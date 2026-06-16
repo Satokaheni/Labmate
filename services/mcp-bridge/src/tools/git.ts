@@ -1,4 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
+import type { ServerRequest, ServerNotification } from '@modelcontextprotocol/sdk/types.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { GitLogInput, GitStatusInput, GitDiffInput } from '../schemas/git.js';
@@ -14,7 +16,8 @@ async function runGit(args: string[], cwd: string): Promise<string> {
 
 export async function makeStatusHandler(
   args: GitStatusInput,
-): Promise<{ content: { type: 'text'; text: string }[]; isError?: true }> {
+  extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
+): Promise<{ content: { type: 'text'; text: string }[]; isError?: boolean }> {
   try {
     const out = await runGit(['status', '--short', '--branch'], args.repo_path);
     const { text } = truncate(out);
@@ -28,7 +31,8 @@ export async function makeStatusHandler(
 
 export async function makeLogHandler(
   args: GitLogInput,
-): Promise<{ content: { type: 'text'; text: string }[]; isError?: true }> {
+  extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
+): Promise<{ content: { type: 'text'; text: string }[]; isError?: boolean }> {
   try {
     const gitArgs = ['log', `--max-count=${args.max_count}`, '--oneline'];
     if (args.branch) gitArgs.push(args.branch);
@@ -44,7 +48,8 @@ export async function makeLogHandler(
 
 export async function makeDiffHandler(
   args: GitDiffInput,
-): Promise<{ content: { type: 'text'; text: string }[]; isError?: true }> {
+  extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
+): Promise<{ content: { type: 'text'; text: string }[]; isError?: boolean }> {
   try {
     const gitArgs = args.ref_b
       ? ['diff', args.ref_a, args.ref_b]
@@ -63,7 +68,6 @@ export function registerGitTools(server: McpServer): void {
   server.registerTool(
     'git_status',
     {
-      title: 'Git status',
       description: 'Get the working tree status of a git repository.',
       inputSchema: GitStatusInput.shape,
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -74,7 +78,6 @@ export function registerGitTools(server: McpServer): void {
   server.registerTool(
     'git_log',
     {
-      title: 'Git log',
       description: 'Get the recent commit history of a git repository.',
       inputSchema: GitLogInput.shape,
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -85,7 +88,6 @@ export function registerGitTools(server: McpServer): void {
   server.registerTool(
     'git_diff',
     {
-      title: 'Git diff',
       description: 'Show changes between two refs, or between a ref and the working tree.',
       inputSchema: GitDiffInput.shape,
       annotations: { readOnlyHint: true, openWorldHint: false },

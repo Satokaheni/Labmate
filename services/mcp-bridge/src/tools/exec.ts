@@ -1,4 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
+import type { ServerRequest, ServerNotification } from '@modelcontextprotocol/sdk/types.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { ExecRunInput } from '../schemas/exec.js';
@@ -10,7 +12,8 @@ const SHELL_METACHAR = /[;&|`$<>()\n\\]/;
 
 export async function makeExecRunHandler(
   args: ExecRunInput,
-): Promise<{ content: { type: 'text'; text: string }[]; isError?: true }> {
+  extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
+): Promise<{ content: { type: 'text'; text: string }[]; isError?: boolean }> {
   if (SHELL_METACHAR.test(args.command)) {
     return {
       content: [{ type: 'text', text: 'exec_run: disallowed shell metacharacter in command' }],
@@ -39,7 +42,6 @@ export function registerExecTools(server: McpServer): void {
   server.registerTool(
     'exec_run',
     {
-      title: 'Run command',
       description: 'Execute a shell command and return its output. Shell metacharacters are rejected.',
       inputSchema: ExecRunInput.shape,
       annotations: { readOnlyHint: false, openWorldHint: true },
