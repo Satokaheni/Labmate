@@ -1,0 +1,7 @@
+| Skill Name | Research Logic | Input →\\rightarrow→ Output | Implementation |
+| --- | --- | --- | --- |
+| context_compressor | Summary Buffering: When the token limit is reached, it doesn't just truncate; it summarizes the oldest "blocks" of conversation into a high-density "State Snapshot" to preserve memory. | conversation_history →\\rightarrow→ Compressed Snapshot | Rust/Python** |
+| semantic_sieve | Hybrid RAG Filtering: Combines BM25 (keyword) and Vector (semantic) search, then applies a "re-ranker" to ensure only the most critical 3-5 chunks are injected into the prompt. | query, retrieved_chunks →\\rightarrow→ Optimized Context | Rust |
+| structural_snapshot | Global State Mapping: Creates a temporary "Map" of the current codebase (which files are open, which functions are being edited) to avoid re-scanning the whole project every turn. | project_root →\\rightarrow→ Active-Work-Map | TypeScript/Rust** |
+| token_budgeter | Dynamic Windowing: Calculates the cost of the current prompt and automatically triggers context_compress** or semantic_sieve when the budget is 80% full. | current_prompt →\\rightarrow→ Budget Warning / Trigger | Rust |
+| state_checkpoint | Session Persistence: Saves the "Goal Tree" and "Working Memory" to a JSON file, allowing the agent to "hibernate" and resume a complex task across different containers. | state_object →\\rightarrow→ checkpoint.json | Python |

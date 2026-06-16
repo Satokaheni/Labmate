@@ -1,0 +1,80 @@
+topic: "LLM Agent Harness Architecture for Local Polyglot Coding/Writing Assistant"
+description: >
+  Research for building Local-Claw: a local autonomous agent using Gemma 4 / Qwen2.5-Coder
+  with a Brain-Nervous System-Hands architecture (Orchestrator + MCP Bridge + Skills).
+  Focus: best patterns, papers, and reference implementations for each spec component.
+
+items:
+  - name: "Coding Agent Orchestrators"
+    category: "Orchestration"
+    description: "OpenHands, SWE-Agent, AgentBench, Confucius Code Agent — architectures for Plan-Execute-Monitor loops, ReAct, Tree-of-Thoughts, and Reflexion patterns for coding agents"
+
+  - name: "MCP Server TypeScript"
+    category: "MCP Bridge"
+    description: "Model Context Protocol TypeScript server SDK, tool registration patterns, stdio transport, best-practice MCP server implementations on GitHub"
+
+  - name: "MCP Python Client"
+    category: "MCP Bridge"
+    description: "Model Context Protocol Python client SDK (mcp package), async subprocess management, JSON-RPC over stdio, timeout/retry patterns"
+
+  - name: "Tiered Context Management"
+    category: "Memory"
+    description: "Working/Semantic/Structural memory tiers, hybrid RAG (BM25 + vector + reranker), context compression (Chain-of-Density, summary buffering), token budgeting for LLM agents"
+
+  - name: "Agent State Machines"
+    category: "State"
+    description: "Goal Tree persistence, checkpoint schemas, session resume patterns, state machine designs for multi-step LLM agents (LangGraph, AutoGPT-style, custom JSON state)"
+
+  - name: "AST Code Analysis Tools"
+    category: "Coding Skills"
+    description: "tree-sitter, ts-morph, semgrep, ast-grep — AST-based symbol mapping, safe structural refactoring, complexity analysis tools and best implementations"
+
+  - name: "Academic Writing Skills"
+    category: "Writing Skills"
+    description: "IMRaD outline generation, Chain-of-Density summarization (Adams et al. 2023), linguistic style transfer, BibTeX citation validation — research paper writing tools for LLM agents"
+
+  - name: "Critique and Reflexion Agents"
+    category: "Critique Skills"
+    description: "Reflexion (Shinn et al. 2023), Constitutional AI, Chain-of-Verification, multi-agent debate (Du et al. 2023), adversarial audit patterns for LLM outputs"
+
+  - name: "BDD TDD for LLM Agent Testing"
+    category: "Testing"
+    description: "Gherkin scenarios for LLM agent behavior, pytest-bdd, behave framework, how to write BDD specs for non-deterministic AI systems, AgentBench evaluation patterns"
+
+  - name: "Local Model Serving Unsloth"
+    category: "Inference"
+    description: "Unsloth FastLanguageModel, 4-bit quantization on A6000/H100, chat template handling for Gemma 4 and Qwen2.5-Coder, vLLM comparison, streaming token generation"
+
+  - name: "Agent Memory Systems"
+    category: "Memory"
+    description: "AgentMemory, MemGPT (Packer et al. 2023), Zep, vector database patterns for conversational memory, episodic vs semantic memory for coding agents"
+
+  - name: "Polyglot Skill Framework Patterns"
+    category: "Skills Framework"
+    description: "How other agent frameworks (LangChain tools, Semantic Kernel plugins, AutoGen skills) structure polyglot tool/skill registries — TypeScript + Python + Rust interop patterns"
+
+  - name: "Multi-Agent Parallel Spawning"
+    category: "Multi-Agent"
+    description: "Patterns for spawning and coordinating parallel sub-agents in LLM systems — task decomposition, result aggregation, Claude Code Agent tool patterns, fan-out/fan-in architectures, concurrency limits, inter-agent communication"
+
+  - name: "Storage Architecture"
+    category: "Infrastructure"
+    description: "Hybrid storage for LLM agents: MongoDB for document/session storage, Chroma/FAISS for vector similarity search, Redis for task queues and caching — schema design, connection pooling, async access patterns for Python agent orchestrators"
+
+  - name: "Docker Containerization"
+    category: "Infrastructure"
+    description: "Container orchestration for local LLM agent stacks: Docker Compose vs Kubernetes-in-Docker (k3s/kind/k3d) — full comparison for the Unsloth inference server, MCP TypeScript bridge, MongoDB, Chroma, Redis stack. Covers Docker Compose approach AND running a k3d/k3s cluster inside Docker with NVIDIA GPU device plugin, Helm charts for services, persistent volume claims, namespace isolation per agent, HorizontalPodAutoscaler for skill workers, migration path from Compose to kube, RunPod A6000 GPU passthrough compatibility"
+    deliverable_note: "If k8s-in-Docker (k3d/k3s) is viable: the optimal_implementation field must include concrete setup scripts (shell + Helm/kubectl manifests) suitable for an infrastructure/ folder at the project root. The spec_infrastructure.md spec should reference these scripts and the infrastructure/ folder should be created with: infrastructure/docker-compose.yml (baseline), infrastructure/k8s/ (manifests/Helm charts), infrastructure/scripts/ (setup-cluster.sh, teardown.sh, gpu-check.sh)."
+
+  - name: "Skill Runner for Local LLM Harness"
+    category: "Skills Framework"
+    description: "How to implement a skill runner in a Python/Gemma 4 agent harness that discovers, loads, and executes markdown/YAML-defined skills (like the Claude Code superpowers skill system) — skill discovery via filesystem, YAML frontmatter parsing, prompt injection into LLM context, tool-calling integration, skill chaining, how to port Claude Code skills to a local Unsloth-based orchestrator"
+
+  - name: "Discord Connector"
+    category: "Integration"
+    description: "Discord bot integration for autonomous LLM agents — discord.py vs discord-interactions, slash commands, streaming responses with message editing, channel/thread management, attachment handling, rate limiting, webhook patterns for agent notifications, asyncio event loop integration with agent orchestrator"
+
+execution:
+  batch_size: 4
+  items_per_agent: 1
+  output_dir: "./results"

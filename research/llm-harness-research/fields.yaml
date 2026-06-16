@@ -1,0 +1,34 @@
+fields:
+  - name: best_architecture
+    description: "The recommended architecture pattern, with reasoning. What design decisions matter most."
+    detail_level: detailed
+
+  - name: reference_papers
+    description: "Key arxiv papers or conference papers. Format: 'Title (Author et al. YEAR) - arxiv:XXXX.XXXXX or venue'"
+    detail_level: detailed
+
+  - name: reference_repos
+    description: "Best GitHub repos implementing this. Format: 'org/repo - description - URL'"
+    detail_level: detailed
+
+  - name: key_libraries
+    description: "Libraries/packages to use. Name, language, version, purpose."
+    detail_level: detailed
+
+  - name: pitfalls
+    description: "Common mistakes or anti-patterns to avoid. What Gemma's current spec gets wrong."
+    detail_level: detailed
+
+  - name: bdd_gherkin_scenarios
+    description: "2-3 Gherkin Feature/Scenario blocks that describe the expected behavior for TDD/BDD implementation"
+    detail_level: detailed
+
+  - name: optimal_implementation
+    description: "Concrete implementation recommendation: code stubs, interfaces, step-by-step logic. What to put in the spec."
+    detail_level: detailed
+
+  - name: sota_improvements
+    description: "State-of-the-art improvements beyond what Gemma originally planned. What should be added or changed."
+    detail_level: moderate
+
+

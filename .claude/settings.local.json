@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(mkdir -p ~/.claude/skills ~/.claude/agents)",
+      "Bash(cp -r ~/Work/Deep-Research-skills/skills/research-en/* ~/.claude/skills/)",
+      "Bash(cp ~/Work/Deep-Research-skills/agents/web-search-agent.md ~/.claude/agents/)",
+      "Bash(cp -r ~/Work/Deep-Research-skills/agents/web-search-modules ~/.claude/agents/)",
+      "Bash(pip install *)",
+      "Skill(research-deep)",
+      "Read(/Users/zachstallbohm/.claude/agents/web-search-agent.md)",
+      "Read(/Users/zachstallbohm/.claude/agents/web-search-modules/academic-papers.md)",
+      "Read(/Users/zachstallbohm/.claude/agents/web-search-modules/general-web.md)",
+      "Read(/Users/zachstallbohm/.claude/agents/web-search-modules/github-debug.md)",
+      "Read(/Users/zachstallbohm/.claude/agents/web-search-modules/stackoverflow.md)",
+      "Read(/Users/zachstallbohm/.claude/agents/web-search-modules/chinese-tech.md)",
+      "Read(/Users/zachstallbohm/Work/gemma/research/llm-harness-research/fields.yaml)",
+      "Write(/Users/zachstallbohm/Work/gemma/research/**)",
+      "Bash(python ~/.claude/skills/research/validate_json.py *)",
+      "Bash(echo * >> /Users/zachstallbohm/Work/gemma/research/llm-harness-research/.progress.log)",
+      "Bash(awk '{print $NF}')",
+      "Bash(xargs -I{} basename {})",
+      "Bash(xargs -I{} basename {} .json)",
+      "Bash(chmod +x *)",
+      "WebFetch(domain:github.com)"
+    ]
+  }
+}

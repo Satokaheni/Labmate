@@ -1,0 +1,310 @@
+[22:58:41] Progress log initialized
+[23:15:37] BDD-TDD-B - STEP: started: web search
+[23:15:39] BDD-TDD-A - started: web search
+[23:15:48] UNSLOTH-A - started: web search
+[23:15:51] UNSLOTH-B - STEP: started: web search
+[23:15:55] MEMORY-A - started: web search
+[23:16:01] MEMORY-B - STEP: started: web search
+[23:16:08] POLYGLOT-A - started: web search
+[23:16:14] POLYGLOT-B - started: web search
+[23:16:18] MULTIAGENT-A - started: web search
+[23:16:23] BDD-TDD-A - done: web search
+[23:16:23] MULTIAGENT-B - STEP: started: web search
+[23:16:26] UNSLOTH-A - done: web search (round 1)
+[23:16:29] STORAGE-A - started: web search
+[23:16:35] STORAGE-B - STEP: started: web search
+[23:16:41] DOCKER-A - started: web search
+[23:16:48] DOCKER-B - started: web search
+[23:16:59] POLYGLOT-A - done: web search
+[23:17:00] MEMORY-A - done: web search
+[23:17:09] BDD-TDD-B - STEP: done: web search
+[23:17:13] MULTIAGENT-B - STEP: done: web search (partial)
+[23:17:14] BDD-TDD-B - STEP: done: field pitfalls
+[23:17:16] BDD-TDD-B - STEP: done: field bdd_gherkin_scenarios
+[23:17:16] BDD-TDD-B - STEP: done: field optimal_implementation
+[23:17:17] BDD-TDD-B - STEP: done: field sota_improvements
+[23:17:18] BDD-TDD-B - STEP: complete: part B
+[23:17:30] DOCKER-A - done: web search
+[23:17:36] DOCKER-B - done: web search
+[23:17:36] BDD-TDD-A - done: field best_architecture
+[23:17:36] BDD-TDD-A - done: field reference_papers
+[23:17:36] BDD-TDD-A - done: field reference_repos
+[23:17:36] BDD-TDD-A - done: field key_libraries
+[23:17:36] BDD-TDD-A - complete: part A
+[23:17:53] POLYGLOT-B - done: web search
+[23:17:53] POLYGLOT-B - done: field pitfalls
+[23:17:53] POLYGLOT-B - done: field bdd_gherkin_scenarios
+[23:17:53] POLYGLOT-B - done: field optimal_implementation
+[23:17:53] POLYGLOT-B - done: field sota_improvements
+[23:17:53] POLYGLOT-B - complete: part B
+[23:18:04] MULTIAGENT-B - STEP: done: web search
+[23:18:04] MULTIAGENT-B - STEP: done: field pitfalls
+[23:18:04] MULTIAGENT-B - STEP: done: field bdd_gherkin_scenarios
+[23:18:04] MULTIAGENT-B - STEP: done: field optimal_implementation
+[23:18:04] MULTIAGENT-B - STEP: done: field sota_improvements
+[23:18:04] MULTIAGENT-B - STEP: complete: part B
+[done] UNSLOTH-A - complete: part A (web search + all 4 fields)
+[$(date '+%H:%M:%S')] DOCKER-B - done: field pitfalls
+[23:18:15] DOCKER-B - done: field pitfalls
+[23:18:15] DOCKER-B - done: field bdd_gherkin_scenarios
+[23:18:15] DOCKER-B - done: field optimal_implementation
+[23:18:15] DOCKER-B - done: field sota_improvements
+[23:18:15] DOCKER-B - complete: part B
+[23:18:22] MEMORY-A - done: field best_architecture
+[23:18:22] POLYGLOT-A - done: field best_architecture
+[23:18:23] UNSLOTH-B - STEP: done: web search
+[23:18:23] MEMORY-A - done: field reference_papers
+[23:18:23] STORAGE-B - STEP: done: web search
+[23:18:24] MEMORY-A - done: field reference_repos
+[23:18:25] MEMORY-A - done: field key_libraries
+[23:18:25] POLYGLOT-A - done: field reference_papers
+[23:18:26] MEMORY-A - complete: part A
+[23:18:28] POLYGLOT-A - done: field reference_repos
+[23:18:29] MULTIAGENT-A - done: web search
+[23:18:30] UNSLOTH-B - STEP: done: field pitfalls
+[23:18:30] UNSLOTH-B - STEP: done: field bdd_gherkin_scenarios
+[23:18:30] UNSLOTH-B - STEP: done: field optimal_implementation
+[23:18:30] UNSLOTH-B - STEP: done: field sota_improvements
+[23:18:30] UNSLOTH-B - STEP: complete: part B
+[23:18:31] POLYGLOT-A - done: field key_libraries
+[23:18:33] MULTIAGENT-A - done: field best_architecture
+[23:18:33] MULTIAGENT-A - done: field reference_papers
+[23:18:35] POLYGLOT-A - complete: part A
+[23:18:35] MULTIAGENT-A - done: field reference_repos
+[23:18:35] STORAGE-B - STEP: done: field pitfalls
+[23:18:35] STORAGE-B - STEP: done: field bdd_gherkin_scenarios
+[23:18:35] STORAGE-B - STEP: done: field optimal_implementation
+[23:18:35] STORAGE-B - STEP: done: field sota_improvements
+[23:18:35] STORAGE-B - STEP: complete: part B
+[23:18:35] MEMORY-B - STEP: done: web search
+[23:18:36] MULTIAGENT-A - done: field key_libraries
+[23:18:36] MULTIAGENT-A - complete: part A
+[23:18:43] MEMORY-B - STEP: done: field pitfalls
+[23:18:43] MEMORY-B - STEP: done: field bdd_gherkin_scenarios
+[23:18:43] MEMORY-B - STEP: done: field optimal_implementation
+[23:18:43] MEMORY-B - STEP: done: field sota_improvements
+[23:18:43] MEMORY-B - STEP: complete: part B
+[23:18:51] DOCKER-A - done: field best_architecture
+[23:18:53] DOCKER-A - done: field reference_papers
+[23:18:53] DOCKER-A - done: field reference_repos
+[23:18:54] DOCKER-A - done: field key_libraries
+[23:18:55] DOCKER-A - complete: part A
+[23:26:32] BDD-TDD-A - started: web search phase
+[23:30:25] BDD-TDD-A - started: web search phase
+[23:30:35] UNSLOTH-A - started: web search phase
+[23:30:46] MEMORY-A - STEP: started: web search phase
+[23:30:58] POLYGLOT-A - started: web search phase
+[23:31:04] MULTIAGENT-A - started: web search phase
+[23:31:17] BDD-TDD-A - done: search 2 of 8
+[23:31:17] STORAGE-A - started: web search phase
+[23:31:26] DOCKER-A - STARTED: web search phase
+[23:31:36] MEMORY-A - STEP: done: search 2 of 4
+[23:32:00] UNSLOTH-A - done: search 5 of 7
+[23:32:07] STORAGE-A - done: search 2 of 6
+[23:32:16] MEMORY-A - STEP: done: search 4 of 4
+[23:32:37] DOCKER-A - DONE: search 2 of 8
+[23:32:37] POLYGLOT-A - done: search 2 of 4
+[23:32:39] ORCHESTRATORS-A - started: web search phase
+[23:32:43] BDD-TDD-A - done: search 6 of 8
+[23:32:47] MEMORY-A - STEP: done: field best_architecture
+[23:32:47] MEMORY-A - STEP: done: field reference_papers
+[23:32:47] MEMORY-A - STEP: done: field reference_repos
+[23:32:47] MEMORY-A - STEP: done: field key_libraries
+[23:32:47] MEMORY-A - STEP: assembling: JSON output
+[23:32:47] MCP-TS-A - started: web search phase
+[23:32:52] STORAGE-A - done: search 4 of 6
+[23:32:54] MCP-PY-A - started: web search phase
+[23:32:57] UNSLOTH-A - done: search 7 of 7
+[23:32:57] UNSLOTH-A - done: field best_architecture
+[23:32:57] UNSLOTH-A - done: field reference_papers
+[23:32:57] UNSLOTH-A - done: field reference_repos
+[23:32:57] UNSLOTH-A - done: field key_libraries
+[23:32:57] UNSLOTH-A - assembling: JSON output
+[23:33:03] CONTEXT-A - STEP: started: web search phase
+[23:33:10] DOCKER-A - DONE: search 4 of 8
+[23:33:11] STATEMACHINE-A - STARTED: web search phase
+[23:33:16] MULTIAGENT-A - done: search 5 of 5
+[23:33:16] POLYGLOT-A - done: field best_architecture
+[23:33:16] POLYGLOT-A - done: field reference_papers
+[23:33:16] POLYGLOT-A - done: field reference_repos
+[23:33:16] POLYGLOT-A - done: field key_libraries
+[23:33:16] POLYGLOT-A - assembling: JSON output
+[23:33:20] AST-A - started: web search phase
+[23:33:28] BDD-TDD-A - done: search 8 of 8
+[23:33:28] BDD-TDD-A - done: field best_architecture
+[23:33:28] BDD-TDD-A - done: field reference_papers
+[23:33:28] BDD-TDD-A - done: field reference_repos
+[23:33:28] BDD-TDD-A - done: field key_libraries
+[23:33:28] BDD-TDD-A - assembling: JSON output
+[23:33:29] WRITING-A - STEP: started: web search phase
+[23:33:35] MCP-TS-A - done: search 2 of 4
+[23:33:37] CRITIQUE-A - started: web search phase
+[23:33:38] MCP-PY-A - done: search 2 of 4
+[23:33:50] SKILLRUNNER-A - started: web search phase
+[23:33:51] MEMORY-A - STEP: complete: part A written
+[23:33:56] DOCKER-A - DONE: search 6 of 8
+[23:33:58] MULTIAGENT-A - done: field best_architecture
+[23:34:00] DISCORD-A - started: web search phase
+[23:34:02] MULTIAGENT-A - done: field reference_papers
+[23:34:02] MULTIAGENT-A - done: field reference_repos
+[23:34:02] MULTIAGENT-A - done: field key_libraries
+[23:34:02] MULTIAGENT-A - assembling: JSON output
+[23:34:03] UNSLOTH-A - complete: part A written
+[23:34:19] ORCHESTRATORS-A - done: search 4 of 6
+[23:34:20] POLYGLOT-A - complete: part A written
+[23:34:26] STORAGE-A - done: search 6 of 6
+[23:34:26] STORAGE-A - done: field best_architecture
+[23:34:26] STORAGE-A - done: field reference_papers
+[23:34:26] STORAGE-A - done: field reference_repos
+[23:34:26] STORAGE-A - done: field key_libraries
+[23:34:26] STORAGE-A - assembling: JSON output
+[23:34:29] CRITIQUE-A - done: search 4 of 7
+[23:34:32] CONTEXT-A - STEP: done: search 2 of 6
+[23:34:34] SKILLRUNNER-A - done: search 2 of 6
+[23:34:37] AST-A - done: search 3 of 5
+[23:34:48] WRITING-A - STEP: done: search 4 of 6
+[23:34:53] DISCORD-A - done: search 2 of 5
+[23:34:54] STATEMACHINE-A - DONE: search 4 of 6
+[23:34:55] MCP-TS-A - done: field best_architecture
+[23:34:55] MCP-TS-A - done: field reference_papers
+[23:34:55] MCP-TS-A - done: field reference_repos
+[23:34:55] MCP-TS-A - done: field key_libraries
+[23:34:55] MCP-TS-A - assembling: JSON output
+[23:34:57] MULTIAGENT-A - complete: part A written
+[23:34:58] BDD-TDD-A - complete: part A written
+[23:35:10] CRITIQUE-A - done: search 6 of 7
+[23:35:21] DOCKER-A - DONE: field best_architecture
+[23:35:21] DOCKER-A - DONE: field reference_papers
+[23:35:21] DOCKER-A - DONE: field reference_repos
+[23:35:21] DOCKER-A - DONE: field key_libraries
+[23:35:21] DOCKER-A - ASSEMBLING: JSON output
+[23:35:22] MCP-PY-A - done: field best_architecture
+[23:35:22] MCP-PY-A - done: field reference_papers
+[23:35:22] MCP-PY-A - done: field reference_repos
+[23:35:22] MCP-PY-A - done: field key_libraries
+[23:35:22] MCP-PY-A - assembling: JSON output
+[23:35:25] STORAGE-A - complete: part A written
+[23:35:34] WRITING-A - STEP: done: search 6 of 6
+[23:35:34] WRITING-A - STEP: done: field best_architecture
+[23:35:34] WRITING-A - STEP: done: field reference_papers
+[23:35:34] WRITING-A - STEP: done: field reference_repos
+[23:35:34] WRITING-A - STEP: done: field key_libraries
+[23:35:34] WRITING-A - STEP: assembling: JSON output
+[23:35:39] ORCHESTRATORS-A - done: search 6 of 6
+[23:35:42] MEMORY-B - STEP: started: web search phase
+[23:35:44] STATEMACHINE-A - DONE: search 6 of 6
+[23:35:44] STATEMACHINE-A - DONE: field best_architecture
+[23:35:44] STATEMACHINE-A - DONE: field reference_papers
+[23:35:44] STATEMACHINE-A - DONE: field reference_repos
+[23:35:44] STATEMACHINE-A - DONE: field key_libraries
+[23:35:44] STATEMACHINE-A - ASSEMBLING: JSON output
+[ASM] ORCHESTRATORS-A - done: field best_architecture
+[ASM] ORCHESTRATORS-A - done: field reference_papers
+[ASM] ORCHESTRATORS-A - done: field reference_repos
+[ASM] ORCHESTRATORS-A - done: field key_libraries
+[ASM] ORCHESTRATORS-A - assembling: JSON output
+[23:35:48] MCP-TS-A - complete: part A written
+[23:35:50] AST-A - done: search 5 of 5
+[23:35:50] AST-A - done: field best_architecture
+[23:35:50] AST-A - done: field reference_papers
+[23:35:50] AST-A - done: field reference_repos
+[23:35:50] AST-A - done: field key_libraries
+[23:35:50] AST-A - assembling: JSON output
+[23:35:56] SKILLRUNNER-A - done: search 5 of 6
+[23:35:57] CRITIQUE-A - done: search 7 of 7
+[23:35:57] CRITIQUE-A - done: field best_architecture
+[23:35:57] CRITIQUE-A - done: field reference_papers
+[23:35:57] CRITIQUE-A - done: field reference_repos
+[23:35:57] CRITIQUE-A - done: field key_libraries
+[23:35:57] CRITIQUE-A - assembling: JSON output
+[23:36:04] CONTEXT-A - STEP: done: search 6 of 6
+[23:36:08] DISCORD-A - done: search 5 of 5
+[23:36:08] DISCORD-A - done: field best_architecture
+[23:36:08] DISCORD-A - done: field reference_papers
+[23:36:08] DISCORD-A - done: field reference_repos
+[23:36:08] DISCORD-A - done: field key_libraries
+[23:36:08] DISCORD-A - assembling: JSON output
+[23:36:13] CONTEXT-A - STEP: assembling: JSON output
+[23:36:14] MCP-PY-A - complete: part A written
+[23:36:26] WRITING-A - STEP: complete: part A written
+[23:36:32] SKILLRUNNER-A - done: field key_libraries
+[23:36:32] SKILLRUNNER-A - assembling: JSON output
+[23:36:35] DOCKER-A - COMPLETE: part A written
+[23:36:37] UNSLOTH-B - STEP: started
+[23:36:47] ORCHESTRATORS-A - complete: part A written
+[23:36:48] STATEMACHINE-A - COMPLETE: part A written
+[23:36:48] AST-A - complete: part A written
+[23:36:54] CRITIQUE-A - complete: part A written
+[23:36:57] POLYGLOT-B - STEP: started
+[23:37:10] DISCORD-A - complete: part A written
+[23:37:16] CONTEXT-A - STEP: complete: part A written
+[23:37:27] MEMORY-B - STEP: assembling: final JSON
+[23:37:31] SKILLRUNNER-A - complete: part A written
+[23:38:16] POLYGLOT-B - STEP: done: field pitfalls
+[23:38:16] POLYGLOT-B - STEP: done: field bdd_gherkin_scenarios
+[23:38:16] POLYGLOT-B - STEP: done: field optimal_implementation
+[23:38:16] POLYGLOT-B - STEP: done: field sota_improvements
+[23:38:16] POLYGLOT-B - STEP: assembling: final JSON
+[23:38:39] UNSLOTH-B - STEP: done: field pitfalls
+[23:38:42] UNSLOTH-B - STEP: done: field bdd_gherkin_scenarios
+[23:38:43] UNSLOTH-B - STEP: done: field optimal_implementation
+[23:38:44] UNSLOTH-B - STEP: done: field sota_improvements
+[23:38:45] UNSLOTH-B - STEP: assembling: final JSON
+[23:39:31] MEMORY-B - STEP: complete: written to disk
+[23:39:49] MULTI-AGENT-B - STEP: started
+[23:40:22] BDD-TDD-B - STEP: started
+[23:40:25] UNSLOTH-B - STEP: complete: written
+[23:40:28] POLYGLOT-B - STEP: complete: written
+[23:40:38] MULTI-AGENT-B - STEP: assembling: final JSON
+[23:40:47] STORAGE-B - STEP: started
+[23:41:31] MCP-TS-B - started
+[23:41:43] STORAGE-B - STEP: done: pitfalls
+[23:41:43] STORAGE-B - STEP: done: bdd_gherkin_scenarios
+[23:41:52] BDD-TDD-B - STEP: done: pitfalls (verified vLLM batch-invariance, asyncio loop scope, self-preference bias arxiv:2410.21819)
+[23:42:06] MULTI-AGENT-B - STEP: complete: written
+[23:42:14] MCP-TS-B - done: pitfalls
+[23:42:14] MCP-TS-B - done: bdd_gherkin_scenarios
+[23:42:19] MCP-TS-B - done: optimal_implementation
+[23:42:19] MCP-TS-B - done: sota_improvements
+[23:42:19] MCP-TS-B - assembling: final JSON
+[23:42:25] MCP-PY-B - START: reading fields.yaml
+[23:42:28] BDD-TDD-B - STEP: done: bdd_gherkin_scenarios
+[23:42:28] BDD-TDD-B - STEP: done: optimal_implementation
+[23:42:28] BDD-TDD-B - STEP: done: sota_improvements (verified pass@k unbiased estimator Chen 2021)
+[23:42:28] BDD-TDD-B - STEP: assembling: final JSON
+[23:42:30] STORAGE-B - STEP: done: optimal_implementation
+[23:42:30] STORAGE-B - STEP: done: sota_improvements
+[23:42:30] STORAGE-B - STEP: assembling: final JSON
+[23:42:33] MCP-PY-B - LOADED: github-debug module, starting verification searches
+[23:42:57] WRITING-B - STEP: STARTED
+[23:43:12] MCP-PY-B - VERIFIED: cancel-scope + v2 timeline confirmed, writing JSON
+[23:43:26] STATE-MACHINES-B - START: reading fields.yaml
+[23:43:38] WRITING-B - STEP: RESEARCH-VERIFIED, compiling JSON
+[23:43:49] STORAGE-B - STEP: complete: written
+[23:43:59] AST-TOOLS-B - START: reading fields.yaml
+[23:44:14] BDD-TDD-B - STEP: complete: written (validation PASS)
+[23:44:37] DOCKER-B - START: loading fields + modules
+[23:44:55] STATE-MACHINES-B - WRITING: building 8-field JSON
+[23:44:57] AST-TOOLS-B - WRITE: assembling 8-field JSON
+[23:45:05] MCP-PY-B - WROTE: json written, validating
+[23:45:08] MCP-PY-B - DONE: validation PASS, 8 fields + item + uncertain complete
+[23:45:09] CRITIQUE-B - STEP: STARTED reading fields.yaml
+[23:45:49] ORCHESTRATORS-B - STARTING: reading fields.yaml
+[23:45:51] MCP-TS-B - complete: written
+[23:45:56] DOCKER-B - VERIFY: confirmed runtime/k3d/keda/healthcheck claims via web; writing JSON
+[23:46:16] DISCORD-B - STEP: started, reading fields.yaml
+[23:46:37] WRITING-B - STEP: COMPLETE, 8 fields written + validated
+[23:46:38] AST-TOOLS-B - DONE: validated PASS, 8 fields written
+[23:46:58] CONTEXT-MGMT-B - START: reading fields.yaml
+[23:46:59] ORCHESTRATORS-B - STEP: web research done, verified LATS=2310.04406, SWE-bench leaderboard
+[23:47:32] STATE-MACHINES-B - DONE: validated, 8 fields written
+[23:47:33] DISCORD-B - STEP: searches done, assembling JSON
+[23:47:33] SKILL-RUNNER-B - START: reading fields and context
+[23:47:54] CONTEXT-MGMT-B - VERIFIED: Gemma/tiktoken + Zep arxiv:2501.13956; writing JSON
+[23:49:08] ORCHESTRATORS-B - COMPLETE: 8-field JSON written and validated (PASS)
+[23:49:13] SKILL-RUNNER-B - RESEARCH-DONE: validated arch/sota/gemma/papers, writing JSON
+[23:49:15] DISCORD-B - STEP: DONE, validated 8 fields + Part B disconnect/DM/thread-isolation enhancements
+[23:49:30] CONTEXT-MGMT-B - DONE: validated
+[23:49:31] CRITIQUE-B - STEP: COMPLETE - all 4 Part B fields enhanced with Local-Claw schema + verified citations
+[23:51:03] SKILL-RUNNER-B - MERGING: existing file rich; integrating new papers (SkillRouter/Tool-to-Agent/SkillFlow) + graph-of-skills + full-body rerank
+[23:51:38] SKILL-RUNNER-B - DONE: 8-field JSON written and validated

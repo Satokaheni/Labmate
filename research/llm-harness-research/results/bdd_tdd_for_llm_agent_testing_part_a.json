@@ -1,0 +1,44 @@
+{
+  "item": "BDD TDD for LLM Agent Testing",
+  "part": "A",
+  "best_architecture": "Adopt a three-layer testing pyramid that cleanly separates deterministic structure from non-deterministic semantics, with pytest-bdd as the BDD/Gherkin front-end for Local-Claw's polyglot agent. (1) UNIT LAYER (mocked, deterministic, fast): inject a fake LLM at the boundary so Gherkin scenarios assert on tool-routing, argument extraction, MCP message shape, and result handling -- NOT on free-text content. Mock at the cheapest stable boundary: unittest.mock/pytest-mock for in-process calls, respx for httpx/async clients (Gemma/Qwen served over an OpenAI-compatible HTTP endpoint via vLLM/Ollama is the natural seam), and vcr.py/pytest-recording to record-then-replay real model responses so later runs are deterministic and fail only when the prompt/payload changes. (2) INTEGRATION LAYER (real model, semantic assertions): keep Gherkin steps deterministic by asserting on STRUCTURE and INVARIANTS rather than exact strings -- did the agent call the right tool, produce valid JSON/diff, leave the repo in a passing state -- and gate fuzzy semantic claims through an LLM-as-judge (G-Eval/DeepEval) or rubric metric so a single scenario produces a stable PASS/FAIL even though the underlying text varies. This is the key insight for non-determinism: write assertions over PROPERTIES that are stable across samples (schema validity, tool-call presence, FAIL_TO_PASS/PASS_TO_PASS test transitions, threshold-based judge scores) instead of literal equality. (3) EVAL/BENCHMARK LAYER (trajectory + outcome): for the coding-agent skills, follow the SWE-bench execution-based pattern -- the ground truth is 'did the generated patch make the previously-failing tests pass without breaking passing tests' -- which is fully deterministic and language-agnostic, ideal for Local-Claw's TS/Rust/Python skills. Cross-cutting design decisions that matter most: (a) make the model a dependency-injected port so every layer can swap real<->fake without monkeypatching framework internals; (b) treat each Gherkin Scenario Outline row as a parameterized example so individual inputs fail independently (data-driven evals); (c) seed/cache for repeatability (temperature=0 plus VCR cassettes or scenario cache_key) so CI is reproducible; (d) separate 'mocked unit' runs (every CI commit, no API keys/GPU) from 'live eval' runs (nightly/pre-release on the RTX A6000) via pytest markers; (e) measure pass@k / multiple samples for any scenario where you must assert on stochastic output, and set acceptance thresholds rather than expecting a single deterministic answer. pytest-bdd is preferred over behave/Robot for this stack because it is a pytest plugin -- it inherits fixtures, parametrization, parallel execution (pytest-xdist), markers for live/mocked separation, and direct composition with DeepEval/Ragas/Scenario which are themselves pytest-native.",
+  "reference_papers": [
+    "Evaluating Large Language Models Trained on Code (HumanEval) (Chen et al. 2021) - arxiv:2107.03374 - introduced HumanEval (164 problems) and the execution-based functional-correctness / pass@k evaluation paradigm that underpins deterministic coding-agent testing",
+    "SWE-bench: Can Language Models Resolve Real-World GitHub Issues? (Jimenez et al. 2023, ICLR 2024) - arxiv:2310.06770 - 2,294 real GitHub issues across 12 Python repos; established the FAIL_TO_PASS / PASS_TO_PASS execution-based, deterministic outcome metric for repo-level coding agents",
+    "AgentBench: Evaluating LLMs as Agents (Liu et al. 2023, ICLR 2024) - arxiv:2308.03688 - multi-environment (8 environments) benchmark for multi-turn agent reasoning/decision-making; canonical reference for agent-as-tested-system evaluation patterns",
+    "SWE-agent: Agent-Computer Interfaces Enable Automated Software Engineering (Yang et al. 2024) - arxiv:2405.15793 - agent-computer interface design and harness pattern for driving coding agents against SWE-bench",
+    "UTBoost: Rigorous Evaluation of Coding Agents on SWE-Bench (2025) - arxiv:2506.09289 - strengthens SWE-bench test suites to reduce false positives, relevant to designing robust pass/fail oracles for agent tests",
+    "Evolutionary Perspectives on the Evaluation of LLM-Based AI Agents: A Comprehensive Survey (2025) - arxiv:2506.11102 - survey of agent evaluation methods (trajectory vs outcome, deterministic vs LLM-judge), useful for choosing assertion strategy",
+    "G-Eval: NLG Evaluation using GPT-4 with Better Human Alignment (Liu et al. 2023) - arxiv:2303.16634 - chain-of-thought LLM-as-judge scoring method implemented in DeepEval, the basis for turning fuzzy semantic checks into thresholded deterministic assertions [uncertain]",
+    "RAGAS: Automated Evaluation of Retrieval Augmented Generation (Es et al. 2023) - arxiv:2309.15217 - reference-free RAG metric framework (faithfulness, answer relevancy, context precision/recall) relevant to the Chroma/RAG memory layer [uncertain]"
+  ],
+  "reference_repos": [
+    "pytest-dev/pytest-bdd - pytest plugin for Gherkin/BDD; preferred BDD front-end because it composes with the full pytest ecosystem (fixtures, xdist, markers) - https://github.com/pytest-dev/pytest-bdd",
+    "cucumber/pytest-bdd-ng - next-gen pytest-bdd under the Cucumber org with fuller Gherkin support (Scenario Outlines, tags-as-markers, localization) - https://github.com/cucumber/pytest-bdd-ng",
+    "behave/behave - mature standalone Python BDD/Gherkin framework with environment hooks and Django/Flask integrations; alternative when pytest coupling is undesired - https://github.com/behave/behave",
+    "langwatch/scenario - agentic testing framework: simulated User Agent drives multi-turn conversations and a Judge Agent renders verdicts; integrates LangGraph/CrewAI/Pydantic-AI, pytest-native, supports cache_key for repeatable runs - https://github.com/langwatch/scenario",
+    "confident-ai/deepeval - 'Pytest for LLMs'; 50+ metrics (G-Eval, hallucination, task completion, tool correctness), native pytest + CI/CD integration, works with local models via Ollama - https://github.com/confident-ai/deepeval",
+    "explodinggradients/ragas - reference-free RAG evaluation metrics with pytest-compatible integration, relevant to the Chroma memory layer - https://github.com/explodinggradients/ragas",
+    "princeton-nlp/SWE-bench - canonical execution-based coding-agent benchmark and harness (FAIL_TO_PASS/PASS_TO_PASS oracle) to model Local-Claw's coding-skill evals - https://github.com/princeton-nlp/SWE-bench",
+    "THUDM/AgentBench - reference implementation of the AgentBench multi-environment agent evaluation harness - https://github.com/THUDM/AgentBench",
+    "openai/human-eval - original HumanEval harness implementing pass@k functional-correctness evaluation - https://github.com/openai/human-eval"
+  ],
+  "key_libraries": [
+    "pytest - Python - >=8.0 - core test runner and fixture/parametrize/marker engine; foundation for separating mocked-unit vs live-eval runs",
+    "pytest-bdd - Python - >=8.1 - Gherkin feature files + step definitions as a pytest plugin; primary BDD layer for Local-Claw",
+    "behave - Python - >=1.2.6 - alternative standalone Gherkin BDD runner (consider only if decoupling from pytest is desired)",
+    "pytest-mock - Python - >=3.14 - thin pytest wrapper over unittest.mock (mocker fixture) for patching in-process LLM/tool calls with auto-cleanup",
+    "respx - Python - >=0.21 - httpx request mocking (sync+async); ideal seam for an OpenAI-compatible Gemma/Qwen HTTP endpoint",
+    "vcrpy + pytest-recording - Python - vcrpy>=6.0, pytest-recording>=0.13 - record-and-replay real LLM HTTP responses into cassettes so subsequent runs are deterministic and detect prompt/payload regressions",
+    "deepeval - Python - >=2.0 - pytest-native LLM eval framework (G-Eval, tool-correctness, task-completion, hallucination); supports local judge models via Ollama/LiteLLM [uncertain version]",
+    "ragas - Python - >=0.2 - reference-free RAG metrics for the Chroma/RAG memory layer",
+    "langwatch-scenario - Python - latest (install via 'uv add langwatch-scenario pytest') - simulation-based multi-turn agent testing with User Simulator + Judge agents, framework-agnostic [uncertain version]",
+    "pytest-asyncio - Python - >=0.24 - run async agent/MCP and respx-mocked coroutine tests under pytest",
+    "pytest-xdist - Python - >=3.6 - parallel test execution (pytest-bdd native advantage over behave) to keep the mocked unit suite fast in CI",
+    "vitest + @langwatch/scenario - TypeScript - latest - mirror the same scenario-based agent tests on the TypeScript MCP server / TS skills side of the polyglot stack [uncertain]"
+  ],
+  "uncertain": [
+    "reference_papers",
+    "key_libraries"
+  ]
+}
