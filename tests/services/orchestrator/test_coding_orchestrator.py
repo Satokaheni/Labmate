@@ -129,3 +129,110 @@ class TestAsyncOrchestrator:
         assert len(result.summary) <= 2000
         assert result.ok is True
         assert result.id == "gid"
+
+
+@pytest.mark.mocked
+class TestCodingOrchestrator:
+    def _make_orch(self):
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator
+        return CodingOrchestrator(
+            graph=MagicMock(),
+            workspace_path="/tmp/workspace",
+            docker_container="lm-sandbox",
+        )
+
+    @pytest.mark.asyncio
+    async def test_architect_passes_thinking_budget_in_extra_body(self):
+        orch = self._make_orch()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "here is the plan"
+
+        with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
+                   new_callable=AsyncMock, return_value=mock_response) as mock_complete:
+            result = await orch.architect("decompose this", thinking_budget=3000)
+            call_kwargs = mock_complete.call_args.kwargs
+            assert call_kwargs["extra_body"]["thinking_budget_tokens"] == 3000
+            assert call_kwargs["model"] == "openai/gemma-4-31b"
+            assert result == "here is the plan"
+
+    @pytest.mark.asyncio
+    async def test_architect_tool_dispatch_uses_zero_budget(self):
+        orch = self._make_orch()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "tool result"
+
+        with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
+                   new_callable=AsyncMock, return_value=mock_response) as mock_complete:
+            await orch.architect("route this tool call", thinking_budget=0)
+            call_kwargs = mock_complete.call_args.kwargs
+            assert call_kwargs["extra_body"]["thinking_budget_tokens"] == 0
+
+    @pytest.mark.asyncio
+    async def test_editor_calls_qwen(self):
+        orch = self._make_orch()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "patched code"
+
+        with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
+                   new_callable=AsyncMock, return_value=mock_response) as mock_complete:
+            result = await orch.editor("fix this bug")
+            call_kwargs = mock_complete.call_args.kwargs
+            assert call_kwargs["model"] == "openai/qwen2.5-coder-32b"
+            assert result == "patched code"
+
+    def test_is_stuck_returns_false_when_not_repeated(self):
+        orch = self._make_orch()
+        assert orch.is_stuck("action_a") is False
+        assert orch.is_stuck("action_b") is False
+        assert orch.is_stuck("action_a") is False
+
+    def test_is_stuck_returns_true_after_n_identical_actions(self):
+        orch = self._make_orch()
+        orch.is_stuck("same_action")
+        orch.is_stuck("same_action")
+        result = orch.is_stuck("same_action")
+        assert result is True
+
+    def test_is_stuck_resets_on_different_action(self):
+        orch = self._make_orch()
+        orch.is_stuck("same_action")
+        orch.is_stuck("same_action")
+        orch.is_stuck("different_action")  # breaks the streak
+        assert orch.is_stuck("same_action") is False
+
+    def test_execute_in_sandbox_success(self):
+        orch = self._make_orch()
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                stdout="test output", stderr="", returncode=0
+            )
+            result = orch.execute_in_sandbox("echo hello")
+            assert result["ok"] is True
+            assert result["stdout"] == "test output"
+            assert result["exit_code"] == 0
+            cmd = mock_run.call_args[0][0]
+            assert "docker" in cmd
+            assert "exec" in cmd
+            assert "lm-sandbox" in cmd
+
+    def test_execute_in_sandbox_failure(self):
+        orch = self._make_orch()
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                stdout="", stderr="command not found", returncode=1
+            )
+            result = orch.execute_in_sandbox("bad_command")
+            assert result["ok"] is False
+            assert result["exit_code"] == 1
+
+    def test_git_checkpoint_calls_git_add_and_commit(self):
+        orch = self._make_orch()
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            orch.git_checkpoint("step 3: fixed tests")
+            calls = [c[0][0] for c in mock_run.call_args_list]
+            assert any("add" in c for c in calls)
+            assert any("commit" in c for c in calls)

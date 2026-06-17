@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import litellm
+import subprocess
 from dataclasses import dataclass, field
 from aiolimiter import AsyncLimiter
 
@@ -182,3 +183,124 @@ class AsyncOrchestrator:
             extra_body={"thinking_budget_tokens": 2000},
         )
         return Result(id="aggregated", summary=r.choices[0].message.content)
+
+
+# ---------------------------------------------------------------------------
+# Main coding orchestrator (wraps the StateGraph entry point)
+# ---------------------------------------------------------------------------
+
+class CodingOrchestrator:
+    """
+    Top-level entry point. Wraps the LangGraph StateGraph with convenience
+    methods and the Gemma 4 architect / Qwen2.5-Coder-32B editor routing.
+
+    Lifecycle:
+      run_task() -> graph.ainvoke() -> plan -> execute -> check -> [reflect | END]
+
+    Crash recovery: re-invoke run_task() with the same session_id.
+    The AsyncMongoDBSaver will load the latest checkpoint and resume.
+    """
+
+    def __init__(
+        self,
+        graph,
+        workspace_path: str,
+        docker_container: str,
+        gemma_api_base: str = "http://localhost:8000/v1",
+        qwen_api_base: str = "http://localhost:8001/v1",
+        max_iter: int = 10,
+        stuck_n: int = 3,
+    ) -> None:
+        self.graph = graph
+        self.workspace = workspace_path
+        self.container = docker_container
+        self._gemma_base = gemma_api_base
+        self._qwen_base = qwen_api_base
+        self.max_iter = max_iter
+        self.stuck_n = stuck_n
+        self._recent_actions: list[str] = []
+
+    async def run_task(self, task: str, session_id: str) -> dict:
+        """
+        Entry point. Pass the same session_id to resume after a crash.
+        Returns the final State dict.
+        """
+        from .types import create_goal
+
+        initial: State = {
+            "session_id": session_id,
+            "goal_tree": create_goal({}, "root", None, task),
+            "current_goal_id": "root",
+            "step_markers": {},
+            "messages": [],
+            "error": None,
+        }
+        cfg = {"configurable": {"thread_id": session_id}}
+        return await self.graph.ainvoke(initial, cfg)
+
+    async def architect(self, prompt: str, thinking_budget: int = 3000) -> str:
+        """
+        Planning, self-reflection, aggregation -> Gemma 4 31B dense.
+
+        thinking_budget controls per-request reasoning depth via llama.cpp's
+        thinking_budget_tokens field (only honored when server started without
+        --reasoning-budget flag). Pass thinking_budget=0 for fast tool-dispatch nodes.
+        """
+        r = await litellm.acompletion(
+            model="openai/gemma-4-31b",
+            api_base=self._gemma_base,
+            messages=[{"role": "user", "content": prompt}],
+            extra_body={"thinking_budget_tokens": thinking_budget},
+        )
+        return r.choices[0].message.content
+
+    async def editor(self, prompt: str) -> str:
+        """Code generation, file edits -> Qwen2.5-Coder-32B."""
+        r = await litellm.acompletion(
+            model="openai/qwen2.5-coder-32b",
+            api_base=self._qwen_base,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return r.choices[0].message.content
+
+    def is_stuck(self, action_key: str) -> bool:
+        """
+        Returns True if the last stuck_n actions are all identical.
+        Triggers escalation from the inner ReAct loop to a fresh Plan-Execute pass.
+        """
+        self._recent_actions.append(action_key)
+        self._recent_actions = self._recent_actions[-self.stuck_n:]
+        return (
+            len(self._recent_actions) == self.stuck_n
+            and len(set(self._recent_actions)) == 1
+        )
+
+    def execute_in_sandbox(self, cmd: str, timeout: int = 60) -> dict:
+        """
+        Run a shell command inside the Docker container.
+        The host filesystem is NEVER mounted writable; only the container
+        is affected by any destructive command.
+        """
+        proc = subprocess.run(
+            ["docker", "exec", self.container, "bash", "-lc", cmd],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return {
+            "stdout": proc.stdout,
+            "stderr": proc.stderr,
+            "exit_code": proc.returncode,
+            "ok": proc.returncode == 0,
+        }
+
+    def git_checkpoint(self, message: str) -> None:
+        """
+        Commit all workspace changes as a rollback-ladder checkpoint.
+        Called after every successful file edit.
+        """
+        subprocess.run(["git", "-C", self.workspace, "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", self.workspace, "commit", "-m", message],
+            check=True,
+        )
