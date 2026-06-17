@@ -6,6 +6,8 @@ import os
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import interrupt
+from pymongo import MongoClient
+from langgraph.checkpoint.mongodb import MongoDBSaver
 
 from .types import State, Status, Goal, get_ready_goals, update_status, now_iso, create_goal
 from .coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
@@ -153,3 +155,46 @@ def router(state: State) -> str:
     if get_ready_goals(state["goal_tree"]):
         return "execute"
     return END
+
+
+# ---------------------------------------------------------------------------
+# Graph factory
+# ---------------------------------------------------------------------------
+
+async def build_graph(
+    orch: CodingOrchestrator,
+    async_orch: AsyncOrchestrator,
+    mongo_uri: str = MONGO_URI,
+    db_name: str = "labmate",
+):
+    """
+    Compile the StateGraph with a MongoDBSaver checkpointer.
+    Returns (compiled_graph, checkpointer). The caller MUST keep checkpointer
+    alive for the graph's lifetime.
+
+    Call once at startup; MongoDBSaver.setup() creates MongoDB indexes (idempotent).
+    """
+    plan_node, execute_node, check_node, reflect_node, approval_node = make_nodes(
+        orch, async_orch
+    )
+
+    b = StateGraph(State)
+    b.add_node("plan", plan_node)
+    b.add_node("execute", execute_node)
+    b.add_node("check", check_node)
+    b.add_node("reflect", reflect_node)
+    b.add_node("approval", approval_node)
+
+    b.add_edge(START, "plan")
+    b.add_edge("plan", "execute")
+    b.add_edge("execute", "check")
+    b.add_conditional_edges("check", router, ["execute", "reflect", "approval", END])
+    b.add_edge("reflect", "execute")
+    b.add_edge("approval", "execute")
+
+    client = MongoClient(mongo_uri)
+    cp = MongoDBSaver(client=client, db_name=db_name)
+    if hasattr(cp, "setup"):
+        cp.setup()
+    graph = b.compile(checkpointer=cp)
+    return graph, cp
