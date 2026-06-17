@@ -12,7 +12,7 @@ def _load_tokenizer():
     # Gemma uses SentencePiece. NEVER use tiktoken — it miscounts Gemma tokens
     # by 30%+ on code and causes context window overflows.
     from transformers import AutoTokenizer
-    return AutoTokenizer.from_pretrained("google/gemma-4-9b-it", use_fast=True)
+    return AutoTokenizer.from_pretrained("google/gemma-4-31B-it", use_fast=True)
 
 
 def token_count(text: str) -> int:

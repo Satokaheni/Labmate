@@ -8,7 +8,7 @@ This file is for any AI coding agent (Claude, Gemma, Qwen, or other) helping imp
 
 Labmate is a local autonomous agent: Brain (LLM) → Nervous System (MCP bridge) → Hands (skills). It runs on a single GPU host. The LLM inference server runs directly on the host; all support services (MongoDB, Chroma, Redis, MCP bridge, orchestrator) run in Docker.
 
-**Primary models:** Gemma 4 MoE 4-bit (orchestrator brain) + Qwen2.5-Coder-32B (specialist worker). Both served via vLLM with an OpenAI-compatible HTTP API.
+**Primary models:** Gemma 4 31B 4-bit (`google/gemma-4-31B-it`, dense, bitsandbytes int4) as orchestrator brain + Qwen2.5-Coder-32B (specialist worker). Both served via vLLM with an OpenAI-compatible HTTP API.
 
 ---
 
@@ -132,10 +132,17 @@ Task queues use Redis Streams (`XADD` / `XREADGROUP` / `XACK`), not `RPUSH`/`BRP
 ### 6. vLLM tool call parser for Gemma 4
 When serving Gemma 4 with vLLM, the parser flag is `gemma4`, not `pythonic` (which is Gemma 3):
 ```bash
-vllm serve google/gemma-4-9b-it \
-  --tool-call-parser gemma4 \      # NOT pythonic
+vllm serve google/gemma-4-31B-it \
+  --port 8000 \
+  --host 0.0.0.0 \
+  --quantization bitsandbytes \
+  --load-in-4bit \
+  --max-model-len 16384 \
+  --gpu-memory-utilization 0.90 \
   --enable-auto-tool-choice \
-  --port 8000
+  --tool-call-parser gemma4 \
+  --reasoning-parser gemma4 \
+  --chat-template examples/tool_chat_template_gemma4.jinja
 ```
 
 ### 7. MongoDB transactional outbox
