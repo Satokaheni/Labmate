@@ -9,7 +9,10 @@ def _mock_token_count(text: str) -> int:
 
 @pytest.mark.asyncio
 async def test_build_context_stays_within_budget():
-    with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
+    with (
+        patch("services.memory.context_manager.token_count", side_effect=_mock_token_count),
+        patch("services.memory.context_manager.rerank", new_callable=AsyncMock, return_value=[]),
+    ):
         from services.memory.context_manager import ContextManager, ContextBudget
 
         redis = AsyncMock()
@@ -59,7 +62,10 @@ async def test_build_context_stays_within_budget():
 @pytest.mark.asyncio
 async def test_build_context_pins_core_memory_even_when_over_budget():
     """Core memory is never trimmed — only summary and recent turns are."""
-    with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
+    with (
+        patch("services.memory.context_manager.token_count", side_effect=_mock_token_count),
+        patch("services.memory.context_manager.rerank", new_callable=AsyncMock, return_value=[]),
+    ):
         from services.memory.context_manager import ContextManager, ContextBudget
 
         redis = AsyncMock()
