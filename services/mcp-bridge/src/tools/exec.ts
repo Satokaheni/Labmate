@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { ExecRunInput } from '../schemas/exec.js';
 import { truncate } from '../utils/truncate.js';
+import { formatError } from '../utils/formatError.js';
 import { log } from '../services/logger.js';
 
 const execFileAsync = promisify(execFile);
@@ -33,8 +34,7 @@ export async function makeExecRunHandler(
     return { content: [{ type: 'text', text: text || '(no output)' }] };
   } catch (err) {
     log.error({ err, command: args.command }, 'exec_run failed');
-    const msg = err instanceof Error ? err.message : String(err);
-    return { content: [{ type: 'text', text: `exec_run failed: ${msg}` }], isError: true };
+    return { content: [{ type: 'text', text: formatError(err, { command: args.command, cwd: args.cwd }) }], isError: true };
   }
 }
 
