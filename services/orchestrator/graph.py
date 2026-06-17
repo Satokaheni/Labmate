@@ -58,6 +58,8 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             results = await async_orch.plan_and_dispatch(ready)
             for r in results:
                 gid = r.id
+                if markers.get(gid) == "completed":
+                    continue  # idempotency guard: skip already-completed goals on crash-resume
                 markers[gid] = "completed"
                 new_status = Status.COMPLETED if r.ok else Status.FAILED
                 update_status(tree, gid, new_status, result=r.summary)
