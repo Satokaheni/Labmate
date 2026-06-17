@@ -6,8 +6,6 @@ import os
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import interrupt
-from pymongo import MongoClient
-from langgraph.checkpoint.mongodb import MongoDBSaver
 
 from .types import State, Status, Goal, get_ready_goals, update_status, now_iso, create_goal
 from .coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
@@ -172,8 +170,10 @@ async def build_graph(
     Returns (compiled_graph, checkpointer). The caller MUST keep checkpointer
     alive for the graph's lifetime.
 
-    Call once at startup; MongoDBSaver.setup() creates MongoDB indexes (idempotent).
+    Call once at startup; MongoDBSaver.from_conn_string() creates MongoDB indexes (idempotent).
     """
+    from langgraph.checkpoint.mongodb import MongoDBSaver
+
     plan_node, execute_node, check_node, reflect_node, approval_node = make_nodes(
         orch, async_orch
     )
@@ -192,9 +192,6 @@ async def build_graph(
     b.add_edge("reflect", "execute")
     b.add_edge("approval", "execute")
 
-    client = MongoClient(mongo_uri)
-    cp = MongoDBSaver(client=client, db_name=db_name)
-    if hasattr(cp, "setup"):
-        cp.setup()
-    graph = b.compile(checkpointer=cp)
-    return graph, cp
+    with MongoDBSaver.from_conn_string(mongo_uri, db_name=db_name) as cp:
+        graph = b.compile(checkpointer=cp)
+        return graph, cp

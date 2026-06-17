@@ -228,15 +228,16 @@ class TestBuildGraph:
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
-        # Use a real MemorySaver for testing
-        mock_client = MM()
+        # Use MemorySaver (real checkpoint saver) wrapped in a context manager
         real_saver = MemorySaver()
+        mock_context_mgr = MM()
+        mock_context_mgr.__enter__ = MM(return_value=real_saver)
+        mock_context_mgr.__exit__ = MM(return_value=None)
 
-        with patch("services.orchestrator.graph.MongoClient", return_value=mock_client):
-            with patch("services.orchestrator.graph.MongoDBSaver", return_value=real_saver):
-                graph, cp = await build_graph(mock_orch, mock_async_orch)
-                assert graph is not None
-                assert cp is real_saver
+        with patch("langgraph.checkpoint.mongodb.MongoDBSaver.from_conn_string", return_value=mock_context_mgr):
+            graph, cp = await build_graph(mock_orch, mock_async_orch)
+            assert graph is not None
+            assert cp is real_saver
 
     @pytest.mark.asyncio
     async def test_build_graph_wires_correct_nodes(self):
@@ -248,16 +249,17 @@ class TestBuildGraph:
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
-        # Use a real MemorySaver for testing
-        mock_client = MM()
+        # Use MemorySaver (real checkpoint saver) wrapped in a context manager
         real_saver = MemorySaver()
+        mock_context_mgr = MM()
+        mock_context_mgr.__enter__ = MM(return_value=real_saver)
+        mock_context_mgr.__exit__ = MM(return_value=None)
 
-        with patch("services.orchestrator.graph.MongoClient", return_value=mock_client):
-            with patch("services.orchestrator.graph.MongoDBSaver", return_value=real_saver):
-                graph, _ = await build_graph(mock_orch, mock_async_orch)
-                node_names = set(graph.nodes.keys())
-                assert "plan" in node_names
-                assert "execute" in node_names
-                assert "check" in node_names
-                assert "reflect" in node_names
-                assert "approval" in node_names
+        with patch("langgraph.checkpoint.mongodb.MongoDBSaver.from_conn_string", return_value=mock_context_mgr):
+            graph, _ = await build_graph(mock_orch, mock_async_orch)
+            node_names = set(graph.nodes.keys())
+            assert "plan" in node_names
+            assert "execute" in node_names
+            assert "check" in node_names
+            assert "reflect" in node_names
+            assert "approval" in node_names
