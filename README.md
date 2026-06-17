@@ -52,7 +52,7 @@ A local, autonomous polyglot agent for high-end software engineering and profess
 
 **Verify GPU:**
 ```bash
-./infrastructure/scripts/gpu-check.sh
+./infrastructure/docker/scripts/gpu-check.sh
 ```
 
 ---
@@ -61,7 +61,7 @@ A local, autonomous polyglot agent for high-end software engineering and profess
 
 ### 1. Start support services (MongoDB, Chroma, Redis)
 ```bash
-./infrastructure/scripts/run-services.sh --infra-only
+./infrastructure/docker/scripts/run-services.sh --infra-only
 ```
 
 ### 2. Start the inference server (host process, not in Docker)
@@ -79,7 +79,7 @@ vllm serve google/gemma-4-9b-it \
 
 ### 3. Start app services (once images are built)
 ```bash
-./infrastructure/scripts/run-services.sh
+./infrastructure/docker/scripts/run-services.sh
 ```
 
 ### 4. Run the current M2 agent (while M3 is in progress)
@@ -210,17 +210,17 @@ docker logs -f lm-orchestrator
 
 ```bash
 # Start everything
-./infrastructure/scripts/run-services.sh
+./infrastructure/docker/scripts/run-services.sh
 
 # Infra only (mongo + chroma + redis)
-./infrastructure/scripts/run-services.sh --infra-only
+./infrastructure/docker/scripts/run-services.sh --infra-only
 
 # Scale skill workers
-./infrastructure/scripts/run-services.sh --workers 4
+./infrastructure/docker/scripts/run-services.sh --workers 4
 
 # Status
-./infrastructure/scripts/run-services.sh --status
+./infrastructure/docker/scripts/run-services.sh --status
 
 # Stop everything
-./infrastructure/scripts/run-services.sh --stop
+./infrastructure/docker/scripts/run-services.sh --stop
 ```

@@ -14,7 +14,7 @@ services:
   # Connects to the host-side inference server via INFERENCE_URL.
   # On Linux, host.docker.internal resolves via the extra_hosts entry below.
   mcp-bridge:
-    build: ../services/mcp-bridge
+    build: ../../services/mcp-bridge
     image: labmate/mcp-bridge:latest
     environment:
       - INFERENCE_URL=${INFERENCE_URL:-http://host.docker.internal:8000}
@@ -38,7 +38,7 @@ services:
 
   # ─── Python Orchestrator ──────────────────────────────────────────────────
   python-orchestrator:
-    build: ../services/orchestrator
+    build: ../../services/orchestrator
     image: labmate/orchestrator:latest
     environment:
       - INFERENCE_URL=${INFERENCE_URL:-http://host.docker.internal:8000}
@@ -65,7 +65,7 @@ services:
   # Scale: docker compose up -d --scale skill-worker=4
   # Or use compose-up.sh N  (e.g. ./scripts/compose-up.sh 4)
   skill-worker:
-    build: ../services/skill-worker
+    build: ../../services/skill-worker
     image: labmate/skill-worker:latest
     environment:
       - REDIS_URL=redis://redis:6379/0

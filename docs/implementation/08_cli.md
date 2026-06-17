@@ -395,7 +395,7 @@ The `_run_graph()` async generator yields typed event dicts from the LangGraph e
 
 ```bash
 # Verify the stack is up
-./infrastructure/scripts/run-services.sh --infra-only
+./infrastructure/docker/scripts/run-services.sh --infra-only
 curl http://localhost:8000/health  # vLLM must be running on host
 
 # Run the CLI
