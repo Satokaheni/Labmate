@@ -28,7 +28,7 @@ class TestCreateGoal:
         assert g["parent_id"] is None
         assert g["children"] == []
         assert g["description"] == "Implement feature X"
-        assert g["status"] == Status.PENDING
+        assert g["status"] == Status.PENDING.value
         assert g["result"] is None
         assert g["error"] is None
         assert g["attempts"] == 0
@@ -58,7 +58,7 @@ class TestUpdateStatus:
         tree: dict = {}
         create_goal(tree, "g1", None, "task")
         update_status(tree, "g1", Status.IN_PROGRESS)
-        assert tree["g1"]["status"] == Status.IN_PROGRESS
+        assert tree["g1"]["status"] == Status.IN_PROGRESS.value
 
     def test_sets_updated_at_iso_string(self):
         tree: dict = {}
@@ -140,3 +140,4 @@ class TestStateJsonSerializable:
         restored = json.loads(serialized)
         assert restored["goal_tree"]["root"]["id"] == "root"
         assert restored["session_id"] == "test-session-001"
+        assert restored["goal_tree"]["root"]["status"] == "PENDING"

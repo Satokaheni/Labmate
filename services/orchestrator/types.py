@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import datetime
 from enum import Enum
-from typing import Optional, TypedDict
+from operator import add
+from typing import Annotated, Optional, TypedDict
 
 
 class Status(str, Enum):
@@ -24,7 +25,7 @@ class Goal(TypedDict):
     parent_id: Optional[str]
     children: list[str]
     description: str
-    status: Status
+    status: str          # Status enum value; stored as str for JSON safety
     result: Optional[str]
     error: Optional[str]
     attempts: int
@@ -44,7 +45,7 @@ class State(TypedDict):
     goal_tree: dict[str, Goal]        # id -> Goal; the live plan
     current_goal_id: Optional[str]
     step_markers: dict[str, str]      # step_id -> 'started' | 'completed'
-    messages: list                    # reducer-safe; parallel nodes may append
+    messages: Annotated[list, add]    # reducer-safe; parallel nodes may append
     error: Optional[str]
 
 
@@ -65,7 +66,7 @@ def create_goal(
         parent_id=parent_id,
         children=[],
         description=desc,
-        status=Status.PENDING,
+        status=Status.PENDING.value,
         result=None,
         error=None,
         attempts=0,
@@ -85,7 +86,7 @@ def update_status(
 ) -> dict[str, Goal]:
     """Transition a goal to a new status and optionally set result/error/started_at/etc."""
     g = tree[gid]
-    g["status"] = status
+    g["status"] = status.value if hasattr(status, "value") else status
     g["updated_at"] = now_iso()
     for k, v in kwargs.items():
         g[k] = v  # type: ignore[literal-required]
@@ -99,6 +100,6 @@ def get_ready_goals(tree: dict[str, Goal]) -> list[Goal]:
     """
     return [
         g for g in tree.values()
-        if g["status"] == Status.PENDING
-        and all(tree[c]["status"] == Status.COMPLETED for c in g["children"])
+        if g["status"] == Status.PENDING.value
+        and all(tree[c]["status"] == Status.COMPLETED.value for c in g["children"])
     ]
