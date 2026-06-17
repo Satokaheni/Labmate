@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime
 from enum import Enum
 from operator import add
-from typing import Annotated, Optional, TypedDict
+from typing import Annotated, TypedDict
 
 
 class Status(str, Enum):
@@ -22,15 +22,15 @@ class Goal(TypedDict):
     no Python objects, no datetimes (use ISO-8601 strings).
     """
     id: str
-    parent_id: Optional[str]
+    parent_id: str | None
     children: list[str]
     description: str
     status: str          # Status enum value; stored as str for JSON safety
-    result: Optional[str]
-    error: Optional[str]
+    result: str | None
+    error: str | None
     attempts: int
-    started_at: Optional[str]    # ISO-8601
-    updated_at: Optional[str]    # ISO-8601
+    started_at: str | None    # ISO-8601
+    updated_at: str | None    # ISO-8601
 
 
 class State(TypedDict):
@@ -43,15 +43,15 @@ class State(TypedDict):
     """
     session_id: str
     goal_tree: dict[str, Goal]        # id -> Goal; the live plan
-    current_goal_id: Optional[str]
+    current_goal_id: str | None
     step_markers: dict[str, str]      # step_id -> 'started' | 'completed'
     messages: Annotated[list, add]    # reducer-safe; parallel nodes may append
-    error: Optional[str]
+    error: str | None
 
 
 def now_iso() -> str:
     """Return current UTC time as ISO-8601 string with Z suffix."""
-    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='microseconds').replace('+00:00', 'Z')
+    return datetime.datetime.now(datetime.UTC).isoformat(timespec='microseconds').replace('+00:00', 'Z')
 
 
 def create_goal(
@@ -86,7 +86,7 @@ def update_status(
 ) -> dict[str, Goal]:
     """Transition a goal to a new status and optionally set result/error/started_at/etc."""
     g = tree[gid]
-    g["status"] = status.value if hasattr(status, "value") else status
+    g["status"] = status.value
     g["updated_at"] = now_iso()
     for k, v in kwargs.items():
         g[k] = v  # type: ignore[literal-required]
