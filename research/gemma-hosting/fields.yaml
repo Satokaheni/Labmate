@@ -1,0 +1,66 @@
+fields:
+  - name: engine_name
+    description: Full name and version of the inference engine or approach
+  - name: cuda_128_compatible
+    description: >
+      Does this engine run on a system with NVIDIA driver 570.195 (CUDA 12.8 max)?
+      Include whether a pre-built wheel exists or if source compilation is required.
+  - name: gemma4_support
+    description: >
+      Does this engine support google/gemma-4-31B-it (Gemma 4, dense 31B, thinking model)?
+      Include model format required (GGUF, safetensors, EXL2, etc.) and any known gaps.
+  - name: tool_calling_support
+    description: >
+      How does this engine handle Gemma 4 function/tool calling?
+      Does it have a dedicated parser (like vLLM's gemma4 parser), use --jinja,
+      or require prompt engineering? Known failure modes (delimiter issues, streaming
+      partial tool calls, JSON truncation)?
+  - name: per_request_reasoning_toggle
+    description: >
+      Can you disable or enable Gemma 4's chain-of-thought reasoning ON A PER-REQUEST
+      basis (not just a global server flag)? If yes, what is the exact request field
+      or parameter (e.g., chat_template_kwargs, enable_thinking, reasoning_effort)?
+  - name: per_request_reasoning_budget
+    description: >
+      Can you cap the number of reasoning tokens ON A PER-REQUEST basis?
+      What is the exact parameter? Does it actually work (i.e., not silently ignored
+      like llama.cpp's current per-request reasoning_budget)?
+  - name: openai_api_compatible
+    description: >
+      Does the engine expose an OpenAI-compatible /v1/chat/completions endpoint with
+      SSE streaming? Any deviations from the OpenAI spec (missing fields, different
+      streaming format) that would affect a Python asyncio client using httpx or openai-python?
+  - name: continuous_batching
+    description: >
+      Does the engine support continuous batching (processing multiple concurrent requests
+      efficiently)? What is the realistic concurrent throughput vs. llama.cpp for an agent
+      orchestrator that fans out 4-8 parallel sub-agents?
+  - name: installation_steps
+    description: >
+      Exact steps to install/build on CUDA 12.8, Ubuntu/Debian-based RunPod pod.
+      Include any pip flags, cmake flags, or source build steps needed. Be concrete.
+  - name: serve_command
+    description: >
+      Exact command to serve google/gemma-4-31B-it (or its GGUF/EXL2 equivalent)
+      on an A6000 48GB with: OpenAI API on port 8000, context 16384, reasoning
+      toggle enabled. Include all relevant flags.
+  - name: speculative_decoding
+    description: >
+      Does this engine support speculative decoding with the MTP draft model
+      (mtp-gemma-4-31B-it.gguf, 0.5 GB)? What flags? Expected speedup on A6000 48GB?
+  - name: known_issues_gemma4
+    description: >
+      Any known bugs, limitations, or gotchas specific to Gemma 4 on this engine
+      as of mid-2026. Include GitHub issues or forum posts if found.
+  - name: vram_usage
+    description: >
+      Estimated VRAM usage for google/gemma-4-31B-it at 4-bit quantization with
+      16k context on A6000 48GB. Headroom remaining for embedding (0.13 GB) and
+      reranker (2.3 GB) co-resident models.
+  - name: overall_recommendation
+    description: >
+      Given the constraints (CUDA 12.8, A6000 48GB, need reliable tool calling,
+      per-request reasoning control, OpenAI API, host-native no containers), is this
+      engine recommended? Rate: RECOMMENDED / VIABLE / NOT_VIABLE and explain why.
+  - name: sources
+    description: List of URLs or references used for this research item

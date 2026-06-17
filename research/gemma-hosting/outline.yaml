@@ -1,0 +1,89 @@
+topic: >
+  Gemma 4 31B inference engine selection for a local autonomous coding agent (Labmate)
+  running on a RunPod pod with NVIDIA A6000 48GB (CUDA 12.8 max, driver 570.195).
+  Core problem: llama.cpp ignores per-request reasoning_budget for Gemma 4, causing
+  the model to spend thousands of tokens on chain-of-thought even for simple tool
+  decisions. Need per-request reasoning control, reliable tool calling, and
+  OpenAI-compatible API. No containers possible on this pod (no NET_ADMIN).
+
+execution:
+  output_dir: research/gemma-hosting/results
+  items_per_agent: 1
+  batch_size: 3
+
+items:
+  - name: llama.cpp Gemma 4 reasoning control
+    category: Current Baseline
+    description: >
+      Current working engine on the pod. The issue: llama.cpp serves Gemma 4 via
+      --jinja and the per-request chat_template_kwargs enable_thinking=false works,
+      but per-request reasoning_budget is IGNORED (silently). Only global server
+      flags --reasoning-budget N work. This means all requests share one budget,
+      making it impossible to give the planner node 8192 reasoning tokens while
+      giving tool-dispatch nodes 0. Research: is there a way to make per-request
+      reasoning_budget work in llama.cpp (patch, build flag, newer commit)?
+      Also: does adding --draft-model mtp-gemma-4-31B-it.gguf with
+      --draft-max 16 give meaningful speedup?
+      Hardware: A6000 48GB, llama.cpp built against CUDA 12.8, model
+      unsloth/gemma-4-31B-it-GGUF UD-Q4_K_XL (18.8 GB). Current serve command:
+      llama-server -m model.gguf --jinja --n-gpu-layers 999 --ctx-size 16384
+      --parallel 2 --host 127.0.0.1 --port 8000
+
+  - name: SGLang
+    category: Alternative Engine
+    description: >
+      SGLang (Stanford) is an inference engine with native OpenAI API compatibility,
+      continuous batching, and structured generation. Research: does it support
+      Gemma 4 31B on CUDA 12.8 (driver 570.195)? Does it have a dedicated Gemma 4
+      thinking/reasoning mode with per-request budget control? Is there a pre-built
+      cu128 wheel or does it require source build? Tool calling support for Gemma 4?
+      Realistic throughput vs llama.cpp for 4-8 concurrent requests.
+
+  - name: ExLlamaV2
+    category: Alternative Engine
+    description: >
+      ExLlamaV2 is a fast inference engine for GPTQ/EXL2 quants with OpenAI API
+      server (tabbyAPI). Research: does ExLlamaV2 + tabbyAPI support Gemma 4 31B
+      on CUDA 12.8? EXL2 quant availability for gemma-4-31B-it? Per-request
+      reasoning control for Gemma 4's thinking mode? Tool calling? Build/install
+      on CUDA 12.8? Throughput vs llama.cpp on A6000 48GB?
+
+  - name: vLLM from source on CUDA 12.8
+    category: Preferred Engine (currently blocked)
+    description: >
+      vLLM is the spec-preferred engine (continuous batching, PagedAttention, native
+      gemma4 tool+reasoning parser). All pre-built wheels require CUDA 12.9+ (cu129/cu130).
+      Research: is building vLLM from source against CUDA 12.8 (cu128) feasible?
+      Which vLLM commit first added the gemma4 tool AND reasoning parsers? Does that
+      commit build cleanly against torch 2.8.x+cu128 on an sm_86 A6000?
+      Is there a community cu128 wheel? What are the actual build steps and brittleness?
+      Is the effort worth it vs staying on llama.cpp or switching to SGLang/ExLlamaV2?
+
+  - name: Ollama
+    category: Alternative Engine
+    description: >
+      Ollama is a popular local LLM serving tool. Research: does Ollama support
+      Gemma 4 31B (google/gemma-4-31B-it or the GGUF) on CUDA 12.8? Does it have
+      per-request reasoning control for Gemma 4's thinking mode? Tool calling support?
+      OpenAI-compatible API? Continuous batching? Any known issues with Gemma 4
+      reasoning token waste? Install on CUDA 12.8 host-native (no containers)?
+
+  - name: MLC-LLM
+    category: Alternative Engine
+    description: >
+      MLC-LLM (Machine Learning Compilation) compiles models to optimized kernels.
+      Research: does MLC-LLM support Gemma 4 31B on CUDA 12.8 (sm_86 A6000)?
+      Pre-compiled artifacts or requires full model compilation? Per-request reasoning
+      control? Tool calling? OpenAI API compatibility? Build complexity on CUDA 12.8?
+      Performance vs llama.cpp on A6000 48GB?
+
+  - name: RunPod environment upgrade path
+    category: Infrastructure
+    description: >
+      The root cause of most issues is the CUDA 12.8 driver ceiling on this pod.
+      Research: what RunPod pod types or templates provide a driver >= 580 (CUDA 13)
+      that would allow stock vLLM cu130 wheels? Is there a RunPod A6000 pod with
+      a newer driver available? What is the process to switch pod types while
+      preserving /workspace data? Would a newer driver also fix the no-container
+      limitation (NET_ADMIN, seccomp), or is that a separate RunPod policy issue?
+      Cost comparison of current pod vs a pod with a newer driver.

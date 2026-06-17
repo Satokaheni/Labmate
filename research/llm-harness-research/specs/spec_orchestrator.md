@@ -1,8 +1,9 @@
 # Orchestrator Layer Spec
 
 **Project:** Labmate — Local Autonomous Polyglot Coding + Writing Agent
-**Hardware target:** RunPod RTX A6000 48 GB VRAM
-**Date:** 2026-06-15
+**Hardware target:** RunPod RTX A6000 / A6000 Ada 48 GB (current) → Mac Mini 48 GB or 32 GB discrete GPU (permanent)
+**Serving stack:** llama.cpp across all machines (CUDA on RunPod, Metal on Mac Mini, Vulkan on AMD)
+**Date:** 2026-06-15 (updated 2026-06-17)
 **Status:** Draft v1
 
 ---
@@ -19,7 +20,7 @@ Three subsystems compose the layer — they are not independent modules but inte
 
 3. **Parallel fan-out / AsyncOrchestrator** — the execution engine for subtasks that are independent. When the Goal Tree reveals a set of siblings with no mutual dependencies, the AsyncOrchestrator fans them out over `asyncio.TaskGroup`, gates concurrency with a `Semaphore` sized to A6000 VRAM capacity, enforces dual RPM+TPM rate limits, and aggregates results Mixture-of-Agents style. The parallel spawner IS what executes fan-out inside the orchestrator — it is called by the `execute` node of the StateGraph whenever the scheduler finds a ready set of width > 1.
 
-**Brain routing:** Gemma 4 MoE 4-bit handles planning, self-reflection, and aggregation (architect role). Qwen2.5-Coder-32B handles code generation and file edits (editor/worker role). Both share the single A6000 and communicate via the TypeScript MCP server / Python MCP client over stdio JSON-RPC.
+**Brain routing:** Gemma 4 31B dense (GGUF UD-Q4_K_XL, ~20 GB) handles planning, self-reflection, and aggregation (architect role). Qwen2.5-Coder-32B handles code generation and file edits (editor/worker role). On the A6000 (48 GB) both co-reside (~40 GB combined); on a 32 GB card only one runs at a time (model-swap mode). Both communicate via the TypeScript MCP server / Python MCP client over stdio JSON-RPC.
 
 ---
 
@@ -147,9 +148,9 @@ User Task
     |                  |
     | architect call   | editor call
     v                  v
-[Gemma 4 MoE 4-bit]  [Qwen2.5-Coder-32B]
-(plan / reflect /     (CodeAct steps /
- aggregate)            file edits)
+[Gemma 4 31B dense]  [Qwen2.5-Coder-32B]
+(plan / reflect /    (CodeAct steps /
+ aggregate)           file edits)
     |                  |
     +---via litellm----+
               |
@@ -508,15 +509,16 @@ class AsyncOrchestrator:
         return Result(id=tid, summary=raw[:2000], ok=True)
 
     async def aggregate(self, task: str, results: list[Result]) -> Result:
-        """MoA-style aggregation: Gemma 4 synthesises all candidate results."""
+        """MoA-style aggregation: Gemma 4 31B synthesises all candidate results."""
         candidates = "\n\n".join(
             f"[{r.id}] {'OK' if r.ok else 'FAILED'}: {r.summary}" for r in results
         )
         prompt = f"Task: {task}\n\nCandidate results:\n{candidates}\n\nSynthesize the best unified result."
         r = await litellm.acompletion(
-            model="openai/gemma-4-moe",
+            model="openai/gemma-4-31b",
             api_base=self._gemma_base,
             messages=[{"role": "user", "content": prompt}],
+            extra_body={"thinking_budget_tokens": 2000},
         )
         return Result(id="aggregated", summary=r.choices[0].message.content)
 
@@ -579,12 +581,19 @@ class CodingOrchestrator:
     # Architect / editor LLM routing (separate litellm calls)
     # ------------------------------------------------------------------
 
-    async def architect(self, prompt: str) -> str:
-        """Planning, self-reflection, aggregation -> Gemma 4 MoE 4-bit."""
+    async def architect(self, prompt: str, thinking_budget: int = 3000) -> str:
+        """Planning, self-reflection, aggregation -> Gemma 4 31B dense.
+
+        thinking_budget controls per-request reasoning depth via llama.cpp's
+        thinking_budget_tokens field (only honored when server started without
+        --reasoning-budget flag). Use a large budget for planning/reflection
+        nodes; pass thinking_budget=0 for fast tool-dispatch nodes.
+        """
         r = await litellm.acompletion(
-            model="openai/gemma-4-moe",
+            model="openai/gemma-4-31b",
             api_base=self._gemma_base,
             messages=[{"role": "user", "content": prompt}],
+            extra_body={"thinking_budget_tokens": thinking_budget},
         )
         return r.choices[0].message.content
 
@@ -668,8 +677,11 @@ from .types import State, Status, Goal, get_ready_goals, update_status, now_iso
 from .coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
 MONGO_URI = "mongodb://localhost:27017"
-GEMMA_BASE = "http://localhost:8000/v1"
-QWEN_BASE  = "http://localhost:8001/v1"
+# llama.cpp serves Gemma 4 31B on port 8000 (CUDA on RunPod, Metal on Mac Mini, Vulkan on AMD).
+# On 48 GB (A6000 / Mac Mini): both servers co-reside.
+# On 32 GB discrete GPU: run one server at a time and set QWEN_BASE = GEMMA_BASE for model-swap mode.
+GEMMA_BASE = os.getenv("GEMMA_BASE", "http://localhost:8000/v1")
+QWEN_BASE  = os.getenv("QWEN_BASE",  "http://localhost:8001/v1")
 
 
 # ---------------------------------------------------------------------------
@@ -1085,11 +1097,13 @@ The following failure modes are synthesized across all three research areas, ran
 
 7. **Semaphore self-deadlock (parallel spawning pitfall, HIGH).** Acquiring the Semaphore *around* `create_task()` at the fan-out site can deadlock when all permits are held by parents waiting on children that cannot start. Acquire inside the leaf worker, after the task is running.
 
-8. **Token-budget blind spot (parallel spawning pitfall, HIGH).** Spawning N agents without pre-estimating prompt+completion tokens busts the TPM budget mid-flight, causing cascading 429s and half-finished plans. Pre-estimate tokens with `tiktoken` (approximate for non-OpenAI models) and call `budget.reserve(n)` before the model call.
+8. **Token-budget blind spot (parallel spawning pitfall, HIGH).** Spawning N agents without pre-estimating prompt+completion tokens busts the TPM budget mid-flight, causing cascading 429s and half-finished plans. Pre-estimate tokens with the Gemma tokenizer and call `budget.reserve(n)` before the model call. **Never use `tiktoken` — it produces wrong counts for Gemma's SentencePiece vocabulary and will cause context overflows.** Use `AutoTokenizer.from_pretrained("google/gemma-4-9b-it")` (the tokenizer is identical across Gemma 4 sizes).
 
 9. **ReAct myopia / stuck loops (loop pitfall, MEDIUM).** The agent repeats the same action without progress. Track the last N action keys; if N consecutive are identical (or no env state change), escalate from the inner ReAct loop to a fresh Plan-Execute pass rather than burning turns.
 
-10. **Architect and editor in the same model call (loop pitfall, MEDIUM).** Architect reasoning and edit-output generation interfere, producing sloppy diffs. Keep them as strictly separate litellm calls with separate system prompts, temperatures, and model configs (Gemma 4 architect → Qwen2.5-Coder-32B editor).
+10. **Architect and editor in the same model call (loop pitfall, MEDIUM).** Architect reasoning and edit-output generation interfere, producing sloppy diffs. Keep them as strictly separate litellm calls with separate system prompts, temperatures, and model configs (Gemma 4 31B architect → Qwen2.5-Coder-32B editor).
+
+11. **Thinking mode on tool-dispatch nodes (latency pitfall, HIGH).** Gemma 4's reasoning mode emits 4,000+ tokens of chain-of-thought before answering. Calling `architect()` with the default `thinking_budget=3000` on a tool-dispatch node (simple key lookup, MCP call routing) wastes ~10–20 seconds per turn with no quality benefit. Pass `thinking_budget=0` on tool-dispatch and extraction nodes; reserve high budgets for `plan`, `reflect`, and `aggregate` nodes. The `--reasoning-budget` server flag must be left unset (default -1) for per-request control to work.
 
 11. **Unsafe tool ACI — raw shell without sandbox (loop pitfall, MEDIUM).** A raw bash shell risks `rm -rf /` and host damage. Execute every CodeAct action inside the Docker container with no writable host mount. One `docker exec` cannot touch the host filesystem.
 
@@ -1125,7 +1139,7 @@ The following failure modes are synthesized across all three research areas, ran
 | `graphlib` | stdlib (3.9+) | `TopologicalSorter` for DAG cycle detection and ready-set scheduling | built-in |
 | `aiolimiter` | `>=1.1` | `AsyncLimiter` leaky-bucket for RPM/TPM rate limiting, event-loop native | `pip install aiolimiter` |
 | `tenacity` | `>=8.2` | Async retry with exponential backoff + jitter for transient 429/5xx and worker timeouts | `pip install tenacity` |
-| `tiktoken` | `>=0.7` | Pre-flight token estimation for budget gating (approximate for Gemma/Qwen; replace with model-native tokenizer for exact counts) | `pip install tiktoken` |
+| `transformers` | `>=4.47` | Pre-flight token estimation via `AutoTokenizer.from_pretrained("google/gemma-4-9b-it")` — exact counts using Gemma's SentencePiece vocabulary. **Do not use tiktoken** (wrong vocab, causes context overflows). | `pip install transformers` |
 | `tree-sitter` + `tree-sitter-language-pack` | latest | Incremental parsing to build the Aider-style ranked repo-map / symbol graph | `pip install tree-sitter tree-sitter-language-pack` |
 | `networkx` | `>=3.0` | DAG construction, validation, visualization, and ancestor/descendant queries during planning | `pip install networkx` |
 | `docker` (docker-py) | `>=7.0` | Container lifecycle management for the sandboxed execution runtime | `pip install docker` |
