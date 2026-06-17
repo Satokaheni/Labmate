@@ -1,0 +1,110 @@
+fields:
+  - name: engine_name
+    description: Full name and version of the inference engine or approach
+    detail_level: brief
+
+  - name: cuda_128_compatible
+    description: >
+      Does this engine run on NVIDIA driver 570.195 (CUDA 12.8 max, sm_86 A6000)?
+      State whether a pre-built wheel exists (pip install) or source compilation is required,
+      and how complex the source build is. Be concrete about which CUDA versions are supported.
+    detail_level: detailed
+
+  - name: gemma4_support
+    description: >
+      Does this engine support google/gemma-4-31B-it (Gemma 4, dense 31B, thinking/reasoning model)?
+      What model format is required (GGUF, EXL2, safetensors, etc.)? Are quants available on
+      HuggingFace? Any known architectural gaps or missing features for Gemma 4 specifically?
+    detail_level: detailed
+
+  - name: per_request_reasoning_toggle
+    description: >
+      Can Gemma 4 chain-of-thought reasoning be disabled ON A PER-REQUEST basis (not just a
+      global server flag)? What is the exact API field or parameter name? Does it actually work
+      or is it silently ignored? Example: chat_template_kwargs enable_thinking, thinking_budget_tokens, etc.
+    detail_level: detailed
+
+  - name: per_request_reasoning_budget
+    description: >
+      Can the number of reasoning tokens be CAPPED per request (not just toggled off)?
+      What is the exact parameter? Does it work reliably (not silently ignored)?
+      This is the core problem: llama.cpp ignores per-request reasoning_budget currently.
+    detail_level: detailed
+
+  - name: tool_calling_support
+    description: >
+      How does this engine handle Gemma 4 function/tool calling? Does it have a dedicated
+      parser (like vLLM gemma4 parser), use --jinja with the Gemma 4 chat template, or
+      require prompt engineering? Known failure modes: delimiter issues, streaming partial
+      tool calls, JSON truncation, multi-turn tool use bugs?
+    detail_level: detailed
+
+  - name: openai_api_compatible
+    description: >
+      Does the engine expose an OpenAI-compatible /v1/chat/completions endpoint with SSE
+      streaming? Any deviations (missing fields, different streaming format) that would
+      affect a Python asyncio client using openai-python or httpx?
+    detail_level: moderate
+
+  - name: continuous_batching
+    description: >
+      Does the engine support continuous batching (processing multiple concurrent requests
+      efficiently without serializing them)? For a local agent with max 10 concurrent users
+      / 4-8 parallel sub-agents, is this needed or is sequential batching fine?
+    detail_level: moderate
+
+  - name: installation_steps
+    description: >
+      Exact commands to install/build on CUDA 12.8, host-native (no Docker/containers),
+      Ubuntu/Debian-based RunPod pod. Include pip flags, cmake flags, or source build steps.
+    detail_level: detailed
+
+  - name: serve_command
+    description: >
+      Exact command to serve google/gemma-4-31B-it (or its equivalent quant) on A6000 48GB
+      with: OpenAI API on port 8000, 16384 context, reasoning toggle available, tool calling
+      enabled. Include all relevant flags.
+    detail_level: detailed
+
+  - name: speculative_decoding
+    description: >
+      Does this engine support speculative decoding with a draft model? Specifically, can it
+      use mtp-gemma-4-31B-it.gguf (0.5 GB MTP draft) for Gemma 4? What flags? Expected
+      speedup on A6000 48GB for single-stream and small concurrent load?
+    detail_level: moderate
+
+  - name: known_issues_gemma4
+    description: >
+      Known bugs, limitations, or gotchas specific to Gemma 4 on this engine as of 2026.
+      Include GitHub issues, forum threads, or benchmark reports if found.
+    detail_level: detailed
+
+  - name: vram_usage
+    description: >
+      Estimated VRAM for google/gemma-4-31B-it at 4-bit quantization with 16k context on
+      A6000 48GB. Headroom left for BAAI/bge-small-en-v1.5 embedder (0.13 GB) and
+      BAAI/bge-reranker-v2-m3 reranker (2.3 GB) co-resident.
+    detail_level: moderate
+
+  - name: small_scale_fit
+    description: >
+      Is this engine appropriate for a small local deployment: 1 developer + max 10 concurrent
+      users, eventually moving off RunPod to personal hardware (likely another A6000 or similar)?
+      Does the operational overhead (compilation, maintenance, config complexity) justify the
+      benefits over the simpler llama.cpp baseline?
+    detail_level: moderate
+
+  - name: overall_recommendation
+    description: >
+      Given constraints (CUDA 12.8, A6000 48GB, small local use, need reliable tool calling,
+      per-request reasoning control, OpenAI API, host-native no containers), rate this engine:
+      RECOMMENDED / VIABLE / NOT_VIABLE and explain the key reasons. Include pros and cons.
+    detail_level: detailed
+
+  - name: sources
+    description: List of URLs or references used for this research item
+    detail_level: brief
+
+  - name: uncertain
+    description: Reserved - auto-filled with list of uncertain field names
+    detail_level: brief

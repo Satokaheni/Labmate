@@ -1,0 +1,111 @@
+topic: >
+  Gemma 4 31B local inference hosting for a small autonomous coding agent (Labmate).
+  Hardware: RunPod A6000 48GB, driver 570.195 (CUDA 12.8 max), host-native (no containers).
+  Scale: 1 developer + max 10 concurrent users, will eventually move to personal hardware.
+  Core problem: llama.cpp ignores per-request reasoning_budget for Gemma 4, causing the
+  model to spend thousands of tokens on chain-of-thought even for simple tool decisions.
+  Need: per-request reasoning control (toggle + budget), reliable tool calling,
+  OpenAI-compatible API, minimal operational complexity.
+
+execution:
+  output_dir: gemma-4-hosting/results
+  items_per_agent: 1
+  batch_size: 3
+
+items:
+  - name: llama.cpp Gemma4 reasoning fix
+    category: Current Baseline
+    description: >
+      Currently serving unsloth/gemma-4-31B-it-GGUF UD-Q4_K_XL (18.8 GB) on A6000.
+      Known working: enable_thinking=false per-request via chat_template_kwargs.
+      Core problem: per-request reasoning_budget is silently ignored; only global
+      --reasoning-budget N server flag works. This means the planner node and the
+      tool-dispatch node share the same budget. One agent mid-run found the correct
+      parameter may be thinking_budget_tokens (not reasoning_budget), and it only
+      works when --reasoning-budget is NOT set as a server flag. Research:
+      (1) Confirm the correct per-request parameter name for llama.cpp Gemma 4 reasoning budget.
+      (2) Which llama.cpp version/commit introduced per-request reasoning budget support?
+      (3) Do speculative decoding flags (--draft-model mtp-gemma-4-31B-it.gguf --draft-max 16)
+      work with the current Gemma 4 GGUF and what speedup to expect on A6000?
+      (4) Flash attention (-fa flag) impact on Gemma 4 quality and speed.
+      Current serve command: llama-server -m model.gguf --jinja --n-gpu-layers 999
+      --ctx-size 16384 --parallel 2 --host 127.0.0.1 --port 8000
+
+  - name: SGLang
+    category: Alternative Engine
+    description: >
+      SGLang (Stanford) is a high-throughput inference engine with OpenAI-compatible API,
+      continuous batching, and structured generation (RadixAttention). Research:
+      (1) CUDA 12.8 support - pre-built cu128 wheel or source build required?
+      (2) Gemma 4 31B support - model format, quant availability?
+      (3) Per-request reasoning toggle and budget for Gemma 4 thinking mode?
+      (4) Tool calling quality for Gemma 4?
+      (5) Realistic throughput vs llama.cpp for 4-8 concurrent requests at small scale?
+      (6) Installation complexity on host-native CUDA 12.8 RunPod?
+
+  - name: ExLlamaV2 and tabbyAPI
+    category: Alternative Engine
+    description: >
+      ExLlamaV2 is a fast GPTQ/EXL2 inference engine; tabbyAPI wraps it with an
+      OpenAI-compatible API server. One research agent noted tabbyAPI lists gemma4 as a
+      supported tool_format. Research:
+      (1) CUDA 12.8 compatibility - wheel or source?
+      (2) Gemma 4 31B support in EXL2 format - are quants available on HuggingFace?
+      (3) Per-request reasoning toggle and budget for Gemma 4?
+      (4) tabbyAPI gemma4 tool_format - how reliable is it?
+      (5) Speed vs llama.cpp on A6000 48GB at small scale?
+      (6) Install complexity host-native?
+
+  - name: vLLM from source CUDA 12.8
+    category: Blocked Preferred Engine
+    description: >
+      vLLM is the spec-preferred engine (continuous batching, PagedAttention, native gemma4
+      tool+reasoning parsers). ALL pre-built wheels require CUDA 12.9+ (cu129/cu130).
+      The A6000 driver 570.195 caps at CUDA 12.8, so no wheel works out of the box.
+      Research:
+      (1) Which vLLM commit first added BOTH --tool-call-parser gemma4 AND --reasoning-parser gemma4?
+      (2) Is building that commit from source against torch+cu128 feasible on sm_86?
+      What are the exact cmake/pip build steps and how brittle is the result?
+      (3) Is there any community cu128 vLLM wheel?
+      (4) Does vLLM's gemma4 reasoning parser support per-request reasoning budget?
+      (5) Is the source-build effort worth it vs SGLang or ExLlamaV2 for small scale use?
+
+  - name: Ollama
+    category: Alternative Engine
+    description: >
+      Ollama is the most popular local LLM serving tool, focused on simplicity.
+      Research:
+      (1) CUDA 12.8 support for host-native install (no containers)?
+      (2) Gemma 4 31B support - does it use GGUF? Is unsloth/gemma-4-31B-it-GGUF compatible?
+      (3) Per-request reasoning toggle and budget for Gemma 4 thinking mode?
+      (4) Tool calling support for Gemma 4?
+      (5) OpenAI-compatible API completeness for use with openai-python?
+      (6) Known issues with Gemma 4 reasoning token waste or tool calling?
+      (7) Is it appropriate for a developer-focused local agent (not consumer chatbot)?
+
+  - name: MLC-LLM
+    category: Alternative Engine
+    description: >
+      MLC-LLM (TVM/ML compilation) compiles models to optimized GPU kernels.
+      Research:
+      (1) CUDA 12.8 / sm_86 A6000 support - pre-compiled artifacts for Gemma 4 31B or
+      requires full model compilation (which can take hours)?
+      (2) Gemma 4 31B support and reasoning mode?
+      (3) Per-request reasoning control?
+      (4) Tool calling support?
+      (5) Is operational complexity (compilation time, maintenance) acceptable for a small
+      local deployment compared to llama.cpp or SGLang?
+
+  - name: RunPod driver upgrade
+    category: Infrastructure Option
+    description: >
+      Root cause of most engine issues: CUDA 12.8 ceiling on current pod (driver 570.195).
+      CUDA 12.9 needs driver >=575.51; CUDA 13.0 needs >=580.
+      Research:
+      (1) What RunPod A6000 pod templates or machine types provide driver >=580?
+      What is the template name / Docker image / GPU type to request?
+      (2) Cost difference vs current setup?
+      (3) Is the no-container limitation (NET_ADMIN, seccomp) a RunPod-wide policy or
+      specific to this pod template? Would a newer driver pod also fix containers?
+      (4) Can /workspace data be preserved when switching pod types (network volume)?
+      (5) Is this the easiest path to unlock stock vLLM vs building from source?
