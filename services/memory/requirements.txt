@@ -1,0 +1,8 @@
+motor>=3.5
+pymongo>=4.9
+chromadb>=0.5
+redis>=5.0
+transformers>=4.40
+pydantic>=2.0
+pytest>=8.0
+pytest-asyncio>=0.23
