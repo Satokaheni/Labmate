@@ -30,6 +30,7 @@ class StorageManager:
         self._chroma_port  = chroma_port
         self._redis_url    = redis_url
         self._outbox_task: asyncio.Task | None = None
+        self._outbox_ready: asyncio.Event = asyncio.Event()
 
     async def __aenter__(self) -> "StorageManager":
         self.mongo = AsyncIOMotorClient(
@@ -64,6 +65,32 @@ class StorageManager:
 
         await self._ensure_indexes()
         self._outbox_task = asyncio.create_task(self._run_outbox())
+
+        # Wait for the change-stream cursor to open (no race on first write)
+        # Timeout guards against unreachable MongoDB or dead worker task
+        try:
+            await asyncio.wait_for(self._outbox_ready.wait(), timeout=10.0)
+        except asyncio.TimeoutError:
+            # Cursor never opened — cancel the task and fail fast
+            if self._outbox_task:
+                self._outbox_task.cancel()
+                try:
+                    await self._outbox_task
+                except asyncio.CancelledError:
+                    pass
+            # Clean up already-opened connections before raising (no __aexit__ on failure)
+            if hasattr(self, "mongo"):
+                self.mongo.close()
+            if hasattr(self, "redis"):
+                try:
+                    await self.redis.aclose()
+                except Exception:
+                    pass
+            raise RuntimeError(
+                "MongoDB change-stream cursor did not open within 10s. "
+                "Check MongoDB replica set connectivity and logs."
+            )
+
         return self
 
     async def __aexit__(self, *_exc) -> None:
@@ -198,6 +225,9 @@ class StorageManager:
 
         try:
             async with self.db.messages.watch(**watch_kwargs) as stream:
+                # Signal that the cursor is now open and listening
+                self._outbox_ready.set()
+
                 async for change in stream:
                     doc  = change["fullDocument"]
                     _id  = doc["_id"]
