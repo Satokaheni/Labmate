@@ -1,7 +1,6 @@
 # services/orchestrator/graph.py
 from __future__ import annotations
 
-import asyncio
 import os
 
 from langgraph.graph import StateGraph, START, END
@@ -159,7 +158,7 @@ def router(state: State) -> str:
 # Graph factory
 # ---------------------------------------------------------------------------
 
-async def build_graph(
+def build_graph(
     orch: CodingOrchestrator,
     async_orch: AsyncOrchestrator,
     mongo_uri: str = MONGO_URI,
@@ -192,6 +191,9 @@ async def build_graph(
     b.add_edge("reflect", "execute")
     b.add_edge("approval", "execute")
 
-    with MongoDBSaver.from_conn_string(mongo_uri, db_name=db_name) as cp:
-        graph = b.compile(checkpointer=cp)
-        return graph, cp
+    from pymongo import MongoClient
+
+    client = MongoClient(mongo_uri)
+    cp = MongoDBSaver(client, db_name=db_name)
+    graph = b.compile(checkpointer=cp)
+    return graph, cp
