@@ -1,0 +1,6 @@
+mcp
+semanticscholar>=0.8
+httpx
+pydantic>=2
+
+# Dev note: tests also need `pytest` and `pytest-asyncio`, installed at repo level.

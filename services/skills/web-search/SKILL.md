@@ -1,0 +1,44 @@
+---
+name: web-search
+description: >
+  Live web search and page fetching via self-hosted SearXNG. Use when the local corpus
+  lacks current information — API documentation updates, recent papers, library changelogs,
+  or any fact requiring freshness. Pairs with citation-check for grounding web results.
+  Operates fully locally via Docker (no cloud search API required).
+trigger: "Use when needing current information not available in the local document library"
+tools:
+  - web_search.search
+  - web_search.fetch_page
+  - web_search.search_code
+version: "0.1.0"
+license: MIT
+requires: []
+---
+
+# web-search
+
+Wraps a self-hosted SearXNG instance (Docker container `lm-searxng`) to provide
+live web search and page-content extraction.
+
+## Tools
+
+### web_search.search(query, limit=10, categories=["general"])
+Returns JSONL; one `SearchResult` per line: `title`, `url`, `snippet`, `source`,
+`published_date`.
+
+### web_search.fetch_page(url, max_length=8000)
+Fetches a URL and extracts main text via cheerio. Returns JSON: `url`, `title`,
+`text` (truncated to `max_length`), `truncated`.
+
+### web_search.search_code(query, limit=5)
+Searches the SearXNG `code` category (GitHub / StackOverflow). Returns JSONL.
+
+## Configuration
+
+- `SEARXNG_URL` (default `http://localhost:8080`) — base URL of the SearXNG instance.
+  Inside the Docker network this is `http://searxng:8080`.
+
+## Offline behavior
+
+If SearXNG is unreachable, every tool returns a structured error object
+(`{"error": "...", "detail": "..."}`) with `isError: true` rather than crashing.

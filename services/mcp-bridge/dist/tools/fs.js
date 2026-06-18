@@ -1,6 +1,7 @@
 import { readFile, readdir, writeFile } from 'node:fs/promises';
 import { FsReadInput, FsListInput, FsWriteInput } from '../schemas/fs.js';
 import { truncate } from '../utils/truncate.js';
+import { formatError } from '../utils/formatError.js';
 import { log } from '../services/logger.js';
 export async function makeReadHandler(args, extra) {
     try {
@@ -13,8 +14,7 @@ export async function makeReadHandler(args, extra) {
     }
     catch (err) {
         log.error({ err, path: args.path }, 'fs_read_file failed');
-        const msg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: 'text', text: `Error reading ${args.path}: ${msg}` }], isError: true };
+        return { content: [{ type: 'text', text: formatError(err, { path: args.path, offset: args.offset }) }], isError: true };
     }
 }
 export async function makeWriteHandler(args, extra) {
@@ -24,8 +24,7 @@ export async function makeWriteHandler(args, extra) {
     }
     catch (err) {
         log.error({ err, path: args.path }, 'fs_write_file failed');
-        const msg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: 'text', text: `Error writing ${args.path}: ${msg}` }], isError: true };
+        return { content: [{ type: 'text', text: formatError(err, { path: args.path }) }], isError: true };
     }
 }
 export async function makeListHandler(args, extra) {
@@ -37,8 +36,7 @@ export async function makeListHandler(args, extra) {
     }
     catch (err) {
         log.error({ err, path: args.path }, 'fs_list_dir failed');
-        const msg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: 'text', text: `Error listing ${args.path}: ${msg}` }], isError: true };
+        return { content: [{ type: 'text', text: formatError(err, { path: args.path }) }], isError: true };
     }
 }
 export function registerFsTools(server) {

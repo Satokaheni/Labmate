@@ -1,0 +1,5 @@
+mcp>=1.0.0
+mutmut>=3.0
+litellm>=1.40.0
+pydantic>=2
+transformers>=4.40.0

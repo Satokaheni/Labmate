@@ -1,0 +1,8 @@
+mcp>=1.0
+pydantic>=2
+habanero>=2.0
+semanticscholar>=0.8
+bibtexparser>=1.4
+litellm>=1.40
+transformers>=4.40
+requests>=2.31

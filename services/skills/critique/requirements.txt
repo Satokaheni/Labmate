@@ -1,0 +1,5 @@
+instructor>=1.0
+pydantic>=2
+transformers>=4.40
+ruff>=0.4
+pytest>=8.0

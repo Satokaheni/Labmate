@@ -8,7 +8,9 @@ This file is for any AI coding agent (Claude, Gemma, Qwen, or other) helping imp
 
 Labmate is a local autonomous agent: Brain (LLM) → Nervous System (MCP bridge) → Hands (skills). It runs on a single GPU host. The LLM inference server runs directly on the host; all support services (MongoDB, Chroma, Redis, MCP bridge, orchestrator) run in Docker.
 
-**Primary models:** Gemma 4 31B 4-bit (`google/gemma-4-31B-it`, dense, bitsandbytes int4) as orchestrator brain + Qwen2.5-Coder-32B (specialist worker). Both served via vLLM with an OpenAI-compatible HTTP API.
+**Primary model:** Gemma 4 31B 4-bit (`gemma-4-31B-it-UD-Q4_K_XL.gguf`) served via **llama.cpp** (`llama-server`) with an OpenAI-compatible HTTP API on port 8000. Qwen2.5-Coder-32B is the intended specialist worker but on a single-GPU host `QWEN_BASE` defaults to `GEMMA_BASE` — both roles run on the same Gemma 4 model.
+
+**Why llama.cpp over vLLM:** llama.cpp runs on any platform — CUDA, Metal (Mac Mini), CPU — with zero driver requirements. vLLM is CUDA-only and requires specific wheel versions per CUDA release. Research confirmed llama.cpp supports all required features: per-request `thinking_budget_tokens`, Gemma 4 tool calling via `--jinja`, and flash attention via `-fa on`.
 
 ---
 
@@ -19,7 +21,7 @@ The codebase is mid-migration. Do not confuse the two:
 | | Current (M2) | Target (M3+) |
 |-|-------------|--------------|
 | Entry point | `main.py` | `services/orchestrator/` |
-| Model loading | Unsloth direct in process | vLLM on host, HTTP API |
+| Model loading | Unsloth direct in process | llama.cpp on host, HTTP API |
 | Tool calling | Regex `[TOOL: name('arg')]` | MCP JSON-RPC over stdio |
 | Memory | AgentMemory HTTP + Codegraph | MongoDB + Chroma + Redis |
 | State machine | Manual loop in `orchestrator.py` | LangGraph StateGraph |
@@ -32,7 +34,7 @@ The codebase is mid-migration. Do not confuse the two:
 ## Architecture Map
 
 ```
-Host process: vLLM (port 8000)
+Host process: llama-server (port 8000)
      │
      │  OpenAI-compatible HTTP  (INFERENCE_URL=http://host.docker.internal:8000)
      ▼
@@ -65,7 +67,7 @@ Before implementing any component, read its spec:
 | TypeScript MCP server | `research/llm-harness-research/specs/spec_mcp_bridge.md` |
 | Python MCP client | `research/llm-harness-research/specs/spec_mcp_bridge.md` |
 | MongoDB + Chroma + Redis | `research/llm-harness-research/specs/spec_memory.md` |
-| vLLM serving + quantization | `research/llm-harness-research/specs/spec_inference.md` |
+| llama.cpp serving + quantization | `research/llm-harness-research/specs/spec_inference.md` |
 | SKILL.md format, SkillRunner, SkillRegistry | `research/llm-harness-research/specs/spec_skills.md` |
 | Testing strategy, pytest-bdd | `research/llm-harness-research/specs/spec_testing.md` |
 | Academic writing + critique skills | `research/llm-harness-research/specs/spec_writing_skills.md` |
@@ -129,21 +131,50 @@ client = chromadb.AsyncHttpClient(host="chroma", port=8000)
 ### 5. Redis — Streams for queues, not BRPOP
 Task queues use Redis Streams (`XADD` / `XREADGROUP` / `XACK`), not `RPUSH`/`BRPOP`. Streams provide consumer groups, at-least-once delivery, and redelivery of crashed tasks.
 
-### 6. vLLM tool call parser for Gemma 4
-When serving Gemma 4 with vLLM, the parser flag is `gemma4`, not `pythonic` (which is Gemma 3):
+### 6. llama.cpp serve command for Gemma 4
+Use `llama-server` (build ≥ b8738). The critical flags:
+- `-fa on` — flash attention (~40% KV VRAM reduction)
+- `--reasoning-format deepseek` — puts reasoning in `message.reasoning_content`, separate from `content`
+- `--reasoning-budget-message` — prevents abrupt cutoff when `thinking_budget_tokens` is hit
+- **Do NOT** set `--reasoning-budget N` as a server flag — it disables per-request `thinking_budget_tokens` control
+
 ```bash
-vllm serve google/gemma-4-31B-it \
-  --port 8000 \
-  --host 0.0.0.0 \
-  --quantization bitsandbytes \
-  --load-in-4bit \
-  --max-model-len 16384 \
-  --gpu-memory-utilization 0.90 \
-  --enable-auto-tool-choice \
-  --tool-call-parser gemma4 \
-  --reasoning-parser gemma4 \
-  --chat-template examples/tool_chat_template_gemma4.jinja
+llama-server \
+  -m models/gemma-4-31B-it-UD-Q4_K_XL.gguf \
+  --jinja \
+  --n-gpu-layers 999 \
+  --ctx-size 16384 \
+  --parallel 2 \
+  --host 127.0.0.1 --port 8000 \
+  -fa on \
+  --reasoning-format deepseek \
+  --reasoning-budget-message "\n</think>\n"
 ```
+
+Per-request reasoning control (pass in `extra_body`):
+
+**IMPORTANT:** Post-April-2026 llama.cpp builds default `thinking_budget_tokens` to `INT_MAX` when not set — this causes non-deterministic hangs. **Every request must set it explicitly.**
+
+```python
+# Planning, coding, writing, research — Labmate's core purpose — reasoning ON
+# architect() default: thinking_budget=3000
+# editor() default:    thinking_budget=2048
+{"thinking_budget_tokens": 2048}   # or 3000 for deeper planning
+
+# Tool selection only (LLM choosing which MCP tool to invoke) — reasoning OFF
+{"thinking_budget_tokens": 0}
+```
+
+Which nodes get what:
+| Node | Model call | `thinking_budget_tokens` |
+|------|-----------|--------------------------|
+| `plan_node` | `architect()` | 3000 |
+| `execute_node` | `editor()` | 2048 |
+| `check_node` | `architect()` | 1000 |
+| `reflect_node` | `architect()` | 3000 |
+| MCP tool dispatch | direct LLM call | 0 |
+
+Never use `enable_thinking: false` via `chat_template_kwargs` — it is silently ignored for Gemma 4.
 
 ### 7. MongoDB transactional outbox
 Never write to MongoDB and Chroma/Redis in two separate calls. Use the transactional outbox pattern: write the document + an outbox marker atomically in one MongoDB write. A background worker reads the outbox and projects to Chroma + Redis. This prevents partial writes from corruption.
@@ -189,7 +220,7 @@ Always read from environment variables. Never hardcode these.
 - Tests live in `tests/` mirroring the `services/` structure
 - Mark tests: `@pytest.mark.mocked` (no GPU, always runs in CI) or `@pytest.mark.live` (needs running inference server)
 - Assert structure, not literal text — LLM output is non-deterministic
-- Use `respx` to mock the vLLM OpenAI-compatible endpoint in mocked tests
+- Use `respx` to mock the llama.cpp OpenAI-compatible endpoint in mocked tests
 - The cross-judge for LLM-as-judge tests must NOT be Gemma or Qwen (self-grading bias)
 - Full testing spec: `research/llm-harness-research/specs/spec_testing.md`
 
@@ -212,7 +243,7 @@ When starting a component, read its spec first, then look at the existing M2 cod
 
 ## What NOT to Do
 
-- Do not load the model directly with `FastLanguageModel` in any M3+ code — that's the M2 pattern. Use the vLLM HTTP API.
+- Do not load the model directly with `FastLanguageModel` in any M3+ code — that's the M2 pattern. Use the llama.cpp HTTP API (`llama-server` on port 8000).
 - Do not modify `core/`, `tools/`, or `main.py` — M2 baseline must stay runnable.
 - Do not add `console.log` to any MCP server, even for debugging. Use `console.error`.
 - Do not use `asyncio.run()` inside an async function — it raises "cannot be called when another event loop is running."

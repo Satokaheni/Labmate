@@ -1,0 +1,4 @@
+mcp>=1.0.0
+docling>=2.0.0
+docling-parse>=2.0.0
+pymupdf>=1.24.0

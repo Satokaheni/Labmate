@@ -1,3 +1,4 @@
+motor>=3.4
 langgraph>=0.2
 langgraph-checkpoint-mongodb
 litellm>=1.40

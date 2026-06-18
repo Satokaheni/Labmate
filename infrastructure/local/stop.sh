@@ -10,6 +10,26 @@ PIDS="${REPO_ROOT}/.data/pids"
 
 info() { echo "[local] $*"; }
 
+_stop_pid() {
+  local name="$1" pidfile="$2"
+  if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+    info "stopping $name (pid $(cat "$pidfile")) ..."
+    kill "$(cat "$pidfile")" 2>/dev/null || true
+    rm -f "$pidfile"
+  else
+    pkill -f "$name" 2>/dev/null && info "stopped stray $name" || info "$name not running"
+  fi
+}
+
+# ─── Discord connector ────────────────────────────────────────────────────────
+_stop_pid "discord-connector" "$PIDS/discord-connector.pid"
+
+# ─── Orchestrator ─────────────────────────────────────────────────────────────
+_stop_pid "orchestrator.main" "$PIDS/orchestrator.pid"
+
+# ─── Skill worker ─────────────────────────────────────────────────────────────
+_stop_pid "skill_worker.worker" "$PIDS/skill-worker.pid"
+
 # ─── Model server (Gemma 4 via llama.cpp) ─────────────────────────────────────
 if [[ -f "$PIDS/llama-server.pid" ]] && kill -0 "$(cat "$PIDS/llama-server.pid")" 2>/dev/null; then
   info "stopping llama-server (pid $(cat "$PIDS/llama-server.pid")) ..."

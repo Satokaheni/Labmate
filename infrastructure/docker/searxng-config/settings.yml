@@ -1,0 +1,34 @@
+# SearXNG settings for Labmate lm-searxng container
+# Enables JSON output format so the web-search MCP skill can query the API.
+#
+# This file is bind-mounted into the container at /etc/searxng/settings.yml
+# when using the named volume approach. To use this file directly, change the
+# docker-compose volume mount to: ./searxng-config:/etc/searxng
+
+search:
+  formats:
+    - html
+    - json
+
+server:
+  # Allow all hosts (container is only reachable within the Docker network)
+  bind_address: "0.0.0.0"
+  secret_key: "labmate-searxng-secret-change-in-production"
+
+# Disable telemetry
+general:
+  debug: false
+
+# Enable common engines
+engines:
+  - name: duckduckgo
+    engine: duckduckgo
+    categories: general
+    timeout: 3.0
+    disabled: false
+
+  - name: github
+    engine: github
+    categories: [code]
+    timeout: 5.0
+    disabled: false

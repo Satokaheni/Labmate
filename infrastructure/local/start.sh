@@ -119,9 +119,100 @@ for i in $(seq 1 30); do
 done
 pass "Chroma ready :8765"
 
+# ─── MCP bridge (TypeScript) — build only; the orchestrator spawns it as a child ─
+MCP_BRIDGE_DIR="${REPO_ROOT}/services/mcp-bridge"
+MCP_DIST="${MCP_BRIDGE_DIR}/dist/index.js"
+if [[ ! -f "$MCP_DIST" ]]; then
+  info "building MCP bridge (npm ci && npm run build) ..."
+  command -v node >/dev/null 2>&1 || fail "node not found — install Node.js"
+  (cd "$MCP_BRIDGE_DIR" && npm ci --quiet && npm run build --quiet) \
+    >"$LOGS/mcp-bridge-build.log" 2>&1 \
+    || fail "MCP bridge build failed — see $LOGS/mcp-bridge-build.log"
+  pass "MCP bridge built → $MCP_DIST"
+else
+  info "MCP bridge already built (dist/index.js present)"
+fi
+
+# ─── Skill worker ─────────────────────────────────────────────────────────────
+_skill_worker_alive() {
+  [[ -f "$PIDS/skill-worker.pid" ]] && kill -0 "$(cat "$PIDS/skill-worker.pid")" 2>/dev/null
+}
+if _skill_worker_alive; then
+  info "skill-worker already running (pid $(cat "$PIDS/skill-worker.pid"))"
+else
+  info "starting skill-worker ..."
+  (
+    source "${SCRIPT_DIR}/local.env"
+    export PYTHONPATH="${REPO_ROOT}"
+    nohup python -m services.skill_worker.worker \
+      >"$LOGS/skill-worker.log" 2>&1 &
+    echo $! >"$PIDS/skill-worker.pid"
+  )
+fi
+# Brief readiness check: the worker logs "skill-worker ready" after connecting Redis.
+for i in $(seq 1 15); do
+  _skill_worker_alive && grep -q "skill-worker ready\|SkillWorker ready\|ready" "$LOGS/skill-worker.log" 2>/dev/null && break
+  _skill_worker_alive || { fail "skill-worker exited — see $LOGS/skill-worker.log"; }
+  sleep 1
+done
+pass "Skill worker running (pid $(cat "$PIDS/skill-worker.pid"))"
+
+# ─── Orchestrator ─────────────────────────────────────────────────────────────
+_orchestrator_alive() {
+  [[ -f "$PIDS/orchestrator.pid" ]] && kill -0 "$(cat "$PIDS/orchestrator.pid")" 2>/dev/null
+}
+if _orchestrator_alive; then
+  info "orchestrator already running (pid $(cat "$PIDS/orchestrator.pid"))"
+else
+  info "starting orchestrator ..."
+  (
+    source "${SCRIPT_DIR}/local.env"
+    export PYTHONPATH="${REPO_ROOT}"
+    export MCP_BRIDGE_ARGS="${MCP_DIST}"
+    nohup python -m services.orchestrator.main \
+      >"$LOGS/orchestrator.log" 2>&1 &
+    echo $! >"$PIDS/orchestrator.pid"
+  )
+fi
+for i in $(seq 1 30); do
+  _orchestrator_alive || { fail "orchestrator exited — see $LOGS/orchestrator.log"; }
+  grep -q "orchestrator.*ready\|MCP bridge ready" "$LOGS/orchestrator.log" 2>/dev/null && break
+  sleep 1
+done
+pass "Orchestrator running (pid $(cat "$PIDS/orchestrator.pid"))"
+
+# ─── Discord connector (optional — only if DISCORD_BOT_TOKEN is set) ──────────
+if [[ -n "${DISCORD_BOT_TOKEN:-}" ]]; then
+  _connector_alive() {
+    [[ -f "$PIDS/discord-connector.pid" ]] && kill -0 "$(cat "$PIDS/discord-connector.pid")" 2>/dev/null
+  }
+  if _connector_alive; then
+    info "discord-connector already running (pid $(cat "$PIDS/discord-connector.pid"))"
+  else
+    info "starting discord-connector ..."
+    (
+      source "${SCRIPT_DIR}/local.env"
+      export PYTHONPATH="${REPO_ROOT}"
+      nohup python -m services.connectors.discord_connector \
+        >"$LOGS/discord-connector.log" 2>&1 &
+      echo $! >"$PIDS/discord-connector.pid"
+    )
+    for i in $(seq 1 15); do
+      _connector_alive || { fail "discord-connector exited — see $LOGS/discord-connector.log"; }
+      grep -q "Logged in\|ready" "$LOGS/discord-connector.log" 2>/dev/null && break
+      sleep 1
+    done
+    pass "Discord connector running (pid $(cat "$PIDS/discord-connector.pid"))"
+  fi
+else
+  info "DISCORD_BOT_TOKEN not set — skipping discord-connector"
+fi
+
 echo
-pass "Local support stack is up. Connection settings:"
+pass "Labmate stack is up. Connection settings:"
 echo "    MONGO_URI=mongodb://localhost:27017/labmate?replicaSet=rs0"
 echo "    REDIS_URL=redis://localhost:6379/0"
 echo "    CHROMA_URL=http://localhost:8765  (CHROMA_HOST=localhost CHROMA_PORT=8765)"
+echo "    GEMMA_BASE=http://localhost:8000/v1"
 echo "    -> source infrastructure/local/local.env to export these."
+echo "    -> Logs: $LOGS/  PIDs: $PIDS/"

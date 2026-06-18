@@ -228,11 +228,96 @@ class TestCodingOrchestrator:
             assert result["ok"] is False
             assert result["exit_code"] == 1
 
-    def test_git_checkpoint_calls_git_add_and_commit(self):
+    @pytest.mark.asyncio
+    async def test_git_checkpoint_calls_git_add_and_commit(self):
         orch = self._make_orch()
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
-            orch.git_checkpoint("step 3: fixed tests")
+            await orch.git_checkpoint("step 3: fixed tests")
             calls = [c[0][0] for c in mock_run.call_args_list]
             assert any("add" in c for c in calls)
             assert any("commit" in c for c in calls)
+
+
+@pytest.mark.mocked
+class TestRunInSandbox:
+    def _make_orch(self, mcp=None):
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator
+        return CodingOrchestrator(
+            graph=MagicMock(),
+            workspace_path="/tmp/workspace",
+            docker_container="lm-sandbox",
+            mcp=mcp,
+        )
+
+    def _make_call_tool_result(self, text: str, is_error: bool = False):
+        """Minimal stand-in for mcp.types.CallToolResult."""
+        content_item = MagicMock()
+        content_item.text = text
+        result = MagicMock()
+        result.content = [content_item]
+        result.isError = is_error
+        return result
+
+    @pytest.mark.asyncio
+    async def test_routes_through_mcp_when_available(self):
+        mcp = AsyncMock()
+        mcp.call_tool.return_value = self._make_call_tool_result("output text")
+        orch = self._make_orch(mcp=mcp)
+
+        obs = await orch.run_in_sandbox("echo hello", timeout_ms=5000)
+
+        mcp.call_tool.assert_awaited_once_with(
+            "exec_run",
+            {"command": "echo hello", "cwd": "/tmp/workspace", "timeout": 5000},
+        )
+        assert obs["ok"] is True
+        assert obs["stdout"] == "output text"
+
+    @pytest.mark.asyncio
+    async def test_mcp_error_result_sets_ok_false(self):
+        mcp = AsyncMock()
+        mcp.call_tool.return_value = self._make_call_tool_result(
+            "command not found", is_error=True
+        )
+        orch = self._make_orch(mcp=mcp)
+
+        obs = await orch.run_in_sandbox("bad-cmd")
+        assert obs["ok"] is False
+        assert obs["exit_code"] == 1
+
+    @pytest.mark.asyncio
+    async def test_mcp_exception_returns_error_dict(self):
+        mcp = AsyncMock()
+        mcp.call_tool.side_effect = RuntimeError("bridge not ready")
+        orch = self._make_orch(mcp=mcp)
+
+        obs = await orch.run_in_sandbox("ls")
+        assert obs["ok"] is False
+        assert "bridge not ready" in obs["stderr"]
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_subprocess_without_mcp(self):
+        orch = self._make_orch(mcp=None)
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                stdout="ok", stderr="", returncode=0
+            )
+            obs = await orch.run_in_sandbox("echo hi")
+        assert obs["ok"] is True
+
+    @pytest.mark.asyncio
+    async def test_mcp_result_concatenates_multiple_content_items(self):
+        mcp = AsyncMock()
+        item_a = MagicMock()
+        item_a.text = "line one"
+        item_b = MagicMock()
+        item_b.text = "line two"
+        result = MagicMock()
+        result.content = [item_a, item_b]
+        result.isError = False
+        mcp.call_tool.return_value = result
+        orch = self._make_orch(mcp=mcp)
+
+        obs = await orch.run_in_sandbox("cmd")
+        assert obs["stdout"] == "line one\nline two"

@@ -1,0 +1,5 @@
+mcp>=1.0.0
+py-tree-sitter>=0.25
+tree-sitter-language-pack>=0.7.2
+networkx>=3.0
+transformers>=4.40.0

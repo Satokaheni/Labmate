@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { GitLogInput, GitStatusInput, GitDiffInput } from '../schemas/git.js';
 import { truncate } from '../utils/truncate.js';
+import { formatError } from '../utils/formatError.js';
 import { log } from '../services/logger.js';
 const execFileAsync = promisify(execFile);
 async function runGit(args, cwd) {
@@ -16,8 +17,7 @@ export async function makeStatusHandler(args, extra) {
     }
     catch (err) {
         log.error({ err }, 'git_status failed');
-        const msg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: 'text', text: `git status failed: ${msg}` }], isError: true };
+        return { content: [{ type: 'text', text: formatError(err, { repo_path: args.repo_path }) }], isError: true };
     }
 }
 export async function makeLogHandler(args, extra) {
@@ -31,8 +31,7 @@ export async function makeLogHandler(args, extra) {
     }
     catch (err) {
         log.error({ err }, 'git_log failed');
-        const msg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: 'text', text: `git log failed: ${msg}` }], isError: true };
+        return { content: [{ type: 'text', text: formatError(err, { repo_path: args.repo_path, max_count: args.max_count }) }], isError: true };
     }
 }
 export async function makeDiffHandler(args, extra) {
@@ -46,8 +45,7 @@ export async function makeDiffHandler(args, extra) {
     }
     catch (err) {
         log.error({ err }, 'git_diff failed');
-        const msg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: 'text', text: `git diff failed: ${msg}` }], isError: true };
+        return { content: [{ type: 'text', text: formatError(err, { repo_path: args.repo_path, ref_a: args.ref_a, ref_b: args.ref_b }) }], isError: true };
     }
 }
 export function registerGitTools(server) {

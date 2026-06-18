@@ -1,0 +1,33 @@
+{
+  "name": "@labmate/a11y-audit",
+  "version": "0.1.0",
+  "private": true,
+  "description": "WCAG accessibility audit MCP server (axe-core via Playwright)",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "a11y-audit": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "postinstall": "playwright install chromium"
+  },
+  "dependencies": {
+    "@axe-core/playwright": "^4.10.0",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "playwright": "^1.48.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

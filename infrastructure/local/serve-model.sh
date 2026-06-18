@@ -45,6 +45,9 @@ nohup "$LLAMA_SERVER" \
   --n-gpu-layers "$NGL" \
   --parallel "$PARALLEL" \
   --jinja \
+  -fa on \
+  --reasoning-format deepseek \
+  --reasoning-budget-message $'\n</think>\n' \
   >"$LOGS/llama-server.log" 2>&1 &
 echo $! > "$PIDS/llama-server.pid"
 info "llama-server pid $(cat "$PIDS/llama-server.pid") — logs: $LOGS/llama-server.log"

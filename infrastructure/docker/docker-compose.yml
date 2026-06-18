@@ -65,7 +65,7 @@ services:
   # Scale: docker compose up -d --scale skill-worker=4
   # Or use compose-up.sh N  (e.g. ./scripts/compose-up.sh 4)
   skill-worker:
-    build: ../../services/skill-worker
+    build: ../../services/skill_worker
     image: labmate/skill-worker:latest
     environment:
       - REDIS_URL=redis://redis:6379/0
@@ -113,6 +113,19 @@ services:
     networks: [labmate]
     restart: unless-stopped
 
+  # ─── SearXNG (self-hosted web search) ────────────────────────────────────────
+  searxng:
+    image: searxng/searxng:latest
+    container_name: lm-searxng
+    ports:
+      - "${SEARXNG_PORT:-8888}:8080"
+    volumes:
+      - searxng-config:/etc/searxng
+    environment:
+      - SEARXNG_BASE_URL=${SEARXNG_BASE_URL:-http://localhost:8888/}
+    networks: [labmate]
+    restart: unless-stopped
+
   # ─── Redis (AOF persistence) ───────────────────────────────────────────────
   redis:
     image: redis:7-alpine
@@ -137,6 +150,8 @@ volumes:
     # ChromaDB vector embeddings — expensive to rebuild
   redis-data:
     # Redis AOF log — preserves task queue across restarts
+  searxng-config:
+    # SearXNG settings (settings.yml with JSON format enabled)
 
 # ─── Networks ─────────────────────────────────────────────────────────────────
 networks:

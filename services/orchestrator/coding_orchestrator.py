@@ -5,6 +5,7 @@ import asyncio
 import litellm
 import subprocess
 from dataclasses import dataclass, field
+from typing import AsyncGenerator
 from aiolimiter import AsyncLimiter
 
 from .types import Goal, State, Status, get_ready_goals, update_status, now_iso
@@ -210,6 +211,7 @@ class CodingOrchestrator:
         qwen_api_base: str = "http://localhost:8001/v1",
         max_iter: int = 10,
         stuck_n: int = 3,
+        mcp=None,
     ) -> None:
         self.graph = graph
         self.workspace = workspace_path
@@ -218,7 +220,9 @@ class CodingOrchestrator:
         self._qwen_base = qwen_api_base
         self.max_iter = max_iter
         self.stuck_n = stuck_n
+        self.mcp = mcp          # MCPClientManager | None
         self._recent_actions: list[str] = []
+        self._gate_futures: dict[str, asyncio.Future] = {}
 
     async def run_task(self, task: str, session_id: str) -> dict:
         """
@@ -234,6 +238,7 @@ class CodingOrchestrator:
             "step_markers": {},
             "messages": [],
             "error": None,
+            "final_answer": "",
         }
         cfg = {"configurable": {"thread_id": session_id}}
         return await self.graph.ainvoke(initial, cfg)
@@ -254,12 +259,17 @@ class CodingOrchestrator:
         )
         return r.choices[0].message.content
 
-    async def editor(self, prompt: str) -> str:
-        """Code generation, file edits -> Qwen2.5-Coder-32B."""
+    async def editor(self, prompt: str, thinking_budget: int = 2048) -> str:
+        """Code generation, file edits -> Qwen2.5-Coder-32B (or Gemma when QWEN_BASE==GEMMA_BASE).
+
+        thinking_budget must always be set: post-April-2026 llama.cpp builds default
+        to INT_MAX if omitted, which can cause non-deterministic hangs.
+        """
         r = await litellm.acompletion(
             model="openai/qwen2.5-coder-32b",
             api_base=self._qwen_base,
             messages=[{"role": "user", "content": prompt}],
+            extra_body={"thinking_budget_tokens": thinking_budget},
         )
         return r.choices[0].message.content
 
@@ -294,13 +304,82 @@ class CodingOrchestrator:
             "ok": proc.returncode == 0,
         }
 
-    def git_checkpoint(self, message: str) -> None:
+    async def run_in_sandbox(self, cmd: str, timeout_ms: int = 30_000) -> dict:
+        """Async sandbox execution — routes through MCP bridge when available.
+
+        When self.mcp is set, calls exec_run on the MCP bridge (works on
+        RunPod and any environment where docker exec is unavailable).
+        Falls back to execute_in_sandbox() via asyncio.to_thread when no MCP
+        client is present (e.g. tests, local dev without the bridge).
         """
-        Commit all workspace changes as a rollback-ladder checkpoint.
-        Called after every successful file edit.
+        if self.mcp is not None:
+            try:
+                result = await self.mcp.call_tool(
+                    "exec_run",
+                    {"command": cmd, "cwd": self.workspace, "timeout": timeout_ms},
+                )
+                text = "\n".join(
+                    c.text for c in result.content if hasattr(c, "text")
+                )
+                is_error = bool(result.isError)
+                return {
+                    "stdout": text,
+                    "stderr": "",
+                    "exit_code": 1 if is_error else 0,
+                    "ok": not is_error,
+                }
+            except Exception as exc:
+                return {"stdout": "", "stderr": str(exc), "exit_code": 1, "ok": False}
+
+        return await asyncio.to_thread(self.execute_in_sandbox, cmd, 60)
+
+    async def stream(self, prompt: str) -> "AsyncGenerator[str, None]":
+        """Async-generator bridge for the Discord connector.
+
+        Runs run_task() and yields the final result summary as a single chunk.
+        A future version may yield incremental tokens directly from vLLM.
         """
-        subprocess.run(["git", "-C", self.workspace, "add", "-A"], check=True)
-        subprocess.run(
-            ["git", "-C", self.workspace, "commit", "-m", message],
-            check=True,
-        )
+        if self.graph is None:
+            raise RuntimeError("graph not wired — call build_graph(orch) and assign orch.graph before streaming")
+        import uuid
+        session_id = str(uuid.uuid4())
+        state = await self.run_task(prompt, session_id)
+        root = state.get("goal_tree", {}).get("root", {})
+        yield state.get("final_answer") or root.get("result", "") or str(state)
+
+    # ── Human-in-the-loop gate interface (used by Discord /approve /reject) ──
+
+    def _gate_future(self, task_id: str) -> asyncio.Future:
+        """Return (or create) the pending gate Future for task_id."""
+        loop = asyncio.get_running_loop()
+        if task_id not in self._gate_futures:
+            self._gate_futures[task_id] = loop.create_future()
+        return self._gate_futures[task_id]
+
+    async def pending_gate(self, task_id: str) -> bool:
+        return task_id in self._gate_futures and not self._gate_futures[task_id].done()
+
+    async def approve_gate(self, task_id: str) -> None:
+        fut = self._gate_futures.pop(task_id, None)
+        if fut and not fut.done():
+            fut.set_result("approve")
+
+    async def reject_gate(self, task_id: str) -> None:
+        fut = self._gate_futures.pop(task_id, None)
+        if fut and not fut.done():
+            fut.set_result("reject")
+
+    async def git_checkpoint(self, message: str) -> None:
+        """Async checkpoint — runs git add + commit in a thread pool worker.
+
+        Always uses subprocess directly; the MCP bridge exposes read-only git
+        tools (status/diff/log) and has no git_commit tool.
+        """
+        def _commit() -> None:
+            subprocess.run(["git", "-C", self.workspace, "add", "-A"], check=True)
+            subprocess.run(
+                ["git", "-C", self.workspace, "commit", "-m", message],
+                check=True,
+            )
+
+        await asyncio.to_thread(_commit)

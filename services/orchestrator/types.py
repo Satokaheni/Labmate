@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime
 from enum import Enum
 from operator import add
-from typing import Annotated, TypedDict
+from typing import Annotated, TypedDict, Optional
 
 
 class Status(str, Enum):
@@ -33,7 +33,7 @@ class Goal(TypedDict):
     updated_at: str | None    # ISO-8601
 
 
-class State(TypedDict):
+class State(TypedDict, total=False):
     """
     The single JSON-serializable state object persisted by AsyncMongoDBSaver
     at every LangGraph super-step.
@@ -47,6 +47,7 @@ class State(TypedDict):
     step_markers: dict[str, str]      # step_id -> 'started' | 'completed'
     messages: Annotated[list, add]    # reducer-safe; parallel nodes may append
     error: str | None
+    final_answer: str                 # Clean summary for Discord/user display
 
 
 def now_iso() -> str:

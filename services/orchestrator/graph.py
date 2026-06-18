@@ -14,7 +14,9 @@ MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
 # On 48 GB (A6000 / Mac Mini): both servers co-reside.
 # On 32 GB discrete GPU: run one server at a time; set QWEN_BASE = GEMMA_BASE for model-swap mode.
 GEMMA_BASE = os.getenv("GEMMA_BASE", "http://localhost:8000/v1")
-QWEN_BASE  = os.getenv("QWEN_BASE",  "http://localhost:8001/v1")
+# On single-GPU setups, QWEN_BASE defaults to GEMMA_BASE (Gemma 4 serves both roles).
+# On dual-GPU, set QWEN_BASE=http://localhost:8001/v1 to enable the specialist Qwen worker.
+QWEN_BASE  = os.getenv("QWEN_BASE",  GEMMA_BASE)
 
 
 def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
@@ -74,13 +76,21 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         markers[gid] = "started"
         update_status(tree, gid, Status.IN_PROGRESS, started_at=now_iso())
 
-        obs = orch.execute_in_sandbox(f"# execute: {goal['description']}")
+        # Generate the shell command from the goal description
+        cmd = await orch.editor(
+            f"Generate a single bash command to accomplish this goal. "
+            f"Reply with ONLY the command, no explanation, no markdown.\n\n"
+            f"Goal: {goal['description']}\n"
+            f"Workspace: {orch.workspace}"
+        )
+        cmd = cmd.strip()
+        obs = await orch.run_in_sandbox(cmd)
         result_text = obs["stdout"] or obs["stderr"]
 
         if obs["ok"]:
             markers[gid] = "completed"
             update_status(tree, gid, Status.COMPLETED, result=result_text)
-            orch.git_checkpoint(f"goal {gid}: {goal['description'][:60]}")
+            await orch.git_checkpoint(f"goal {gid}: {goal['description'][:60]}")
         else:
             g = tree[gid]
             g["attempts"] = g["attempts"] + 1
@@ -93,8 +103,40 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         }
 
     async def check(state: State) -> dict:
-        """Validate the current goal's result and set final status if warranted."""
-        return {}
+        """Finalize root when all leaf goals are terminal; set final_answer."""
+        tree = dict(state["goal_tree"])
+        root_id = "root"
+        root = tree.get(root_id, {})
+
+        children = root.get("children", [])
+        if not children:
+            return {}
+
+        # Only finalize when every child has reached a terminal status
+        all_terminal = all(
+            tree.get(c, {}).get("status") in (Status.COMPLETED.value, Status.FAILED.value)
+            for c in children
+        )
+        if not all_terminal:
+            return {}
+
+        # Build answer from completed leaves
+        answer = "\n\n".join(
+            f"**{tree[c]['description'][:80]}**\n{tree[c]['result']}"
+            for c in children
+            if tree.get(c, {}).get("result")
+        )
+        if not answer:
+            answer = "Task completed."
+
+        # Mark root COMPLETED so get_ready_goals won't re-select it
+        update_status(tree, root_id, Status.COMPLETED, result=answer)
+
+        return {
+            "goal_tree": tree,
+            "final_answer": answer,
+            "current_goal_id": root_id,
+        }
 
     async def reflect(state: State) -> dict:
         """
