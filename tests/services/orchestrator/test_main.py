@@ -269,3 +269,60 @@ async def test_handle_defaults_missing_user_workspace():
     call_kwargs = orch.run_task.call_args.kwargs
     assert call_kwargs.get("user_id") == ""
     assert call_kwargs.get("workspace_id") == ""
+
+
+@pytest.mark.asyncio
+async def test_handle_acks_malformed_payload():
+    """Malformed JSON payload must still be acked (no poison pill)."""
+    proc = OrchestratorProcess()
+    proc._redis = AsyncMock()
+
+    orch = AsyncMock()
+    storage = AsyncMock()
+    storage.workspaces = AsyncMock()
+    storage.workspaces.record_session = AsyncMock()
+    storage.workspaces.complete_session = AsyncMock()
+
+    # Malformed JSON that will fail json.loads()
+    fields = {"payload": "not-json"}
+    await proc._handle("msg-bad", fields, orch, storage)
+
+    # xack must have been called even though parsing failed
+    proc._redis.xack.assert_awaited_once_with(GOALS_STREAM, GOALS_GROUP, "msg-bad")
+
+
+@pytest.mark.asyncio
+async def test_complete_session_called_with_ok_true_on_success():
+    """complete_session must record ok=True when task succeeds (error is None)."""
+    proc = OrchestratorProcess()
+    proc._redis = AsyncMock()
+
+    orch = AsyncMock()
+    # Task succeeds with error: None
+    orch.run_task.return_value = {"final_answer": "done", "error": None}
+
+    storage = AsyncMock()
+    storage.workspaces = AsyncMock()
+    storage.workspaces.record_session = AsyncMock()
+    storage.workspaces.complete_session = AsyncMock()
+    storage.workspaces.get_workspace = AsyncMock(return_value=None)
+    storage.workspaces._db = AsyncMock()
+    storage.workspaces._db.__getitem__ = MagicMock(return_value=AsyncMock())
+
+    payload = json.dumps({
+        "task_id": "t-ok",
+        "task": "succeed",
+        "session_id": "s-ok",
+        "user_id": "u-1",
+        "workspace_id": "ws-1",
+    })
+    await proc._handle("msg-ok", fields={"payload": payload}, orch=orch, storage=storage)
+
+    # complete_session must be called with ok=True (because error is None)
+    storage.workspaces.complete_session.assert_awaited()
+    call_args = storage.workspaces.complete_session.call_args
+    # Check that ok=True was passed (either as kwarg or positional arg)
+    ok_value = call_args.kwargs.get("ok")
+    if ok_value is None and len(call_args.args) > 1:
+        ok_value = call_args.args[1]
+    assert ok_value is True

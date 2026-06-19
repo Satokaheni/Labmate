@@ -169,7 +169,14 @@ class OrchestratorProcess:
         orch: CodingOrchestrator,
         storage: StorageManager,
     ) -> None:
+        # Safe defaults — must be bound before try so finally never raises NameError
         task_id = msg_id
+        user_id = ""
+        workspace_id = ""
+        session_id = ""
+        task_text = ""
+        final_state = {}
+
         try:
             payload    = json.loads(fields.get("payload", "{}"))
             task_id    = payload.get("task_id", msg_id)
@@ -230,7 +237,11 @@ class OrchestratorProcess:
             # Fix 2: Complete session in finally block
             if user_id and workspace_id:
                 try:
-                    ok_flag = "error" not in str(final_state) if 'final_state' in locals() else False
+                    # Check if error value is None (not just string presence)
+                    if isinstance(final_state, dict):
+                        ok_flag = final_state.get("error") is None
+                    else:
+                        ok_flag = True
                     await storage.workspaces.complete_session(session_id, ok=ok_flag)
                 except Exception:
                     pass
