@@ -23,6 +23,7 @@ def mock_mongo():
             col.insert_one.return_value = MagicMock(inserted_id="mongo_id_1")
             col.update_one.return_value = MagicMock(modified_count=1)
             col.count_documents.return_value = 0
+            col.create_index = AsyncMock(return_value=None)
             collections[name] = col
         return collections[name]
 

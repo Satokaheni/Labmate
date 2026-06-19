@@ -11,6 +11,7 @@ import chromadb
 import redis.asyncio as aioredis
 from motor.motor_asyncio import AsyncIOMotorClient
 
+from .db_indexes import ensure_indexes
 from .workspace_manager import WorkspaceManager
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,7 @@ class StorageManager:
 
     async def __aenter__(self) -> "StorageManager":
         """Start the OutboxWorker background task when entering the context."""
+        await ensure_indexes(self._db)
         from .outbox_worker import OutboxWorker
         self._outbox_worker = OutboxWorker(self)
         self._outbox_task = asyncio.create_task(self._outbox_worker.run(), name="outbox-worker")

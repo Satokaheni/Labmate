@@ -119,14 +119,10 @@ async def test_outbox_worker_projects_and_marks_processed(storage, mock_mongo, m
 # Task 5 — StorageManager async context manager
 # ---------------------------------------------------------------------------
 
-async def test_context_manager_starts_outbox_worker():
+async def test_context_manager_starts_outbox_worker(mock_mongo, mock_chroma, mock_redis):
     """__aenter__ must create and start the OutboxWorker background task."""
     from services.orchestrator.storage_manager import StorageManager
-    from unittest.mock import AsyncMock, MagicMock, patch
-
-    mock_mongo = MagicMock()
-    mock_chroma = AsyncMock()
-    mock_redis = AsyncMock()
+    from unittest.mock import patch
 
     storage = StorageManager.from_clients(
         mongo=mock_mongo, chroma=mock_chroma, redis=mock_redis
@@ -134,6 +130,7 @@ async def test_context_manager_starts_outbox_worker():
 
     # Mock asyncio.create_task to avoid actually running the background task
     with patch("asyncio.create_task") as mock_create_task:
+        from unittest.mock import MagicMock
         mock_task = MagicMock()
         mock_create_task.return_value = mock_task
 
