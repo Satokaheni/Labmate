@@ -5,9 +5,11 @@
 #   1. ./serve-model.sh          # llama-server on :8000
 #   2. ./start.sh                # MongoDB, Redis, Chroma, MCP bridge, orchestrator
 #
+# This script always starts a REPL session. Positional args (which would trigger
+# one-shot mode) are silently dropped. For one-shot use python -m services.cli directly.
+#
 # Usage:
 #   ./start-cli.sh                        # interactive REPL with workspace picker
-#   ./start-cli.sh "write a hello world"  # one-shot task
 #   ./start-cli.sh --resume <session-id>  # resume a previous session
 #   ./start-cli.sh --workspace <ws-id>    # open a specific workspace
 set -euo pipefail
@@ -43,4 +45,31 @@ source "${SCRIPT_DIR}/local.env"
 export PYTHONPATH="${REPO_ROOT}"
 
 cd "${REPO_ROOT}"
-exec python -m services.cli "$@"
+
+# Pass through --resume/-r and --workspace/-w flags; drop positional args so
+# this script always launches the interactive REPL, never one-shot mode.
+CLI_ARGS=()
+skip_next=false
+for arg in "$@"; do
+  if $skip_next; then
+    CLI_ARGS+=("$arg")
+    skip_next=false
+    continue
+  fi
+  case "$arg" in
+    --resume|-r|--workspace|-w)
+      CLI_ARGS+=("$arg")
+      skip_next=true
+      ;;
+    -*)
+      CLI_ARGS+=("$arg")
+      ;;
+    # Positional args (no leading dash) are dropped — forces REPL mode
+  esac
+done
+
+if [ "${#CLI_ARGS[@]}" -gt 0 ]; then
+    exec python -m services.cli "${CLI_ARGS[@]}"
+else
+    exec python -m services.cli
+fi
