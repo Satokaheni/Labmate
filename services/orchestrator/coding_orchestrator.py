@@ -122,8 +122,13 @@ class AsyncOrchestrator:
                         running[tid] = tg.create_task(self._run_worker(index[tid]))
                 await asyncio.sleep(0)
                 for tid, task in list(running.items()):
-                    if task.done() and not task.cancelled():
-                        ts.done(tid)
+                    if task.done():
+                        # Remove before marking done: otherwise the same task is
+                        # re-seen on the next while-iteration and ts.done(tid) is
+                        # called twice → "node already marked done".
+                        del running[tid]
+                        if not task.cancelled():
+                            ts.done(tid)
 
         return list(self.results.values())
 
@@ -160,6 +165,7 @@ class AsyncOrchestrator:
         r = await litellm.acompletion(
             model="openai/qwen2.5-coder-32b",
             api_base=self._qwen_base,
+            api_key="not-needed",
             messages=[{"role": "user", "content": t.prompt}],
         )
         return r.choices[0].message.content
@@ -180,6 +186,7 @@ class AsyncOrchestrator:
         r = await litellm.acompletion(
             model="openai/gemma-4-31b",
             api_base=self._gemma_base,
+            api_key="not-needed",
             messages=[{"role": "user", "content": prompt}],
             extra_body={"thinking_budget_tokens": 2000},
         )
@@ -268,6 +275,7 @@ class CodingOrchestrator:
         r = await litellm.acompletion(
             model="openai/gemma-4-31b",
             api_base=self._gemma_base,
+            api_key="not-needed",
             messages=[{"role": "user", "content": prompt}],
             extra_body={"thinking_budget_tokens": thinking_budget},
         )
@@ -282,6 +290,7 @@ class CodingOrchestrator:
         r = await litellm.acompletion(
             model="openai/qwen2.5-coder-32b",
             api_base=self._qwen_base,
+            api_key="not-needed",
             messages=[{"role": "user", "content": prompt}],
             extra_body={"thinking_budget_tokens": thinking_budget},
         )

@@ -150,6 +150,14 @@ class OrchestratorProcess:
                     count=1,
                     block=BLOCK_MS,
                 )
+            except (aioredis.TimeoutError, TimeoutError):
+                # Defensive: a blocking xreadgroup should tolerate a read-timeout
+                # and re-poll. This does NOT fire on the pinned redis-py 5.x
+                # (which returns [] cleanly when BLOCK elapses), but redis-py
+                # 8.x regressed blocking-read handling and raises TimeoutError
+                # here under a busy event loop — which, if uncaught, silently
+                # kills goal consumption. Keep the catch regardless of version.
+                continue
             except aioredis.ResponseError as exc:
                 _log.error("xreadgroup error: %s", exc)
                 await asyncio.sleep(1)

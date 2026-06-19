@@ -1,4 +1,4 @@
-redis[asyncio]>=5.0
+redis>=5.0,<6   # asyncio is built in since redis-py 4.2 (no [asyncio] extra); pin <6 — 8.x regressed blocking xreadgroup
 mcp
 anyio
 jsonschema

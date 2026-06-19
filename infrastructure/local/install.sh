@@ -27,6 +27,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
+# Build/install steps below redirect logs into .data/logs — make sure it exists
+# before the first write (the llama.cpp build redirect fails on a missing dir).
+mkdir -p "${REPO_ROOT}/.data/logs" "${REPO_ROOT}/.data/pids"
+
 # ─── Tunables (override via env) ──────────────────────────────────────────────
 export HF_HOME="${HF_HOME:-/workspace/.hf-cache}"
 LLAMA_DIR="${LLAMA_DIR:-/workspace/llama.cpp}"
@@ -85,10 +89,16 @@ fi
 
 # ─── 3. Python deps ───────────────────────────────────────────────────────────
 # System Python is PEP-668 externally-managed → --break-system-packages.
-log "python deps (memory + mcp-bridge) ..."
+# Install requirements for every core service that runs in the local stack —
+# not just memory + mcp-bridge. Missing any of these makes start.sh fail at
+# runtime (e.g. skill-worker dies with ModuleNotFoundError: 'frontmatter').
+# Skill-specific deps under services/skills/* are installed lazily per skill.
+log "python deps (core services) ..."
 PIP="pip install --break-system-packages -q"
-$PIP -r "${REPO_ROOT}/services/memory/requirements.txt"
-$PIP -r "${REPO_ROOT}/services/mcp-bridge/requirements.txt"
+for svc in memory mcp-bridge orchestrator skill_runner skill_worker cli; do
+  req="${REPO_ROOT}/services/${svc}/requirements.txt"
+  [[ -f "$req" ]] && { log "  pip: services/${svc}"; $PIP -r "$req"; }
+done
 # NOTE: We deliberately do NOT install vllm here (CUDA-13 incompatibility above).
 
 # ─── 4. Inference engine: llama.cpp + GGUF ────────────────────────────────────
