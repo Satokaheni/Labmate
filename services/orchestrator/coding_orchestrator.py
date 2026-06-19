@@ -347,7 +347,7 @@ class CodingOrchestrator:
 
         return await asyncio.to_thread(self.execute_in_sandbox, cmd, 60)
 
-    async def stream(self, prompt: str) -> "AsyncGenerator[str, None]":
+    async def stream(self, prompt: str, user_id: str = "", workspace_id: str = "") -> "AsyncGenerator[str, None]":
         """Async generator — run a task and yield the final answer as a single chunk.
 
         Used by the CLI connector and future frontend connectors.
@@ -357,7 +357,7 @@ class CodingOrchestrator:
             raise RuntimeError("graph not wired — call build_graph(orch) and assign orch.graph before streaming")
         import uuid
         session_id = str(uuid.uuid4())
-        state = await self.run_task(prompt, session_id)
+        state = await self.run_task(prompt, session_id, user_id=user_id, workspace_id=workspace_id)
         root = state.get("goal_tree", {}).get("root", {})
         yield state.get("final_answer") or root.get("result", "") or str(state)
 
