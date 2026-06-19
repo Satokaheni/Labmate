@@ -116,8 +116,13 @@ async def test_handle_calls_run_task_and_acks():
     orch = AsyncMock()
     orch.run_task.return_value = {"session_id": "s1", "goal_tree": {}}
 
+    storage = AsyncMock()
+    storage.workspaces = AsyncMock()
+    storage.workspaces.record_session = AsyncMock()
+    storage.workspaces.complete_session = AsyncMock()
+
     payload = json.dumps({"task_id": "t1", "task": "do something", "session_id": "s1"})
-    await proc._handle("100-0", {"payload": payload}, orch)
+    await proc._handle("100-0", {"payload": payload}, orch, storage)
 
     orch.run_task.assert_awaited_once_with("do something", "s1", user_id="", workspace_id="")
     proc._redis.xack.assert_awaited_once_with(GOALS_STREAM, GOALS_GROUP, "100-0")
@@ -131,8 +136,13 @@ async def test_handle_acks_on_failure():
     orch = AsyncMock()
     orch.run_task.side_effect = RuntimeError("graph exploded")
 
+    storage = AsyncMock()
+    storage.workspaces = AsyncMock()
+    storage.workspaces.record_session = AsyncMock()
+    storage.workspaces.complete_session = AsyncMock()
+
     payload = json.dumps({"task_id": "t2", "task": "fail", "session_id": "s2"})
-    await proc._handle("200-0", {"payload": payload}, orch)
+    await proc._handle("200-0", {"payload": payload}, orch, storage)
 
     # ACK must happen even on failure
     proc._redis.xack.assert_awaited_once_with(GOALS_STREAM, GOALS_GROUP, "200-0")
@@ -146,8 +156,13 @@ async def test_handle_writes_error_result_on_failure():
     orch = AsyncMock()
     orch.run_task.side_effect = RuntimeError("boom")
 
+    storage = AsyncMock()
+    storage.workspaces = AsyncMock()
+    storage.workspaces.record_session = AsyncMock()
+    storage.workspaces.complete_session = AsyncMock()
+
     payload = json.dumps({"task_id": "err-task", "task": "fail"})
-    await proc._handle("300-0", {"payload": payload}, orch)
+    await proc._handle("300-0", {"payload": payload}, orch, storage)
 
     set_args = proc._redis.set.call_args[0]
     stored = json.loads(set_args[1])
@@ -162,9 +177,14 @@ async def test_handle_uses_task_id_as_session_id_when_absent():
     orch = AsyncMock()
     orch.run_task.return_value = {}
 
+    storage = AsyncMock()
+    storage.workspaces = AsyncMock()
+    storage.workspaces.record_session = AsyncMock()
+    storage.workspaces.complete_session = AsyncMock()
+
     # No session_id in payload — should fall back to task_id
     payload = json.dumps({"task_id": "standalone-task", "task": "do it"})
-    await proc._handle("400-0", {"payload": payload}, orch)
+    await proc._handle("400-0", {"payload": payload}, orch, storage)
 
     orch.run_task.assert_awaited_once_with("do it", "standalone-task", user_id="", workspace_id="")
 
@@ -207,6 +227,14 @@ async def test_handle_parses_user_and_workspace():
     orch = AsyncMock()
     orch.run_task.return_value = {"session_id": "s-1", "goal_tree": {}}
 
+    storage = AsyncMock()
+    storage.workspaces = AsyncMock()
+    storage.workspaces.record_session = AsyncMock()
+    storage.workspaces.complete_session = AsyncMock()
+    storage.workspaces.get_workspace = AsyncMock(return_value=None)
+    storage.workspaces._db = AsyncMock()
+    storage.workspaces._db.__getitem__ = MagicMock(return_value=AsyncMock())
+
     payload = json.dumps({
         "task_id": "t-1",
         "task": "do something",
@@ -214,7 +242,7 @@ async def test_handle_parses_user_and_workspace():
         "user_id": "u-abc",
         "workspace_id": "ws-xyz",
     })
-    await proc._handle("msg-1", {"payload": payload}, orch)
+    await proc._handle("msg-1", {"payload": payload}, orch, storage)
 
     call_kwargs = orch.run_task.call_args.kwargs
     assert call_kwargs.get("user_id") == "u-abc"
@@ -230,8 +258,13 @@ async def test_handle_defaults_missing_user_workspace():
     orch = AsyncMock()
     orch.run_task.return_value = {"session_id": "s-2", "goal_tree": {}}
 
+    storage = AsyncMock()
+    storage.workspaces = AsyncMock()
+    storage.workspaces.record_session = AsyncMock()
+    storage.workspaces.complete_session = AsyncMock()
+
     payload = json.dumps({"task_id": "t-2", "task": "hi", "session_id": "s-2"})
-    await proc._handle("msg-2", {"payload": payload}, orch)
+    await proc._handle("msg-2", {"payload": payload}, orch, storage)
 
     call_kwargs = orch.run_task.call_args.kwargs
     assert call_kwargs.get("user_id") == ""

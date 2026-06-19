@@ -130,7 +130,7 @@ class OrchestratorProcess:
             await self._ensure_group()
 
             _log.info("orchestrator %s ready", self._worker_id)
-            await self._loop(orch)
+            await self._loop(orch, _sm)
 
         if self._mcp:
             await self._mcp.shutdown()
@@ -140,7 +140,7 @@ class OrchestratorProcess:
 
     # ── goal loop ──────────────────────────────────────────────────────────
 
-    async def _loop(self, orch: CodingOrchestrator) -> None:
+    async def _loop(self, orch: CodingOrchestrator, storage: StorageManager) -> None:
         while not self._shutdown.is_set():
             try:
                 raw = await self._redis.xreadgroup(
@@ -160,13 +160,14 @@ class OrchestratorProcess:
 
             for _stream, entries in raw:
                 for msg_id, fields in entries:
-                    await self._handle(msg_id, fields, orch)
+                    await self._handle(msg_id, fields, orch, storage)
 
     async def _handle(
         self,
         msg_id: str,
         fields: dict[str, str],
         orch: CodingOrchestrator,
+        storage: StorageManager,
     ) -> None:
         task_id = msg_id
         try:
@@ -176,6 +177,44 @@ class OrchestratorProcess:
             session_id = payload.get("session_id") or task_id
             user_id    = payload.get("user_id", "")
             workspace_id = payload.get("workspace_id", "")
+
+            # Fix 2: Record session if user_id and workspace_id are present
+            if user_id and workspace_id:
+                from .models import SessionMeta
+                try:
+                    await storage.workspaces.record_session(SessionMeta(
+                        session_id=session_id,
+                        user_id=user_id,
+                        workspace_id=workspace_id,
+                        task_preview=task_text[:120],
+                    ))
+                except Exception:
+                    pass  # never let session recording block task execution
+
+            # Fix 3: Upsert workspace on first sight
+            if user_id and workspace_id:
+                try:
+                    ws = await storage.workspaces.get_workspace(workspace_id)
+                    if ws is None:
+                        # First time we see this workspace — persist it
+                        from datetime import datetime, timezone
+                        await storage.workspaces._db["workspaces"].update_one(
+                            {"workspace_id": workspace_id},
+                            {"$setOnInsert": {
+                                "workspace_id": workspace_id,
+                                "user_id": user_id,
+                                "name": f"workspace-{workspace_id[:8]}",
+                                "paths": [],
+                                "sources": [],
+                                "description": None,
+                                "instructions": None,
+                                "created_at": datetime.now(timezone.utc),
+                                "updated_at": datetime.now(timezone.utc),
+                            }},
+                            upsert=True,
+                        )
+                except Exception:
+                    pass  # upsert failure never blocks task
 
             _log.info("task %s: %.80s", task_id, task_text)
             final_state = await orch.run_task(
@@ -188,6 +227,13 @@ class OrchestratorProcess:
             _log.exception("task %s failed", task_id)
             await self._write_result(task_id, {"ok": False, "error": "task_failed"})
         finally:
+            # Fix 2: Complete session in finally block
+            if user_id and workspace_id:
+                try:
+                    ok_flag = "error" not in str(final_state) if 'final_state' in locals() else False
+                    await storage.workspaces.complete_session(session_id, ok=ok_flag)
+                except Exception:
+                    pass
             await self._redis.xack(GOALS_STREAM, GOALS_GROUP, msg_id)
 
     async def _write_result(self, task_id: str, result: dict) -> None:

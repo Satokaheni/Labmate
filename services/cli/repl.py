@@ -114,26 +114,31 @@ class REPL:
 
     async def _send_task(self, task: str) -> None:
         task_id = str(uuid.uuid4())
+        turn_session_id = str(uuid.uuid4())  # fresh per-turn session (Fix 4)
         self._sessions.append(SessionRecord(
-            session_id=self._ctx.session_id,
+            session_id=turn_session_id,
             workspace_id=self._ctx.workspace_id,
             workspace_name=self._ctx.workspace_name,
             task_preview=task[:120],
         ))
 
-        with self._renderer.thinking("Working…"):
-            await self._redis.push_task(
-                task_id=task_id,
-                task=task,
-                session_id=self._ctx.session_id,
-                user_id=self._ctx.identity.user_id,
-                workspace_id=self._ctx.workspace_id,
-            )
-            result = await self._redis.get_result(task_id, timeout=300.0)
+        try:  # Fix 6: error handling
+            with self._renderer.thinking("Working…"):
+                await self._redis.push_task(
+                    task_id=task_id,
+                    task=task,
+                    session_id=turn_session_id,
+                    user_id=self._ctx.identity.user_id,
+                    workspace_id=self._ctx.workspace_id,
+                )
+                result = await self._redis.get_result(task_id, timeout=300.0)
+        except Exception as exc:
+            self._renderer.print_error(f"Connection error: {exc}")
+            return
 
         if not result.get("ok"):
             self._renderer.print_error(result.get("error", "Unknown error"))
             return
 
         answer = extract_answer(result.get("state", {}))
-        self._renderer.print_answer(answer, session_id=self._ctx.session_id)
+        self._renderer.print_answer(answer, session_id=turn_session_id)

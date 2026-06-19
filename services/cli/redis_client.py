@@ -37,8 +37,24 @@ class LabmateRedisClient:
         timeout: float = 300.0,
     ) -> dict:
         key = f"{RESULT_PREFIX}{task_id}"
+
+        # Fast path: result may already exist (task finished before we subscribed)
+        raw = await self._redis.get(key)
+        if raw is not None:
+            return json.loads(raw)
+
+        # Subscribe first, then check again to close the race window between
+        # the fast-path GET and the subscribe completing.
         pubsub = self._redis.pubsub()
         await pubsub.subscribe(key)
+
+        # Re-check: result may have arrived between the first GET and subscribe
+        raw = await self._redis.get(key)
+        if raw is not None:
+            await pubsub.unsubscribe(key)
+            await pubsub.aclose()
+            return json.loads(raw)
+
         deadline = time.monotonic() + timeout
         try:
             while time.monotonic() < deadline:
