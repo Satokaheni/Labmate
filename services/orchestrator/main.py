@@ -26,7 +26,7 @@ Redis Streams contract (CLAUDE.md rule #5):
   Ack:     XACK labmate:goals orchestrators <msg-id>
 
 Goal payload (JSON in the "payload" field):
-  { "task_id": "<str>", "task": "<str>", "session_id": "<str|null>" }
+  { "task_id": "<str>", "task": "<str>", "session_id": "<str|null>", "user_id": "<str|null>", "workspace_id": "<str|null>" }
 
 Result (24 h TTL):
   SET  labmate:result:<task_id>  <JSON>  EX 86400
