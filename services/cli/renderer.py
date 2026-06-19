@@ -1,0 +1,61 @@
+from __future__ import annotations
+import json
+from contextlib import contextmanager
+from typing import Any
+
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.spinner import Spinner
+from rich.live import Live
+from rich.text import Text
+
+
+def extract_answer(state: Any) -> str:
+    if isinstance(state, dict):
+        if state.get("final_answer"):
+            return state["final_answer"]
+        root = state.get("goal_tree", {}).get("root", {})
+        if root.get("result"):
+            return root["result"]
+        raw = json.dumps(state, default=str)
+        return raw[:3000] + ("…" if len(raw) > 3000 else "")
+    return str(state)
+
+
+class Renderer:
+    """Wraps Rich console for Labmate CLI output."""
+
+    def __init__(self) -> None:
+        self._console = Console(highlight=False)
+
+    def print_answer(self, text: str, session_id: str = "") -> None:
+        self._console.print()
+        self._console.print(Markdown(text))
+        if session_id:
+            self._console.print(
+                f"\n[dim]session: {session_id}[/dim]",
+                highlight=False,
+            )
+
+    def print_error(self, message: str) -> None:
+        self._console.print(f"[bold red]Error:[/bold red] {message}")
+
+    def print_info(self, message: str) -> None:
+        self._console.print(f"[dim]{message}[/dim]")
+
+    def print_workspace(self, name: str, workspace_id: str) -> None:
+        self._console.print(
+            f"[bold cyan]Workspace:[/bold cyan] {name}  "
+            f"[dim]({workspace_id[:8]}…)[/dim]"
+        )
+
+    @contextmanager
+    def thinking(self, label: str = "Thinking…"):
+        """Context manager that shows a spinner while work is in flight."""
+        with Live(
+            Spinner("dots", text=Text(label, style="dim")),
+            console=self._console,
+            refresh_per_second=10,
+            transient=True,
+        ):
+            yield
