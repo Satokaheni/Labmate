@@ -174,9 +174,13 @@ class OrchestratorProcess:
             task_id    = payload.get("task_id", msg_id)
             task_text  = payload.get("task", "")
             session_id = payload.get("session_id") or task_id
+            user_id    = payload.get("user_id", "")
+            workspace_id = payload.get("workspace_id", "")
 
             _log.info("task %s: %.80s", task_id, task_text)
-            final_state = await orch.run_task(task_text, session_id)
+            final_state = await orch.run_task(
+                task_text, session_id, user_id=user_id, workspace_id=workspace_id
+            )
             await self._write_result(task_id, {"ok": True, "state": final_state})
             _log.info("task %s complete", task_id)
 

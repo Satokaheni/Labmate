@@ -119,7 +119,7 @@ async def test_handle_calls_run_task_and_acks():
     payload = json.dumps({"task_id": "t1", "task": "do something", "session_id": "s1"})
     await proc._handle("100-0", {"payload": payload}, orch)
 
-    orch.run_task.assert_awaited_once_with("do something", "s1")
+    orch.run_task.assert_awaited_once_with("do something", "s1", user_id="", workspace_id="")
     proc._redis.xack.assert_awaited_once_with(GOALS_STREAM, GOALS_GROUP, "100-0")
 
 
@@ -166,7 +166,7 @@ async def test_handle_uses_task_id_as_session_id_when_absent():
     payload = json.dumps({"task_id": "standalone-task", "task": "do it"})
     await proc._handle("400-0", {"payload": payload}, orch)
 
-    orch.run_task.assert_awaited_once_with("do it", "standalone-task")
+    orch.run_task.assert_awaited_once_with("do it", "standalone-task", user_id="", workspace_id="")
 
 
 # ── mcp_client_manager shim ───────────────────────────────────────────────────
@@ -194,3 +194,45 @@ def test_logging_goes_to_stderr_not_stdout():
     for handler in logging.root.handlers + logger.handlers:
         if isinstance(handler, logging.StreamHandler):
             assert handler.stream is not sys.stdout
+
+
+# ── _handle with user_id and workspace_id ─────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_handle_parses_user_and_workspace():
+    """_handle extracts user_id and workspace_id from payload."""
+    proc = OrchestratorProcess()
+    proc._redis = AsyncMock()
+
+    orch = AsyncMock()
+    orch.run_task.return_value = {"session_id": "s-1", "goal_tree": {}}
+
+    payload = json.dumps({
+        "task_id": "t-1",
+        "task": "do something",
+        "session_id": "s-1",
+        "user_id": "u-abc",
+        "workspace_id": "ws-xyz",
+    })
+    await proc._handle("msg-1", {"payload": payload}, orch)
+
+    call_kwargs = orch.run_task.call_args.kwargs
+    assert call_kwargs.get("user_id") == "u-abc"
+    assert call_kwargs.get("workspace_id") == "ws-xyz"
+
+
+@pytest.mark.asyncio
+async def test_handle_defaults_missing_user_workspace():
+    """Missing user_id/workspace_id default to empty string without error."""
+    proc = OrchestratorProcess()
+    proc._redis = AsyncMock()
+
+    orch = AsyncMock()
+    orch.run_task.return_value = {"session_id": "s-2", "goal_tree": {}}
+
+    payload = json.dumps({"task_id": "t-2", "task": "hi", "session_id": "s-2"})
+    await proc._handle("msg-2", {"payload": payload}, orch)
+
+    call_kwargs = orch.run_task.call_args.kwargs
+    assert call_kwargs.get("user_id") == ""
+    assert call_kwargs.get("workspace_id") == ""
