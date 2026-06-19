@@ -87,6 +87,25 @@ class WorkspaceManager:
             {"$set": fields},
         )
 
+    async def upsert_workspace(self, workspace_id: str, user_id: str) -> None:
+        """Persist a CLI-minted workspace on first sight. No-op if it already exists."""
+        now = datetime.now(timezone.utc)
+        await self._db[WORKSPACES].update_one(
+            {"workspace_id": workspace_id},
+            {"$setOnInsert": {
+                "workspace_id": workspace_id,
+                "user_id": user_id,
+                "name": f"workspace-{workspace_id[:8]}",
+                "paths": [],
+                "sources": [],
+                "description": None,
+                "instructions": None,
+                "created_at": now,
+                "updated_at": now,
+            }},
+            upsert=True,
+        )
+
     # ── session metadata ──────────────────────────────────────────────────
 
     async def record_session(self, meta: SessionMeta) -> None:

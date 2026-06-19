@@ -202,25 +202,7 @@ class OrchestratorProcess:
             # Fix 3: Upsert workspace on first sight
             if user_id and workspace_id:
                 try:
-                    ws = await storage.workspaces.get_workspace(workspace_id)
-                    if ws is None:
-                        # First time we see this workspace — persist it
-                        from datetime import datetime, timezone
-                        await storage.workspaces._db["workspaces"].update_one(
-                            {"workspace_id": workspace_id},
-                            {"$setOnInsert": {
-                                "workspace_id": workspace_id,
-                                "user_id": user_id,
-                                "name": f"workspace-{workspace_id[:8]}",
-                                "paths": [],
-                                "sources": [],
-                                "description": None,
-                                "instructions": None,
-                                "created_at": datetime.now(timezone.utc),
-                                "updated_at": datetime.now(timezone.utc),
-                            }},
-                            upsert=True,
-                        )
+                    await storage.workspaces.upsert_workspace(workspace_id, user_id)
                 except Exception:
                     pass  # upsert failure never blocks task
 

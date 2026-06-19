@@ -84,3 +84,16 @@ async def test_complete_session(mgr, mock_db):
     assert call_args[0][0] == {"session_id": "s-xyz"}
     assert call_args[0][1]["$set"]["ok"] is False
     assert "completed_at" in call_args[0][1]["$set"]
+
+
+async def test_upsert_workspace_calls_update_one(mgr, mock_db):
+    mock_db["workspaces"].update_one = AsyncMock()
+    await mgr.upsert_workspace("ws-123", "user-456")
+    call_args = mock_db["workspaces"].update_one.call_args
+    assert call_args[0][0] == {"workspace_id": "ws-123"}
+    assert call_args[1]["upsert"] is True
+    assert "created_at" in call_args[0][1]["$setOnInsert"]
+    assert "updated_at" in call_args[0][1]["$setOnInsert"]
+    assert call_args[0][1]["$setOnInsert"]["user_id"] == "user-456"
+    assert call_args[0][1]["$setOnInsert"]["workspace_id"] == "ws-123"
+    mock_db["workspaces"].update_one.assert_called_once()
