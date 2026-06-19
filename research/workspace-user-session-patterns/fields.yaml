@@ -1,0 +1,134 @@
+fields:
+  identity_and_auth:
+    - name: user_identity_model
+      description: >
+        How users are identified and authenticated — OAuth (GitHub/Google), email+password,
+        API key, device-local (no account), or org SSO. Whether identity is optional or required.
+      detail_level: moderate
+
+    - name: multi_user_collaboration
+      description: >
+        Whether the product supports shared workspaces, team/org isolation, roles/permissions,
+        and concurrent access. Includes enterprise teamspace models (Devin teamspaces,
+        Cursor team rules, Claude/ChatGPT org-shared projects).
+      detail_level: moderate
+
+  workspace_model:
+    - name: workspace_definition
+      description: >
+        What constitutes a "workspace" — directory/repo on disk, abstract named entity in a
+        cloud DB, a curated source/corpus set (NotebookLM), or an account-scoped project.
+        Whether workspace maps 1:1 to a git repo, a filesystem path, or is fully virtual.
+      detail_level: detailed
+
+    - name: workspace_session_binding
+      description: >
+        How sessions/conversations are scoped — to a workspace, to a user globally, or both.
+        Whether a user can have multiple active sessions per workspace simultaneously.
+      detail_level: detailed
+
+    - name: context_scoping
+      description: >
+        What context is workspace-level vs. global vs. session-level. Includes files, memories,
+        instructions, and tool configurations that are scoped to a workspace vs. applied globally.
+      detail_level: moderate
+
+    - name: config_file_instruction_precedence
+      description: >
+        Which files scope behavior and in what cascade order — AGENTS.md, CLAUDE.md, .cursor/rules,
+        .windsurfrules, global_rules.md, nested-directory overrides. Max file size caps.
+        Whether config files are per-workspace, per-directory, or global.
+      detail_level: detailed
+
+    - name: source_corpus_grounding_scope
+      description: >
+        For research-assistant products — whether the workspace is defined by a bounded source
+        set (NotebookLM notebook, Perplexity Space) rather than a directory. How sources are
+        added, what types are supported (PDF, web, video), and how they scope retrieval.
+      detail_level: moderate
+
+  persistence_and_history:
+    - name: persistence_mechanism
+      description: >
+        Where and how state is stored — local files (JSONL, SQLite), cloud DB (Postgres, Mongo),
+        Redis cache, or hybrid. Whether storage is append-only (event log) or mutable (snapshots).
+      detail_level: detailed
+
+    - name: session_history
+      description: >
+        How conversations/sessions are stored, structured, and retrieved. Format (JSONL, JSON,
+        relational), retention policy, whether history is browsable via UI, and whether it is
+        exportable or portable.
+      detail_level: detailed
+
+    - name: memory_layering
+      description: >
+        Distinction between auto-generated memories (Windsurf, Claude Auto-memory) and
+        user-authored instructions, and between ephemeral thread state and durable cross-thread
+        store. How short-term and long-term memory are separated architecturally.
+      detail_level: detailed
+
+    - name: search_retrieval_history
+      description: >
+        Whether past sessions are searchable across a workspace or globally. Full-text search,
+        semantic search, or none. Whether history from one session can be retrieved/referenced
+        in a new session without manual copy-paste.
+      detail_level: moderate
+
+    - name: lifecycle_ttl_cleanup
+      description: >
+        Ephemeral vs. persistent session semantics. Expiration/TTL policy. What is discarded
+        at session end (Devin discards uncommitted work; Redis checkpoint TTL). Archiving vs.
+        hard deletion.
+      detail_level: moderate
+
+  execution_and_isolation:
+    - name: sandbox_isolation_model
+      description: >
+        Whether a session runs in an isolated VM/container, an ephemeral repo checkout, a git
+        worktree, or just an in-process context. Network policy (on vs. off by default).
+        Security implications and resource limits.
+      detail_level: detailed
+
+    - name: snapshot_state_restore
+      description: >
+        Whether workspace machine/environment state (filesystem, installed packages, env vars)
+        can be saved and restored independently of conversation history. Distinct from session
+        history — this is filesystem/env state (Devin snapshots, Codex environment setup scripts).
+      detail_level: moderate
+
+    - name: cloud_local_handoff
+      description: >
+        Whether a session can move between cloud and local execution while preserving state
+        and history (Cursor cloud↔local, Codex CLI↔web). Whether self-hosting is supported.
+      detail_level: brief
+
+    - name: parallelism_subagent_fanout
+      description: >
+        Single-session vs. parallel managed agents/worktrees. Coordinator pattern and limits
+        (Devin managed Devins, Cursor up to 10–50 parallel, Codex worktrees). How parallel
+        sessions share or isolate workspace state.
+      detail_level: moderate
+
+    - name: trigger_surface
+      description: >
+        How sessions are initiated — IDE, CLI, web app, mobile, Slack, GitHub issue/PR mention,
+        cron/automation webhook. Determines auth and session-creation API surface design.
+      detail_level: brief
+
+  implementation:
+    - name: implementation_stack
+      description: >
+        Tech stack used for auth, session storage, workspace metadata, and history retrieval.
+        Database choices, caching layer, event format (JSONL, Mongo document, Redis stream).
+      detail_level: detailed
+
+    - name: applicability_to_labmate
+      description: >
+        How the pattern maps to Labmate's architecture — MongoDB (long-term session docs),
+        Redis Streams (active session state, TTL), LangGraph thread_id checkpointing,
+        Discord connector as session entry point. Concrete recommendations for workspace_id
+        scoping, user identity model, and history retrieval API.
+      detail_level: detailed
+
+uncertain: []

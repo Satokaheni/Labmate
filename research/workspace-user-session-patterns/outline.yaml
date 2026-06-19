@@ -1,0 +1,126 @@
+topic: Workspace and user session management patterns in AI coding and research assistants
+
+items:
+  - name: Claude Projects
+    category: Cloud AI Assistant
+    description: >
+      Anthropic's project feature — shared context, file uploads, conversation history
+      scoped per project. Custom instructions per project, artifacts retained across sessions.
+
+  - name: OpenAI ChatGPT Projects
+    category: Cloud AI Assistant
+    description: >
+      Project folders with persistent memory, file storage, custom instructions per project.
+      Distinct from Codex Cloud — consumer chat product with project-scoped history.
+
+  - name: OpenAI Codex Cloud
+    category: Cloud Agent Platform
+    description: >
+      Flagship session-as-isolated-cloud-sandbox model. Multi-threaded workspace (one thread
+      per project, N agents per thread), git-worktree-backed parallelism, network-off-by-default
+      sandbox. Session history shared across CLI/IDE/app. Distinct from ChatGPT Projects.
+
+  - name: GitHub Copilot Coding Agent
+    category: Cloud Agent Platform
+    description: >
+      Async, repo-scoped, GitHub Actions-backed successor to "Copilot Workspace" (2024 preview).
+      Issue-to-PR task context, agent sessions tied to GitHub identity. Replaced the preview
+      "Copilot Workspaces" brand in 2025.
+
+  - name: Cursor Local IDE
+    category: IDE-native Assistant
+    description: >
+      Workspace = open folder/repo. Per-workspace .cursor/rules/*.mdc cascade, conversation
+      history in sidebar, composer sessions. Local-first; cloud agents are a separate product.
+
+  - name: Cursor Cloud Agents
+    category: Cloud Agent Platform
+    description: >
+      Distinct from local Cursor — sandboxed cloud VM, ephemeral repo checkout, cloud↔local
+      session handoff (state + history transfer), self-hosted via Helm/K8s WorkerDeployment.
+      Up to 10–50 parallel agents per workspace.
+
+  - name: Windsurf (Codeium)
+    category: IDE-native Assistant
+    description: >
+      Cascade flows with per-session context. Workspace = open directory. Auto + manual Memories
+      stored at ~/.codeium/windsurf/memories/. Scoped by global_rules.md vs .windsurfrules
+      (project-local). Strong memory-layering model.
+
+  - name: Devin 2.0 (Cognition)
+    category: Cloud Agent Platform
+    description: >
+      Per-session isolated VM, machine snapshots as workspace-state primitive, parallel managed
+      Devins, teamspace isolation. Discards uncommitted work at session end. Strong reference
+      for snapshot/restore semantics.
+
+  - name: Google Jules
+    category: Cloud Agent Platform
+    description: >
+      Async cloud-VM agent by Google Labs. Issue-mention trigger, opens PRs. Network ON
+      (contrast to Codex network-off). Adds a comparison point on isolation policy and
+      trigger surface (GitHub event / CLI / TUI).
+
+  - name: Replit AI
+    category: Cloud IDE / Agent
+    description: >
+      Cloud REPL as workspace. User identity tied to Replit account. Persistent project state,
+      collaborative multiplayer editing. Replit Agent runs inside the REPL environment.
+
+  - name: Bolt.new
+    category: Cloud IDE / Agent
+    description: >
+      Browser-based project sessions. Each project has its own file tree and chat history.
+      WebContainer-based isolation (in-browser Node.js). No persistent user memory across projects.
+
+  - name: JetBrains AI Assistant
+    category: IDE-native Assistant
+    description: >
+      IDE project as workspace unit. Per-project AI history in IDE. JetBrains Junie (2025)
+      adds agentic task execution. Workspace = JetBrains project file scope.
+
+  - name: VS Code + Copilot
+    category: IDE-native Assistant
+    description: >
+      .vscode/ scoped settings, workspace-level context for Copilot. Agent mode added in 2025.
+      Workspace = VS Code workspace file scope. AGENTS.md respected for instruction cascading.
+
+  - name: Perplexity Spaces
+    category: Research Assistant
+    description: >
+      Research-assistant analog — a Space = persistent knowledge hub mixing web + uploaded files,
+      per-space instructions, collaboration. Closest consumer analog to a Labmate lab/workspace.
+      Scope defined by source set, not directory.
+
+  - name: Google NotebookLM
+    category: Research Assistant
+    description: >
+      Source-grounded research workspace. A notebook = bounded source set + chat + generated
+      artifacts (summaries, audio overview). Strong model for workspace = curated corpus scope
+      rather than workspace = directory.
+
+  - name: AGENTS.md Standard
+    category: Architecture Reference
+    description: >
+      Cross-tool context-scoping standard (Linux Foundation AAIF, 60k+ repos, 28+ tools).
+      Cascading/nested precedence, 32 KiB cap. Directly informs how Labmate should scope
+      instructions per workspace vs. global.
+
+  - name: Claude Code Session Storage Model
+    category: Architecture Reference
+    description: >
+      Append-only JSONL per session under ~/.claude/projects/<path-encoded>/, parentUuid-chained
+      event stream, project-path-scoped, plus CLAUDE.md + Auto-memory dual layer. Most documented
+      real-world session-persistence design; maps cleanly to a MongoDB event-document model.
+
+  - name: LangGraph Thread / Checkpointer Model
+    category: Architecture Reference
+    description: >
+      thread_id-keyed checkpoints, Redis (TTL, fast) for short-term + Mongo (document) for
+      long-term, cross-thread Store for user-level memory. Reference architecture for
+      Labmate-applicability column given our existing MongoDB/Redis/LangGraph stack.
+
+execution:
+  batch_size: 5
+  items_per_agent: 2
+  output_dir: ./results
