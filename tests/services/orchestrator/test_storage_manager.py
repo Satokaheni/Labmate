@@ -252,3 +252,16 @@ async def test_from_clients_works_without_context_manager():
     # The outbox worker should not be created yet
     assert not hasattr(storage, "_outbox_worker")
     assert not hasattr(storage, "_outbox_task")
+
+
+@pytest.mark.asyncio
+async def test_storage_manager_has_workspace_manager(storage):
+    """StorageManager exposes a WorkspaceManager via .workspaces property."""
+    from services.orchestrator.workspace_manager import WorkspaceManager
+    assert isinstance(storage.workspaces, WorkspaceManager)
+
+
+@pytest.mark.asyncio
+async def test_storage_manager_workspace_manager_uses_same_db(storage):
+    """WorkspaceManager receives the same db instance StorageManager uses."""
+    assert storage.workspaces._db is storage._db

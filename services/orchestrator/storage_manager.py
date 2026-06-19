@@ -11,6 +11,8 @@ import chromadb
 import redis.asyncio as aioredis
 from motor.motor_asyncio import AsyncIOMotorClient
 
+from .workspace_manager import WorkspaceManager
+
 logger = logging.getLogger(__name__)
 
 DB_NAME = "labmate"
@@ -49,6 +51,7 @@ class StorageManager:
         self._chroma = None  # set lazily via _get_chroma()
         self._redis = aioredis.from_url(redis_url)
         self._db = self._mongo[DB_NAME]
+        self._workspaces = WorkspaceManager(self._db)
 
     @classmethod
     def from_clients(cls, *, mongo, chroma, redis) -> "StorageManager":
@@ -59,6 +62,7 @@ class StorageManager:
         self._chroma_args = {}
         self._redis = redis
         self._db = mongo[DB_NAME]
+        self._workspaces = WorkspaceManager(self._db)
         return self
 
     async def __aenter__(self) -> "StorageManager":
@@ -78,6 +82,10 @@ class StorageManager:
                 pass
         await self._redis.aclose()
         self._mongo.close()
+
+    @property
+    def workspaces(self) -> WorkspaceManager:
+        return self._workspaces
 
     async def _get_chroma(self):
         if self._chroma is None:
