@@ -145,7 +145,7 @@ def test_no_tiktoken_import():
     import pathlib
     import re
 
-    src = pathlib.Path("/Users/zachstallbohm/Work/gemma/services/orchestrator")
+    src = pathlib.Path(__file__).resolve().parents[3] / "services" / "orchestrator"
     for f in ("storage_manager.py", "memory_consolidator.py", "outbox_worker.py"):
         text = (src / f).read_text()
         # Check for actual import statements (not comments)

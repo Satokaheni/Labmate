@@ -72,7 +72,7 @@ Before implementing any component, read its spec:
 | Testing strategy, pytest-bdd | `research/llm-harness-research/specs/spec_testing.md` |
 | Academic writing + critique skills | `research/llm-harness-research/specs/spec_writing_skills.md` |
 | Docker, run-services.sh | `research/llm-harness-research/specs/spec_infrastructure.md` |
-| Discord connector | `research/llm-harness-research/specs/spec_integrations.md` |
+| Discord connector (**deferred — do not wire yet**) | `research/llm-harness-research/specs/spec_integrations.md` |
 
 ---
 
@@ -235,7 +235,8 @@ Build in this sequence — each layer depends on the one before:
 3. **`services/orchestrator/`** — Python LangGraph orchestrator using the MCP client
 4. **`services/skills/`** — Individual skill servers (start with `ast-repo-map`)
 5. **`services/skill-worker/`** — Worker that pulls from Redis and dispatches skills
-6. **Discord connector** — Only after the orchestrator loop is stable
+6. **CLI connector** (`services/cli/`) — Primary interaction layer until a frontend exists. Modeled after Claude Code CLI: streaming output, session resume, workspace selection.
+7. **Discord connector** — **Deferred.** Do not wire, import, or reference this in any active code path until explicitly instructed. The connector lives in `services/connectors/deferred/` and is intentionally excluded from the running stack. A frontend will exist before Discord is integrated.
 
 When starting a component, read its spec first, then look at the existing M2 code for context on what it replaces.
 

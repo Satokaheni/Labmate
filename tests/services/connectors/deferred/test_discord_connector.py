@@ -1,5 +1,9 @@
-# tests/services/connectors/test_discord_connector.py
+# tests/services/connectors/deferred/test_discord_connector.py
+# Discord connector is deferred — not wired into the active stack yet.
+# These tests are skipped until Discord integration is explicitly enabled.
 from __future__ import annotations
+import pytest
+pytestmark = pytest.mark.skip(reason="Discord connector deferred — not yet integrated")
 
 import asyncio
 import json

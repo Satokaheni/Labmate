@@ -334,10 +334,10 @@ class CodingOrchestrator:
         return await asyncio.to_thread(self.execute_in_sandbox, cmd, 60)
 
     async def stream(self, prompt: str) -> "AsyncGenerator[str, None]":
-        """Async-generator bridge for the Discord connector.
+        """Async generator — run a task and yield the final answer as a single chunk.
 
-        Runs run_task() and yields the final result summary as a single chunk.
-        A future version may yield incremental tokens directly from vLLM.
+        Used by the CLI connector and future frontend connectors.
+        A future version may yield incremental tokens as they are produced.
         """
         if self.graph is None:
             raise RuntimeError("graph not wired — call build_graph(orch) and assign orch.graph before streaming")
@@ -347,7 +347,7 @@ class CodingOrchestrator:
         root = state.get("goal_tree", {}).get("root", {})
         yield state.get("final_answer") or root.get("result", "") or str(state)
 
-    # ── Human-in-the-loop gate interface (used by Discord /approve /reject) ──
+    # ── Human-in-the-loop gate interface (approve / reject via any connector) ──
 
     def _gate_future(self, task_id: str) -> asyncio.Future:
         """Return (or create) the pending gate Future for task_id."""
