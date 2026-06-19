@@ -321,3 +321,46 @@ class TestRunInSandbox:
 
         obs = await orch.run_in_sandbox("cmd")
         assert obs["stdout"] == "line one\nline two"
+
+
+@pytest.fixture
+def orch_with_graph():
+    """Fixture providing a CodingOrchestrator with a mock graph."""
+    from services.orchestrator.coding_orchestrator import CodingOrchestrator
+
+    async def mock_ainvoke(state, config):
+        """Mock ainvoke that preserves the input state."""
+        return state
+
+    mock_graph = AsyncMock()
+    mock_graph.ainvoke = mock_ainvoke
+    return CodingOrchestrator(
+        graph=mock_graph,
+        workspace_path="/tmp/workspace",
+        docker_container="lm-sandbox",
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_task_accepts_user_workspace(orch_with_graph):
+    """run_task accepts user_id and workspace_id kwargs without error."""
+    state = await orch_with_graph.run_task(
+        "hello",
+        session_id="s-1",
+        user_id="u-abc",
+        workspace_id="ws-xyz",
+    )
+    assert isinstance(state, dict)
+
+
+@pytest.mark.asyncio
+async def test_state_carries_workspace_fields(orch_with_graph):
+    """Final state includes workspace_id and user_id."""
+    state = await orch_with_graph.run_task(
+        "hello",
+        session_id="s-2",
+        user_id="u-abc",
+        workspace_id="ws-xyz",
+    )
+    assert state.get("workspace_id") == "ws-xyz"
+    assert state.get("user_id") == "u-abc"

@@ -48,6 +48,8 @@ class State(TypedDict, total=False):
     messages: Annotated[list, add]    # reducer-safe; parallel nodes may append
     error: str | None
     final_answer: str                 # Clean summary for Discord/user display
+    workspace_id: str                 # which workspace this session belongs to
+    user_id: str                      # stable user identifier
 
 
 def now_iso() -> str:

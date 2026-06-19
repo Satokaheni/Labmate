@@ -224,7 +224,13 @@ class CodingOrchestrator:
         self._recent_actions: list[str] = []
         self._gate_futures: dict[str, asyncio.Future] = {}
 
-    async def run_task(self, task: str, session_id: str) -> dict:
+    async def run_task(
+        self,
+        task: str,
+        session_id: str,
+        user_id: str = "",
+        workspace_id: str = "",
+    ) -> dict:
         """
         Entry point. Pass the same session_id to resume after a crash.
         Returns the final State dict.
@@ -239,8 +245,16 @@ class CodingOrchestrator:
             "messages": [],
             "error": None,
             "final_answer": "",
+            "workspace_id": workspace_id,
+            "user_id": user_id,
         }
-        cfg = {"configurable": {"thread_id": session_id}}
+        cfg = {
+            "configurable": {
+                "thread_id": session_id,
+                "workspace_id": workspace_id,
+                "user_id": user_id,
+            }
+        }
         return await self.graph.ainvoke(initial, cfg)
 
     async def architect(self, prompt: str, thinking_budget: int = 3000) -> str:
