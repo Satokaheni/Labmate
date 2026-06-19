@@ -326,3 +326,40 @@ async def test_complete_session_called_with_ok_true_on_success():
     if ok_value is None and len(call_args.args) > 1:
         ok_value = call_args.args[1]
     assert ok_value is True
+
+
+@pytest.mark.asyncio
+async def test_complete_session_called_with_ok_false_on_run_task_exception():
+    """complete_session must record ok=False when run_task raises an exception."""
+    proc = OrchestratorProcess()
+    proc._redis = AsyncMock()
+
+    orch = AsyncMock()
+    # Task fails with exception
+    orch.run_task.side_effect = RuntimeError("boom")
+
+    storage = AsyncMock()
+    storage.workspaces = AsyncMock()
+    storage.workspaces.record_session = AsyncMock()
+    storage.workspaces.complete_session = AsyncMock()
+    storage.workspaces.get_workspace = AsyncMock(return_value=None)
+    storage.workspaces._db = AsyncMock()
+    storage.workspaces._db.__getitem__ = MagicMock(return_value=AsyncMock())
+
+    payload = json.dumps({
+        "task_id": "t-fail",
+        "task": "fail",
+        "session_id": "s-fail",
+        "user_id": "u-2",
+        "workspace_id": "ws-2",
+    })
+    await proc._handle("msg-fail", fields={"payload": payload}, orch=orch, storage=storage)
+
+    # complete_session must be called with ok=False (because run_task raised)
+    storage.workspaces.complete_session.assert_awaited()
+    call_args = storage.workspaces.complete_session.call_args
+    # Check that ok=False was passed (either as kwarg or positional arg)
+    ok_value = call_args.kwargs.get("ok")
+    if ok_value is None and len(call_args.args) > 1:
+        ok_value = call_args.args[1]
+    assert ok_value is False

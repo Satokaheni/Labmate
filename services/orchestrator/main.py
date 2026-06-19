@@ -176,6 +176,7 @@ class OrchestratorProcess:
         session_id = ""
         task_text = ""
         final_state = {}
+        task_succeeded = False
 
         try:
             payload    = json.loads(fields.get("payload", "{}"))
@@ -227,6 +228,7 @@ class OrchestratorProcess:
             final_state = await orch.run_task(
                 task_text, session_id, user_id=user_id, workspace_id=workspace_id
             )
+            task_succeeded = True
             await self._write_result(task_id, {"ok": True, "state": final_state})
             _log.info("task %s complete", task_id)
 
@@ -238,7 +240,9 @@ class OrchestratorProcess:
             if user_id and workspace_id:
                 try:
                     # Check if error value is None (not just string presence)
-                    if isinstance(final_state, dict):
+                    if not task_succeeded:
+                        ok_flag = False
+                    elif isinstance(final_state, dict):
                         ok_flag = final_state.get("error") is None
                     else:
                         ok_flag = True
