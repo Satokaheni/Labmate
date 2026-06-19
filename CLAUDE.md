@@ -242,6 +242,95 @@ When starting a component, read its spec first, then look at the existing M2 cod
 
 ---
 
+## Next Steps: E2E Testing
+
+**Immediate priority.** The unit tests all pass. The next job is running the full stack on RunPod and verifying the Redis round-trip, session persistence, and workspace tracking work end-to-end. The full runbook is in `docs/e2e-testing.md`.
+
+### Starting the stack
+
+Start in this order — each step must complete before the next:
+
+```bash
+# 1. Model server (blocks until healthy — takes ~10 min on first VRAM load)
+infrastructure/local/serve-model.sh
+
+# 2. Support services + orchestrator (MongoDB, Redis, Chroma, MCP bridge, orchestrator)
+infrastructure/local/start.sh
+
+# Verify all services are up:
+infrastructure/local/status.sh
+```
+
+### Tests Claude can run autonomously (no human in the loop)
+
+These can all be driven from the terminal without interactive input:
+
+**1. Unit tests (no GPU needed, always safe):**
+```bash
+cd /workspace/Labmate
+pytest tests/ -v 2>&1 | tee .data/logs/pytest.log
+```
+
+**2. Service health checks:**
+```bash
+redis-cli ping                                                # → PONG
+mongosh --quiet --eval 'rs.status().myState'                  # → 1
+curl -s http://localhost:8765/api/v2/heartbeat | head -c 80   # → {"nanosecond heartbeat":...}
+curl -s http://localhost:8000/health | grep '"status"'        # → "ok"
+```
+
+**3. Redis round-trip (orchestrator end-to-end, no CLI):**
+```bash
+# Push a task directly
+TASK_ID="e2e-$(date +%s)"
+redis-cli XADD labmate:goals '*' payload \
+  "{\"task_id\":\"$TASK_ID\",\"task\":\"What is 2+2? Reply in one sentence.\",\"session_id\":\"$TASK_ID\"}"
+
+# Poll for result (up to 120 s)
+for i in $(seq 1 120); do
+  VAL=$(redis-cli GET "labmate:result:$TASK_ID" 2>/dev/null)
+  if [ -n "$VAL" ]; then echo "$VAL"; break; fi
+  sleep 1
+done
+```
+Success: result JSON with `"ok": true`. Failure: timeout or `"ok": false`.
+
+**4. One-shot CLI task (exercises the full CLI → Redis → orchestrator path):**
+```bash
+# Use python -m directly — start-cli.sh forces REPL mode
+source infrastructure/local/local.env
+PYTHONPATH=. python -m services.cli "Write a Python function that returns the square of a number."
+```
+Success: prints code output and exits with code 0.
+
+**5. Log inspection (run alongside any test):**
+```bash
+tail -f .data/logs/orchestrator.log &
+tail -f .data/logs/llama-server.log &
+```
+Look for: `task complete` (success), `task failed` (exception with traceback), `WARN` / `ERROR` lines.
+
+### What requires human intervention
+
+- Interactive REPL sessions (workspace picker, typing tasks)
+- Session resume across invocations (need a prior session ID)
+- Scenario 5 (kill-and-resume checkpoint test)
+
+For those, follow `docs/e2e-testing.md` scenarios 1–5 with the user present.
+
+### Diagnosing failures from logs
+
+| Log pattern | Likely cause | Where to look |
+|-------------|-------------|---------------|
+| `task failed` + traceback | Exception in `run_task` or LangGraph node | `.data/logs/orchestrator.log` |
+| `xreadgroup error` | Redis not running or stream not created | `.data/logs/orchestrator.log` + `redis-cli ping` |
+| No `goal received` after XADD | Consumer group not joined or orchestrator not running | `.data/logs/orchestrator.log`, check pidfile |
+| `MCP bridge did not become ready` | Bridge crash or missing `dist/index.js` | `.data/logs/orchestrator.log`, run `npm run build` in `services/mcp-bridge/` |
+| `llama-server` 5xx or timeout | Model not loaded, VRAM OOM | `.data/logs/llama-server.log` |
+| `MongoServerError` | MongoDB not in replica set or not running | `.data/logs/mongod.log`, `rs.status()` |
+
+---
+
 ## What NOT to Do
 
 - Do not load the model directly with `FastLanguageModel` in any M3+ code — that's the M2 pattern. Use the llama.cpp HTTP API (`llama-server` on port 8000).

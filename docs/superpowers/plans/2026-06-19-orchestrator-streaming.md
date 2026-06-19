@@ -31,22 +31,26 @@ Emitted variants (spec §4 shapes):
 | { type: 'agent.status'; status: AgentStatus }
 ```
 
-`NodeName = 'plan_node' | 'execute_node' | 'check_node' | 'reflect_node' | 'chat_node'`.
+`NodeName = 'plan_node' | 'execute_node' | 'check_node' | 'reflect_node' | 'chat_node'`
+(plus the `approval_node` extension — see Node-name mapping below).
 
 `ToolCall` (subset used by `tool.start`/`tool.done`), `ContextWindow`, and
 `AgentStatus` shapes are defined verbatim in Task 2 (`EVENT_SCHEMA_NOTES`).
 
 ---
 
-## Node-name mapping (DECISION — see Gaps section)
+## Node-name mapping (DECISION)
 
 The compiled graph nodes are named `plan`, `execute`, `check`, `reflect`,
 `approval` (see `services/orchestrator/graph.py`). FRONTEND_SPEC `NodeName`
 values are `plan_node`, `execute_node`, `check_node`, `reflect_node`,
 `chat_node`. We map graph node → spec NodeName with a single constant
-`NODE_NAME_MAP` (Task 2). `approval` has **no** spec NodeName; events from the
-`approval` node are dropped (not emitted) rather than invented. This keeps the
-emitted `node` values inside the spec union.
+`NODE_NAME_MAP` (Task 2). The `approval` node has no NodeName in the spec's
+union, but its events are valuable (the human-in-the-loop gate must be visible
+to consumers), so we emit it as `approval_node` — an **extension** of the spec
+union for a node the spec did not know about. The spec's NodeName union is the
+authoritative list for *existing* nodes; consumers that do not recognise
+`approval_node` can ignore it.
 
 ---
 
@@ -157,8 +161,8 @@ def test_node_name_map_matches_spec():
     assert NODE_NAME_MAP["execute"] == "execute_node"
     assert NODE_NAME_MAP["check"] == "check_node"
     assert NODE_NAME_MAP["reflect"] == "reflect_node"
-    # approval has no spec NodeName — must be absent so events from it are dropped
-    assert "approval" not in NODE_NAME_MAP
+    # approval is a spec extension — emitted as approval_node so the gate is visible
+    assert NODE_NAME_MAP["approval"] == "approval_node"
 
 
 def test_thinking_budget_table_matches_spec():
@@ -182,18 +186,30 @@ Expected: `ImportError: cannot import name 'NODE_NAME_MAP'` (2 new tests error, 
 
 - [ ] **Step 3: Implement** — append to `services/orchestrator/events.py`
 
+Add `from typing import Literal` to the module's imports (top of the file,
+under `from __future__ import annotations`), then append:
+
 ```python
-# --- Node name mapping (graph node -> FRONTEND_SPEC NodeName) ---------------
+# NodeName — FRONTEND_SPEC §3 union, extended with approval_node.
+# The spec's union (plan_node | execute_node | check_node | reflect_node |
+# chat_node) is authoritative for nodes the spec knows about; approval_node is
+# our extension for the human-in-the-loop gate the spec did not enumerate.
+# Consumers that don't recognise approval_node ignore it.
+NodeName = Literal[
+    "plan_node", "execute_node", "check_node",
+    "reflect_node", "chat_node", "approval_node",
+]
+
+# --- Node name mapping (graph node -> NodeName) -----------------------------
 # Graph nodes (graph.py): plan, execute, check, reflect, approval.
-# Spec NodeName (FRONTEND_SPEC §3): plan_node, execute_node, check_node,
-# reflect_node, chat_node.
-# 'approval' is intentionally absent — it has no spec NodeName, so events from
-# the approval node are dropped rather than emitted with an invented value.
+# 'approval' maps to approval_node (a spec extension) so the approval gate is
+# visible to consumers rather than dropped.
 NODE_NAME_MAP: dict[str, str] = {
     "plan": "plan_node",
     "execute": "execute_node",
     "check": "check_node",
     "reflect": "reflect_node",
+    "approval": "approval_node",
 }
 
 # thinking_budget_tokens per spec NodeName (FRONTEND_SPEC §3 budget table).
@@ -242,6 +258,16 @@ git commit -m "feat(orchestrator): node-name map and thinking-budget table"
 **Files:**
 - Modify: `services/orchestrator/events.py`
 - Modify: `tests/services/orchestrator/test_events.py`
+
+> **`tool_start()` / `tool_done()` publisher methods.** These two emit helpers
+> (used by the manual sandbox tool-event task — see "Task 8b" below) are
+> defined and shape-tested in **Task 4** alongside the other typed emit helpers
+> (`test_tool_start_shape`, `test_tool_done_shape`). They emit the exact
+> `tool.start` / `tool.done` shapes from FRONTEND_SPEC §4 (`tool.start` carries
+> `toolCall` as `Omit<ToolCall,'result'|'durationMs'|'status'>`; `tool.done`
+> carries flat `toolId`/`status`/`summary`/`result`/`durationMs`). The
+> publisher is already bound to its task at construction, so these methods take
+> **no** `task_id` argument — the caller in `execute_node` does not pass one.
 
 - [ ] **Step 1: Write failing test** — append to `tests/services/orchestrator/test_events.py`
 
@@ -652,7 +678,7 @@ async def test_map_on_chain_start_emits_node_enter_and_agent_active(pub):
     assert node_enter["node"] == "plan_node"
 
 
-async def test_map_unmapped_node_is_dropped(pub):
+async def test_map_approval_node_emits_node_enter(pub):
     from services.orchestrator.events import map_langgraph_event
     p, redis = pub
     await map_langgraph_event(
@@ -660,7 +686,22 @@ async def test_map_unmapped_node_is_dropped(pub):
          "metadata": {"langgraph_node": "approval"}, "data": {}},
         p,
     )
-    redis.publish.assert_not_called()  # approval has no spec NodeName
+    types = [e["type"] for e in _published(redis)]
+    assert "node.enter" in types  # approval gate IS visible (approval_node)
+    node_enter = next(e for e in _published(redis) if e["type"] == "node.enter")
+    assert node_enter["node"] == "approval_node"
+
+
+async def test_map_unmapped_node_is_dropped(pub):
+    from services.orchestrator.events import map_langgraph_event
+    p, redis = pub
+    # the graph root / unnamed chain has no NodeName mapping — still dropped
+    await map_langgraph_event(
+        {"event": "on_chain_start", "name": "__graph__",
+         "metadata": {"langgraph_node": "__graph__"}, "data": {}},
+        p,
+    )
+    redis.publish.assert_not_called()  # unmapped node -> drop
 
 
 async def test_map_chat_model_stream_splits_reasoning_and_answer(pub):
@@ -791,7 +832,8 @@ async def map_langgraph_event(event: dict, pub: "EventPublisher") -> None:
     """Translate ONE LangGraph astream_events(v2) event into emit calls.
 
     Pure dispatcher — all StreamEvent shapes come from EventPublisher helpers.
-    Unmapped nodes (e.g. 'approval') and empty chunks produce no events.
+    Unmapped nodes (the graph root / unnamed chains) and empty chunks produce
+    no events; mapped nodes including 'approval' (-> approval_node) do emit.
     """
     etype = event.get("event")
     meta = event.get("metadata") or {}
@@ -800,7 +842,7 @@ async def map_langgraph_event(event: dict, pub: "EventPublisher") -> None:
     if etype == "on_chain_start":
         spec_node = NODE_NAME_MAP.get(raw_node)
         if spec_node is None:
-            return  # unmapped node (approval / graph root) — drop
+            return  # unmapped node (graph root / unnamed chain) — drop
         if not pub._active:
             pub._active = True
             await pub.agent_status(state="active", node=spec_node)
@@ -871,7 +913,7 @@ cd /Users/zachstallbohm/Work/Labmate
 python -m pytest tests/services/orchestrator/test_events.py -q
 ```
 
-Expected: `22 passed`.
+Expected: `23 passed`.
 
 - [ ] **Step 5: Commit**
 
@@ -960,37 +1002,60 @@ git commit -m "refactor(orchestrator): make token_count tokenizer injectable for
 - Modify: `tests/services/orchestrator/test_events.py`
 
 The prompt requires `context.update` at node boundaries with token counts from
-the Gemma tokenizer. We compute `used` from the LangGraph state's serializable
-content (system prompt + conversation + reasoning), bucketed into the spec's
-five segments. To stay dependency-light and test-safe, the producer takes a
-`count_tokens` callable.
+the Gemma tokenizer, populating **all five** spec segments:
+
+- **`systemPrompt`** — tokens of the first `state["messages"]` entry whose role
+  is `"system"` (0 if none).
+- **`skillInstructions`** — tokens of the MCP tool schemas injected as tool
+  definitions. Computed once on the orchestrator (`orch._skill_tokens`, see
+  Task 8b/Task 9 wiring) and read here via `getattr(orch, '_skill_tokens', 0)`.
+- **`conversation`** — sum of all non-system, non-reasoning message tokens.
+- **`workingMemory`** — tokens of any *non-first* system message (the first
+  system message is the static prompt; subsequent system messages are RAG /
+  Chroma injections). Approximate but accurate enough for the bar.
+- **`reasoning`** — `reasoning_content` tokens from the last assistant message
+  (already correct), plus reflection-message tokens already in state.
+
+To stay dependency-light and test-safe, the producer takes a `count_tokens`
+callable and an optional `orch` (for `_skill_tokens`).
 
 - [ ] **Step 1: Write failing test** — append to `tests/services/orchestrator/test_events.py`
 
 ```python
-async def test_emit_context_for_state_buckets_and_sums(pub):
+async def test_emit_context_for_state_all_five_segments(pub):
     from services.orchestrator.events import emit_context_for_state
     p, redis = pub
 
+    class _Orch:
+        _skill_tokens = 5  # MCP tool schemas already counted on the orchestrator
+
     state = {
         "messages": [
-            {"role": "user", "content": "hello world"},
-            {"role": "reflection", "content": "diagnose this"},
+            {"role": "system", "content": "static system prompt"},        # systemPrompt (3)
+            {"role": "system", "content": "rag injected facts"},           # workingMemory (3)
+            {"role": "user", "content": "hello world"},                    # conversation (2)
+            {"role": "assistant", "content": "an answer here",             # conversation (3)
+             "reasoning_content": "because reasons apply"},                # reasoning (3)
         ],
         "goal_tree": {"root": {"description": "do a thing"}},
     }
     # fake counter: 1 token per whitespace word
-    await emit_context_for_state(p, state, count_tokens=lambda s: len(s.split()))
+    await emit_context_for_state(
+        p, state, count_tokens=lambda s: len(s.split()), orch=_Orch(),
+    )
 
     ev = [json.loads(c.args[1]) for c in redis.publish.await_args_list][-1]
     assert ev["type"] == "context.update"
     w = ev["window"]
     assert w["max"] == 16384
-    assert sum(w["segments"].values()) == w["used"]
+    seg = w["segments"]
+    assert seg["systemPrompt"] == 3        # first system message
+    assert seg["skillInstructions"] == 5   # orch._skill_tokens
+    assert seg["conversation"] == 5        # "hello world" + "an answer here"
+    assert seg["workingMemory"] == 3       # second (RAG) system message
+    assert seg["reasoning"] == 3           # assistant reasoning_content
+    assert sum(seg.values()) == w["used"]
     assert w["free"] == w["max"] - w["used"]
-    # reflection messages bucket into 'reasoning', user/assistant into 'conversation'
-    assert w["segments"]["reasoning"] == 2     # "diagnose this"
-    assert w["segments"]["conversation"] == 2  # "hello world"
 
 
 async def test_emit_context_default_counter_is_lazy(pub, monkeypatch):
@@ -1024,35 +1089,83 @@ Expected: `ImportError: cannot import name 'emit_context_for_state'`.
 from services.orchestrator.memory_consolidator import token_count
 
 
+def _msg_role(m) -> str:
+    if isinstance(m, dict):
+        return m.get("role", "")
+    return getattr(m, "role", "") or ""
+
+
+def _msg_content(m) -> str:
+    if isinstance(m, dict):
+        return m.get("content", "") or ""
+    return getattr(m, "content", "") or ""
+
+
+def _msg_reasoning(m) -> str:
+    """reasoning_content lives on dict['reasoning_content'] or
+    additional_kwargs['reasoning_content'] depending on message form."""
+    if isinstance(m, dict):
+        return m.get("reasoning_content", "") or ""
+    rc = getattr(m, "reasoning_content", None)
+    if rc:
+        return rc
+    ak = getattr(m, "additional_kwargs", None)
+    if isinstance(ak, dict):
+        return ak.get("reasoning_content", "") or ""
+    return ""
+
+
 async def emit_context_for_state(
     pub: "EventPublisher",
     state: dict,
     count_tokens=None,
+    orch=None,
 ) -> None:
     """Compute a ContextWindow from graph state and emit context.update.
 
-    Buckets (FRONTEND_SPEC §3 ContextWindow.segments):
-      systemPrompt, skillInstructions, conversation, workingMemory, reasoning.
-    We only populate the buckets we have data for; the rest stay 0 so the
-    invariant sum(segments) == used always holds.
+    Buckets (FRONTEND_SPEC §3 ContextWindow.segments), all five populated:
+      systemPrompt      — first system message (the static prompt)
+      skillInstructions — MCP tool schemas, precomputed on orch._skill_tokens
+      conversation      — non-system, non-reflection message bodies
+      workingMemory     — non-first system messages (RAG / Chroma injections)
+      reasoning         — reflection-message bodies + reasoning_content on the
+                          last assistant message
+    The invariant sum(segments) == used always holds.
     """
     count = count_tokens or token_count
+    messages = state.get("messages", []) or []
+
+    sys_msgs = [m for m in messages if _msg_role(m) == "system"]
+    system_tokens = count(_msg_content(sys_msgs[0])) if sys_msgs else 0
+    # first system message = static prompt; the rest are RAG injections
+    working_memory_tokens = sum(count(_msg_content(m)) for m in sys_msgs[1:])
 
     conversation = 0
     reasoning = 0
-    for m in state.get("messages", []) or []:
-        text = m.get("content", "") if isinstance(m, dict) else str(m)
-        n = count(text)
-        if isinstance(m, dict) and m.get("role") == "reflection":
-            reasoning += n
-        else:
-            conversation += n
+    for m in messages:
+        role = _msg_role(m)
+        if role == "system":
+            continue  # accounted for in systemPrompt / workingMemory
+        if role == "reflection":
+            reasoning += count(_msg_content(m))
+            continue
+        conversation += count(_msg_content(m))
+
+    # reasoning_content on the last assistant message (current turn's reasoning)
+    for m in reversed(messages):
+        if _msg_role(m) == "assistant":
+            rc = _msg_reasoning(m)
+            if rc:
+                reasoning += count(rc)
+            break
+
+    skill_tokens = getattr(orch, "_skill_tokens", 0) if orch is not None else 0
 
     segments = {
-        "systemPrompt": 0,
-        "skillInstructions": 0,
+        "systemPrompt": system_tokens,
+        "skillInstructions": skill_tokens,
         "conversation": conversation,
-        "workingMemory": 0,
+        "workingMemory": working_memory_tokens,
         "reasoning": reasoning,
     }
     await pub.context_update(used=sum(segments.values()), segments=segments)
@@ -1065,13 +1178,13 @@ cd /Users/zachstallbohm/Work/Labmate
 python -m pytest tests/services/orchestrator/test_events.py -q
 ```
 
-Expected: `25 passed`.
+Expected: `26 passed`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add services/orchestrator/events.py tests/services/orchestrator/test_events.py
-git commit -m "feat(orchestrator): context.update producer bucketed by graph state"
+git commit -m "feat(orchestrator): context.update producer bucketed by all five segments"
 ```
 
 ---
@@ -1250,7 +1363,7 @@ Add this method to `CodingOrchestrator` (place it directly after `run_task`):
                     raw_node = (event.get("metadata") or {}).get("langgraph_node")
                     if raw_node in NODE_NAME_MAP:
                         last_node = NODE_NAME_MAP[raw_node]
-                        await emit_context_for_state(pub, initial)
+                        await emit_context_for_state(pub, initial, orch=self)
                 if event.get("event") == "on_chain_end":
                     out = (event.get("data") or {}).get("output")
                     if isinstance(out, dict) and out.get("final_answer"):
@@ -1286,6 +1399,202 @@ Expected: `3 passed`.
 ```bash
 git add services/orchestrator/coding_orchestrator.py tests/services/orchestrator/test_coding_orchestrator_stream.py
 git commit -m "feat(orchestrator): run_task_streamed drives astream_events"
+```
+
+---
+
+### Task 8b: Manually emit tool.start / tool.done around run_in_sandbox
+
+**Files:**
+- Modify: `services/orchestrator/coding_orchestrator.py`
+- Modify: `services/orchestrator/graph.py`
+- Modify: `services/orchestrator/events.py` (verify `tool_start`/`tool_done` — defined in Task 4)
+- Modify: `tests/services/orchestrator/test_coding_orchestrator_stream.py`
+
+`astream_events`' `on_tool_start`/`on_tool_end` only fire for LangChain-wrapped
+tools. `run_in_sandbox()` is a plain method call inside `execute_node`, so no
+tool events are produced automatically. This task makes the sandbox call emit
+`tool.start` / `tool.done` manually so the tool rows surface in the UI.
+
+The mechanism: stash the active `EventPublisher` on the `CodingOrchestrator`
+during a streaming run (`orch._event_pub = publisher`), so the graph node — a
+plain async function closed over `orch` — can reach it. `execute_node` checks
+`getattr(orch, '_event_pub', None)` and brackets the sandbox call with emits.
+When `_event_pub` is `None` (non-streaming `run_task()` path, or tests),
+`run_in_sandbox` is called exactly as today with no events.
+
+> `tool_start()` / `tool_done()` are the publisher methods from Task 4; they
+> emit the exact `tool.start` / `tool.done` shapes from FRONTEND_SPEC §4. No
+> new publisher methods are needed here — this task only wires them in.
+
+- [ ] **Step 1: Write failing test** — append to `tests/services/orchestrator/test_coding_orchestrator_stream.py`
+
+```python
+async def test_execute_node_emits_tool_events_when_publisher_set(monkeypatch):
+    """With orch._event_pub set, an execute pass emits tool.start then tool.done."""
+    from services.orchestrator.coding_orchestrator import CodingOrchestrator
+    from services.orchestrator import graph as graph_mod
+
+    orch = CodingOrchestrator(graph=None, workspace_path="/ws", docker_container="")
+    async_orch = MagicMock()
+
+    # the publisher records the order of calls
+    pub = AsyncMock()
+    orch._event_pub = pub
+
+    # editor() -> a command; run_in_sandbox() -> a successful observation
+    orch.editor = AsyncMock(return_value="ls -la")
+    orch.run_in_sandbox = AsyncMock(
+        return_value={"stdout": "file.txt", "stderr": "", "exit_code": 0, "ok": True}
+    )
+    orch.git_checkpoint = AsyncMock()
+
+    # build just the execute node via the factory
+    _plan, execute_node, _check, _reflect, _approval = graph_mod.make_nodes(orch, async_orch)
+
+    from services.orchestrator.types import create_goal
+    tree = create_goal({}, "root", None, "do a thing")
+    create_goal(tree, "root_sub0", "root", "list files")
+    # mark root completed-ish so the single ready leaf is root_sub0
+    state = {
+        "session_id": "s-1", "goal_tree": tree,
+        "current_goal_id": "root", "step_markers": {}, "messages": [],
+    }
+    await execute_node(state)
+
+    pub.tool_start.assert_awaited_once()
+    pub.tool_done.assert_awaited_once()
+    # tool.start emitted before tool.done
+    assert pub.tool_start.await_args.kwargs["name"] == "exec_run"
+    assert pub.tool_done.await_args.kwargs["status"] == "done"
+    assert pub.tool_done.await_args.kwargs["result"]["ok"] is True
+    orch.run_in_sandbox.assert_awaited_once_with("ls -la")
+
+
+async def test_execute_node_no_events_when_publisher_absent():
+    """With no _event_pub, run_in_sandbox is still called and no events emit."""
+    from services.orchestrator.coding_orchestrator import CodingOrchestrator
+    from services.orchestrator import graph as graph_mod
+
+    orch = CodingOrchestrator(graph=None, workspace_path="/ws", docker_container="")
+    assert getattr(orch, "_event_pub", None) is None  # default field is None
+    async_orch = MagicMock()
+
+    orch.editor = AsyncMock(return_value="ls")
+    orch.run_in_sandbox = AsyncMock(
+        return_value={"stdout": "ok", "stderr": "", "exit_code": 0, "ok": True}
+    )
+    orch.git_checkpoint = AsyncMock()
+
+    _plan, execute_node, _check, _reflect, _approval = graph_mod.make_nodes(orch, async_orch)
+
+    from services.orchestrator.types import create_goal
+    tree = create_goal({}, "root", None, "do a thing")
+    create_goal(tree, "root_sub0", "root", "list files")
+    state = {
+        "session_id": "s-1", "goal_tree": tree,
+        "current_goal_id": "root", "step_markers": {}, "messages": [],
+    }
+    await execute_node(state)
+
+    orch.run_in_sandbox.assert_awaited_once_with("ls")  # still runs normally
+```
+
+- [ ] **Step 2: Run it (must fail)**
+
+```bash
+cd /Users/zachstallbohm/Work/Labmate
+python -m pytest tests/services/orchestrator/test_coding_orchestrator_stream.py -q -k tool_events
+```
+
+Expected: `test_execute_node_emits_tool_events_when_publisher_set` fails —
+`pub.tool_start`/`pub.tool_done` are never awaited (execute_node does not emit
+yet). `test_execute_node_no_events_when_publisher_absent` may already pass.
+
+- [ ] **Step 3a: Implement** — `services/orchestrator/coding_orchestrator.py`
+
+Add the `_event_pub` field to `CodingOrchestrator.__init__` (after the existing
+`self._gate_futures = {}` line):
+```python
+        # Set during a streaming run so graph nodes can emit tool events around
+        # plain method calls (run_in_sandbox) that astream_events can't see.
+        # None on the non-streaming run_task() path and in tests.
+        self._event_pub = None  # EventPublisher | None
+```
+
+- [ ] **Step 3b: Implement** — `services/orchestrator/graph.py`
+
+In `execute_node`, replace the single-goal sandbox call block:
+```python
+        cmd = cmd.strip()
+        obs = await orch.run_in_sandbox(cmd)
+        result_text = obs["stdout"] or obs["stderr"]
+```
+with a version that brackets the sandbox call with tool events when a publisher
+is attached:
+```python
+        cmd = cmd.strip()
+
+        import time, uuid
+        tool_id = str(uuid.uuid4())
+        pub = getattr(orch, "_event_pub", None)
+        if pub is not None:
+            await pub.tool_start(
+                tool_id=tool_id, name="exec_run", kind="tool",
+                summary=cmd[:120],
+            )
+        t0 = time.monotonic()
+        obs = await orch.run_in_sandbox(cmd)
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        if pub is not None:
+            status = "done" if obs["ok"] else "error"
+            summary = (obs["stdout"][:120] or obs["stderr"][:120])
+            await pub.tool_done(
+                tool_id=tool_id, status=status, summary=summary,
+                result=obs, duration_ms=elapsed_ms,
+            )
+
+        result_text = obs["stdout"] or obs["stderr"]
+```
+
+> Only the single-goal branch of `execute_node` calls `run_in_sandbox`; the
+> parallel branch dispatches through `async_orch.plan_and_dispatch()` (separate
+> workers) and is out of scope for tool events here.
+
+- [ ] **Step 3c: Wire the publisher in `run_task_streamed`** —
+`services/orchestrator/coding_orchestrator.py`
+
+In `run_task_streamed()` (Task 8), set and clear `self._event_pub` around the
+stream so `execute_node` can reach the publisher:
+```python
+        self._event_pub = pub
+        try:
+            async for event in self.graph.astream_events(initial, cfg, version="v2"):
+                ...  # existing body unchanged
+        except Exception:
+            ...  # existing error handling unchanged
+            raise
+        finally:
+            self._event_pub = None
+```
+(Fold the existing `try/except` body into this `try/except/finally`; the
+`finally` guarantees the publisher is detached even on error so it never leaks
+into a subsequent non-streaming run.)
+
+- [ ] **Step 4: Run tests (must pass)**
+
+```bash
+cd /Users/zachstallbohm/Work/Labmate
+python -m pytest tests/services/orchestrator/test_coding_orchestrator_stream.py -q
+```
+
+Expected: all pass (the two new tool-event tests plus the three from Task 8).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add services/orchestrator/coding_orchestrator.py services/orchestrator/graph.py tests/services/orchestrator/test_coding_orchestrator_stream.py
+git commit -m "feat(orchestrator): emit tool.start/tool.done around run_in_sandbox"
 ```
 
 ---
@@ -1423,6 +1732,26 @@ with:
 `_write_result()` is unchanged. The error path (`_write_result(task_id,
 {"ok": False, ...})`) is unchanged.
 
+- [ ] **Step 3b: Compute `_skill_tokens` once after MCP is ready** —
+`services/orchestrator/main.py`
+
+The `skillInstructions` context segment (Task 7) reads
+`orch._skill_tokens`. Compute it once in `OrchestratorProcess.run()` right
+after `mcp.wait_ready()` completes, so the MCP tool schemas are counted with the
+Gemma tokenizer and reused for every `context.update`:
+```python
+        # after self._mcp.wait_ready() (and whenever the tool set changes):
+        import json
+        from services.orchestrator.memory_consolidator import token_count
+        orch._skill_tokens = sum(
+            token_count(f"{t.name} {t.description} {json.dumps(t.inputSchema or {})}")
+            for t in (self._mcp.tools if self._mcp else [])
+        )
+```
+If the orchestrator runs without an MCP bridge (`self._mcp is None`),
+`_skill_tokens` stays at its `0` default (set in `__init__`, Task 8b) and the
+`skillInstructions` segment reads 0.
+
 - [ ] **Step 4: Run tests (must pass)**
 
 ```bash
@@ -1480,10 +1809,10 @@ git commit -m "test(orchestrator): green streaming + result-write regression sui
 
 1. **Node-name mismatch (resolved in-plan).** Graph nodes are `plan/execute/
    check/reflect/approval`; spec NodeName is `*_node` + `chat_node`. Decision:
-   `NODE_NAME_MAP` (Task 2). `approval` and `chat_node` have no counterpart in
-   the other set — `approval` events are dropped; `chat_node` is never emitted
-   by this graph (no chat node exists yet). **Confirm** dropping approval
-   events is acceptable for v1.
+   `NODE_NAME_MAP` (Task 2). `approval` is emitted as the `approval_node`
+   extension so the human-in-the-loop gate is visible (Gap 1, resolved — the
+   approval node is no longer dropped). `chat_node` is never emitted by this
+   graph (no chat node exists yet).
 
 2. **`turn.created` / `session.updated` / `artifact.created` not emitted.** The
    prompt's mapping list does not include them and the current graph produces no
@@ -1496,18 +1825,21 @@ git commit -m "test(orchestrator): green streaming + result-write regression sui
    tokens/budget/durationMs) would require accumulating per-node reasoning. Left
    out for v1; deltas are sufficient for the CLI. **Confirm** acceptable.
 
-4. **`tool.*` may never fire in practice.** The current graph calls the sandbox
-   via `orch.run_in_sandbox()` (a plain method, not a LangChain tool), so
-   `on_tool_start/on_tool_end` will not be produced by `astream_events` until
-   sandbox calls are wrapped as LangChain tools. The mapping is implemented and
-   tested so it works the moment tools are wired, but **no tool events will
-   appear until then**. Flagged, not blocking.
+4. **`tool.*` events (resolved — Task 8b).** `astream_events`'
+   `on_tool_start/on_tool_end` still won't fire for `orch.run_in_sandbox()` (a
+   plain method, not a LangChain tool), so Task 8b emits `tool.start` /
+   `tool.done` **manually** around the sandbox call in `execute_node` via the
+   publisher stashed on `orch._event_pub`. Tool rows now surface for sandbox
+   commands; the `map_langgraph_event` `on_tool_*` mapping (Task 5) remains for
+   any future LangChain-wrapped tools.
 
-5. **`context.update` token accuracy.** We bucket only `conversation` and
-   `reasoning` from `state["messages"]`; `systemPrompt`, `skillInstructions`,
-   `workingMemory` are 0 because the orchestrator does not currently track them
-   in serializable state. The invariant `sum(segments)==used` always holds.
-   **Confirm** partial accounting is acceptable for v1.
+5. **`context.update` token accuracy (resolved — Task 7).** All five segments
+   are now populated: `systemPrompt` (first system message), `skillInstructions`
+   (`orch._skill_tokens` from MCP tool schemas), `conversation`, `workingMemory`
+   (non-first system messages = RAG injections), and `reasoning`
+   (reflection messages + last assistant `reasoning_content`). The invariant
+   `sum(segments)==used` always holds. `workingMemory` is an approximation
+   (non-first system messages) but accurate enough for the bar display.
 
 6. **EXPIRE-on-channel semantics.** `EXPIRE labmate:events:<task_id>` targets a
    key with the same name as the pub/sub channel. Pub/sub itself is keyless, so

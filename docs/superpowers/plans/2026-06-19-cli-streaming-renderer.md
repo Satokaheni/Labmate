@@ -28,9 +28,11 @@ harmlessly):
 | { type: 'agent.status'; status: AgentStatus }        // consumed for spinner state
 ```
 
-`NodeName = 'plan_node' | 'execute_node' | 'check_node' | 'reflect_node' | 'chat_node'`.
-The renderer never invents or requires variants outside this set; unknown
-`type` values are dropped.
+`NodeName = 'plan_node' | 'execute_node' | 'check_node' | 'reflect_node' | 'chat_node'`
+(plus `approval_node`, an orchestrator extension for the human-in-the-loop gate —
+see Plan 1 Gap 1). The renderer treats `node` as an opaque string, so
+`approval_node` renders like any other node line; it never invents or requires
+variants outside this set, and unknown `type` values are dropped.
 
 ---
 
@@ -1222,10 +1224,11 @@ git commit -m "test(cli): green streaming + fallback regression suite"
    this is desired (alternative: print `StreamRenderer.answer_text` directly and
    skip the second `get_result()` — but that loses the goal-tree fallback).
 
-3. **`tool.*` events likely absent in v1.** Per Plan 1, the orchestrator won't
-   emit `tool.start`/`tool.done` until sandbox calls are wrapped as LangChain
-   tools. The renderer handles them correctly when present; the tool-row tests
-   prove the rendering, but live runs may show none. Not blocking.
+3. **`tool.*` events now emitted (Plan 1 Task 8b).** The orchestrator emits
+   `tool.start`/`tool.done` manually around `run_in_sandbox()` in
+   `execute_node`, so the renderer's tool rows (the `_ToolRow` reduction and the
+   `⚙ / ✓ / ✗` lines) surface on live sandbox-command runs — not just in the
+   unit tests. No CLI change needed; the renderer already handles them.
 
 4. **Reasoning is shown inline, not collapsible.** The prompt asks for a
    "collapsible block." A terminal `Live` view cannot offer interactive
