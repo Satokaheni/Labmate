@@ -14,6 +14,14 @@ WORKSPACES = "workspaces"
 SESSIONS = "sessions"
 
 
+def _strip(doc: dict | None) -> dict | None:
+    """Remove MongoDB's _id before passing to Pydantic."""
+    if doc is None:
+        return None
+    doc.pop("_id", None)
+    return doc
+
+
 class WorkspaceManager:
     """CRUD layer for users, workspaces, and session metadata."""
 
@@ -30,7 +38,7 @@ class WorkspaceManager:
 
     async def get_user(self, user_id: str) -> Optional[User]:
         doc = await self._db[USERS].find_one({"user_id": user_id})
-        return User(**doc) if doc else None
+        return User(**_strip(doc)) if doc else None
 
     async def touch_user(self, user_id: str) -> None:
         await self._db[USERS].update_one(
@@ -63,14 +71,16 @@ class WorkspaceManager:
 
     async def get_workspace(self, workspace_id: str) -> Optional[Workspace]:
         doc = await self._db[WORKSPACES].find_one({"workspace_id": workspace_id})
-        return Workspace(**doc) if doc else None
+        return Workspace(**_strip(doc)) if doc else None
 
-    async def list_workspaces(self, user_id: str) -> list[Workspace]:
-        cursor = self._db[WORKSPACES].find({"user_id": user_id})
-        docs = await cursor.to_list(length=100)
-        return [Workspace(**d) for d in docs]
+    async def list_workspaces(self, user_id: str, limit: int = 100) -> list[Workspace]:
+        cursor = self._db[WORKSPACES].find({"user_id": user_id}).limit(limit)
+        docs = await cursor.to_list(length=limit)
+        return [Workspace(**_strip(d)) for d in docs]
 
     async def update_workspace(self, workspace_id: str, **fields) -> None:
+        _IMMUTABLE = {"workspace_id", "user_id", "created_at"}
+        fields = {k: v for k, v in fields.items() if k not in _IMMUTABLE}
         fields["updated_at"] = datetime.now(timezone.utc)
         await self._db[WORKSPACES].update_one(
             {"workspace_id": workspace_id},
@@ -99,4 +109,4 @@ class WorkspaceManager:
             q["workspace_id"] = workspace_id
         cursor = self._db[SESSIONS].find(q).sort("created_at", -1).limit(limit)
         docs = await cursor.to_list(length=limit)
-        return [SessionMeta(**d) for d in docs]
+        return [SessionMeta(**_strip(d)) for d in docs]
