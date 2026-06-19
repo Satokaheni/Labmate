@@ -1,5 +1,4 @@
 from services.orchestrator.models import User, Workspace, SessionMeta
-import pytest
 from datetime import datetime, timezone
 
 def test_user_defaults():
@@ -12,7 +11,8 @@ def test_workspace_defaults():
     assert ws.workspace_id
     assert ws.paths == []
     assert ws.sources == []
-    assert ws.instructions == ""
+    assert ws.description is None
+    assert ws.instructions is None
 
 def test_workspace_with_paths():
     ws = Workspace(
@@ -33,3 +33,6 @@ def test_session_meta():
         task_preview="Write a sorting algorithm",
     )
     assert sm.session_id == "s-abc"
+    assert sm.ok is True
+    assert sm.completed_at is None
+    assert sm.task_preview == "Write a sorting algorithm"

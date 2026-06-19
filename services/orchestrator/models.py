@@ -23,10 +23,10 @@ class Workspace(BaseModel):
     workspace_id: str = Field(default_factory=_uid)
     name: str
     user_id: str
-    description: str = ""
+    description: Optional[str] = None
     paths: list[str] = Field(default_factory=list)
     sources: list[str] = Field(default_factory=list)
-    instructions: str = ""
+    instructions: Optional[str] = None
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
 
