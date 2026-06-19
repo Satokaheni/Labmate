@@ -77,10 +77,14 @@ async def _async_main(
         from .session_store import SessionStore
         prior_sessions = SessionStore().list()
         prior = next((s for s in prior_sessions if s.session_id == resume_id), None)
+        if prior is None:
+            _renderer.print_info(f"Session {resume_id[:8]}… not found in local history — pick a workspace to continue.")
         if prior:
             # Try to load the workspace from cache
             prior_ws = next((w for w in existing_ws
                             if w.get("workspace_id") == prior.workspace_id), None)
+            if prior_ws is None:
+                _renderer.print_info(f"Session {resume_id[:8]}… found but workspace not in local cache — pick a workspace to continue.")
             if prior_ws:
                 ws_choice_raw = prior_ws
                 # Skip workspace picker entirely
