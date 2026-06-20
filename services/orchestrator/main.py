@@ -250,6 +250,14 @@ class OrchestratorProcess:
                 task_text, session_id, user_id=user_id, workspace_id=workspace_id
             )
             task_succeeded = True
+            # Stream the final answer with typewriter effect (answer.delta + answer.done)
+            if hasattr(orch, "stream_final_answer"):
+                try:
+                    streamed = await orch.stream_final_answer(task_text, final_state)
+                    if isinstance(final_state, dict) and streamed:
+                        final_state["final_answer"] = streamed
+                except Exception:
+                    pass  # best-effort; never let streaming block the result
             # Derive ok from final_state.error (FIX #2: failed subtasks now finalize with error set, not exception)
             ok_flag = final_state.get("error") is None
             await self._write_result(task_id, {"ok": ok_flag, "state": final_state})

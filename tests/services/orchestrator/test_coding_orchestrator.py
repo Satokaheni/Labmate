@@ -6,7 +6,54 @@ import pytest
 import graphlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from services.orchestrator.coding_orchestrator import TokenBudget, AsyncOrchestrator, Result, SubTask
+from services.orchestrator.coding_orchestrator import TokenBudget, AsyncOrchestrator, Result, SubTask, CodingOrchestrator
+
+
+def _chunk(text):
+    return MagicMock(choices=[MagicMock(delta=MagicMock(content=text))])
+
+
+@pytest.mark.asyncio
+async def test_stream_final_answer_emits_deltas_and_returns_text():
+    from services.orchestrator import events
+    orch = CodingOrchestrator(graph=None, workspace_path=".", docker_container="")
+
+    async def fake_stream(*a, **k):
+        for t in ["Hel", "lo ", "world"]:
+            yield _chunk(t)
+
+    captured = []
+
+    class FakeEmitter:
+        async def emit(self, type, **f):
+            captured.append({"type": type, **f})
+
+    with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
+               new_callable=AsyncMock, return_value=fake_stream()):
+        token = events.current_emitter.set(FakeEmitter())
+        try:
+            text = await orch.stream_final_answer(
+                "say hi",
+                {"final_answer": "Hello world",
+                 "goal_tree": {"root": {"result": "Hello world"}}}
+            )
+        finally:
+            events.current_emitter.reset(token)
+
+    assert text == "Hello world"
+    deltas = [e["text"] for e in captured if e["type"] == "answer.delta"]
+    assert deltas == ["Hel", "lo ", "world"]
+    assert any(e["type"] == "answer.done" and e["text"] == "Hello world" for e in captured)
+
+
+@pytest.mark.asyncio
+async def test_stream_final_answer_falls_back_on_error():
+    from services.orchestrator import events
+    orch = CodingOrchestrator(graph=None, workspace_path=".", docker_container="")
+    with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
+               new_callable=AsyncMock, side_effect=RuntimeError("stream boom")):
+        text = await orch.stream_final_answer("x", {"final_answer": "assembled answer"})
+    assert text == "assembled answer"
 
 
 def _make_mock_response(content: str = "done") -> MagicMock:

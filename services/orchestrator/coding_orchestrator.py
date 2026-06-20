@@ -674,6 +674,47 @@ class CodingOrchestrator:
 
         return await asyncio.to_thread(self.execute_in_sandbox, cmd, 60)
 
+    async def stream_final_answer(self, task: str, final_state: dict) -> str:
+        """Compose the user-facing reply with a streamed LLM call.
+
+        Emits answer.delta per chunk (typewriter effect) and answer.done at the end.
+        Best-effort: on any error, returns the assembled final_answer without raising.
+        """
+        assembled = ""
+        if isinstance(final_state, dict):
+            assembled = (
+                final_state.get("final_answer")
+                or final_state.get("goal_tree", {}).get("root", {}).get("result", "")
+                or ""
+            )
+        prompt = (
+            "Write a concise, friendly answer to the user's request using the results below. "
+            "Do not mention tools, skills, or internal steps.\n\n"
+            f"Request: {task}\n\nResults:\n{assembled}"
+        )
+        acc = ""
+        try:
+            stream = await litellm.acompletion(
+                model="openai/gemma-4-31b",
+                api_base=self._gemma_base,
+                api_key="not-needed",
+                messages=[{"role": "user", "content": prompt}],
+                stream=True,
+                extra_body={"thinking_budget_tokens": 0},
+            )
+            async for chunk in stream:
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    acc += delta
+                    await events.emit("answer.delta", text=delta)
+            await events.emit("answer.done", text=acc)
+            return acc or assembled
+        except Exception as exc:
+            import logging
+            _log = logging.getLogger("orchestrator")
+            _log.warning("stream_final_answer failed, using assembled answer: %s", exc)
+            return assembled
+
     async def stream(self, prompt: str, user_id: str = "", workspace_id: str = "") -> "AsyncGenerator[str, None]":
         """Async generator — run a task and yield the final answer as a single chunk.
 
