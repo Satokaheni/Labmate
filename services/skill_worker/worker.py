@@ -218,6 +218,14 @@ class SkillWorker:
         qualified = f"{skill}.{tool}"
         try:
             result = await self._registry.call_tool(qualified, arguments)
+            # Check if the MCP result indicates a tool error (isError=True)
+            # This is a normal return, not an exception, so we must inspect the result
+            if hasattr(result, "isError") and result.isError:
+                return {
+                    "ok": False,
+                    "error": "tool_error",
+                    "result": self._jsonable(result),
+                }
             return {"ok": True, "result": self._jsonable(result)}
         except SkillUnavailable as exc:
             return {"ok": False, "error": "skill_unavailable", "detail": str(exc)}

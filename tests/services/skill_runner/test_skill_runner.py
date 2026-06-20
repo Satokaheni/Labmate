@@ -198,6 +198,93 @@ def test_chain_limit_blocks_further_activations(tmp_path):
 
 
 @pytest.mark.mocked
+def test_discover_skips_node_modules_paths(write_skill, tmp_path):
+    """Discover should skip SKILL.md files under node_modules to avoid catalog pollution."""
+    proj_root = tmp_path / "project"
+    proj_root.mkdir()
+
+    # Create a real skill
+    real_skill = proj_root / "real-skill"
+    real_skill.mkdir()
+    (real_skill / "SKILL.md").write_text(
+        VALID_SKILL.format(name="real-skill", desc="A real skill."),
+        encoding="utf-8"
+    )
+
+    # Create a vendored skill under node_modules (should be skipped)
+    vendor = proj_root / "some-lib" / "node_modules" / "vendored-skill"
+    vendor.mkdir(parents=True)
+    (vendor / "SKILL.md").write_text(
+        VALID_SKILL.format(name="vendored-skill", desc="Vendored skill."),
+        encoding="utf-8"
+    )
+
+    runner = SkillRunner(roots=[proj_root, tmp_path / "personal", tmp_path / "bundled"])
+    runner.discover()
+
+    assert "real-skill" in runner.catalog
+    assert "vendored-skill" not in runner.catalog  # Skipped because under node_modules
+
+
+@pytest.mark.mocked
+def test_discover_skips_git_paths(tmp_path):
+    """Discover should skip SKILL.md files under .git."""
+    proj_root = tmp_path / "project"
+    proj_root.mkdir()
+
+    # Create a real skill
+    real_skill = proj_root / "real-skill"
+    real_skill.mkdir()
+    (real_skill / "SKILL.md").write_text(
+        VALID_SKILL.format(name="real-skill", desc="A real skill."),
+        encoding="utf-8"
+    )
+
+    # Create a skill under .git/dist (should be skipped)
+    git_dir = proj_root / ".git" / "dist" / "hidden-skill"
+    git_dir.mkdir(parents=True)
+    (git_dir / "SKILL.md").write_text(
+        VALID_SKILL.format(name="hidden-skill", desc="Hidden skill."),
+        encoding="utf-8"
+    )
+
+    runner = SkillRunner(roots=[proj_root, tmp_path / "personal", tmp_path / "bundled"])
+    runner.discover()
+
+    assert "real-skill" in runner.catalog
+    assert "hidden-skill" not in runner.catalog  # Skipped because under .git
+
+
+@pytest.mark.mocked
+def test_discover_skips_dist_paths(tmp_path):
+    """Discover should skip SKILL.md files under dist."""
+    proj_root = tmp_path / "project"
+    proj_root.mkdir()
+
+    # Create a real skill
+    real_skill = proj_root / "real-skill"
+    real_skill.mkdir()
+    (real_skill / "SKILL.md").write_text(
+        VALID_SKILL.format(name="real-skill", desc="A real skill."),
+        encoding="utf-8"
+    )
+
+    # Create a skill under dist (should be skipped)
+    dist_dir = proj_root / "dist" / "compiled-skill"
+    dist_dir.mkdir(parents=True)
+    (dist_dir / "SKILL.md").write_text(
+        VALID_SKILL.format(name="compiled-skill", desc="Compiled skill."),
+        encoding="utf-8"
+    )
+
+    runner = SkillRunner(roots=[proj_root, tmp_path / "personal", tmp_path / "bundled"])
+    runner.discover()
+
+    assert "real-skill" in runner.catalog
+    assert "compiled-skill" not in runner.catalog  # Skipped because under dist
+
+
+@pytest.mark.mocked
 def test_path_confinement_rejects_after_fs_tamper(write_skill, tmp_path, monkeypatch):
     proj_root, md = write_skill("project", "deploy", VALID_SKILL.format(name="deploy", desc="Deploys things."))
     runner = SkillRunner(roots=[proj_root, tmp_path / "personal", tmp_path / "bundled"])

@@ -219,6 +219,7 @@ class CodingOrchestrator:
         max_iter: int = 10,
         stuck_n: int = 3,
         mcp=None,
+        skill_router=None,
     ) -> None:
         self.graph = graph
         self.workspace = workspace_path
@@ -228,6 +229,7 @@ class CodingOrchestrator:
         self.max_iter = max_iter
         self.stuck_n = stuck_n
         self.mcp = mcp          # MCPClientManager | None
+        self.skill_router = skill_router  # SkillRouter | None
         self._recent_actions: list[str] = []
         self._gate_futures: dict[str, asyncio.Future] = {}
 
@@ -397,12 +399,22 @@ class CodingOrchestrator:
 
         Always uses subprocess directly; the MCP bridge exposes read-only git
         tools (status/diff/log) and has no git_commit tool.
+
+        Tolerates "nothing to commit" (CalledProcessError with exit code 1 when
+        there are no staged changes), which is common for read-only skills
+        like ast-repo-map or web-search that produce no working-tree changes.
         """
         def _commit() -> None:
             subprocess.run(["git", "-C", self.workspace, "add", "-A"], check=True)
-            subprocess.run(
-                ["git", "-C", self.workspace, "commit", "-m", message],
-                check=True,
-            )
+            try:
+                subprocess.run(
+                    ["git", "-C", self.workspace, "commit", "-m", message],
+                    check=True,
+                )
+            except subprocess.CalledProcessError as exc:
+                # Exit code 1 means "nothing to commit" — common for read-only skills.
+                # Allow it; re-raise anything else.
+                if exc.returncode != 1:
+                    raise
 
         await asyncio.to_thread(_commit)

@@ -363,3 +363,42 @@ async def test_complete_session_called_with_ok_false_on_run_task_exception():
     if ok_value is None and len(call_args.args) > 1:
         ok_value = call_args.args[1]
     assert ok_value is False
+
+
+# ── skill router wiring ────────────────────────────────────────────────────────
+
+def test_skill_router_wiring_order():
+    """Code inspection: verify redis is initialized before skill router in main.py.
+
+    This test documents the fix for the bug where SkillRouter was created with
+    redis=None, causing all skill routes to fail at runtime with AttributeError
+    on None.xadd(). The fix: move redis pool/client creation BEFORE the
+    skill-router try/except block.
+    """
+    from pathlib import Path
+
+    # Path from test file: tests/services/orchestrator/test_main.py
+    # -> services/orchestrator/main.py
+    main_py = (Path(__file__).parent.parent.parent.parent / "services" / "orchestrator" / "main.py").read_text()
+    lines = main_py.split('\n')
+
+    # Find line numbers of key sections (1-indexed for clarity in error messages)
+    redis_pool_line = None
+    skill_router_comment_line = None
+
+    for i, line in enumerate(lines, 1):
+        if 'pool = aioredis.ConnectionPool.from_url' in line:
+            redis_pool_line = i
+        if '# Build skill router' in line:
+            skill_router_comment_line = i
+
+    # Both sections must exist
+    assert redis_pool_line is not None, "Redis pool creation not found in main.py"
+    assert skill_router_comment_line is not None, "Skill router comment block not found in main.py"
+
+    # Redis MUST be initialized BEFORE the skill router block
+    assert redis_pool_line < skill_router_comment_line, (
+        f"BUG: redis pool created at line {redis_pool_line}, "
+        f"but skill router block starts at line {skill_router_comment_line}. "
+        "Redis must be created first so SkillRouter.__init__ receives a non-None redis client."
+    )

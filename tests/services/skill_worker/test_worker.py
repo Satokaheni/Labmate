@@ -136,6 +136,33 @@ async def test_dispatch_generic_exception():
     assert "subprocess crashed" in result["detail"]
 
 
+@pytest.mark.asyncio
+async def test_dispatch_handles_iserror_flag():
+    """Test that MCP CallToolResult with isError=True is reported as failure."""
+    worker = _make_worker()
+    registry = AsyncMock()
+
+    # Create a mock MCP result with isError=True (a normal return, not an exception)
+    mock_result = MagicMock()
+    mock_result.isError = True
+    mock_result.content = [{"type": "text", "text": "Tool failed"}]
+    mock_result.model_dump = MagicMock(return_value={"isError": True, "content": [{"type": "text", "text": "Tool failed"}]})
+    registry.call_tool.return_value = mock_result
+    worker._registry = registry
+
+    result = await worker._dispatch({
+        "task_id": "t4",
+        "skill": "test-skill",
+        "tool": "test-tool",
+        "arguments": {},
+    })
+
+    # Should be reported as failure, not success
+    assert result["ok"] is False
+    assert result["error"] == "tool_error"
+    assert "content" in result["result"]
+
+
 # ── _handle ────────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

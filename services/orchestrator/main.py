@@ -50,6 +50,8 @@ from services.orchestrator.graph import build_graph, GEMMA_BASE, QWEN_BASE
 from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 from services.orchestrator.storage_manager import StorageManager
 from services.orchestrator.mcp_client_manager import MCPClientManager
+from services.orchestrator.skill_router import SkillRouter
+from services.skill_runner.skill_runner import SkillRunner
 
 _log = logging.getLogger("orchestrator")
 
@@ -104,6 +106,28 @@ class OrchestratorProcess:
                 gemma_api_base=GEMMA_BASE,
             )
 
+            # Initialize Redis BEFORE skill router (CLAUDE.md: "after self._redis is created")
+            pool = aioredis.ConnectionPool.from_url(
+                redis_url, max_connections=8, decode_responses=True,
+            )
+            self._redis = aioredis.Redis(connection_pool=pool)
+            await self._ensure_group()
+
+            # Build skill router (optional, wrapped in try/except so startup never fails)
+            skill_router = None
+            try:
+                skills_root = Path(__file__).resolve().parent.parent / "skills"
+                runner = SkillRunner(roots=[skills_root])
+                runner.discover()
+                skill_router = SkillRouter(
+                    runner=runner,
+                    redis=self._redis,
+                    gemma_api_base=GEMMA_BASE,
+                )
+                _log.info("skill router ready (%d skills)", len(runner.catalog))
+            except Exception:
+                _log.warning("failed to initialize skill router — continuing without skills", exc_info=True)
+
             # CodingOrchestrator and build_graph have a circular dependency:
             # build_graph(orch, ...) closes node functions over the orch object;
             # CodingOrchestrator(graph, ...) stores the compiled graph.
@@ -115,6 +139,7 @@ class OrchestratorProcess:
                 gemma_api_base=GEMMA_BASE,
                 qwen_api_base=QWEN_BASE,
                 mcp=self._mcp,
+                skill_router=skill_router,
             )
             graph, _cp = build_graph(
                 orch=orch,
@@ -122,12 +147,6 @@ class OrchestratorProcess:
                 mongo_uri=os.getenv("MONGO_URI", "mongodb://localhost:27017/labmate"),
             )
             orch.graph = graph
-
-            pool = aioredis.ConnectionPool.from_url(
-                redis_url, max_connections=8, decode_responses=True,
-            )
-            self._redis = aioredis.Redis(connection_pool=pool)
-            await self._ensure_group()
 
             _log.info("orchestrator %s ready", self._worker_id)
             await self._loop(orch, _sm)
