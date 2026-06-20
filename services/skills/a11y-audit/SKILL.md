@@ -7,9 +7,9 @@ description: >
   Use as a post-generation quality gate on any frontend code.
 trigger: "Use when checking accessibility compliance of rendered HTML or React components"
 tools:
-  - a11y_audit.audit_file
-  - a11y_audit.audit_url
-  - a11y_audit.list_rules
+  - audit_file
+  - audit_url
+  - list_rules
 version: "0.1.0"
 license: MIT
 requires: []
@@ -23,15 +23,15 @@ guarantee — axe-core detects roughly 57% of WCAG issues; the rest need human r
 
 ## Tools
 
-### `a11y_audit.audit_file(html_or_component_path, rules?)`
+### `audit_file(html_or_component_path, rules?)`
 Resolves the path to a `file://` URL, renders it, injects axe-core, and returns an
 `AuditResult` JSON: `violations`, plus counts for `passes`, `incomplete`, `inapplicable`,
 and `violation_count`. Pass `rules` (array of axe rule IDs) to restrict the run.
 
-### `a11y_audit.audit_url(url, rules?)`
+### `audit_url(url, rules?)`
 Same as above for an `http(s)` URL (e.g. a running dev server).
 
-### `a11y_audit.list_rules()`
+### `list_rules()`
 Returns every axe rule ID with its description and WCAG level (A / AA / AAA).
 
 ## Result shape

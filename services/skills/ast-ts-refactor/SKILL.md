@@ -8,9 +8,9 @@ description: >
   the TypeScript type checker.
 trigger: "Use for TypeScript/JS cross-file rename, find-references, or move-symbol"
 tools:
-  - ast.ts-refactor.rename_symbol
-  - ast.ts-refactor.find_references
-  - ast.ts-refactor.move_symbol
+  - rename_symbol
+  - find_references
+  - move_symbol
 version: "0.1.0"
 license: MIT
 requires: []
@@ -45,7 +45,7 @@ cross-file references or shadowed names.
 
 ## Available Tools
 
-### `ast.ts-refactor.rename_symbol`
+### `rename_symbol`
 
 Renames `symbol` (declared in `file`) to `new_name` across the whole project.
 
@@ -60,7 +60,7 @@ Renames `symbol` (declared in `file`) to `new_name` across the whole project.
 
 Returns a `Diff`: `{ "unified_diff": "...", "files_affected": ["..."], "changes": N }`.
 
-### `ast.ts-refactor.find_references`
+### `find_references`
 
 Returns every usage site of `symbol`, including re-exports and barrel imports.
 
@@ -75,7 +75,7 @@ Returns every usage site of `symbol`, including re-exports and barrel imports.
 Returns a list of `Reference`:
 `{ "file": "...", "line": N, "column": N, "text": "...", "is_definition": false }`.
 
-### `ast.ts-refactor.move_symbol`
+### `move_symbol`
 
 Moves `symbol` from `source_file` to `dest_file`, rewriting imports in all
 affected files.

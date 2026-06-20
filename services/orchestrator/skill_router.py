@@ -155,7 +155,13 @@ class SkillRouter:
         if response.get("status") not in ("loaded", "already_loaded"):
             _log.error("failed to load skill: %s", response.get("message"))
             return None
-        body = response.get("body", "")
+        # On a repeat load, load_skill omits the body (progressive-disclosure dedup),
+        # so fall back to the runner's activation cache. Without this, plan_tool_call
+        # returns None for any skill already loaded by an earlier task → that subtask
+        # falls into the slow ReAct loop. (The constrained-decoding/fast-path attempts
+        # from this session were reverted as regressive; THIS cache read was the one
+        # correct latency fix. See docs/e2e-setup-findings.)
+        body = response.get("body") or self._runner.loaded.get(skill_name, "")
         if not body:
             _log.error("skill %s has empty body", skill_name)
             return None
