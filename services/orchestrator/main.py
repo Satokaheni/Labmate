@@ -51,6 +51,7 @@ from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncO
 from services.orchestrator.storage_manager import StorageManager
 from services.orchestrator.mcp_client_manager import MCPClientManager
 from services.orchestrator.skill_router import SkillRouter
+from services.orchestrator import events
 from services.skill_runner.skill_runner import SkillRunner
 
 _log = logging.getLogger("orchestrator")
@@ -209,6 +210,8 @@ class OrchestratorProcess:
         task_text = ""
         final_state = {}
         task_succeeded = False
+        _emitter: events.EventEmitter | None = None
+        _token = None
 
         try:
             payload    = json.loads(fields.get("payload", "{}"))
@@ -217,6 +220,10 @@ class OrchestratorProcess:
             session_id = payload.get("session_id") or task_id
             user_id    = payload.get("user_id", "")
             workspace_id = payload.get("workspace_id", "")
+
+            _emitter = events.EventEmitter(self._redis, task_id)
+            _token = events.current_emitter.set(_emitter)
+            await _emitter.emit("turn.start", task=task_text)
 
             # Fix 2: Record session if user_id and workspace_id are present
             if user_id and workspace_id:
@@ -265,6 +272,16 @@ class OrchestratorProcess:
                     await storage.workspaces.complete_session(session_id, ok=ok_flag)
                 except Exception:
                     pass
+            try:
+                _status = "complete" if task_succeeded and (
+                    not isinstance(final_state, dict) or final_state.get("error") is None
+                ) else "error"
+                _answer = final_state.get("final_answer", "") if isinstance(final_state, dict) else ""
+                await events.emit("turn.done", status=_status, final_answer=_answer)
+            except Exception:
+                pass
+            if _token is not None:
+                events.current_emitter.reset(_token)
             await self._redis.xack(GOALS_STREAM, GOALS_GROUP, msg_id)
 
     async def _write_result(self, task_id: str, result: dict) -> None:
