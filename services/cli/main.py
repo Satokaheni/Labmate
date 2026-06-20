@@ -127,19 +127,19 @@ async def _async_main(
     redis_url = _redis_url()
 
     if one_shot:
+        from .event_stream import run_task_with_streaming
         client = LabmateRedisClient(redis_url)
         task_id = str(uuid.uuid4())
         _renderer.print_workspace(ws_choice_raw["name"], ws_choice_raw["workspace_id"])
         try:
-            with _renderer.thinking("Working…"):
-                await client.push_task(
-                    task_id=task_id,
-                    task=one_shot,
-                    session_id=session_id,
-                    user_id=identity.user_id,
-                    workspace_id=ws_choice_raw["workspace_id"],
-                )
-                result = await client.get_result(task_id, timeout=300.0)
+            await client.push_task(
+                task_id=task_id,
+                task=one_shot,
+                session_id=session_id,
+                user_id=identity.user_id,
+                workspace_id=ws_choice_raw["workspace_id"],
+            )
+            result = await run_task_with_streaming(client, _renderer, task_id)
         except Exception as exc:
             _renderer.print_error(f"Connection error: {exc}")
             await client.aclose()

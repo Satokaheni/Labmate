@@ -114,7 +114,7 @@ class REPL:
 
     async def _send_task(self, task: str) -> None:
         task_id = str(uuid.uuid4())
-        turn_session_id = str(uuid.uuid4())  # fresh per-turn session (Fix 4)
+        turn_session_id = str(uuid.uuid4())
         self._sessions.append(SessionRecord(
             session_id=turn_session_id,
             workspace_id=self._ctx.workspace_id,
@@ -122,16 +122,16 @@ class REPL:
             task_preview=task[:120],
         ))
 
-        try:  # Fix 6: error handling
-            with self._renderer.thinking("Working…"):
-                await self._redis.push_task(
-                    task_id=task_id,
-                    task=task,
-                    session_id=turn_session_id,
-                    user_id=self._ctx.identity.user_id,
-                    workspace_id=self._ctx.workspace_id,
-                )
-                result = await self._redis.get_result(task_id, timeout=300.0)
+        try:
+            await self._redis.push_task(
+                task_id=task_id,
+                task=task,
+                session_id=turn_session_id,
+                user_id=self._ctx.identity.user_id,
+                workspace_id=self._ctx.workspace_id,
+            )
+            from .event_stream import run_task_with_streaming
+            result = await run_task_with_streaming(self._redis, self._renderer, task_id)
         except Exception as exc:
             self._renderer.print_error(f"Connection error: {exc}")
             return
