@@ -14,6 +14,13 @@ import redis.asyncio as aioredis
 from services.orchestrator.events import EVENTS_STREAM_PREFIX
 
 
+EVENTS_PREFIX = "labmate:events:"
+
+
+def event_channel(task_id: str) -> str:
+    return f"{EVENTS_PREFIX}{task_id}"
+
+
 async def tail_events(
     redis_url: str, task_id: str, *, last_id: str = "0", block_ms: int = 5000
 ) -> AsyncGenerator[dict, None]:

@@ -18,3 +18,9 @@ async def test_tail_events_decodes_and_advances(monkeypatch):
         if evt.get("type") == "tool.start":
             break
     assert got[0]["type"] == "tool.start" and got[0]["seq"] == 1
+
+
+def test_event_channel_constant_and_helper():
+    from services.cli.event_stream import EVENTS_PREFIX, event_channel
+    assert EVENTS_PREFIX == "labmate:events:"
+    assert event_channel("t-1") == "labmate:events:t-1"
