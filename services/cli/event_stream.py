@@ -21,14 +21,17 @@ async def tail_events(
     r = aioredis.from_url(redis_url, decode_responses=True)
     stream = f"{EVENTS_STREAM_PREFIX}{task_id}"
     cur = last_id
-    while True:
-        resp = await r.xread({stream: cur}, count=50, block=block_ms)
-        if not resp:
-            continue
-        for _stream, entries in resp:
-            for entry_id, fields in entries:
-                cur = entry_id
-                try:
-                    yield json.loads(fields["event"])
-                except (KeyError, json.JSONDecodeError):
-                    continue
+    try:
+        while True:
+            resp = await r.xread({stream: cur}, count=50, block=block_ms)
+            if not resp:
+                continue
+            for _stream, entries in resp:
+                for entry_id, fields in entries:
+                    cur = entry_id
+                    try:
+                        yield json.loads(fields["event"])
+                    except (KeyError, json.JSONDecodeError):
+                        continue
+    finally:
+        await r.aclose()

@@ -364,7 +364,7 @@ class AsyncOrchestrator:
                         name=_emit_name,
                         kind=_kind,
                         args=args,
-                        reasoning_why=_turn_reasoning if "_turn_reasoning" in dir() else "",
+                        reasoning_why=_turn_reasoning,
                     )
 
                     if name == "load_skill" and self.skill_router is not None:
@@ -401,11 +401,16 @@ class AsyncOrchestrator:
                     else:
                         content = json.dumps({"error": f"unknown tool: {name}"})
 
-                    # Emit tool.done
+                    # Emit tool.done — derive status from content (error key = error)
+                    try:
+                        _parsed = json.loads(content) if isinstance(content, str) else content
+                        _td_status = "error" if isinstance(_parsed, dict) and "error" in _parsed else "done"
+                    except Exception:
+                        _td_status = "done"
                     await events.emit(
                         "tool.done",
                         tool_id=_tool_id,
-                        status="done",
+                        status=_td_status,
                         summary=str(content)[:200],
                         result=content,
                         duration_ms=int((time.monotonic() - _t0) * 1000),
