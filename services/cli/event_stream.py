@@ -97,3 +97,28 @@ class EventStream:
 
     async def aclose(self) -> None:
         await self._gen.aclose()
+
+
+FIRST_EVENT_TIMEOUT = 2.0  # seconds to wait before falling back to spinner
+
+
+async def run_task_with_streaming(
+    client, renderer, task_id: str, result_timeout: float = 300.0
+) -> dict:
+    """Race live stream vs fallback spinner; always return get_result() dict.
+
+    Subscribes to the task's event channel. If the first event arrives within
+    FIRST_EVENT_TIMEOUT, renders live then reads the canonical result. Otherwise
+    renders the spinner and reads the result (original behavior). Caller owns
+    push_task() and printing; this helper owns the stream lifecycle.
+    """
+    stream = client.subscribe_events(task_id)
+    try:
+        first = await stream.first(timeout=FIRST_EVENT_TIMEOUT)
+        if first is not None:
+            await renderer.stream_live(stream)
+            return await client.get_result(task_id, timeout=result_timeout)
+        with renderer.thinking("Working…"):
+            return await client.get_result(task_id, timeout=result_timeout)
+    finally:
+        await stream.aclose()
