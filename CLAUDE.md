@@ -41,18 +41,118 @@ This session took the M3 stack from "unit tests pass" to a **working, skill-awar
 - **Skill-aware planner + ReAct executor** (`spec_skills §2.2`) — catalog in-context, `load_skill`→`call_skill_tool`, dispatch to the `labmate:skill-tasks` worker; concurrency preserved. Plus real per-subtask reflexion + honest failure propagation.
 - **100% skill selection** — `SkillRouter.select()` picks the right skill 18/18 isolated; **14/14 end-to-end** dispatch. Root fix was a deterministic bug: `SkillRunner.load_skill` activation counter never reset (`reset_activations()` now called per goal). Plus a directive that lifted recall and per-sample retries.
 
-**Done this session on `feat/agent-event-stream` (uncommitted→committing now):**
+**Done this session on `feat/agent-event-stream` (committed, pushed):**
 - **Skill tool-name fix** — 6 skills' `SKILL.md` documented tool names with a namespace prefix their servers don't expose (e.g. pdf-parse `pdf_parse.parse` vs exposed `parse`), so the model emitted unusable names → `SkillUnavailable` → reflect-retry loops. Fixed all 6 (`a11y-audit`, `ast-repo-map`, `ast-ts-refactor`, `citation-graph`, `paper-to-slides`, `pdf-parse`) to bare names. pdf-parse now executes `ok=True` 3/3.
 - **`plan_tool_call` cache read** — on a repeat `load_skill` the body is omitted (progressive-disclosure dedup); now falls back to `runner.loaded[name]` so plan doesn't return None on already-loaded skills (was forcing the slow ReAct fallback).
-- **Event-stream implementation doc** written: `docs/superpowers/plans/2026-06-20-agent-event-stream.md`.
+- **Agent event stream implemented** (all 6 tasks, 216 tests passing):
+  - `services/orchestrator/events.py` — `EventEmitter` class, ContextVar pattern, `XADD` to `labmate:events:<task_id>`, `extract_reasoning()` / `reasoning_summary()` helpers
+  - Orchestrator wires `EventEmitter` per goal in `main._handle`; emits `turn.start` / `turn.done`
+  - `skill_router.py` emits `reasoning` (node=route) + `tool.start` / `tool.done` around each skill call
+  - `coding_orchestrator.py` emits `reasoning` per ReAct turn + `tool.start` / `tool.done` around `run_bash` / `call_skill_tool` + `stream_final_answer()` emits `answer.delta` / `answer.done`
+  - `services/cli/event_stream.py` — `tail_events()` XREAD BLOCK consumer (async generator)
+- **CLI streaming renderer implemented** (Tasks 1–8, wf1+wf2, all pass):
+  - `services/cli/event_stream.py` extended: `EVENTS_PREFIX`, `event_channel()`, `EventStream` class (wraps `tail_events()` with `first(timeout)` / `events()` / `aclose()`), `FIRST_EVENT_TIMEOUT = 2.0`, `run_task_with_streaming()`
+  - `services/cli/stream_renderer.py` — `StreamRenderer` pure reducer; handles `turn.start`, `reasoning`, `tool.start`/`tool.done` (flat snake_case fields), `answer.delta`, `answer.done`, `turn.done`; renders `◆ working…`, `⚙/✓/✗ tool rows`, dim italic reasoning, streaming markdown answer
+  - `services/cli/redis_client.py` — `subscribe_events()` + `_redis_url`
+  - `services/cli/renderer.py` — `stream_live()` drives Rich `Live` loop
+  - `services/cli/repl.py` + `services/cli/main.py` — both use `run_task_with_streaming`: if first event arrives in ≤2 s, stream live then read canonical answer from `get_result()`; otherwise fall back to spinner
 
 **Reverted (do NOT reintroduce):** `plan_tool_call` constrained-decoding (`response_format`) regressed tool-name selection; a `plan` fast-path and an LLM profiler were net-neutral/diagnostic.
 
 **Known issues / latency state:** end-to-end is correct (14/14 dispatch) but **slow (~40–85 s/goal)**. Drivers, in order: (1) inherent ~6 s/call on the Q4 model × ~7 calls/goal; (2) **reflect-retry loops on failing skill executions** — many failures here are *environmental* (web-search/citation-graph need network, figma a key, code-sandbox Docker — none available on this pod), so they retry to exhaustion. In production with creds/network they succeed. Next latency lever (not yet done): **cap reflect-retries** on cleanly-failing skills.
 
-## Next Step: implement the event-stream comms
+## Next Steps: Live Smoke Tests for Event Stream + CLI Streaming
 
-**Immediate priority for the next session.** Implement `docs/superpowers/plans/2026-06-20-agent-event-stream.md` — a transport-agnostic event stream so a CLI/frontend can show, live: **which skill/tool was selected, when it runs/finishes, the model's reasoning** (for debugging), **and the final answer streamed token-by-token** (Claude-style). Events are `XADD`'d to a per-task Redis stream `labmate:events:<task_id>`; the doc has the full architecture, event schema (a subset of `FRONTEND_SPEC.md §4`), consumer contract, and 6 bite-sized TDD tasks. No new spec needed — `FRONTEND_SPEC.md` is the spec; this doc is the plan. Est. ~40–55 min via the Haiku→Opus workflow (mocked tests; only Tasks 5–6 need the live stack). Build with `superpowers:subagent-driven-development` or `executing-plans`.
+The event stream and CLI streaming renderer are **unit-tested but not yet live-verified**. The next session on RunPod should confirm (1) orchestrator events actually land in Redis Streams, and (2) the CLI picks them up and renders live.
+
+Start the stack first (same order as always):
+```bash
+infrastructure/local/serve-model.sh   # wait until healthy
+infrastructure/local/start.sh
+infrastructure/local/status.sh        # verify all services green
+```
+
+### Smoke test 1: Verify event stream writes (orchestrator side)
+
+Push a task and watch the Redis Stream for events in parallel:
+
+```bash
+# Terminal 1 — push a task and wait for result
+TASK_ID="evt-$(date +%s)"
+redis-cli XADD labmate:goals '*' payload \
+  "{\"task_id\":\"$TASK_ID\",\"task\":\"What is 2+2? Reply in one sentence.\",\"session_id\":\"$TASK_ID\"}"
+
+# Poll result (up to 120 s)
+for i in $(seq 1 120); do
+  VAL=$(redis-cli GET "labmate:result:$TASK_ID" 2>/dev/null)
+  [ -n "$VAL" ] && echo "$VAL" && break
+  sleep 1
+done
+```
+
+```bash
+# Terminal 2 — tail the event stream (run while terminal 1 is running)
+redis-cli XREAD BLOCK 0 STREAMS "labmate:events:$TASK_ID" 0
+```
+
+**Expected events in order:**
+1. `turn.start` — task accepted
+2. One or more `reasoning` events (`node`, `summary`, `text`)
+3. `tool.start` + `tool.done` pairs for each skill/bash call
+4. `answer.delta` chunks (streaming final answer)
+5. `answer.done` (full final answer)
+6. `turn.done` with `"status": "complete"`
+
+**Success:** events 1–6 appear and result has `"ok": true`.
+**Failure modes:**
+- Stream key missing (`labmate:events:<task_id>` never created) → `events.py` emitter not wiring; check `main._handle` for `EventEmitter` setup
+- `turn.start` appears but no `tool.*` → `skill_router.py` or `coding_orchestrator.py` not emitting; check those emit calls
+- No `answer.delta` → `stream_final_answer()` not called or failing silently; check orchestrator log
+
+### Smoke test 2: CLI streaming integration (one-shot mode)
+
+```bash
+source infrastructure/local/local.env
+PYTHONPATH=. python -m services.cli \
+  "Write a Python function that returns the square of a number."
+```
+
+**What you should see on screen:**
+- `◆ working…` line appears immediately (within ≤2 s of submitting)
+- Tool rows appear as the orchestrator runs: `⚙ exec_run  <reasoning_why>` → `✓ exec_run  exit 0  (1.2s)`
+- Reasoning blocks in dim italic text below the tool rows
+- Answer text streaming in progressively (markdown)
+- After `turn.done`: clean final markdown answer printed below the live frame
+- Process exits with code 0
+
+**Success:** live frame renders before the answer is complete.
+**Failure:** spinner appears instead of live frame (fallback path ran) — means no event arrived within 2 s. Check event stream smoke test 1 first.
+
+### Smoke test 3: Fallback path (regression)
+
+Stop the orchestrator so no events are published:
+```bash
+pkill -f "services.orchestrator"   # or use stop.sh and skip restarting orchestrator
+```
+
+Run the CLI again:
+```bash
+PYTHONPATH=. python -m services.cli "What is 2+2?"
+```
+
+**Expected:** spinner (`Working…`) appears, waits 2 s with no events, then polls `get_result()`. Since the orchestrator is stopped, it will timeout after 300 s (or return `"ok": false`). The key assertion is **no crash** and **no traceback** — the fallback path runs cleanly.
+
+Restart the orchestrator after: `infrastructure/local/start.sh`.
+
+### Diagnosing event stream failures
+
+| Symptom | Likely cause | Where to look |
+|---------|-------------|---------------|
+| No events at all | `EventEmitter` not created in `main._handle` | `orchestrator.log` — look for `turn.start` log line |
+| `turn.start` only, no `tool.*` | Skill router / ReAct not emitting | `skill_router.py` lines that call `events.emit("tool.start", ...)` |
+| `tool.*` events but no `answer.delta` | `stream_final_answer()` failed | `orchestrator.log` — look for `stream_final_answer failed` warning |
+| CLI shows spinner instead of live frame | Events not arriving within 2 s; check stream test 1 first | `FIRST_EVENT_TIMEOUT = 2.0` in `event_stream.py` — increase if orchestrator startup is slow |
+| CLI crashes on event parse | Malformed JSON in event field | `redis-cli XRANGE labmate:events:<id> - +` — inspect raw payloads |
 
 ---
 
