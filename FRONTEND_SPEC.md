@@ -234,6 +234,48 @@ type AuthMsg = { type: 'auth'; token: string };
 
 A `401` on any REST call or an `auth.error` on the socket **drops the user back to the login screen** (clear in-memory token, keep the URL session params for restore after re-auth).
 
+### Boot handshake (splash screen)
+
+On `auth.ok` the client routes to the **boot screen** (`Labmate Boot.dc.html` is the visual reference) and the chat UI **must not mount until the orchestrator reports the required subsystems ready**. The splash is not a timer — every row's status is driven by `system.boot` events streamed on the same socket. The mock advances on fixed delays; the real client replaces those with the events below and removes all hard-coded timing.
+
+```ts
+type SubsystemId = 'brain' | 'nervous_system' | 'hands' | 'memory' | 'workspace';
+type SubsystemState = 'pending' | 'starting' | 'ready' | 'degraded' | 'failed';
+
+interface Subsystem {
+  id: SubsystemId;
+  label: string;          // 'Brain', 'Nervous System', …
+  detail: string;         // 'gemma-3-4b · llama.cpp :8000', 'MCP bridge · 4 servers', …
+  state: SubsystemState;
+  required: boolean;       // gates entry; false = app can start without it
+  message?: string;        // surfaced on degraded/failed
+}
+
+// server→client, added to the StreamEvent union, emitted right after auth.ok:
+//   | { type: 'boot.plan';   subsystems: Subsystem[] }          // the full row list, in display order, all 'pending'
+//   | { type: 'boot.update'; id: SubsystemId; state: SubsystemState; detail?: string; message?: string }
+//   | { type: 'boot.ready';  sessionBootstrap: SessionBootstrap } // all required subsystems ready → mount chat
+//   | { type: 'boot.error';  id: SubsystemId; message: string }   // a required subsystem failed → block + show retry
+```
+
+- **`boot.plan` builds the rows.** The frontend renders exactly the subsystems the server names (don't hard-code Brain/Nervous System/Hands/Memory/Workspace in the UI — they come from the event), each starting `pending`. `detail` fills the mono subline; `required` marks which ones gate entry.
+- **`boot.update` flips a row's status** as the backend actually finishes that work: `pending → starting` (row lights up, spinner) → `ready` (green ✓ + status word) — e.g. llama.cpp answered `/healthz`, the MCP bridge connected all servers, the skill registry finished loading, prior conversations + context were restored from the store. The progress bar is `ready_count / total`, derived from row state — never a clock.
+- **`boot.ready` carries the warm-start payload** the chat needs so it can paint immediately instead of re-fetching: recent conversation list, active session, loaded skills, context-window usage, subsystem health snapshot (`SessionBootstrap`, defined below). Only on this event does the splash fade out and `Labmate.dc.html` mount.
+- **Degraded vs. failed.** A non-`required` subsystem reporting `degraded`/`failed` does **not** block entry — the row shows the warning (amber) and `message`, and the app starts with that capability flagged. A `required` subsystem emitting `boot.error` (or exceeding the boot timeout) **halts the splash**: show the failed row in error state with its `message` and a **Retry** action (re-runs the handshake) plus **Back to login**.
+- **Timeout.** If no terminal event arrives within `BOOT_TIMEOUT_MS` (default 15s), treat it as `boot.error` on whichever required subsystems are still `pending`/`starting`.
+- **Reconnect.** If the socket drops mid-boot, reconnect and the orchestrator re-emits `boot.plan` + current states (idempotent — the client renders from the latest snapshot, not an accumulated log).
+
+```ts
+interface SessionBootstrap {
+  user: AuthUser;
+  sessions: Session[];          // recent conversation list, sorted desc by updatedAt
+  activeSessionId: string | null;
+  skills: { id: string; name: string; enabled: boolean }[];
+  contextWindow: { used: number; total: number };   // e.g. { used: 11597, total: 16384 }
+  subsystems: Subsystem[];      // final health snapshot (mirrors the SYSTEM footer)
+}
+```
+
 ### Token storage & lifecycle
 
 - **Never put the token in the URL** (URL holds only `session`/`mode` — section 8).
@@ -244,7 +286,7 @@ A `401` on any REST call or an `auth.error` on the socket **drops the user back 
 
 ### UI states the login screen must cover
 
-`idle` · `submitting` (button shows a spinner + “Authenticating…”, inputs disabled) · `error` (empty-field validation or `invalid_credentials`/`locked` from the server) · `success` (route to `Labmate.dc.html` with the prior/last `?session&mode`). Enter submits; password has a show/hide toggle; the "local instance reachable · llama.cpp :8000" readout reflects backend health (`GET /healthz`) — a down backend should disable submit.
+`idle` · `submitting` (button shows a spinner + “Authenticating…”, inputs disabled) · `error` (empty-field validation or `invalid_credentials`/`locked` from the server) · `success` (route to the **boot screen**, which performs the handshake above and then mounts `Labmate.dc.html` with the prior/last `?session&mode`). Enter submits; password has a show/hide toggle; the "local instance reachable · llama.cpp :8000" readout reflects backend health (`GET /healthz`) — a down backend should disable submit.
 
 ---
 
