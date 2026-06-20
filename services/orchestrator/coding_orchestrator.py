@@ -161,6 +161,42 @@ class AsyncOrchestrator:
         """
         import json
 
+        # Reset the per-task skill-activation budget. SkillRunner.load_skill caps
+        # activations at max_chain PER TASK; without a reset the counter accrues
+        # across the process lifetime and load_skill starts failing after ~8 goals
+        # (silently breaking routing for every later goal). Reset at this per-goal
+        # boundary so each goal gets a fresh budget.
+        if self.skill_router is not None:
+            try:
+                self.skill_router.runner.reset_activations()
+            except Exception:
+                pass
+
+        # ── Skill-first deterministic routing ────────────────────────────────
+        # The selector (SkillRouter.select) is highly reliable at picking the
+        # correct skill (18/18 in live smoke tests), whereas the free ReAct loop
+        # below sometimes bypasses a matching skill via run_bash/finish. So when a
+        # skill clearly matches the goal, run it deterministically — select →
+        # load body (progressive disclosure) → tool call → dispatch — and return.
+        # Fall through to the ReAct loop only when NO skill matches (run() is None).
+        if self.skill_router is not None:
+            try:
+                skill_result = await self.skill_router.run(goal)
+            except Exception:
+                skill_result = None
+            if isinstance(skill_result, dict):
+                res = skill_result.get("result")
+                if isinstance(res, dict) and isinstance(res.get("content"), list):
+                    text = "\n".join(
+                        c.get("text", "") for c in res["content"]
+                        if isinstance(c, dict) and c.get("text")
+                    )
+                elif isinstance(res, str):
+                    text = res
+                else:
+                    text = json.dumps(res, default=str)
+                return {"ok": bool(skill_result.get("ok")), "summary": text[:2000]}
+
         # Build tool list
         tools = []
         if self.skill_router is not None:
@@ -221,9 +257,15 @@ class AsyncOrchestrator:
             catalog = self.skill_router.runner.catalog_prompt()
 
         system = (
-            "You are an execution agent. Use the available skills and tools to accomplish the task. "
-            "Call load_skill(name) to read a skill's instructions, then call_skill_tool(skill, tool, arguments) to run its tools. "
-            "Use run_bash for shell work. Call finish(summary) when the task is complete."
+            "You are an execution agent with access to specialized SKILLS plus a generic shell. "
+            "CRITICAL RULE: if ANY available skill matches the task, you MUST accomplish it with "
+            "that skill — call load_skill(name) to read its instructions, then "
+            "call_skill_tool(skill, tool, arguments) to run the right tool. Do NOT use run_bash to "
+            "hand-replicate what a skill already does (e.g. do not grep/sed/write files yourself "
+            "when a code-search, test-generation, parsing, audit, or documentation skill exists). "
+            "Use run_bash ONLY when no available skill fits the task. "
+            "Do NOT call finish until the work is actually done — and when a matching skill exists, "
+            "finish only AFTER call_skill_tool has returned its result. Call finish(summary) to end."
         )
         if catalog:
             system += f"\n\n{catalog}"

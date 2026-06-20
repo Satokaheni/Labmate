@@ -85,6 +85,17 @@ class SkillRunner:
             return
         self.catalog[name] = SkillMeta(name, desc, real, tier, dict(meta))
 
+    def reset_activations(self) -> None:
+        """Reset the per-task activation counter.
+
+        max_chain bounds how many skills may be auto-loaded within a SINGLE task
+        (the requires-chain guard). The counter must be reset at each task
+        boundary — otherwise it accumulates across the process lifetime and, after
+        max_chain total loads, every load_skill fails with 'activation limit
+        reached', silently breaking skill routing for all later tasks.
+        """
+        self._activations = 0
+
     def reload_catalog(self) -> None:
         """Re-run discovery. Safe to call on a filesystem change event.
 

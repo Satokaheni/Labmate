@@ -30,6 +30,12 @@ _log = logging.getLogger("skill_router")
 SKILL_TASKS_STREAM = "labmate:skill-tasks"
 RESULT_PREFIX = "labmate:result:"
 
+# Retry budgets: the local Q4 model is non-deterministic, so a clearly-matching
+# skill is occasionally missed on a single sample. Independent retries compound
+# recall toward ~100% (precision is unaffected — we only accept catalog hits).
+SELECT_ATTEMPTS = 3
+PLAN_ATTEMPTS = 3
+
 
 class SkillRouter:
     """Routes natural-language goals to skills and manages the full lifecycle."""
@@ -73,71 +79,61 @@ class SkillRouter:
         Returns:
             Skill name (str) if selected, None otherwise
         """
-        try:
-            catalog = self._runner.catalog_prompt()
-            schema = self._runner.tool_schema()
-            # Without an explicit directive, Gemma 4 under-triggers: it returns no
-            # tool call for ~half of clearly-matching tasks. Instructing it to call
-            # load_skill whenever a skill fits raised live selection recall from
-            # 9/18 to 18/18 (precision was already 100%). See docs/e2e-setup-findings.
-            directive = (
-                "You are a skill router. If ANY available skill is relevant to the "
-                "user's task, you MUST call load_skill with that skill's name. Only "
-                "decline to call a tool if truly no skill fits."
-            )
-
-            r = await litellm.acompletion(
-                model="openai/gemma-4-31b",
-                api_base=self._gemma_base,
-                api_key="not-needed",
-                messages=[
-                    {"role": "system", "content": f"{directive}\n\n{catalog}"},
-                    {"role": "user", "content": task},
-                ],
-                tools=[schema],
-                tool_choice="auto",
-                extra_body={"thinking_budget_tokens": 0},
-            )
-
-            # Check if the model issued any tool calls
-            if not hasattr(r, "choices") or not r.choices:
-                return None
-
-            choice = r.choices[0]
-            if not hasattr(choice, "message") or not choice.message:
-                return None
-
-            tool_calls = getattr(choice.message, "tool_calls", None)
-            if not tool_calls:
-                return None
-
-            # Extract the first load_skill tool call
-            for tc in tool_calls:
-                if getattr(tc, "function", None) is None:
+        catalog = self._runner.catalog_prompt()
+        schema = self._runner.tool_schema()
+        # Without an explicit directive, Gemma 4 under-triggers: it returns no
+        # tool call for ~half of clearly-matching tasks. Instructing it to call
+        # load_skill whenever a skill fits raised live selection recall from
+        # 9/18 to 18/18 (precision was already 100%). See docs/e2e-setup-findings.
+        directive = (
+            "You are a skill router. If ANY available skill is relevant to the "
+            "user's task, you MUST call load_skill with that skill's name. Only "
+            "decline to call a tool if truly no skill fits."
+        )
+        # Retry across independent samples: the local Q4 model is non-deterministic
+        # and occasionally emits no tool call for a clearly-matching task. Each
+        # attempt is an independent sample, so a few retries compound recall toward
+        # ~100% without ever picking a WRONG skill (we only accept catalog hits).
+        for attempt in range(SELECT_ATTEMPTS):
+            try:
+                r = await litellm.acompletion(
+                    model="openai/gemma-4-31b",
+                    api_base=self._gemma_base,
+                    api_key="not-needed",
+                    messages=[
+                        {"role": "system", "content": f"{directive}\n\n{catalog}"},
+                        {"role": "user", "content": task},
+                    ],
+                    tools=[schema],
+                    tool_choice="auto",
+                    extra_body={"thinking_budget_tokens": 0},
+                )
+                choices = getattr(r, "choices", None)
+                if not choices:
                     continue
-                func = tc.function
-                if getattr(func, "name", None) != "load_skill":
-                    continue
-
-                # Parse arguments
-                args_str = getattr(func, "arguments", "{}")
-                if isinstance(args_str, str):
-                    try:
-                        args = json.loads(args_str)
-                    except json.JSONDecodeError:
+                message = getattr(choices[0], "message", None)
+                tool_calls = getattr(message, "tool_calls", None) if message else None
+                if not tool_calls:
+                    continue  # no tool call this sample — retry
+                for tc in tool_calls:
+                    func = getattr(tc, "function", None)
+                    if func is None or getattr(func, "name", None) != "load_skill":
                         continue
-                else:
-                    args = args_str or {}
-
-                skill_name = args.get("name")
-                if skill_name and skill_name in self._runner.catalog:
-                    _log.info("selected skill: %s", skill_name)
-                    return skill_name
-
-            return None
-        except Exception as exc:
-            _log.exception("select() error: %s", exc)
-            return None
+                    args_str = getattr(func, "arguments", "{}")
+                    if isinstance(args_str, str):
+                        try:
+                            args = json.loads(args_str)
+                        except json.JSONDecodeError:
+                            continue
+                    else:
+                        args = args_str or {}
+                    skill_name = args.get("name")
+                    if skill_name and skill_name in self._runner.catalog:
+                        _log.info("selected skill: %s (attempt %d)", skill_name, attempt + 1)
+                        return skill_name
+            except Exception as exc:
+                _log.warning("select() attempt %d error: %s", attempt + 1, exc)
+        return None
 
     async def plan_tool_call(self, task: str, skill_name: str) -> dict | None:
         """
@@ -153,73 +149,62 @@ class SkillRouter:
         Returns:
             {"tool": str, "arguments": dict} or None on error
         """
-        try:
-            # Load the skill body
-            load_result = self._runner.load_skill(skill_name)
-            response = load_result.get("response", {})
-            if response.get("status") not in ("loaded", "already_loaded"):
-                _log.error("failed to load skill: %s", response.get("message"))
-                return None
-
-            body = response.get("body", "")
-            if not body:
-                _log.error("skill %s has empty body", skill_name)
-                return None
-
-            # Ask for a tool call plan
-            prompt = (
-                f"You have loaded the skill: {skill_name}\n\n"
-                f"Skill documentation:\n{body}\n\n"
-                f"Task: {task}\n\n"
-                f"Reply with ONLY a JSON object (no markdown, no code fences):\n"
-                f'{{"tool":"<tool_name>","arguments":{{"<arg>":<value>}}}}'
-            )
-
-            r = await litellm.acompletion(
-                model="openai/gemma-4-31b",
-                api_base=self._gemma_base,
-                api_key="not-needed",
-                messages=[{"role": "user", "content": prompt}],
-                extra_body={"thinking_budget_tokens": 0},
-            )
-
-            if not hasattr(r, "choices") or not r.choices:
-                return None
-
-            raw_text = r.choices[0].message.content
-            if not raw_text:
-                return None
-
-            # Strip markdown code fences if present
-            raw_text = raw_text.strip()
-            if raw_text.startswith("```json"):
-                raw_text = raw_text[7:]
-            elif raw_text.startswith("```"):
-                raw_text = raw_text[3:]
-            if raw_text.endswith("```"):
-                raw_text = raw_text[:-3]
-
-            # Parse JSON
-            try:
-                parsed = json.loads(raw_text)
-            except json.JSONDecodeError as exc:
-                _log.error("failed to parse tool call JSON: %s", exc)
-                return None
-
-            if not isinstance(parsed, dict):
-                return None
-
-            tool = parsed.get("tool")
-            arguments = parsed.get("arguments", {})
-            if not tool:
-                return None
-
-            _log.info("planned tool call: %s.%s", skill_name, tool)
-            return {"tool": tool, "arguments": arguments}
-
-        except Exception as exc:
-            _log.exception("plan_tool_call() error: %s", exc)
+        # Load the skill body once (progressive disclosure).
+        load_result = self._runner.load_skill(skill_name)
+        response = load_result.get("response", {})
+        if response.get("status") not in ("loaded", "already_loaded"):
+            _log.error("failed to load skill: %s", response.get("message"))
             return None
+        body = response.get("body", "")
+        if not body:
+            _log.error("skill %s has empty body", skill_name)
+            return None
+
+        prompt = (
+            f"You have loaded the skill: {skill_name}\n\n"
+            f"Skill documentation:\n{body}\n\n"
+            f"Task: {task}\n\n"
+            f"Reply with ONLY a JSON object (no markdown, no code fences):\n"
+            f'{{"tool":"<tool_name>","arguments":{{"<arg>":<value>}}}}'
+        )
+        # Retry across independent samples: the model occasionally returns prose or
+        # malformed JSON; a few retries compound the chance of a valid tool plan.
+        for attempt in range(PLAN_ATTEMPTS):
+            try:
+                r = await litellm.acompletion(
+                    model="openai/gemma-4-31b",
+                    api_base=self._gemma_base,
+                    api_key="not-needed",
+                    messages=[{"role": "user", "content": prompt}],
+                    extra_body={"thinking_budget_tokens": 0},
+                )
+                choices = getattr(r, "choices", None)
+                if not choices:
+                    continue
+                raw_text = choices[0].message.content
+                if not raw_text:
+                    continue
+                raw_text = raw_text.strip()
+                if raw_text.startswith("```json"):
+                    raw_text = raw_text[7:]
+                elif raw_text.startswith("```"):
+                    raw_text = raw_text[3:]
+                if raw_text.endswith("```"):
+                    raw_text = raw_text[:-3]
+                try:
+                    parsed = json.loads(raw_text)
+                except json.JSONDecodeError:
+                    continue  # malformed — retry
+                if not isinstance(parsed, dict):
+                    continue
+                tool = parsed.get("tool")
+                if not tool:
+                    continue
+                _log.info("planned tool call: %s.%s (attempt %d)", skill_name, tool, attempt + 1)
+                return {"tool": tool, "arguments": parsed.get("arguments", {})}
+            except Exception as exc:
+                _log.warning("plan_tool_call() attempt %d error: %s", attempt + 1, exc)
+        return None
 
     async def execute(
         self, skill_name: str, tool: str, arguments: dict
