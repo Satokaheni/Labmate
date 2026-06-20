@@ -9,6 +9,8 @@ from rich.spinner import Spinner
 from rich.live import Live
 from rich.text import Text
 
+from .stream_renderer import StreamRenderer
+
 
 def extract_answer(state: Any) -> str:
     if isinstance(state, dict):
@@ -59,3 +61,21 @@ class Renderer:
             transient=True,
         ):
             yield
+
+    async def stream_live(self, stream) -> "StreamRenderer":
+        """Drive a Rich Live frame from an EventStream.
+
+        Returns the StreamRenderer so the caller can read accumulated
+        answer/status. Does not subscribe or close `stream`.
+        """
+        sr = StreamRenderer()
+        with Live(
+            sr.render(),
+            console=self._console,
+            refresh_per_second=12,
+            transient=False,
+        ) as live:
+            async for event in stream.events():
+                sr.handle(event)
+                live.update(sr.render())
+        return sr
