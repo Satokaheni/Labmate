@@ -31,6 +31,31 @@ The codebase is mid-migration. Do not confuse the two:
 
 ---
 
+## Session Log — 2026-06-20 (read this first)
+
+This session took the M3 stack from "unit tests pass" to a **working, skill-aware orchestrator** running live on the pod. Branches: `fix/e2e-setup-and-redis` (pushed; the e2e + skill-selection milestone) → `feat/agent-event-stream` (current; latency/reliability fixes + the event-stream plan).
+
+**Done & verified live (committed/pushed on `fix/e2e-setup-and-redis`):**
+- **Full e2e bring-up** — installed all deps, fixed `install.sh` (missing service deps + skill deps), `start.sh` (stale-bridge rebuild), `stop.sh` (don't kill the model by default). See `docs/e2e-setup-findings.md`.
+- **Pinned `redis>=5.0,<6`** — redis-py 8.x raises `TimeoutError` on empty blocking `xreadgroup` under a busy loop (silently killed goal consumption). Loop also defensively catches it.
+- **Skill-aware planner + ReAct executor** (`spec_skills §2.2`) — catalog in-context, `load_skill`→`call_skill_tool`, dispatch to the `labmate:skill-tasks` worker; concurrency preserved. Plus real per-subtask reflexion + honest failure propagation.
+- **100% skill selection** — `SkillRouter.select()` picks the right skill 18/18 isolated; **14/14 end-to-end** dispatch. Root fix was a deterministic bug: `SkillRunner.load_skill` activation counter never reset (`reset_activations()` now called per goal). Plus a directive that lifted recall and per-sample retries.
+
+**Done this session on `feat/agent-event-stream` (uncommitted→committing now):**
+- **Skill tool-name fix** — 6 skills' `SKILL.md` documented tool names with a namespace prefix their servers don't expose (e.g. pdf-parse `pdf_parse.parse` vs exposed `parse`), so the model emitted unusable names → `SkillUnavailable` → reflect-retry loops. Fixed all 6 (`a11y-audit`, `ast-repo-map`, `ast-ts-refactor`, `citation-graph`, `paper-to-slides`, `pdf-parse`) to bare names. pdf-parse now executes `ok=True` 3/3.
+- **`plan_tool_call` cache read** — on a repeat `load_skill` the body is omitted (progressive-disclosure dedup); now falls back to `runner.loaded[name]` so plan doesn't return None on already-loaded skills (was forcing the slow ReAct fallback).
+- **Event-stream implementation doc** written: `docs/superpowers/plans/2026-06-20-agent-event-stream.md`.
+
+**Reverted (do NOT reintroduce):** `plan_tool_call` constrained-decoding (`response_format`) regressed tool-name selection; a `plan` fast-path and an LLM profiler were net-neutral/diagnostic.
+
+**Known issues / latency state:** end-to-end is correct (14/14 dispatch) but **slow (~40–85 s/goal)**. Drivers, in order: (1) inherent ~6 s/call on the Q4 model × ~7 calls/goal; (2) **reflect-retry loops on failing skill executions** — many failures here are *environmental* (web-search/citation-graph need network, figma a key, code-sandbox Docker — none available on this pod), so they retry to exhaustion. In production with creds/network they succeed. Next latency lever (not yet done): **cap reflect-retries** on cleanly-failing skills.
+
+## Next Step: implement the event-stream comms
+
+**Immediate priority for the next session.** Implement `docs/superpowers/plans/2026-06-20-agent-event-stream.md` — a transport-agnostic event stream so a CLI/frontend can show, live: **which skill/tool was selected, when it runs/finishes, the model's reasoning** (for debugging), **and the final answer streamed token-by-token** (Claude-style). Events are `XADD`'d to a per-task Redis stream `labmate:events:<task_id>`; the doc has the full architecture, event schema (a subset of `FRONTEND_SPEC.md §4`), consumer contract, and 6 bite-sized TDD tasks. No new spec needed — `FRONTEND_SPEC.md` is the spec; this doc is the plan. Est. ~40–55 min via the Haiku→Opus workflow (mocked tests; only Tasks 5–6 need the live stack). Build with `superpowers:subagent-driven-development` or `executing-plans`.
+
+---
+
 ## Architecture Map
 
 ```
