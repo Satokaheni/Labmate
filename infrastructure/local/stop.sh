@@ -2,11 +2,23 @@
 # stop.sh — Stop the native Labmate support stack started by start.sh.
 #
 # Data under <repo>/.data is preserved. Re-run start.sh to bring it back.
+#
+# By DEFAULT the model server (llama-server) is left running — it takes ~10 min
+# to load Gemma 4 into VRAM, so killing it on every support-stack restart is
+# expensive and surprising (it also contradicted the docs, which said the model
+# is left up). Pass --all (or --model) to also stop llama-server.
+#
+# Usage:
+#   ./stop.sh           # stop support stack + orchestrator; LEAVE the model up
+#   ./stop.sh --all     # also stop the model server (llama-server)
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 PIDS="${REPO_ROOT}/.data/pids"
+
+STOP_MODEL=false
+[[ "${1:-}" == "--all" || "${1:-}" == "--model" ]] && STOP_MODEL=true
 
 info() { echo "[local] $*"; }
 
@@ -30,13 +42,17 @@ _stop_pid "orchestrator.main" "$PIDS/orchestrator.pid"
 # ─── Skill worker ─────────────────────────────────────────────────────────────
 _stop_pid "skill_worker.worker" "$PIDS/skill-worker.pid"
 
-# ─── Model server (Gemma 4 via llama.cpp) ─────────────────────────────────────
-if [[ -f "$PIDS/llama-server.pid" ]] && kill -0 "$(cat "$PIDS/llama-server.pid")" 2>/dev/null; then
-  info "stopping llama-server (pid $(cat "$PIDS/llama-server.pid")) ..."
-  kill "$(cat "$PIDS/llama-server.pid")" 2>/dev/null || true
-  rm -f "$PIDS/llama-server.pid"
+# ─── Model server (Gemma 4 via llama.cpp) — only with --all/--model ───────────
+if $STOP_MODEL; then
+  if [[ -f "$PIDS/llama-server.pid" ]] && kill -0 "$(cat "$PIDS/llama-server.pid")" 2>/dev/null; then
+    info "stopping llama-server (pid $(cat "$PIDS/llama-server.pid")) ..."
+    kill "$(cat "$PIDS/llama-server.pid")" 2>/dev/null || true
+    rm -f "$PIDS/llama-server.pid"
+  else
+    pkill -f "llama-server" 2>/dev/null && info "stopped stray llama-server" || info "llama-server not running"
+  fi
 else
-  pkill -f "llama-server" 2>/dev/null && info "stopped stray llama-server" || info "llama-server not running"
+  info "leaving llama-server running (pass --all to stop it; ~10 min to reload)"
 fi
 
 # ─── Chroma ───────────────────────────────────────────────────────────────────

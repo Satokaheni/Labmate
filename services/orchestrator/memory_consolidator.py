@@ -114,8 +114,9 @@ class MemoryConsolidator:
             model=f"openai/{GEMMA_MODEL}",
             messages=[{"role": "user", "content": prompt}],
             api_base=self._base,
-            api_key="EMPTY",
+            api_key="not-needed",
             temperature=0.0,
+            extra_body={"thinking_budget_tokens": 1024},  # FIX #6: avoid INT_MAX hang
         )
         return resp["choices"][0]["message"]["content"]
 

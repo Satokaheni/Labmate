@@ -45,12 +45,20 @@ class SkillRunner:
     # ---------- STAGE 1: discovery (frontmatter only) ----------
 
     def discover(self) -> None:
-        """Scan all roots, parse frontmatter only, build catalog."""
+        """Scan all roots, parse frontmatter only, build catalog.
+
+        Skips SKILL.md files under node_modules or .git/dist to avoid
+        catalog pollution from vendored dependencies.
+        """
         self.catalog.clear()
         for tier, root in zip(self.TIER_NAMES, self.roots):
             if not root.is_dir():
                 continue
             for skill_md in sorted(root.rglob("SKILL.md")):
+                # Skip vendored paths (node_modules, .git, dist)
+                parts = skill_md.parts
+                if any(p in ("node_modules", ".git", "dist") for p in parts):
+                    continue
                 self._index(skill_md, tier, root)
         log.info("cataloged %d skills", len(self.catalog))  # -> stderr
 
@@ -76,6 +84,17 @@ class SkillRunner:
             )
             return
         self.catalog[name] = SkillMeta(name, desc, real, tier, dict(meta))
+
+    def reset_activations(self) -> None:
+        """Reset the per-task activation counter.
+
+        max_chain bounds how many skills may be auto-loaded within a SINGLE task
+        (the requires-chain guard). The counter must be reset at each task
+        boundary — otherwise it accumulates across the process lifetime and, after
+        max_chain total loads, every load_skill fails with 'activation limit
+        reached', silently breaking skill routing for all later tasks.
+        """
+        self._activations = 0
 
     def reload_catalog(self) -> None:
         """Re-run discovery. Safe to call on a filesystem change event.

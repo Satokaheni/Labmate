@@ -20,12 +20,17 @@
 #   vLLM becomes viable again (preferred for batching) — see INSTALL.md.
 #
 # Usage:
-#   infrastructure/local/install.sh            # everything
-#   infrastructure/local/install.sh --no-model # skip the 18GB GGUF download
+#   infrastructure/local/install.sh             # everything (core + skills + model)
+#   infrastructure/local/install.sh --no-model  # skip the 18GB GGUF download
+#   infrastructure/local/install.sh --no-skills # skip per-skill deps (core only)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+# Build/install steps below redirect logs into .data/logs — make sure it exists
+# before the first write (the llama.cpp build redirect fails on a missing dir).
+mkdir -p "${REPO_ROOT}/.data/logs" "${REPO_ROOT}/.data/pids"
 
 # ─── Tunables (override via env) ──────────────────────────────────────────────
 export HF_HOME="${HF_HOME:-/workspace/.hf-cache}"
@@ -35,7 +40,13 @@ GGUF_REPO="${GGUF_REPO:-unsloth/gemma-4-31B-it-GGUF}"
 GGUF_FILE="${GGUF_FILE:-gemma-4-31B-it-UD-Q4_K_XL.gguf}"
 
 SKIP_MODEL=false
-[[ "${1:-}" == "--no-model" ]] && SKIP_MODEL=true
+SKIP_SKILLS=false
+for arg in "$@"; do
+  case "$arg" in
+    --no-model)  SKIP_MODEL=true ;;
+    --no-skills) SKIP_SKILLS=true ;;
+  esac
+done
 
 log()  { echo "[install] $*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -85,11 +96,42 @@ fi
 
 # ─── 3. Python deps ───────────────────────────────────────────────────────────
 # System Python is PEP-668 externally-managed → --break-system-packages.
-log "python deps (memory + mcp-bridge) ..."
+# Install requirements for every core service that runs in the local stack —
+# not just memory + mcp-bridge. Missing any of these makes start.sh fail at
+# runtime (e.g. skill-worker dies with ModuleNotFoundError: 'frontmatter').
+log "python deps (core services) ..."
 PIP="pip install --break-system-packages -q"
-$PIP -r "${REPO_ROOT}/services/memory/requirements.txt"
-$PIP -r "${REPO_ROOT}/services/mcp-bridge/requirements.txt"
+for svc in memory mcp-bridge orchestrator skill_runner skill_worker cli; do
+  req="${REPO_ROOT}/services/${svc}/requirements.txt"
+  [[ -f "$req" ]] && { log "  pip: services/${svc}"; $PIP -r "$req"; }
+done
 # NOTE: We deliberately do NOT install vllm here (CUDA-13 incompatibility above).
+
+# ─── 3b. Skill dependencies (Python requirements + TypeScript build) ───────────
+# Each skill in services/skills/<name> is an independent MCP server with its own
+# deps. The skill-worker spawns every skill that has a SKILL.md; a skill whose
+# deps are missing fails to register and is silently skipped. Install them ALL so
+# the full skill set is available for e2e. A single skill's install failing must
+# not abort the whole run, so each is guarded with `|| log WARN`.
+# Pass --no-skills to skip this section (faster core-only setup).
+if [[ "${SKIP_SKILLS:-false}" == "true" ]]; then
+  log "skipping skill deps (--no-skills)."
+else
+  log "skill deps (python + typescript) ..."
+  for d in "${REPO_ROOT}"/services/skills/*/; do
+    name="$(basename "$d")"
+    if [[ -f "$d/requirements.txt" ]]; then
+      log "  pip: skills/${name}"
+      $PIP -r "$d/requirements.txt" || log "  WARN: pip failed for skills/${name} — skill will be skipped at runtime"
+    fi
+    if [[ -f "$d/package.json" ]]; then
+      log "  npm: skills/${name}"
+      ( cd "$d" && npm install --no-audit --no-fund >/dev/null 2>&1 \
+          && npm run build --if-present >/dev/null 2>&1 ) \
+        || log "  WARN: npm install/build failed for skills/${name} — skill will be skipped at runtime"
+    fi
+  done
+fi
 
 # ─── 4. Inference engine: llama.cpp + GGUF ────────────────────────────────────
 LLAMA_SERVER="${LLAMA_DIR}/build/bin/llama-server"

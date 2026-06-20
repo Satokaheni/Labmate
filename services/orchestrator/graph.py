@@ -28,14 +28,26 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
     async def plan(state: State) -> dict:
         """
         Decompose the current root goal into child Goals via a Gemma 4 architect call.
+        Includes the skill catalog in the prompt when available.
         Writes new Goal entries into goal_tree. Pure return-delta — no in-place mutation.
         """
+        import copy
+
         root_id = state["current_goal_id"]
         root_desc = state["goal_tree"][root_id]["description"]
-        raw_plan = await orch.architect(
-            f"Decompose this task into concrete subtasks (one per line):\n{root_desc}"
-        )
-        tree = dict(state["goal_tree"])
+
+        # Include skill catalog in the prompt if available
+        catalog = ""
+        if getattr(orch, "skill_router", None) is not None:
+            catalog = orch.skill_router.runner.catalog_prompt()
+
+        prompt = f"Decompose this task into concrete subtasks (one per line):\n{root_desc}"
+        if catalog:
+            prompt += f"\n\nAvailable skills:\n{catalog}\nIf the whole task is accomplishable by a single available skill, emit ONE subtask describing that work. Otherwise produce a small number of coherent subtasks, each a self-contained unit that may map to a skill."
+
+        raw_plan = await orch.architect(prompt)
+        # Deep copy to avoid mutating the checkpoint's prior goal_tree.
+        tree = copy.deepcopy(state["goal_tree"])
         for i, line in enumerate(raw_plan.strip().splitlines()):
             if line.strip():
                 gid = f"{root_id}_sub{i}"
@@ -44,67 +56,53 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
 
     async def execute_node(state: State) -> dict:
         """
-        Execute the current PENDING goal. If multiple goals are ready in parallel,
-        delegates to AsyncOrchestrator.plan_and_dispatch().
-        Includes an idempotency guard via step_markers.
+        Execute all ready PENDING goals via AsyncOrchestrator.plan_and_dispatch().
+        This ensures all goals (including single ones) are processed through the
+        skill-aware ReAct executor, preserving concurrency for multiple goals.
+        Includes an idempotency guard via step_markers that tracks per-GOAL-ID completion,
+        not result hash, so retries after reflect can produce different outcomes.
         """
+        import copy
+
         ready = get_ready_goals(state["goal_tree"])
         if not ready:
             return {}
 
-        tree = dict(state["goal_tree"])
+        # Deep copy to avoid mutating the checkpoint's prior goal_tree.
+        tree = copy.deepcopy(state["goal_tree"])
         markers = dict(state["step_markers"])
 
-        if len(ready) > 1:
-            results = await async_orch.plan_and_dispatch(ready)
-            for r in results:
-                gid = r.id
-                if markers.get(gid) == "completed":
-                    continue  # idempotency guard: skip already-completed goals on crash-resume
-                markers[gid] = "completed"
-                new_status = Status.COMPLETED if r.ok else Status.FAILED
+        results = await async_orch.plan_and_dispatch(ready)
+        for r in results:
+            gid = r.id
+            # Idempotency guard (FIX #4): mark per-GOAL-ID only when COMPLETED.
+            # FAILED goals are NOT marked, so they stay retryable and increment attempts each time.
+            # This prevents the deadlock where a retry with the same summary was skipped.
+            if markers.get(gid) == "completed":
+                continue  # idempotency guard: already applied for this goal
+            new_status = Status.COMPLETED if r.ok else Status.FAILED
+            # Increment attempts on FAILED (needed for router's reflect branch to trigger)
+            if not r.ok:
+                tree[gid]["attempts"] = tree[gid].get("attempts", 0) + 1
+            # Set both result and error on failure so reflect/check can surface the error
+            if r.ok:
                 update_status(tree, gid, new_status, result=r.summary)
-            return {"goal_tree": tree, "step_markers": markers}
+            else:
+                update_status(tree, gid, new_status, result=r.summary, error=r.summary)
+            # Mark as completed only if succeeded; FAILED goals stay retryable
+            if r.ok:
+                markers[gid] = "completed"
 
-        goal = ready[0]
-        gid = goal["id"]
-
-        # Idempotency guard: skip if already completed (crash-resume safety)
-        if markers.get(gid) == "completed":
-            return {}
-
-        markers[gid] = "started"
-        update_status(tree, gid, Status.IN_PROGRESS, started_at=now_iso())
-
-        # Generate the shell command from the goal description
-        cmd = await orch.editor(
-            f"Generate a single bash command to accomplish this goal. "
-            f"Reply with ONLY the command, no explanation, no markdown.\n\n"
-            f"Goal: {goal['description']}\n"
-            f"Workspace: {orch.workspace}"
-        )
-        cmd = cmd.strip()
-        obs = await orch.run_in_sandbox(cmd)
-        result_text = obs["stdout"] or obs["stderr"]
-
-        if obs["ok"]:
-            markers[gid] = "completed"
-            update_status(tree, gid, Status.COMPLETED, result=result_text)
-            await orch.git_checkpoint(f"goal {gid}: {goal['description'][:60]}")
-        else:
-            g = tree[gid]
-            g["attempts"] = g["attempts"] + 1
-            update_status(tree, gid, Status.FAILED, error=result_text)
-
-        return {
-            "goal_tree": tree,
-            "step_markers": markers,
-            "current_goal_id": gid,
-        }
+        return {"goal_tree": tree, "step_markers": markers}
 
     async def check(state: State) -> dict:
-        """Finalize root when all leaf goals are terminal; set final_answer."""
-        tree = dict(state["goal_tree"])
+        """
+        Finalize root when all children are terminal; handle failed retryables.
+        If a child failed but has attempts < 3, defer finalization and route to reflect.
+        (FIX #1/#2: Stop masking failures as success)
+        """
+        import copy
+        tree = copy.deepcopy(state["goal_tree"])
         root_id = "root"
         root = tree.get(root_id, {})
 
@@ -112,7 +110,7 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         if not children:
             return {}
 
-        # Only finalize when every child has reached a terminal status
+        # Only check finalization when every child has reached a terminal status
         all_terminal = all(
             tree.get(c, {}).get("status") in (Status.COMPLETED.value, Status.FAILED.value)
             for c in children
@@ -120,29 +118,59 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         if not all_terminal:
             return {}
 
-        # Build answer from completed leaves
-        answer = "\n\n".join(
+        # Check for failed children that can still be retried (attempts < 3)
+        failed_retryable = [
+            c for c in children
+            if tree.get(c, {}).get("status") == Status.FAILED.value
+            and tree.get(c, {}).get("attempts", 0) < 3
+        ]
+        if failed_retryable:
+            # Don't finalize; defer to reflect by routing to first failed child
+            return {"goal_tree": tree, "current_goal_id": failed_retryable[0]}
+
+        # All children are terminal and no retryables remain: FINALIZE
+        # Build answer from all children, noting failures
+        completed_results = [
             f"**{tree[c]['description'][:80]}**\n{tree[c]['result']}"
             for c in children
             if tree.get(c, {}).get("result")
-        )
-        if not answer:
-            answer = "Task completed."
+        ]
+        failed_children = [
+            c for c in children
+            if tree.get(c, {}).get("status") == Status.FAILED.value
+        ]
+        answer = "\n\n".join(completed_results) if completed_results else "Task completed."
+        if failed_children:
+            failed_summary = "; ".join(
+                f"{tree[c]['description'][:40]} (error: {(tree[c].get('error') or 'unknown')[:50]})"
+                for c in failed_children
+            )
+            answer += f"\n\nFailed subtasks: {failed_summary}"
 
-        # Mark root COMPLETED so get_ready_goals won't re-select it
-        update_status(tree, root_id, Status.COMPLETED, result=answer)
+        # Determine root status: FAILED if any child failed, else COMPLETED
+        failed_any = bool(failed_children)
+        final_status = Status.FAILED if failed_any else Status.COMPLETED
+        update_status(tree, root_id, final_status, result=answer)
 
-        return {
+        result = {
             "goal_tree": tree,
             "final_answer": answer,
             "current_goal_id": root_id,
         }
+        if failed_any:
+            failed_summary = "; ".join(
+                f"{tree[c]['description'][:40]} (error: {(tree[c].get('error') or 'unknown')[:50]})"
+                for c in failed_children
+            )
+            result["error"] = f"{len(failed_children)} subtask(s) failed: {failed_summary}"
+        return result
 
     async def reflect(state: State) -> dict:
         """
         Reflexion: write a natural-language diagnosis to episodic memory.
         Conditions the next execute attempt on the stored reflection.
         """
+        import copy
         gid = state["current_goal_id"]
         goal = state["goal_tree"][gid]
         reflection = await orch.architect(
@@ -152,7 +180,8 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             "Write a concise diagnosis and what to do differently on the next attempt.",
             thinking_budget=3000,
         )
-        tree = dict(state["goal_tree"])
+        # Deep copy to avoid mutating the checkpoint's prior goal_tree.
+        tree = copy.deepcopy(state["goal_tree"])
         update_status(tree, gid, Status.PENDING)
         return {
             "goal_tree": tree,
@@ -164,9 +193,11 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         Human-in-the-loop gate before irreversible actions.
         interrupt() checkpoints state and suspends execution until the thread is resumed.
         """
+        import copy
         gid = state["current_goal_id"]
         decision = interrupt({"action": "irreversible", "goal": gid})
-        tree = dict(state["goal_tree"])
+        # Deep copy to avoid mutating the checkpoint's prior goal_tree.
+        tree = copy.deepcopy(state["goal_tree"])
         new_status = Status.IN_PROGRESS if decision == "approve" else Status.BLOCKED
         update_status(tree, gid, new_status)
         return {"goal_tree": tree}
@@ -178,7 +209,13 @@ def router(state: State) -> str:
     """
     Route after the 'check' node. Reads only values committed in prior
     super-steps — never intra-super-step values.
+    Finalization (final_answer set) is the terminal signal.
+    (FIX #2: make finalization terminal so failed FAILED root doesn't loop)
     """
+    # If final_answer is set, check node finalized the tree — end execution
+    if state.get("final_answer"):
+        return END
+
     gid = state.get("current_goal_id")
     if gid is None:
         return END

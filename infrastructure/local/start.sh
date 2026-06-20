@@ -122,15 +122,23 @@ pass "Chroma ready :8765"
 # ─── MCP bridge (TypeScript) — build only; the orchestrator spawns it as a child ─
 MCP_BRIDGE_DIR="${REPO_ROOT}/services/mcp-bridge"
 MCP_DIST="${MCP_BRIDGE_DIR}/dist/index.js"
-if [[ ! -f "$MCP_DIST" ]]; then
+# Rebuild when dist is missing OR stale (any src/*.ts newer than the compiled
+# entrypoint). A stale dist — e.g. compiled before a new src/ file was added —
+# loads but crashes the bridge at import time (ERR_MODULE_NOT_FOUND), which the
+# orchestrator only surfaces as "MCP bridge did not become ready".
+_mcp_stale() {
+  [[ ! -f "$MCP_DIST" ]] && return 0
+  [[ -n "$(find "$MCP_BRIDGE_DIR/src" -name '*.ts' -newer "$MCP_DIST" -print -quit 2>/dev/null)" ]]
+}
+if _mcp_stale; then
   info "building MCP bridge (npm ci && npm run build) ..."
   command -v node >/dev/null 2>&1 || fail "node not found — install Node.js"
-  (cd "$MCP_BRIDGE_DIR" && npm ci --quiet && npm run build --quiet) \
+  (cd "$MCP_BRIDGE_DIR" && rm -rf dist && npm ci --quiet && npm run build --quiet) \
     >"$LOGS/mcp-bridge-build.log" 2>&1 \
     || fail "MCP bridge build failed — see $LOGS/mcp-bridge-build.log"
   pass "MCP bridge built → $MCP_DIST"
 else
-  info "MCP bridge already built (dist/index.js present)"
+  info "MCP bridge already built (dist/index.js up to date)"
 fi
 
 # ─── Skill worker ─────────────────────────────────────────────────────────────

@@ -363,3 +363,87 @@ async def test_complete_session_called_with_ok_false_on_run_task_exception():
     if ok_value is None and len(call_args.args) > 1:
         ok_value = call_args.args[1]
     assert ok_value is False
+
+
+@pytest.mark.asyncio
+async def test_write_result_ok_false_when_final_state_has_error():
+    """FIX #2: _write_result derives ok=False from final_state.error (not exception)."""
+    proc = OrchestratorProcess()
+    proc._redis = AsyncMock()
+
+    orch = AsyncMock()
+    # Graph finalized with FAILED root and error set (no exception raised)
+    orch.run_task.return_value = {
+        "final_answer": "Task failed with subtask errors",
+        "error": "1 subtask(s) failed: subtask 1 (error: worker error: bad thing)",
+        "goal_tree": {"root": {"status": "FAILED"}},
+    }
+
+    storage = AsyncMock()
+    storage.workspaces = AsyncMock()
+    storage.workspaces.record_session = AsyncMock()
+    storage.workspaces.complete_session = AsyncMock()
+    storage.workspaces.get_workspace = AsyncMock(return_value=None)
+    storage.workspaces._db = AsyncMock()
+    storage.workspaces._db.__getitem__ = MagicMock(return_value=AsyncMock())
+
+    payload = json.dumps({
+        "task_id": "t-graph-failed",
+        "task": "subtask fails",
+        "session_id": "s-graph-failed",
+        "user_id": "u-3",
+        "workspace_id": "ws-3",
+    })
+    await proc._handle("msg-graph-fail", fields={"payload": payload}, orch=orch, storage=storage)
+
+    # _write_result must be called with ok=False (derived from error != None)
+    set_args = proc._redis.set.call_args[0]
+    result = json.loads(set_args[1])
+    assert result["ok"] is False, "Redis result should have ok=False when final_state.error is set"
+
+    # complete_session must also record ok=False
+    storage.workspaces.complete_session.assert_awaited()
+    call_args = storage.workspaces.complete_session.call_args
+    ok_value = call_args.kwargs.get("ok")
+    if ok_value is None and len(call_args.args) > 1:
+        ok_value = call_args.args[1]
+    assert ok_value is False
+
+
+# ── skill router wiring ────────────────────────────────────────────────────────
+
+def test_skill_router_wiring_order():
+    """Code inspection: verify redis is initialized before skill router in main.py.
+
+    This test documents the fix for the bug where SkillRouter was created with
+    redis=None, causing all skill routes to fail at runtime with AttributeError
+    on None.xadd(). The fix: move redis pool/client creation BEFORE the
+    skill-router try/except block.
+    """
+    from pathlib import Path
+
+    # Path from test file: tests/services/orchestrator/test_main.py
+    # -> services/orchestrator/main.py
+    main_py = (Path(__file__).parent.parent.parent.parent / "services" / "orchestrator" / "main.py").read_text()
+    lines = main_py.split('\n')
+
+    # Find line numbers of key sections (1-indexed for clarity in error messages)
+    redis_pool_line = None
+    skill_router_comment_line = None
+
+    for i, line in enumerate(lines, 1):
+        if 'pool = aioredis.ConnectionPool.from_url' in line:
+            redis_pool_line = i
+        if '# Build skill router' in line:
+            skill_router_comment_line = i
+
+    # Both sections must exist
+    assert redis_pool_line is not None, "Redis pool creation not found in main.py"
+    assert skill_router_comment_line is not None, "Skill router comment block not found in main.py"
+
+    # Redis MUST be initialized BEFORE the skill router block
+    assert redis_pool_line < skill_router_comment_line, (
+        f"BUG: redis pool created at line {redis_pool_line}, "
+        f"but skill router block starts at line {skill_router_comment_line}. "
+        "Redis must be created first so SkillRouter.__init__ receives a non-None redis client."
+    )

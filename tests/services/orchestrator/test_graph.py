@@ -119,6 +119,87 @@ class TestPlanNode:
         children = delta["goal_tree"]["root"]["children"]
         assert len(children) == 2
 
+    @pytest.mark.asyncio
+    async def test_plan_node_includes_skill_catalog_when_available(self):
+        """Plan node should include skill catalog in the prompt when skill_router present."""
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+        from unittest.mock import patch
+
+        # Create a mock skill_router with a catalog
+        mock_runner = MagicMock()
+        mock_runner.catalog_prompt.return_value = "- test-skill: A test skill\n- other-skill: Another skill"
+        mock_skill_router = MagicMock()
+        mock_skill_router.runner = mock_runner
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        mock_orch.architect = AsyncMock(return_value="Use test-skill")
+        mock_orch.skill_router = mock_skill_router
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+
+        plan_node, *_ = make_nodes(mock_orch, mock_async_orch)
+
+        state = _make_state()
+        await plan_node(state)
+
+        # Verify architect was called with a prompt containing skill info
+        call_args = mock_orch.architect.call_args
+        assert call_args is not None
+        prompt = call_args[0][0]
+        assert "test-skill" in prompt or "skill" in prompt.lower()
+
+    @pytest.mark.asyncio
+    async def test_plan_node_with_real_skill_router_property_access(self):
+        """Test plan node with real SkillRouter.runner property (not private _runner)."""
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+        from services.orchestrator.skill_router import SkillRouter
+        from services.skill_runner.skill_runner import SkillRunner, SkillMeta
+        from pathlib import Path
+
+        # Build a real SkillRunner with a mock catalog
+        runner = MagicMock(spec=SkillRunner)
+        runner.catalog = {
+            "test-skill": SkillMeta(
+                name="test-skill",
+                description="Test skill",
+                path=Path("/fake/SKILL.md"),
+                tier="bundled",
+            )
+        }
+        runner.catalog_prompt.return_value = "- test-skill: Test skill"
+        runner.tool_schema.return_value = {"type": "function", "function": {"name": "load_skill"}}
+
+        # Create a real SkillRouter (which now has a .runner property)
+        mock_redis = AsyncMock()
+        skill_router = SkillRouter(
+            runner=runner,
+            redis=mock_redis,
+            gemma_api_base="http://localhost:8000/v1",
+        )
+
+        # Verify the property is accessible (the PRIMARY BUG FIX)
+        assert skill_router.runner is runner
+        assert skill_router.runner.catalog_prompt() == "- test-skill: Test skill"
+
+        # Now use it in the graph
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        mock_orch.architect = AsyncMock(return_value="Use test-skill")
+        mock_orch.skill_router = skill_router
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+
+        plan_node, *_ = make_nodes(mock_orch, mock_async_orch)
+
+        state = _make_state()
+        delta = await plan_node(state)
+
+        # Verify the plan executed without AttributeError
+        assert "goal_tree" in delta
+        # Verify architect was called with catalog prompt
+        call_args = mock_orch.architect.call_args
+        prompt = call_args[0][0]
+        assert "Test skill" in prompt
+
 
 @pytest.mark.mocked
 class TestExecuteNode:
@@ -128,112 +209,206 @@ class TestExecuteNode:
         from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
-        mock_orch.run_in_sandbox = AsyncMock()
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+        # No ready goals, so plan_and_dispatch should not be called
+        mock_async_orch.plan_and_dispatch = AsyncMock()
 
         _, execute_node, *_ = make_nodes(mock_orch, mock_async_orch)
 
         state = _make_state()
         state["step_markers"]["root"] = "completed"
+        # Mark root as completed so there are no ready goals
+        update_status(state["goal_tree"], "root", Status.COMPLETED)
 
         delta = await execute_node(state)
         assert delta == {}
-        mock_orch.run_in_sandbox.assert_not_called()
+        mock_async_orch.plan_and_dispatch.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_execute_node_calls_git_checkpoint_on_success(self):
+    async def test_execute_node_calls_plan_and_dispatch_on_success(self):
+        """execute_node should call plan_and_dispatch for ready goals."""
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator, Result
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
-        mock_orch.editor = AsyncMock(return_value="echo test")
-        mock_orch.workspace = "/workspace"
-        mock_orch.run_in_sandbox = AsyncMock(return_value={
-            "stdout": "Tests passed", "stderr": "", "exit_code": 0, "ok": True
-        })
-        mock_orch.git_checkpoint = AsyncMock()
+        result = Result(id="root", summary="task completed", ok=True)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+        mock_async_orch.plan_and_dispatch = AsyncMock(return_value=[result])
 
         _, execute_node, *_ = make_nodes(mock_orch, mock_async_orch)
 
         state = _make_state()
         await execute_node(state)
-        mock_orch.git_checkpoint.assert_awaited_once()
+        mock_async_orch.plan_and_dispatch.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_execute_node_increments_attempts_on_failure(self):
+    async def test_execute_node_handles_failure_from_plan_and_dispatch(self):
+        """execute_node should mark goal FAILED when plan_and_dispatch returns ok=False."""
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator, Result
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
-        mock_orch.editor = AsyncMock(return_value="failing_command")
-        mock_orch.workspace = "/workspace"
-        mock_orch.run_in_sandbox = AsyncMock(return_value={
-            "stdout": "", "stderr": "error", "exit_code": 1, "ok": False
-        })
-        mock_orch.git_checkpoint = AsyncMock()
+        # Return a failed result
+        result = Result(id="root", summary="error occurred", ok=False)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+        mock_async_orch.plan_and_dispatch = AsyncMock(return_value=[result])
 
         _, execute_node, *_ = make_nodes(mock_orch, mock_async_orch)
 
         state = _make_state()
         delta = await execute_node(state)
         tree = delta["goal_tree"]
-        assert tree["root"]["attempts"] == 1
         assert tree["root"]["status"] == Status.FAILED.value
 
     @pytest.mark.asyncio
-    async def test_execute_node_git_checkpoint_not_called_on_failure(self):
+    async def test_execute_node_respects_idempotency_guard_on_retry(self):
+        """execute_node should skip already-applied results on retry (idempotency) — FIX #4."""
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator, Result
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
-        mock_orch.editor = AsyncMock(return_value="failing_command")
-        mock_orch.workspace = "/workspace"
-        mock_orch.run_in_sandbox = AsyncMock(return_value={
-            "stdout": "", "stderr": "fail", "exit_code": 2, "ok": False
-        })
-        mock_orch.git_checkpoint = AsyncMock()
+        # plan_and_dispatch returns a result
+        result = Result(id="root", summary="already done", ok=True)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+        mock_async_orch.plan_and_dispatch = AsyncMock(return_value=[result])
 
         _, execute_node, *_ = make_nodes(mock_orch, mock_async_orch)
         state = _make_state()
-        await execute_node(state)
-        mock_orch.git_checkpoint.assert_not_awaited()
+        # Mark goal with per-goal-ID "completed" marker (FIX #4: not hash-of-summary)
+        state["step_markers"]["root"] = "completed"
+
+        delta = await execute_node(state)
+        # plan_and_dispatch is called, but idempotency guard prevents double-update
+        mock_async_orch.plan_and_dispatch.assert_awaited_once()
+        # The returned goal_tree should skip the update (because the marker matches)
+        # The status stays PENDING since the idempotency guard skipped the update
+        assert delta.get("goal_tree", {}).get("root", {}).get("status") == Status.PENDING.value
 
     @pytest.mark.asyncio
-    async def test_execute_node_calls_editor_then_sandbox(self):
-        """execute_node must call editor() to generate a command, not pass a comment."""
+    async def test_execute_node_routes_all_ready_goals_through_plan_and_dispatch(self):
+        """execute_node should use plan_and_dispatch for all ready goals (including single)."""
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator, Result
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
-        mock_orch.editor = AsyncMock(return_value="ls -la")
-        mock_orch.workspace = "/workspace"
-        mock_orch.run_in_sandbox = AsyncMock(return_value={
-            "stdout": "file1", "stderr": "", "exit_code": 0, "ok": True
-        })
-        mock_orch.git_checkpoint = AsyncMock()
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+
+        # Mock plan_and_dispatch to return a result
+        result = Result(id="root", summary="task completed", ok=True)
+        mock_async_orch.plan_and_dispatch = AsyncMock(return_value=[result])
 
         _, execute_node, *_ = make_nodes(mock_orch, mock_async_orch)
 
         state = _make_state()
         new_state = await execute_node(state)
 
-        # Verify editor was called once
-        mock_orch.editor.assert_awaited_once()
-        # Verify run_in_sandbox was called once
-        mock_orch.run_in_sandbox.assert_awaited_once()
+        # Verify plan_and_dispatch was called
+        mock_async_orch.plan_and_dispatch.assert_awaited_once()
+        # Verify the goal was marked as completed
+        assert new_state["goal_tree"]["root"]["status"] == Status.COMPLETED.value
+        assert new_state["goal_tree"]["root"]["result"] == "task completed"
 
-        # The argument to run_in_sandbox must NOT be a comment
-        cmd_arg = mock_orch.run_in_sandbox.call_args[0][0]
-        assert not cmd_arg.startswith("#"), "execute_node passed a comment to run_in_sandbox"
-        assert cmd_arg == "ls -la"
+    @pytest.mark.asyncio
+    async def test_execute_node_with_multiple_ready_goals_calls_plan_and_dispatch(self):
+        """execute_node handles multiple ready goals via plan_and_dispatch."""
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator, Result
 
-        # Verify goal is marked as completed
-        tree = new_state["goal_tree"]
-        assert tree["root"]["status"] == Status.COMPLETED.value
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+
+        # Mock plan_and_dispatch to return results for both goals
+        results = [
+            Result(id="g1", summary="goal 1 done", ok=True),
+            Result(id="g2", summary="goal 2 done", ok=True),
+        ]
+        mock_async_orch.plan_and_dispatch = AsyncMock(return_value=results)
+
+        _, execute_node, *_ = make_nodes(mock_orch, mock_async_orch)
+
+        state = _make_state()
+        # Add two child goals
+        create_goal(state["goal_tree"], "g1", "root", "Goal 1")
+        create_goal(state["goal_tree"], "g2", "root", "Goal 2")
+        # Mark root as completed so children are ready
+        update_status(state["goal_tree"], "root", Status.COMPLETED)
+
+        new_state = await execute_node(state)
+
+        # Verify plan_and_dispatch was called with both goals
+        assert mock_async_orch.plan_and_dispatch.await_count == 1
+        called_goals = mock_async_orch.plan_and_dispatch.call_args[0][0]
+        assert len(called_goals) == 2
+
+        # Both goals should be marked completed
+        assert new_state["goal_tree"]["g1"]["status"] == Status.COMPLETED.value
+        assert new_state["goal_tree"]["g2"]["status"] == Status.COMPLETED.value
+
+    @pytest.mark.asyncio
+    async def test_execute_node_increments_attempts_on_failed_result(self):
+        """execute_node should increment attempts counter when a goal fails (SECONDARY BUG FIX)."""
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator, Result
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        # Return a failed result
+        result = Result(id="root", summary="error", ok=False)
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+        mock_async_orch.plan_and_dispatch = AsyncMock(return_value=[result])
+
+        _, execute_node, *_ = make_nodes(mock_orch, mock_async_orch)
+
+        state = _make_state()
+        initial_attempts = state["goal_tree"]["root"].get("attempts", 0)
+        delta = await execute_node(state)
+
+        # Attempts should be incremented on failed result
+        assert delta["goal_tree"]["root"]["attempts"] == initial_attempts + 1
+        assert delta["goal_tree"]["root"]["status"] == Status.FAILED.value
+
+    @pytest.mark.asyncio
+    async def test_execute_node_idempotency_allows_retry_with_different_outcome(self):
+        """execute_node idempotency (FIX #4): failed goals not marked, so retries can succeed."""
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator, Result
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        # First call: failure
+        result1 = Result(id="root", summary="first error", ok=False)
+        # Second call: success (after reflect retry)
+        result2 = Result(id="root", summary="second success", ok=True)
+
+        # On first call, return failure
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+        mock_async_orch.plan_and_dispatch = AsyncMock(return_value=[result1])
+
+        _, execute_node, *_ = make_nodes(mock_orch, mock_async_orch)
+
+        state = _make_state()
+        delta1 = await execute_node(state)
+
+        # Verify first result is applied
+        assert delta1["goal_tree"]["root"]["status"] == Status.FAILED.value
+        assert "first error" in delta1["goal_tree"]["root"]["result"]
+        marker_after_first = delta1["step_markers"].get("root")
+        # Failed goals are NOT marked (FIX #4), so marker should not exist
+        assert marker_after_first is None
+
+        # Now simulate reflect resetting to PENDING
+        state["goal_tree"]["root"]["status"] = Status.PENDING.value
+        state["goal_tree"]["root"]["attempts"] = 1
+        state["step_markers"] = delta1["step_markers"]
+
+        # Second call: success
+        mock_async_orch.plan_and_dispatch = AsyncMock(return_value=[result2])
+        delta2 = await execute_node(state)
+
+        # Verify second result (success) is applied because failed goal wasn't marked
+        assert delta2["goal_tree"]["root"]["status"] == Status.COMPLETED.value
+        assert "second success" in delta2["goal_tree"]["root"]["result"]
+        marker_after_second = delta2["step_markers"].get("root")
+        # Successful goal IS marked as "completed" (FIX #4)
+        assert marker_after_second == "completed"
 
 
 @pytest.mark.mocked
@@ -253,6 +428,90 @@ class TestCheckNode:
         # Root has no children
         delta = await check_node(state)
         assert delta == {}
+
+    @pytest.mark.asyncio
+    async def test_check_defers_finalization_when_failed_child_retryable(self):
+        """FIX #1: check should NOT finalize when a failed child has attempts < 3."""
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+
+        _, _, check_node, _, _ = make_nodes(mock_orch, mock_async_orch)
+
+        state = _make_state()
+        # Add two children: one completed, one failed with attempts < 3
+        create_goal(state["goal_tree"], "task1", "root", "Task 1")
+        create_goal(state["goal_tree"], "task2", "root", "Task 2")
+        update_status(state["goal_tree"], "task1", Status.COMPLETED, result="Task 1 done")
+        update_status(state["goal_tree"], "task2", Status.FAILED, error="Task 2 failed")
+        state["goal_tree"]["task2"]["attempts"] = 1
+
+        delta = await check_node(state)
+
+        # Check should NOT finalize; should return current_goal_id for the failed child and tree
+        assert "final_answer" not in delta
+        assert delta.get("current_goal_id") == "task2"
+        assert "goal_tree" in delta
+        # Root should still be in its current state, not finalized
+        assert delta["goal_tree"]["root"]["status"] != Status.COMPLETED.value
+
+    @pytest.mark.asyncio
+    async def test_check_finalizes_with_failed_children_after_exhausted_attempts(self):
+        """FIX #1: check should finalize with root=FAILED when all children terminal and no retryables."""
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+
+        _, _, check_node, _, _ = make_nodes(mock_orch, mock_async_orch)
+
+        state = _make_state()
+        # One completed, one failed with exhausted attempts
+        create_goal(state["goal_tree"], "task1", "root", "Task 1")
+        create_goal(state["goal_tree"], "task2", "root", "Task 2")
+        update_status(state["goal_tree"], "task1", Status.COMPLETED, result="Task 1 done")
+        update_status(state["goal_tree"], "task2", Status.FAILED, error="Task 2 failed")
+        state["goal_tree"]["task2"]["attempts"] = 3
+
+        delta = await check_node(state)
+
+        # Should finalize with root=FAILED
+        assert "final_answer" in delta
+        assert "error" in delta
+        assert delta["goal_tree"]["root"]["status"] == Status.FAILED.value
+        assert "Task 2 failed" in delta["final_answer"]
+
+    @pytest.mark.asyncio
+    async def test_check_finalizes_with_mixed_terminal_states_now_fails(self):
+        """UPDATE: check should finalize with root=FAILED when any child FAILED and attempts >= 3."""
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+
+        _, _, check_node, _, _ = make_nodes(mock_orch, mock_async_orch)
+
+        state = _make_state()
+        create_goal(state["goal_tree"], "task1", "root", "Task 1")
+        create_goal(state["goal_tree"], "task2", "root", "Task 2")
+
+        # One completed, one failed with max attempts
+        update_status(state["goal_tree"], "task1", Status.COMPLETED, result="Task 1 done")
+        update_status(state["goal_tree"], "task2", Status.FAILED, error="Task 2 failed")
+        state["goal_tree"]["task2"]["attempts"] = 3
+
+        delta = await check_node(state)
+
+        # Should finalize since both are terminal and no retryables
+        assert "goal_tree" in delta
+        # Root should be FAILED, not COMPLETED (FIX #1)
+        assert delta["goal_tree"]["root"]["status"] == Status.FAILED.value
+        assert "error" in delta
+        assert "Task 2 failed" in delta["final_answer"]
 
     @pytest.mark.asyncio
     async def test_check_returns_empty_when_children_not_all_terminal(self):
@@ -310,8 +569,8 @@ class TestCheckNode:
         assert "All tests passed" in delta["final_answer"]
 
     @pytest.mark.asyncio
-    async def test_check_finalizes_with_mixed_terminal_states(self):
-        """Check node should finalize when all children are terminal (COMPLETED or FAILED)."""
+    async def test_check_defers_finalization_on_retryable_failure(self):
+        """Check node should defer finalization when a failed child has attempts < 3 (even with mixed terminal)."""
         from services.orchestrator.graph import make_nodes
         from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
@@ -324,15 +583,16 @@ class TestCheckNode:
         create_goal(state["goal_tree"], "task1", "root", "Task 1")
         create_goal(state["goal_tree"], "task2", "root", "Task 2")
 
-        # One completed, one failed
+        # One completed, one failed (but retryable: attempts < 3)
         update_status(state["goal_tree"], "task1", Status.COMPLETED, result="Task 1 done")
         update_status(state["goal_tree"], "task2", Status.FAILED, error="Task 2 failed")
+        state["goal_tree"]["task2"]["attempts"] = 1
 
         delta = await check_node(state)
 
-        # Should finalize since both are terminal
-        assert "goal_tree" in delta
-        assert delta["goal_tree"]["root"]["status"] == Status.COMPLETED.value
+        # Should defer finalization and route to reflect
+        assert "final_answer" not in delta
+        assert delta.get("current_goal_id") == "task2"
 
     @pytest.mark.asyncio
     async def test_check_uses_default_answer_when_no_results(self):
@@ -423,3 +683,130 @@ class TestBuildGraph:
                 assert "check" in node_names
                 assert "reflect" in node_names
                 assert "approval" in node_names
+
+
+@pytest.mark.mocked
+class TestEndToEndGraphExecution:
+    """End-to-end tests for subtask failure and recovery paths (FIX #5)."""
+
+    @pytest.mark.asyncio
+    async def test_e2e_subtask_failure_retry_success(self):
+        """
+        FIX #5: Drive the full graph through a failure-retry-success path.
+        - Architect returns 2 subtasks
+        - First execute: one COMPLETED, one FAILED (attempts=1)
+        - Check: defers finalization, routes to reflect
+        - Reflect: resets to PENDING with reflection message
+        - Execute again: both COMPLETED
+        - Check: finalizes with root COMPLETED
+        """
+        from services.orchestrator.graph import build_graph
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator, Result
+        from langgraph.checkpoint.memory import MemorySaver
+        from unittest.mock import patch
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        # Plan returns 2 subtasks
+        mock_orch.architect = AsyncMock(return_value="Subtask 1\nSubtask 2")
+        mock_orch.skill_router = None
+
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+        # First execute: one success, one failure
+        first_results = [
+            Result(id="root_sub0", summary="Subtask 1 complete", ok=True),
+            Result(id="root_sub1", summary="Subtask 2 error", ok=False),
+        ]
+        # Second execute (after reflect): both success
+        second_results = [
+            Result(id="root_sub1", summary="Subtask 2 complete (retry)", ok=True),
+        ]
+        mock_async_orch.plan_and_dispatch = AsyncMock(
+            side_effect=[first_results, second_results]
+        )
+
+        real_cp = MemorySaver()
+        with patch("pymongo.MongoClient"):
+            with patch("langgraph.checkpoint.mongodb.MongoDBSaver", return_value=real_cp):
+                graph, _ = build_graph(mock_orch, mock_async_orch)
+
+                # Run the graph
+                initial_state = {
+                    "session_id": "test-e2e-1",
+                    "goal_tree": {},
+                    "current_goal_id": "root",
+                    "step_markers": {},
+                    "messages": [],
+                    "error": None,
+                    "final_answer": "",
+                    "workspace_id": "ws1",
+                    "user_id": "user1",
+                }
+                create_goal(initial_state["goal_tree"], "root", None, "Do two tasks")
+
+                final_state = await graph.ainvoke(initial_state, {"configurable": {"thread_id": "test-e2e-1"}})
+
+                # Verify final state
+                assert final_state["goal_tree"]["root"]["status"] == Status.COMPLETED.value
+                assert "final_answer" in final_state
+                assert final_state.get("error") is None
+                # Verify both children are completed
+                root = final_state["goal_tree"]["root"]
+                children = root["children"]
+                for cid in children:
+                    assert final_state["goal_tree"][cid]["status"] == Status.COMPLETED.value
+                # Verify reflection happened (message appended)
+                reflection_messages = [m for m in final_state.get("messages", []) if m.get("role") == "reflection"]
+                assert len(reflection_messages) > 0
+
+    @pytest.mark.asyncio
+    async def test_e2e_subtask_exhausted_attempts_finalizes_failed(self):
+        """
+        FIX #5: Subtask fails 3 times, then root finalizes with FAILED status.
+        - Architect returns 1 subtask
+        - Execute: FAILED (attempts=1)
+        - Check/Reflect/Execute cycle repeats: FAILED (attempts=2), FAILED (attempts=3)
+        - Check: no retryables remain; finalizes with root FAILED and error set
+        """
+        from services.orchestrator.graph import build_graph
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator, Result
+        from langgraph.checkpoint.memory import MemorySaver
+        from unittest.mock import patch
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        mock_orch.architect = AsyncMock(return_value="Subtask that always fails")
+        mock_orch.skill_router = None
+
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+        # Always return FAILED
+        failed_result = Result(id="root_sub0", summary="error: always fails", ok=False)
+        mock_async_orch.plan_and_dispatch = AsyncMock(return_value=[failed_result])
+
+        real_cp = MemorySaver()
+        with patch("pymongo.MongoClient"):
+            with patch("langgraph.checkpoint.mongodb.MongoDBSaver", return_value=real_cp):
+                graph, _ = build_graph(mock_orch, mock_async_orch)
+
+                initial_state = {
+                    "session_id": "test-e2e-2",
+                    "goal_tree": {},
+                    "current_goal_id": "root",
+                    "step_markers": {},
+                    "messages": [],
+                    "error": None,
+                    "final_answer": "",
+                    "workspace_id": "ws1",
+                    "user_id": "user1",
+                }
+                create_goal(initial_state["goal_tree"], "root", None, "Impossible task")
+
+                final_state = await graph.ainvoke(initial_state, {"configurable": {"thread_id": "test-e2e-2"}})
+
+                # Verify final state: root FAILED, error set
+                assert final_state["goal_tree"]["root"]["status"] == Status.FAILED.value
+                assert "error" in final_state
+                assert final_state.get("final_answer") != ""
+                # Child should have attempts == 3
+                children = final_state["goal_tree"]["root"]["children"]
+                if children:
+                    child_id = children[0]
+                    assert final_state["goal_tree"][child_id]["attempts"] == 3

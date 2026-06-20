@@ -50,6 +50,8 @@ from services.orchestrator.graph import build_graph, GEMMA_BASE, QWEN_BASE
 from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 from services.orchestrator.storage_manager import StorageManager
 from services.orchestrator.mcp_client_manager import MCPClientManager
+from services.orchestrator.skill_router import SkillRouter
+from services.skill_runner.skill_runner import SkillRunner
 
 _log = logging.getLogger("orchestrator")
 
@@ -99,10 +101,37 @@ class OrchestratorProcess:
             except asyncio.TimeoutError:
                 _log.warning("MCP bridge did not become ready within 30 s — continuing")
 
+            # Note: skill_router is built below, so we'll update async_orch later
             async_orch = AsyncOrchestrator(
                 qwen_api_base=QWEN_BASE,
                 gemma_api_base=GEMMA_BASE,
             )
+
+            # Initialize Redis BEFORE skill router (CLAUDE.md: "after self._redis is created")
+            pool = aioredis.ConnectionPool.from_url(
+                redis_url, max_connections=8, decode_responses=True,
+            )
+            self._redis = aioredis.Redis(connection_pool=pool)
+            await self._ensure_group()
+
+            # Build skill router (optional, wrapped in try/except so startup never fails)
+            skill_router = None
+            try:
+                skills_root = Path(__file__).resolve().parent.parent / "skills"
+                runner = SkillRunner(roots=[skills_root])
+                runner.discover()
+                skill_router = SkillRouter(
+                    runner=runner,
+                    redis=self._redis,
+                    gemma_api_base=GEMMA_BASE,
+                )
+                # Wire skill_router into async_orch for react_execute
+                async_orch.skill_router = skill_router
+                async_orch.mcp = self._mcp
+                async_orch.workspace = workspace
+                _log.info("skill router ready (%d skills)", len(runner.catalog))
+            except Exception:
+                _log.warning("failed to initialize skill router — continuing without skills", exc_info=True)
 
             # CodingOrchestrator and build_graph have a circular dependency:
             # build_graph(orch, ...) closes node functions over the orch object;
@@ -115,6 +144,7 @@ class OrchestratorProcess:
                 gemma_api_base=GEMMA_BASE,
                 qwen_api_base=QWEN_BASE,
                 mcp=self._mcp,
+                skill_router=skill_router,
             )
             graph, _cp = build_graph(
                 orch=orch,
@@ -122,12 +152,6 @@ class OrchestratorProcess:
                 mongo_uri=os.getenv("MONGO_URI", "mongodb://localhost:27017/labmate"),
             )
             orch.graph = graph
-
-            pool = aioredis.ConnectionPool.from_url(
-                redis_url, max_connections=8, decode_responses=True,
-            )
-            self._redis = aioredis.Redis(connection_pool=pool)
-            await self._ensure_group()
 
             _log.info("orchestrator %s ready", self._worker_id)
             await self._loop(orch, _sm)
@@ -150,6 +174,14 @@ class OrchestratorProcess:
                     count=1,
                     block=BLOCK_MS,
                 )
+            except (aioredis.TimeoutError, TimeoutError):
+                # Defensive: a blocking xreadgroup should tolerate a read-timeout
+                # and re-poll. This does NOT fire on the pinned redis-py 5.x
+                # (which returns [] cleanly when BLOCK elapses), but redis-py
+                # 8.x regressed blocking-read handling and raises TimeoutError
+                # here under a busy event loop — which, if uncaught, silently
+                # kills goal consumption. Keep the catch regardless of version.
+                continue
             except aioredis.ResponseError as exc:
                 _log.error("xreadgroup error: %s", exc)
                 await asyncio.sleep(1)
@@ -211,7 +243,9 @@ class OrchestratorProcess:
                 task_text, session_id, user_id=user_id, workspace_id=workspace_id
             )
             task_succeeded = True
-            await self._write_result(task_id, {"ok": True, "state": final_state})
+            # Derive ok from final_state.error (FIX #2: failed subtasks now finalize with error set, not exception)
+            ok_flag = final_state.get("error") is None
+            await self._write_result(task_id, {"ok": ok_flag, "state": final_state})
             _log.info("task %s complete", task_id)
 
         except Exception:
