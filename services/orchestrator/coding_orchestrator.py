@@ -4,11 +4,14 @@ from __future__ import annotations
 import asyncio
 import litellm
 import subprocess
+import time
+import uuid
 from dataclasses import dataclass, field
 from typing import AsyncGenerator
 from aiolimiter import AsyncLimiter
 
 from .types import Goal, State, Status, get_ready_goals, update_status, now_iso
+from . import events
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +293,15 @@ class AsyncOrchestrator:
 
                 msg = r.choices[0].message
 
+                # Emit reasoning event if present
+                _turn_reasoning = events.extract_reasoning(r)
+                if _turn_reasoning:
+                    await events.emit(
+                        "reasoning", node="execute",
+                        summary=events.reasoning_summary(_turn_reasoning),
+                        text=_turn_reasoning,
+                    )
+
                 # Check for tool calls early (before appending assistant turn)
                 tool_calls = getattr(msg, "tool_calls", None)
 
@@ -341,7 +353,21 @@ class AsyncOrchestrator:
                             "summary": str(args.get("summary", ""))[:2000],
                         }
 
-                    elif name == "load_skill" and self.skill_router is not None:
+                    # Emit tool.start for all non-finish tools
+                    _tool_id = uuid.uuid4().hex[:12]
+                    _kind = "skill" if name == "call_skill_tool" else "tool"
+                    _emit_name = args.get("skill", name) if name == "call_skill_tool" else name
+                    _t0 = time.monotonic()
+                    await events.emit(
+                        "tool.start",
+                        tool_id=_tool_id,
+                        name=_emit_name,
+                        kind=_kind,
+                        args=args,
+                        reasoning_why=_turn_reasoning if "_turn_reasoning" in dir() else "",
+                    )
+
+                    if name == "load_skill" and self.skill_router is not None:
                         obs = self.skill_router.runner.load_skill(args.get("name", ""))
                         content = json.dumps(obs)
 
@@ -374,6 +400,16 @@ class AsyncOrchestrator:
 
                     else:
                         content = json.dumps({"error": f"unknown tool: {name}"})
+
+                    # Emit tool.done
+                    await events.emit(
+                        "tool.done",
+                        tool_id=_tool_id,
+                        status="done",
+                        summary=str(content)[:200],
+                        result=content,
+                        duration_ms=int((time.monotonic() - _t0) * 1000),
+                    )
 
                     # Append tool result
                     messages.append({

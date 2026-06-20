@@ -16,6 +16,55 @@ def _make_mock_response(content: str = "done") -> MagicMock:
     return r
 
 
+def _msg_with_tool_call(name, arguments_json, reasoning=""):
+    tc = MagicMock()
+    tc.id = "call-1"
+    tc.function = MagicMock()
+    tc.function.name = name
+    tc.function.arguments = arguments_json
+    msg = MagicMock()
+    msg.tool_calls = [tc]
+    msg.content = ""
+    msg.reasoning_content = reasoning
+    msg.model_dump = lambda: {"role": "assistant", "content": "", "tool_calls": []}
+    return msg
+
+
+@pytest.mark.asyncio
+async def test_react_execute_emits_tool_events_for_run_bash():
+    from services.orchestrator import events
+    orch = AsyncOrchestrator(skill_router=None, mcp=MagicMock())
+    orch.mcp.call_tool = AsyncMock(return_value=MagicMock(
+        content=[MagicMock(text="hi")], isError=False
+    ))
+
+    resp1 = MagicMock(choices=[MagicMock(
+        message=_msg_with_tool_call("run_bash", '{"command":"echo hi"}', "need shell")
+    )])
+    finish_msg = MagicMock(tool_calls=None, content="done")
+    finish_msg.model_dump = lambda: {"role": "assistant", "content": "done"}
+    resp2 = MagicMock(choices=[MagicMock(message=finish_msg)])
+
+    captured = []
+
+    class FakeEmitter:
+        async def emit(self, type, **f):
+            captured.append({"type": type, **f})
+
+    with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
+               new_callable=AsyncMock, side_effect=[resp1, resp2]):
+        token = events.current_emitter.set(FakeEmitter())
+        try:
+            await orch.react_execute("run echo")
+        finally:
+            events.current_emitter.reset(token)
+
+    types = [e["type"] for e in captured]
+    assert "tool.start" in types and "tool.done" in types
+    start = next(e for e in captured if e["type"] == "tool.start")
+    assert start["name"] == "run_bash" and start["kind"] == "tool"
+
+
 @pytest.mark.mocked
 class TestTokenBudget:
     def test_init_applies_80_percent_margin(self):
