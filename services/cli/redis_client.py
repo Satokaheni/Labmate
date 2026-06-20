@@ -12,6 +12,7 @@ RESULT_PREFIX = "labmate:result:"
 class LabmateRedisClient:
     def __init__(self, redis_url: str | None = None) -> None:
         url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        self._redis_url = url
         self._redis = aioredis.from_url(url, decode_responses=False)
 
     async def push_task(
@@ -72,6 +73,11 @@ class LabmateRedisClient:
         if raw is None:
             return {"ok": False, "error": "result_missing"}
         return json.loads(raw)
+
+    def subscribe_events(self, task_id: str) -> "EventStream":
+        """Return an EventStream for labmate:events:<task_id> (XREAD BLOCK)."""
+        from .event_stream import EventStream
+        return EventStream(self._redis_url, task_id)
 
     async def aclose(self) -> None:
         await self._redis.aclose()
