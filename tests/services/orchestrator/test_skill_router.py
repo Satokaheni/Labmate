@@ -7,6 +7,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from services.orchestrator.skill_router import SkillRouter
+from services.orchestrator import events
 from services.skill_runner.skill_runner import SkillRunner, SkillMeta
 from pathlib import Path
 
@@ -348,6 +349,36 @@ class TestSkillRouter:
         with patch.object(router, "select", new_callable=AsyncMock, side_effect=RuntimeError("oops")):
             result = await router.run("task")
             assert result is None
+
+    @pytest.mark.asyncio
+    async def test_run_emits_tool_start_and_done(self, router):
+        """run() emits tool.start and tool.done events with reasoning."""
+        router.select = AsyncMock(return_value="ast-repo-map")
+        router._last_reasoning = "the task asks to map the repo"
+        router.plan_tool_call = AsyncMock(return_value={"tool": "map", "arguments": {"path": "."}})
+        router.execute = AsyncMock(return_value={"ok": True, "result": {"content": [{"text": "ok"}]}})
+
+        captured = []
+
+        class FakeEmitter:
+            async def emit(self, type, **f):
+                captured.append({"type": type, **f})
+
+        token = events.current_emitter.set(FakeEmitter())
+        try:
+            await router.run("map the repo")
+        finally:
+            events.current_emitter.reset(token)
+
+        types = [e["type"] for e in captured]
+        assert "tool.start" in types and "tool.done" in types
+        start = next(e for e in captured if e["type"] == "tool.start")
+        assert start["name"] == "ast-repo-map"
+        assert start["kind"] == "skill"
+        assert start["reasoning_why"] == "the task asks to map the repo"
+        done = next(e for e in captured if e["type"] == "tool.done")
+        assert done["status"] == "done"
+        assert "tool_id" in start and start["tool_id"] == done["tool_id"]
 
 
 @pytest.mark.mocked

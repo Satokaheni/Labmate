@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from typing import Any
 
@@ -23,6 +24,7 @@ import litellm
 import redis.asyncio as aioredis
 
 from services.skill_runner.skill_runner import SkillRunner
+from services.orchestrator import events
 
 _log = logging.getLogger("skill_router")
 
@@ -59,6 +61,7 @@ class SkillRouter:
         self._redis = redis
         self._gemma_base = gemma_api_base
         self._call_timeout = call_timeout
+        self._last_reasoning: str = ""
 
     @property
     def runner(self) -> SkillRunner:
@@ -130,6 +133,13 @@ class SkillRouter:
                     skill_name = args.get("name")
                     if skill_name and skill_name in self._runner.catalog:
                         _log.info("selected skill: %s (attempt %d)", skill_name, attempt + 1)
+                        self._last_reasoning = events.extract_reasoning(r)
+                        await events.emit(
+                            "reasoning",
+                            node="route",
+                            summary=events.reasoning_summary(self._last_reasoning),
+                            text=self._last_reasoning,
+                        )
                         return skill_name
             except Exception as exc:
                 _log.warning("select() attempt %d error: %s", attempt + 1, exc)
@@ -283,23 +293,43 @@ class SkillRouter:
             Result dict {"ok": bool, "result": ...} if successful, None if select/plan fail
         """
         try:
-            # Step 1: Select skill
             skill_name = await self.select(task)
             if skill_name is None:
                 _log.debug("no skill selected for task")
                 return None
 
-            # Step 2: Plan tool call
             plan = await self.plan_tool_call(task, skill_name)
             if plan is None:
                 _log.debug("failed to plan tool call for %s", skill_name)
                 return None
 
-            # Step 3: Execute
-            result = await self.execute(
-                skill_name,
-                plan["tool"],
-                plan["arguments"],
+            tool_id = uuid.uuid4().hex[:12]
+            await events.emit(
+                "tool.start",
+                tool_id=tool_id,
+                name=skill_name,
+                kind="skill",
+                args=plan.get("arguments", {}),
+                reasoning_why=self._last_reasoning,
+            )
+            started = time.monotonic()
+            try:
+                result = await self.execute(skill_name, plan["tool"], plan["arguments"])
+            except Exception as exc:
+                await events.emit(
+                    "tool.done", tool_id=tool_id, status="error",
+                    summary=str(exc)[:200], result=None,
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                )
+                raise
+            ok = bool(result.get("ok"))
+            await events.emit(
+                "tool.done",
+                tool_id=tool_id,
+                status="done" if ok else "error",
+                summary=("ok" if ok else str(result.get("error", "failed")))[:200],
+                result=result.get("result"),
+                duration_ms=int((time.monotonic() - started) * 1000),
             )
             return result
 
