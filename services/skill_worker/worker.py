@@ -191,6 +191,26 @@ class SkillWorker:
             finally:
                 await self._redis.xack(STREAM, GROUP, msg_id)
 
+    @staticmethod
+    def _jsonable(obj: Any) -> Any:
+        """Make a skill result JSON-serializable.
+
+        registry.call_tool() returns the raw MCP CallToolResult (a pydantic
+        model with content blocks) — json.dumps() can't serialize it, which
+        previously surfaced every successful call as "internal_error". Dump
+        pydantic models to plain JSON; fall back to str() for anything else.
+        """
+        if hasattr(obj, "model_dump"):
+            try:
+                return obj.model_dump(mode="json")
+            except Exception:
+                return str(obj)
+        try:
+            json.dumps(obj)
+            return obj
+        except (TypeError, ValueError):
+            return str(obj)
+
     async def _dispatch(self, payload: dict[str, Any]) -> dict[str, Any]:
         skill = payload.get("skill", "")
         tool = payload.get("tool", "")
@@ -198,7 +218,7 @@ class SkillWorker:
         qualified = f"{skill}.{tool}"
         try:
             result = await self._registry.call_tool(qualified, arguments)
-            return {"ok": True, "result": result}
+            return {"ok": True, "result": self._jsonable(result)}
         except SkillUnavailable as exc:
             return {"ok": False, "error": "skill_unavailable", "detail": str(exc)}
         except Exception as exc:
