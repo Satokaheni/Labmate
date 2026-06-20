@@ -54,6 +54,11 @@ class SkillRouter:
         self._gemma_base = gemma_api_base
         self._call_timeout = call_timeout
 
+    @property
+    def runner(self) -> SkillRunner:
+        """Public accessor for the runner (SkillRunner with catalog and tool schema)."""
+        return self._runner
+
     async def select(self, task: str) -> str | None:
         """
         Ask Gemma 4 to select which skill to use for this task.

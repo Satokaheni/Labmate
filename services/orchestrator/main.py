@@ -101,6 +101,7 @@ class OrchestratorProcess:
             except asyncio.TimeoutError:
                 _log.warning("MCP bridge did not become ready within 30 s — continuing")
 
+            # Note: skill_router is built below, so we'll update async_orch later
             async_orch = AsyncOrchestrator(
                 qwen_api_base=QWEN_BASE,
                 gemma_api_base=GEMMA_BASE,
@@ -124,6 +125,10 @@ class OrchestratorProcess:
                     redis=self._redis,
                     gemma_api_base=GEMMA_BASE,
                 )
+                # Wire skill_router into async_orch for react_execute
+                async_orch.skill_router = skill_router
+                async_orch.mcp = self._mcp
+                async_orch.workspace = workspace
                 _log.info("skill router ready (%d skills)", len(runner.catalog))
             except Exception:
                 _log.warning("failed to initialize skill router — continuing without skills", exc_info=True)
@@ -238,7 +243,9 @@ class OrchestratorProcess:
                 task_text, session_id, user_id=user_id, workspace_id=workspace_id
             )
             task_succeeded = True
-            await self._write_result(task_id, {"ok": True, "state": final_state})
+            # Derive ok from final_state.error (FIX #2: failed subtasks now finalize with error set, not exception)
+            ok_flag = final_state.get("error") is None
+            await self._write_result(task_id, {"ok": ok_flag, "state": final_state})
             _log.info("task %s complete", task_id)
 
         except Exception:
