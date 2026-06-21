@@ -43,9 +43,46 @@ All events share the envelope `{ "type": str, "task_id": str, "seq": int, "ts": 
   "status": "complete" | "error", "final_answer": str }
 ```
 
+```python
+# permission_request — orchestrator is paused waiting for user approval of a risky action
+# The gate node (security-gate plan) emits this and blocks on labmate:permission:<session_id>.
+# The CLI must render the action, collect y/s/n, and write the response back to that stream.
+#
+# risk_tier values:
+#   "shell-exec"  — skill explicitly classified as shell-exec in SKILL_RISK_TABLE
+#   "file-write"  — skill explicitly classified as file-write
+#   "escalate"    — command_gate.analyze_command returned ESCALATE (unknown program,
+#                   chaining, redirection, git write subcommand, etc.)
+# "reason" is the human-readable explanation from analyze_command (d.reason), e.g.
+#   "mkdir: requires approval" or "git: non-read-only subcommand 'push'"
+# --auto-approve bypasses "escalate" and skill-tier prompts only.
+# BLOCK decisions from command_gate are never surfaced here — they are denied inline.
+{ "type": "permission_request", "task_id": str, "seq": int, "ts": float,
+  "session_id": str,
+  "risk_tier": "shell-exec" | "file-write" | "escalate",
+  "skill": str, "tool": str,
+  "preview": str,   # command string for shell-exec/escalate; "path\n<first 40 lines>" for file-write
+  "reason": str }   # from analyze_command d.reason; empty string for skill-level risk_tier
+
+# safety_warning — assess_safety node flagged input as suspicious; awaiting user confirm
+{ "type": "safety_warning", "task_id": str, "seq": int, "ts": float,
+  "session_id": str,
+  "reason": str }    # one-sentence explanation from the LLM classifier
+
+# safety_block — assess_safety node classified input as malicious; hard stop, no prompt
+{ "type": "safety_block", "task_id": str, "seq": int, "ts": float,
+  "reason": str }    # why it was blocked
+```
+
 **NOT emitted by the current orchestrator** (ignore in renderer):
 - `node.enter`, `reasoning.delta` — superseded by `turn.start`/`reasoning`
 - `context.update`, `agent.status` — not implemented
+
+**Security gate dependency:** `permission_request`, `safety_warning`, and `safety_block` are
+emitted by the security gate (see `docs/superpowers/plans/2026-06-21-security-gate.md`). The
+gate does NOT need to be implemented before the CLI — if events of these types never arrive,
+the renderer silently ignores them. Implement Task 9 of this plan alongside or after the
+security gate plan.
 
 ---
 
@@ -63,6 +100,7 @@ All events share the envelope `{ "type": str, "task_id": str, "seq": int, "ts": 
 | `tests/services/cli/test_stream_renderer.py` | Create | `StreamRenderer` reduction + render tests |
 | `tests/services/cli/test_repl_streaming.py` | Create | `_send_task()` race + fallback tests |
 | `tests/services/cli/test_integration_smoke.py` | Modify | `run_task_with_streaming` helper tests |
+| `tests/services/cli/test_permission_prompt.py` | Create | y/s/n prompt, `send_permission_response`, `--auto-approve` flag (Task 9) |
 
 ---
 
@@ -1090,6 +1128,290 @@ Expected: all pass (orchestrator tests unchanged).
 ```bash
 git add -A
 git commit -m "test(cli): full streaming + fallback regression suite"
+```
+
+---
+
+### Task 9: Security gate event handlers — permission prompt + safety events
+
+**Context:** This task implements the CLI side of the security gate
+(`docs/superpowers/plans/2026-06-21-security-gate.md`). The gate node in the
+orchestrator emits `permission_request`, `safety_warning`, and `safety_block`
+events and blocks waiting for a response on `labmate:permission:<session_id>`.
+The CLI must handle those events, prompt the user, and write the response back.
+
+**Because the CLI is being built from scratch here, implement this now rather
+than as a patch on top later. Tasks 8 and 9 of the security gate plan are
+superseded by this task when the CLI is built fresh.**
+
+**Files:**
+- Modify: `services/cli/stream_renderer.py` (add handlers for three new event types)
+- Modify: `services/cli/redis_client.py` (add `send_permission_response()`)
+- Modify: `services/cli/repl.py` (thread `auto_approve` through session, add `awaiting_safety_confirm` state)
+- Modify: `services/cli/main.py` (add `--auto-approve` CLI flag)
+- Create: `tests/services/cli/test_permission_prompt.py`
+
+- [ ] **Step 1: Write failing tests**
+
+Create `tests/services/cli/test_permission_prompt.py`:
+
+```python
+from __future__ import annotations
+import asyncio
+import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
+from services.cli.redis_client import LabmateRedisClient
+
+
+@pytest.mark.asyncio
+async def test_send_permission_response_granted():
+    client = LabmateRedisClient.__new__(LabmateRedisClient)
+    client._redis = AsyncMock()
+    client._redis.xadd = AsyncMock()
+    await client.send_permission_response("sess-1", "y")
+    client._redis.xadd.assert_called_once()
+    call_args = client._redis.xadd.call_args
+    stream = call_args[0][0]
+    payload = call_args[0][1]
+    assert stream == "labmate:permission:sess-1"
+    assert payload["choice"] == "y"
+
+
+@pytest.mark.asyncio
+async def test_send_permission_response_session_approve():
+    client = LabmateRedisClient.__new__(LabmateRedisClient)
+    client._redis = AsyncMock()
+    client._redis.xadd = AsyncMock()
+    await client.send_permission_response("sess-1", "s")
+    payload = client._redis.xadd.call_args[0][1]
+    assert payload["choice"] == "s"
+
+
+@pytest.mark.asyncio
+async def test_send_permission_response_denied():
+    client = LabmateRedisClient.__new__(LabmateRedisClient)
+    client._redis = AsyncMock()
+    client._redis.xadd = AsyncMock()
+    await client.send_permission_response("sess-1", "n")
+    payload = client._redis.xadd.call_args[0][1]
+    assert payload["choice"] == "n"
+
+
+def test_stream_renderer_handles_permission_request(capsys):
+    from services.cli.stream_renderer import StreamRenderer
+    renderer = StreamRenderer()
+    event = {
+        "type": "permission_request",
+        "task_id": "t1", "seq": 1, "ts": 0.0,
+        "session_id": "sess-1",
+        "risk_tier": "shell-exec",
+        "skill": "code-sandbox", "tool": "run_bash",
+        "preview": "pytest tests/ -v",
+    }
+    # Should return pending permission state, not raise
+    result = renderer.handle_permission_request(event)
+    assert result["pending"] is True
+    assert result["session_id"] == "sess-1"
+
+
+def test_stream_renderer_handles_safety_block(capsys):
+    from services.cli.stream_renderer import StreamRenderer
+    renderer = StreamRenderer()
+    event = {
+        "type": "safety_block",
+        "task_id": "t1", "seq": 1, "ts": 0.0,
+        "reason": "Detected destructive shell pattern: rm -rf /",
+    }
+    # Should mark the stream as terminated, not raise
+    result = renderer.handle_safety_block(event)
+    assert result["blocked"] is True
+
+
+def test_stream_renderer_handles_safety_warning(capsys):
+    from services.cli.stream_renderer import StreamRenderer
+    renderer = StreamRenderer()
+    event = {
+        "type": "safety_warning",
+        "task_id": "t1", "seq": 1, "ts": 0.0,
+        "session_id": "sess-1",
+        "reason": "Task may attempt credential access.",
+    }
+    result = renderer.handle_safety_warning(event)
+    assert result["pending"] is True
+    assert result["session_id"] == "sess-1"
+```
+
+- [ ] **Step 2: Run to confirm failure**
+
+```bash
+python -m pytest tests/services/cli/test_permission_prompt.py -v
+```
+Expected: FAIL — `send_permission_response` missing; `handle_permission_request` missing.
+
+- [ ] **Step 3: Add `send_permission_response` to `redis_client.py`**
+
+In `services/cli/redis_client.py`, add:
+
+```python
+async def send_permission_response(self, session_id: str, choice: str) -> None:
+    """Write user's permission choice back to the gate's response stream.
+
+    choice: "y" (approve once), "s" (approve session), "n" (deny)
+    """
+    await self._redis.xadd(
+        f"labmate:permission:{session_id}",
+        {"choice": choice},
+    )
+```
+
+- [ ] **Step 4: Add permission/safety handlers to `stream_renderer.py`**
+
+In `services/cli/stream_renderer.py`, add these three methods to `StreamRenderer`:
+
+```python
+def handle_permission_request(self, event: dict) -> dict:
+    """Pause live view and surface a permission prompt. Returns pending state
+    so the caller (stream_live) can collect y/s/n and write the response."""
+    risk_tier = event.get("risk_tier", "")
+    skill = event.get("skill", "")
+    tool = event.get("tool", "")
+    preview = event.get("preview", "")
+    reason = event.get("reason", "")
+    tier_labels = {
+        "shell-exec": "[bold yellow]shell-exec[/]",
+        "file-write": "[bold cyan]file-write[/]",
+        "escalate": "[bold magenta]escalate[/]",
+    }
+    tier_label = tier_labels.get(risk_tier, f"[bold]{risk_tier}[/]")
+    self.console.print(f"\n[bold]Permission required:[/] {tier_label}  {skill} › {tool}")
+    if reason:
+        self.console.print(f"[dim]{reason}[/]")
+    self.console.print(f"[dim]{preview[:800]}[/]")
+    self.console.print("\n  [bold][y][/] Yes")
+    self.console.print("  [bold][s][/] Yes, allow this session")
+    self.console.print("  [bold][n][/] No\n")
+    return {"pending": True, "session_id": event.get("session_id", "")}
+
+def handle_safety_block(self, event: dict) -> dict:
+    """Render a hard-stop safety block message. No prompt — task is cancelled."""
+    reason = event.get("reason", "")
+    self.console.print(f"\n[bold red]⛔ Task blocked:[/] {reason}\n")
+    return {"blocked": True}
+
+def handle_safety_warning(self, event: dict) -> dict:
+    """Surface a safety warning and return pending state for y/n confirmation."""
+    reason = event.get("reason", "")
+    self.console.print(f"\n[bold yellow]⚠ Safety warning:[/] {reason}")
+    self.console.print("\n  [bold][y][/] Continue anyway")
+    self.console.print("  [bold][n][/] Cancel\n")
+    return {"pending": True, "session_id": event.get("session_id", "")}
+```
+
+In `StreamRenderer.handle()` (the main event dispatch method), add three cases:
+
+```python
+elif event_type == "permission_request":
+    pending = self.handle_permission_request(event)
+    # Signal caller to collect input — do not return yet
+    return pending
+elif event_type == "safety_warning":
+    pending = self.handle_safety_warning(event)
+    return pending
+elif event_type == "safety_block":
+    return self.handle_safety_block(event)
+```
+
+- [ ] **Step 5: Thread permission response through `stream_live()` in `renderer.py`**
+
+In `services/cli/renderer.py`, update `stream_live()` to handle `pending` events returned
+by `StreamRenderer.handle()`. When `pending=True`, pause the `Live` context, read a
+single keypress (`y`/`s`/`n`), call `redis_client.send_permission_response(session_id, choice)`,
+then resume:
+
+```python
+async def _collect_keypress(self, valid: str = "ysn") -> str:
+    """Read a single character from stdin (no Enter needed)."""
+    import sys, tty, termios
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        while True:
+            ch = sys.stdin.read(1).lower()
+            if ch in valid:
+                return ch
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+# Inside stream_live(), after each `result = self._stream_renderer.handle(event)`:
+if result and result.get("pending"):
+    session_id = result["session_id"]
+    choice = await self._collect_keypress()
+    await self._redis_client.send_permission_response(session_id, choice)
+    if choice == "s":
+        self.console.print("[dim]Auto-approve enabled for this session.[/]")
+        self._auto_approve = True
+    elif choice == "n":
+        self.console.print("[dim]Action skipped.[/]")
+```
+
+- [ ] **Step 6: Add `--auto-approve` flag to `main.py`**
+
+In `services/cli/main.py`, add a `--auto-approve` / `-A` flag via typer and pass it into
+the initial Redis push payload as `"auto_approve": True` so the orchestrator's gate node
+skips prompting for the entire session.
+
+**Scope of `--auto-approve`:** It bypasses the y/s/n prompt for `"shell-exec"`, `"file-write"`,
+and `"escalate"` risk tiers. It does **not** bypass `BLOCK` decisions from `command_gate.analyze_command`
+— those are always denied inline before reaching the gate node and never surface as
+`permission_request` events. Auto-approve is for scripted/batch use; it does not disable
+the structural command gate.
+
+```python
+@app.command()
+def main(
+    ...existing args...,
+    auto_approve: bool = typer.Option(
+        False, "--auto-approve", "-A",
+        help="Skip all permission prompts for this session (scripted/batch use).",
+    ),
+):
+    ...
+    payload = {
+        ...,
+        "auto_approve": auto_approve,
+    }
+```
+
+In `services/cli/repl.py`, thread `auto_approve` through `REPLContext` so the REPL
+sets it in every task payload pushed to `labmate:goals`.
+
+- [ ] **Step 7: Run tests**
+
+```bash
+python -m pytest tests/services/cli/test_permission_prompt.py -v
+```
+Expected: PASS (7 tests).
+
+```bash
+python -m pytest tests/services/cli/ -v
+```
+Expected: PASS — no regressions in existing streaming tests.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add services/cli/stream_renderer.py services/cli/redis_client.py \
+        services/cli/renderer.py services/cli/repl.py services/cli/main.py \
+        tests/services/cli/test_permission_prompt.py
+git commit -m "feat(security): CLI permission prompt + safety event handlers
+
+- send_permission_response() on LabmateRedisClient
+- StreamRenderer: handle_permission_request, handle_safety_warning, handle_safety_block
+- stream_live(): pause Live, collect y/s/n keypress, write response to gate stream
+- --auto-approve / -A flag seeds auto_approve=True in task payload
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
 ```
 
 ---
