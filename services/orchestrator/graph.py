@@ -18,6 +18,24 @@ GEMMA_BASE = os.getenv("GEMMA_BASE", "http://localhost:8000/v1")
 # On dual-GPU, set QWEN_BASE=http://localhost:8001/v1 to enable the specialist Qwen worker.
 QWEN_BASE  = os.getenv("QWEN_BASE",  GEMMA_BASE)
 
+# A1: tasks at or above this ambiguity score route to the approval gate before planning.
+AMBIGUITY_THRESHOLD = float(os.getenv("AMBIGUITY_THRESHOLD", "0.6"))
+
+# A2: artifacts scoring below this route back through reflect for revision.
+CRITIQUE_THRESHOLD = float(os.getenv("CRITIQUE_THRESHOLD", "0.90"))
+
+
+def classify_artifact(text: str) -> str:
+    """Cheap heuristic artifact classifier for the A2 verify gate."""
+    if not text:
+        return "other"
+    code_markers = ("```", "def ", "class ", "import ", "function ", "=>", "};", "public ")
+    if any(m in text for m in code_markers):
+        return "code"
+    if len(text.strip()) > 200:
+        return "writing"
+    return "other"
+
 
 def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
     """
@@ -73,6 +91,7 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         markers = dict(state["step_markers"])
 
         results = await async_orch.plan_and_dispatch(ready)
+        last_artifact = {"type": "other", "payload": ""}
         for r in results:
             gid = r.id
             # Idempotency guard (FIX #4): mark per-GOAL-ID only when COMPLETED.
@@ -92,8 +111,14 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             # Mark as completed only if succeeded; FAILED goals stay retryable
             if r.ok:
                 markers[gid] = "completed"
+            # Track last artifact for A2 verify gate
+            if r.ok and r.summary:
+                last_artifact = {
+                    "type": classify_artifact(r.summary),
+                    "payload": r.summary,
+                }
 
-        return {"goal_tree": tree, "step_markers": markers}
+        return {"goal_tree": tree, "step_markers": markers, "last_artifact": last_artifact}
 
     async def check(state: State) -> dict:
         """
@@ -202,7 +227,77 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         update_status(tree, gid, new_status)
         return {"goal_tree": tree}
 
-    return plan, execute_node, check, reflect, approval
+    async def assess_ambiguity(state: State) -> dict:
+        import json
+        goal = state.get("root_goal") or state["goal_tree"][state["current_goal_id"]]["description"]
+        prompt = (
+            "You are triaging a task before an autonomous agent executes it.\n"
+            f"TASK: {goal}\n\n"
+            "List the assumptions an agent must make to act on this as written. "
+            "Then rate overall ambiguity from 0.0 (fully specified) to 1.0 (critically "
+            "underspecified). Respond as JSON: "
+            '{"assumptions": ["..."], "ambiguity": 0.0, "blocking_question": "" }'
+        )
+        raw = await orch.architect(prompt, thinking_budget=1024)
+        text = (raw or "").strip()
+        if text.startswith("```json"):
+            text = text[7:]
+        elif text.startswith("```"):
+            text = text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+        try:
+            out = json.loads(text.strip())
+            if not isinstance(out, dict):
+                raise ValueError("not an object")
+        except (json.JSONDecodeError, ValueError):
+            out = {}
+        try:
+            ambiguity = float(out.get("ambiguity", 0.0))
+        except (TypeError, ValueError):
+            ambiguity = 0.0
+        return {
+            "root_goal": goal,
+            "assumptions": out.get("assumptions", []) or [],
+            "ambiguity": ambiguity,
+            "blocking_question": out.get("blocking_question", "") or "",
+        }
+
+    async def verify(state: State) -> dict:
+        """
+        A2: critique code/writing artifacts. Dispatches the critique skill via
+        the orchestrator's skill_router. Defaults score to 1.0 (pass) on any
+        failure so a critique outage never blocks the pipeline.
+        """
+        artifact = state.get("last_artifact") or {"type": "other", "payload": ""}
+        atype = artifact.get("type")
+        router_obj = getattr(orch, "skill_router", None)
+        if atype not in ("code", "writing") or router_obj is None:
+            return {"verified": True, "critique_score": 1.0, "critique_notes": ""}
+
+        score = 1.0
+        notes = ""
+        try:
+            res = await router_obj.execute(
+                "critique",
+                "critique",
+                {
+                    "output": artifact.get("payload", ""),
+                    "task": state.get("root_goal", ""),
+                    "critique_type": atype,
+                },
+            )
+            if isinstance(res, dict) and res.get("ok"):
+                payload = res.get("result")
+                if isinstance(payload, dict):
+                    score = float(payload.get("score", 1.0))
+                    notes = str(payload.get("notes", ""))
+        except Exception:
+            score = 1.0
+            notes = ""
+        return {"verified": True, "critique_score": score, "critique_notes": notes}
+
+    return plan, execute_node, check, reflect, approval, assess_ambiguity, verify
 
 
 def router(state: State) -> str:
@@ -233,6 +328,20 @@ def router(state: State) -> str:
     return END
 
 
+def ambiguity_router(state: State) -> str:
+    """A1: route after assess_ambiguity."""
+    if float(state.get("ambiguity", 0.0)) >= AMBIGUITY_THRESHOLD:
+        return "approval"
+    return "plan"
+
+
+def verify_router(state: State) -> str:
+    """A2: route after verify. Sub-threshold artifacts loop through reflect."""
+    if float(state.get("critique_score", 1.0)) < CRITIQUE_THRESHOLD:
+        return "reflect"
+    return "check"
+
+
 # ---------------------------------------------------------------------------
 # Graph factory
 # ---------------------------------------------------------------------------
@@ -252,20 +361,24 @@ def build_graph(
     """
     from langgraph.checkpoint.mongodb import MongoDBSaver
 
-    plan_node, execute_node, check_node, reflect_node, approval_node = make_nodes(
+    plan_node, execute_node, check_node, reflect_node, approval_node, assess_node, verify_node = make_nodes(
         orch, async_orch
     )
 
     b = StateGraph(State)
     b.add_node("plan", plan_node)
     b.add_node("execute", execute_node)
+    b.add_node("verify", verify_node)
     b.add_node("check", check_node)
     b.add_node("reflect", reflect_node)
     b.add_node("approval", approval_node)
+    b.add_node("assess_ambiguity", assess_node)
 
-    b.add_edge(START, "plan")
+    b.add_edge(START, "assess_ambiguity")
+    b.add_conditional_edges("assess_ambiguity", ambiguity_router, ["approval", "plan"])
     b.add_edge("plan", "execute")
-    b.add_edge("execute", "check")
+    b.add_edge("execute", "verify")
+    b.add_conditional_edges("verify", verify_router, ["reflect", "check"])
     b.add_conditional_edges("check", router, ["execute", "reflect", "approval", END])
     b.add_edge("reflect", "execute")
     b.add_edge("approval", "execute")

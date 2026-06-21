@@ -18,6 +18,11 @@ def _make_state(**overrides) -> dict:
         "step_markers": {},
         "messages": [],
         "error": None,
+        "root_goal": "top-level task",
+        "last_artifact": {"type": "other", "payload": ""},
+        "verified": False,
+        "critique_score": 1.0,
+        "critique_notes": "",
     }
     base.update(overrides)
     return base
@@ -412,6 +417,42 @@ class TestExecuteNode:
 
 
 @pytest.mark.mocked
+class TestExecuteNodeArtifact:
+    @pytest.mark.asyncio
+    async def test_execute_node_sets_last_artifact_code(self):
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator, Result
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        result = Result(id="root", summary="def add(a, b):\n    return a + b", ok=True)
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+        mock_async_orch.plan_and_dispatch = AsyncMock(return_value=[result])
+
+        _, execute_node, *_ = make_nodes(mock_orch, mock_async_orch)
+        state = _make_state()
+        delta = await execute_node(state)
+        assert delta["last_artifact"]["type"] == "code"
+        assert "def add" in delta["last_artifact"]["payload"]
+
+    @pytest.mark.asyncio
+    async def test_execute_node_sets_last_artifact_writing(self):
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator, Result
+
+        prose = ("This paper investigates the effect of context length on retrieval "
+                 "accuracy across several configurations. " * 4)
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        result = Result(id="root", summary=prose, ok=True)
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+        mock_async_orch.plan_and_dispatch = AsyncMock(return_value=[result])
+
+        _, execute_node, *_ = make_nodes(mock_orch, mock_async_orch)
+        state = _make_state()
+        delta = await execute_node(state)
+        assert delta["last_artifact"]["type"] == "writing"
+
+
+@pytest.mark.mocked
 class TestCheckNode:
     @pytest.mark.asyncio
     async def test_check_returns_empty_when_no_children(self):
@@ -422,7 +463,7 @@ class TestCheckNode:
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
-        _, _, check_node, _, _ = make_nodes(mock_orch, mock_async_orch)
+        _, _, check_node, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
 
         state = _make_state()
         # Root has no children
@@ -438,7 +479,7 @@ class TestCheckNode:
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
-        _, _, check_node, _, _ = make_nodes(mock_orch, mock_async_orch)
+        _, _, check_node, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
 
         state = _make_state()
         # Add two children: one completed, one failed with attempts < 3
@@ -466,7 +507,7 @@ class TestCheckNode:
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
-        _, _, check_node, _, _ = make_nodes(mock_orch, mock_async_orch)
+        _, _, check_node, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
 
         state = _make_state()
         # One completed, one failed with exhausted attempts
@@ -493,7 +534,7 @@ class TestCheckNode:
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
-        _, _, check_node, _, _ = make_nodes(mock_orch, mock_async_orch)
+        _, _, check_node, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
 
         state = _make_state()
         create_goal(state["goal_tree"], "task1", "root", "Task 1")
@@ -522,7 +563,7 @@ class TestCheckNode:
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
-        _, _, check_node, _, _ = make_nodes(mock_orch, mock_async_orch)
+        _, _, check_node, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
 
         state = _make_state()
         # Add children to root
@@ -544,7 +585,7 @@ class TestCheckNode:
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
-        _, _, check_node, _, _ = make_nodes(mock_orch, mock_async_orch)
+        _, _, check_node, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
 
         state = _make_state()
         # Add completed children
@@ -577,7 +618,7 @@ class TestCheckNode:
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
-        _, _, check_node, _, _ = make_nodes(mock_orch, mock_async_orch)
+        _, _, check_node, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
 
         state = _make_state()
         create_goal(state["goal_tree"], "task1", "root", "Task 1")
@@ -603,7 +644,7 @@ class TestCheckNode:
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
-        _, _, check_node, _, _ = make_nodes(mock_orch, mock_async_orch)
+        _, _, check_node, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
 
         state = _make_state()
         create_goal(state["goal_tree"], "task1", "root", "Task 1")
@@ -627,7 +668,7 @@ class TestReflectNode:
         mock_orch.architect = AsyncMock(return_value="do it differently next time")
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
-        _, _, _, reflect_node, _ = make_nodes(mock_orch, mock_async_orch)
+        _, _, _, reflect_node, _, _, _ = make_nodes(mock_orch, mock_async_orch)
 
         state = _make_state()
         update_status(state["goal_tree"], "root", Status.FAILED, error="syntax error")
@@ -638,6 +679,163 @@ class TestReflectNode:
         assert len(delta["messages"]) == 1
         assert delta["messages"][0]["role"] == "reflection"
         assert "differently" in delta["messages"][0]["content"]
+
+
+@pytest.mark.mocked
+class TestAssessAmbiguityNode:
+    @pytest.mark.asyncio
+    async def test_assess_ambiguity_parses_json(self):
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        mock_orch.architect = AsyncMock(return_value=(
+            '{"assumptions": ["uses python"], "ambiguity": 0.8, '
+            '"blocking_question": "which framework?"}'
+        ))
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+
+        nodes = make_nodes(mock_orch, mock_async_orch)
+        assess = nodes[5]  # 6th node
+
+        state = _make_state(root_goal="build a thing")
+        delta = await assess(state)
+        assert delta["ambiguity"] == 0.8
+        assert delta["assumptions"] == ["uses python"]
+        assert delta["blocking_question"] == "which framework?"
+
+    @pytest.mark.asyncio
+    async def test_assess_ambiguity_defaults_zero_on_bad_json(self):
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        mock_orch.architect = AsyncMock(return_value="not json at all")
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+
+        nodes = make_nodes(mock_orch, mock_async_orch)
+        assess = nodes[5]
+
+        state = _make_state(root_goal="anything")
+        delta = await assess(state)
+        assert delta["ambiguity"] == 0.0
+        assert delta["assumptions"] == []
+
+    @pytest.mark.asyncio
+    async def test_assess_ambiguity_strips_code_fences(self):
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        mock_orch.architect = AsyncMock(return_value=(
+            '```json\n{"assumptions": [], "ambiguity": 0.3, "blocking_question": ""}\n```'
+        ))
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+
+        nodes = make_nodes(mock_orch, mock_async_orch)
+        assess = nodes[5]
+
+        state = _make_state(root_goal="x")
+        delta = await assess(state)
+        assert delta["ambiguity"] == 0.3
+
+
+@pytest.mark.mocked
+class TestVerifyNode:
+    @pytest.mark.asyncio
+    async def test_verify_passes_through_non_code_writing(self):
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        mock_orch.skill_router = None
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+
+        nodes = make_nodes(mock_orch, mock_async_orch)
+        verify = nodes[6]
+
+        state = _make_state(last_artifact={"type": "other", "payload": "ok"})
+        delta = await verify(state)
+        assert delta["verified"] is True
+        assert delta["critique_score"] == 1.0
+
+    @pytest.mark.asyncio
+    async def test_verify_calls_critique_for_code(self):
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+
+        mock_router = MagicMock()
+        mock_router.execute = AsyncMock(return_value={
+            "ok": True,
+            "result": {"score": 0.42, "notes": "missing error handling"},
+        })
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        mock_orch.skill_router = mock_router
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+
+        nodes = make_nodes(mock_orch, mock_async_orch)
+        verify = nodes[6]
+
+        state = _make_state(last_artifact={"type": "code", "payload": "def f(): pass"})
+        delta = await verify(state)
+        mock_router.execute.assert_awaited_once()
+        assert delta["critique_score"] == 0.42
+        assert delta["verified"] is True
+
+    @pytest.mark.asyncio
+    async def test_verify_defaults_score_when_critique_fails(self):
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+
+        mock_router = MagicMock()
+        mock_router.execute = AsyncMock(return_value={"ok": False, "error": "timeout"})
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        mock_orch.skill_router = mock_router
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+
+        nodes = make_nodes(mock_orch, mock_async_orch)
+        verify = nodes[6]
+
+        state = _make_state(last_artifact={"type": "code", "payload": "x=1"})
+        delta = await verify(state)
+        assert delta["critique_score"] == 1.0
+        assert delta["verified"] is True
+
+
+@pytest.mark.mocked
+class TestVerifyRouter:
+    def test_verify_router_routes_to_reflect_when_below_threshold(self):
+        from services.orchestrator.graph import verify_router
+        state = _make_state(critique_score=0.5)
+        assert verify_router(state) == "reflect"
+
+    def test_verify_router_routes_to_check_when_at_threshold(self):
+        from services.orchestrator.graph import verify_router
+        state = _make_state(critique_score=0.95)
+        assert verify_router(state) == "check"
+
+    def test_verify_router_defaults_to_check_when_missing(self):
+        from services.orchestrator.graph import verify_router
+        state = _make_state()
+        assert verify_router(state) == "check"
+
+
+@pytest.mark.mocked
+class TestAmbiguityRouter:
+    def test_ambiguity_router_routes_to_approval_when_high(self):
+        from services.orchestrator.graph import ambiguity_router
+        state = _make_state(ambiguity=0.7)
+        assert ambiguity_router(state) == "approval"
+
+    def test_ambiguity_router_routes_to_plan_when_low(self):
+        from services.orchestrator.graph import ambiguity_router
+        state = _make_state(ambiguity=0.2)
+        assert ambiguity_router(state) == "plan"
+
+    def test_ambiguity_router_defaults_to_plan_when_missing(self):
+        from services.orchestrator.graph import ambiguity_router
+        state = _make_state()
+        assert ambiguity_router(state) == "plan"
 
 
 @pytest.mark.mocked
@@ -683,6 +881,34 @@ class TestBuildGraph:
                 assert "check" in node_names
                 assert "reflect" in node_names
                 assert "approval" in node_names
+
+    def test_build_graph_wires_assess_ambiguity_node(self):
+        from unittest.mock import patch
+        from services.orchestrator.graph import build_graph
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+        from langgraph.checkpoint.memory import MemorySaver
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+        real_cp = MemorySaver()
+        with patch("pymongo.MongoClient"):
+            with patch("langgraph.checkpoint.mongodb.MongoDBSaver", return_value=real_cp):
+                graph, _ = build_graph(mock_orch, mock_async_orch)
+                assert "assess_ambiguity" in set(graph.nodes.keys())
+
+    def test_build_graph_wires_verify_node(self):
+        from unittest.mock import patch
+        from services.orchestrator.graph import build_graph
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+        from langgraph.checkpoint.memory import MemorySaver
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+        real_cp = MemorySaver()
+        with patch("pymongo.MongoClient"):
+            with patch("langgraph.checkpoint.mongodb.MongoDBSaver", return_value=real_cp):
+                graph, _ = build_graph(mock_orch, mock_async_orch)
+                assert "verify" in set(graph.nodes.keys())
 
 
 @pytest.mark.mocked

@@ -10,6 +10,31 @@ import { log } from '../services/logger.js';
 // Relaxed command validation: non-empty and under 8192 chars
 const COMMAND_VALID = /^.{1,8192}$/s;
 
+// Sandbox bypass patterns: code execution that must go through code-sandbox skill
+const SANDBOX_BYPASS_PATTERNS: RegExp[] = [
+  /\bpython3?\s+-c\b/,        // python -c '...'
+  /\bpython3?\s+\S+\.py\b/,   // python foo.py
+  /\bnode\s+-e\b/,            // node -e '...'
+  /\bnode\s+\S+\.js\b/,       // node foo.js
+  /\bbash\s+\S+\.sh\b/,       // bash foo.sh
+  /\bpytest\b/,               // pytest ...
+  /\beval\b/,                 // eval "..."
+  /\bcurl\b.*\|.*\bsh\b/,     // curl ... | sh
+];
+
+export function guardRunBash(cmd: string): string | null {
+  for (const pattern of SANDBOX_BYPASS_PATTERNS) {
+    if (pattern.test(cmd)) {
+      return (
+        'exec_run: this command looks like code execution and is not allowed ' +
+        'through the generic shell. Run agent-generated code via the ' +
+        'code-sandbox skill (isolated container) instead.'
+      );
+    }
+  }
+  return null;
+}
+
 export async function makeExecRunHandler(
   args: ExecRunInput,
   extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
@@ -18,6 +43,14 @@ export async function makeExecRunHandler(
   if (!COMMAND_VALID.test(args.command)) {
     return {
       content: [{ type: 'text', text: 'exec_run: command must be non-empty and under 8192 characters' }],
+      isError: true,
+    };
+  }
+
+  const bypass = guardRunBash(args.command);
+  if (bypass) {
+    return {
+      content: [{ type: 'text', text: bypass }],
       isError: true,
     };
   }

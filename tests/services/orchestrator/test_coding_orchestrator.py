@@ -784,3 +784,11 @@ class TestAsyncOrchestratorInit:
         assert orch.mcp is None
         assert orch.workspace == "."
         assert orch.max_steps == 6
+
+
+def test_react_system_prompt_directs_code_to_sandbox():
+    import inspect
+    from services.orchestrator import coding_orchestrator
+    src = inspect.getsource(coding_orchestrator.AsyncOrchestrator.react_execute)
+    assert "code-sandbox" in src
+    assert "run_bash" in src

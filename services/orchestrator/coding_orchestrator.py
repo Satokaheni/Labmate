@@ -268,7 +268,10 @@ class AsyncOrchestrator:
             "when a code-search, test-generation, parsing, audit, or documentation skill exists). "
             "Use run_bash ONLY when no available skill fits the task. "
             "Do NOT call finish until the work is actually done — and when a matching skill exists, "
-            "finish only AFTER call_skill_tool has returned its result. Call finish(summary) to end."
+            "finish only AFTER call_skill_tool has returned its result. Call finish(summary) to end. "
+            "SANDBOX RULE: run_bash is for read-only inspection (ls, cat, grep, git status) only. "
+            "Any code you author or execute — Python, Node, shell scripts, pytest — MUST go through "
+            "the code-sandbox skill (load_skill('code-sandbox') then call_skill_tool), NEVER run_bash."
         )
         if catalog:
             system += f"\n\n{catalog}"
@@ -572,6 +575,7 @@ class CodingOrchestrator:
             "final_answer": "",
             "workspace_id": workspace_id,
             "user_id": user_id,
+            "root_goal": task,
         }
         cfg = {
             "configurable": {

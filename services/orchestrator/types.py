@@ -50,6 +50,16 @@ class State(TypedDict, total=False):
     final_answer: str                 # Clean summary for Discord/user display
     workspace_id: str                 # which workspace this session belongs to
     user_id: str                      # stable user identifier
+    # A1 ambiguity gate
+    root_goal: str                    # the original incoming task text
+    assumptions: list[str]            # assumptions an agent must make to proceed
+    ambiguity: float                  # 0.0 fully specified .. 1.0 critically underspecified
+    blocking_question: str            # the single question to ask the user, if any
+    # A2 critique/verify gate
+    last_artifact: dict               # {"type": "code"|"writing"|"other", "payload": str}
+    verified: bool                    # True once verify has run
+    critique_score: float             # 0.0 .. 1.0 quality score from critique skill
+    critique_notes: str               # human-readable critique summary
 
 
 def now_iso() -> str:

@@ -456,6 +456,256 @@ For those, follow `docs/e2e-testing.md` scenarios 1–5 with the user present.
 
 ---
 
+## Session Log — 2026-06-21
+
+This session implemented the full labmate-implementation-guide.md in order (A3 → C1 → A1/A2 → B1-B4 → C2 → dataset skills), using subagent-driven development (Haiku implement → Opus spec+quality review → Opus full project review).
+
+**A3 — Sandbox bypass guard (done):**
+- `services/mcp-bridge/src/tools/exec.ts` — added `SANDBOX_BYPASS_PATTERNS` (8 regexes) and exported `guardRunBash(cmd)`; guard fires before exec and returns `isError: true` with "code-sandbox" message
+- `services/orchestrator/coding_orchestrator.py` — extended ReAct system prompt with SANDBOX RULE: `run_bash` is for inspection only; agent code must go through `code-sandbox` skill
+
+**C1 — Eval harness (done):**
+- `eval/extend_eval.py` — generates routing eval cases for new skills from SKILL.md frontmatter via Gemma
+- `eval/run_routing_eval.py` — scores routing accuracy; reports per-cluster/per-skill breakdown + confusion list
+- `eval/routing_eval.seed.jsonl` — 77 pristine seed cases (do NOT append); includes cases for dataset-search, dataset-generation, results-analysis, commit-pr, arxiv-prep, rebuttal-response
+- `eval/routing_eval.jsonl` — working set (extend_eval appends here)
+
+**A1 — Ambiguity gate (done):**
+- `services/orchestrator/types.py` — added `root_goal`, `assumptions`, `ambiguity`, `blocking_question` to `State`
+- `services/orchestrator/graph.py` — `assess_ambiguity` node (6th), `ambiguity_router` (`>= 0.6 → approval`), `AMBIGUITY_THRESHOLD` env var; `build_graph` wires `START → assess_ambiguity → (approval|plan)`; `run_task` seeds `root_goal`
+
+**A2 — Critique verify gate (done):**
+- `services/orchestrator/types.py` — added `last_artifact`, `verified`, `critique_score`, `critique_notes` to `State`
+- `services/orchestrator/graph.py` — `classify_artifact()` helper, `execute_node` sets `last_artifact`, `verify` node (7th), `verify_router` (`< 0.90 → reflect`), `CRITIQUE_THRESHOLD` env var; `execute → verify → (reflect|check)`
+- `services/skills/critique/server.py` — **created** (was missing; worker registry never picked up the skill; verify gate was silently always passing). Uses `_GemmaClient` shim (sync litellm + instructor) + `CritiqueSkill`; runs in `asyncio.to_thread`; returns `{score, verdict, notes}`
+
+**B1-B4 — Four new skills (done, all tests pass):**
+- `services/skills/arxiv-prep/` — `clean_source`, `verify_compile`, `anonymize` (diff only, no in-place edit), `package_tarball`, `extract_metadata`
+- `services/skills/rebuttal-response/` — `parse_reviews`, `draft_response` (one Gemma call per concern), `coverage_audit`; fix applied: paragraph input now splits on blank lines
+- `services/skills/commit-pr/` — `summarize_diff`, `write_commit`, `write_pr`; NEVER runs `git add/commit/push` — reads diff only
+- `services/skills/results-analysis/` — `profile_results`, `compare_runs` (Welch t-test + bootstrap CI, seed=0), `make_figures` (Agg backend); `matplotlib.use("Agg")` precedes pyplot import
+
+**C2 — Two-tier skill selection (done):**
+- `services/orchestrator/skill_router.py` — extracted `_sample_select(task, thinking_budget)` private method; new `select()`: 3 samples at budget=0, unanimous → return immediately (3 calls total), disagreement → one tiebreak at budget=1024 (4 calls total), all None → return None with no tiebreak
+
+**Dataset skills (done):**
+- `services/skills/dataset-search/` — `search_hf_hub`, `search_papers_with_code`, `rank_candidates` (lexical, no LLM); deterministic; SKILL.md cross-references `web-search`, `citation-graph`, `dataset-generation`
+- `services/skills/dataset-generation/` — `generate_from_seeds` (Gemma per seed), `format_as_jsonl`, `validate_coverage` (lexical); SKILL.md cross-references `dataset-search`
+
+**make_nodes arity note:** `make_nodes()` now returns 7 nodes: `plan, execute_node, check, reflect, approval, assess_ambiguity, verify`. Any test that unpacks it with a fixed count must use 7 values.
+
+---
+
+## RunPod Task Queue — 2026-06-21
+
+Three tasks to run in order on RunPod. Start the full stack before any of them:
+
+```bash
+infrastructure/local/serve-model.sh   # wait until model is healthy
+infrastructure/local/start.sh
+infrastructure/local/status.sh        # all services must be green before proceeding
+```
+
+---
+
+### Task R1: Full skill E2E testing (priority: high)
+
+Six new skills were added this session plus the `critique` skill gained its `server.py` (was previously inert). Re-run the full skill E2E suite to confirm all skills dispatch correctly through Redis Streams → skill worker → MCP server and return valid responses.
+
+**New skills to test first:**
+- `arxiv-prep` — call `clean_source` with a sample project dir (can be a temp dir with a dummy `.tex`)
+- `rebuttal-response` — call `parse_reviews` with a short mock review text
+- `commit-pr` — call `summarize_diff` with a small inline diff string
+- `results-analysis` — call `profile_results` with a small CSV file
+- `dataset-search` — call `search_hf_hub` with query `"emotion classification"`
+- `dataset-generation` — call `generate_from_seeds` with 1–2 seed strings
+- `critique` — call `critique` with a short code snippet and a task description; verify `score` is a float in `[0, 1]` and `verdict` is one of `pass/revise/fail`
+
+**Dispatch pattern for each skill via Redis (one-shot test):**
+```bash
+source infrastructure/local/local.env
+TASK_ID="e2e-$(date +%s)"
+redis-cli XADD labmate:goals '*' payload \
+  "{\"task_id\":\"$TASK_ID\",\"task\":\"<your task description>\",\"session_id\":\"$TASK_ID\"}"
+# Poll result
+for i in $(seq 1 120); do
+  VAL=$(redis-cli GET "labmate:result:$TASK_ID" 2>/dev/null)
+  [ -n "$VAL" ] && echo "$VAL" && break; sleep 1
+done
+```
+
+**Or use the CLI for a cleaner test:**
+```bash
+source infrastructure/local/local.env
+PYTHONPATH=. python -m services.cli "Search the Hugging Face Hub for empathetic dialogue datasets."
+PYTHONPATH=. python -m services.cli "Generate 3 synthetic instruction-response examples for empathy training."
+PYTHONPATH=. python -m services.cli "Summarize this diff and write a commit message: $(git diff HEAD | head -50)"
+```
+
+**What to verify:**
+- Each skill routes correctly (check logs for `selected skill: <name>`)
+- Each skill returns `{"ok": true, "result": {...}}` — not an error
+- The `critique` skill returns `{"score": <float>, "verdict": "<str>", "notes": "<str>"}`
+- No skill times out (if it does, check that its `server.py` is on `sys.path` in the worker)
+
+**Also re-run the existing pytest E2E suite:**
+```bash
+python -m pytest tests/ -v --ignore=tests/services/skills/paper-to-slides \
+  --ignore=tests/services/skills/figma-to-component \
+  --ignore=tests/services/skills/design-token-transform 2>&1 | tail -20
+```
+Expected: no new failures beyond the pre-existing collection errors in those three dirs.
+
+---
+
+### Task R2: Routing evaluation + scoring (priority: high)
+
+Extend the eval working set with generated cases for the 6 new skills, then score routing across the full catalog. This confirms new skills route at acceptable accuracy and don't regress neighbors.
+
+**Step 1 — Generate routing cases:**
+```bash
+python eval/extend_eval.py \
+  --skills-dir services/skills \
+  --eval eval/routing_eval.jsonl \
+  --per-skill 6 \
+  --base-url http://localhost:8000/v1 \
+  --model gemma-4-31b
+```
+This appends ~6 positive + disambiguation cases per new skill. The seed file is not touched.
+
+**Step 2 — Score routing:**
+```bash
+python eval/run_routing_eval.py \
+  --eval eval/routing_eval.jsonl \
+  --skills-dir services/skills \
+  --base-url http://localhost:8000/v1 \
+  --model gemma-4-31b \
+  --repeats 3 \
+  --report eval/reports/
+```
+
+**Acceptance thresholds:**
+| Check | Threshold |
+|---|---|
+| New skill per-skill accuracy | ≥ 0.80 |
+| Neighbor regression (any existing skill) | drop ≤ 0.05 from baseline |
+| Overall accuracy | ≥ 0.85 |
+
+**Key confusion pairs to watch:**
+- `dataset-search` vs `web-search` (both search, but dataset-search hits HF/PWC APIs)
+- `dataset-generation` vs `dataset-search` (create vs find)
+- `dataset-search` vs `citation-graph` (datasets vs paper citations)
+- `arxiv-prep` vs `academic-writing` (package finished paper vs draft it)
+- `commit-pr` vs bridge `git_*` tools (generate prose vs read repo state)
+- `results-analysis` vs `paper-rag` (local result files vs literature retrieval)
+
+If a skill is mis-routing, improve its SKILL.md description cross-references — the `description` field is the routing signal for `select()`. Rerun scoring after each fix. Do **not** modify `routing_eval.seed.jsonl`.
+
+---
+
+### Task R3: Event streaming E2E (priority: medium)
+
+The graph now has 7 nodes (added `assess_ambiguity` and `verify` this session). Confirm events emit correctly from all nodes, including the two new ones.
+
+**Smoke test — full event stream with new nodes:**
+```bash
+source infrastructure/local/local.env
+TASK_ID="evt-$(date +%s)"
+
+# Terminal 1: submit and poll result
+redis-cli XADD labmate:goals '*' payload \
+  "{\"task_id\":\"$TASK_ID\",\"task\":\"Write a Python function to reverse a string.\",\"session_id\":\"$TASK_ID\"}"
+for i in $(seq 1 120); do
+  VAL=$(redis-cli GET "labmate:result:$TASK_ID" 2>/dev/null)
+  [ -n "$VAL" ] && echo "$VAL" && break; sleep 1
+done
+
+# Terminal 2: watch events (run before submitting)
+redis-cli XREAD BLOCK 120000 STREAMS "labmate:events:$TASK_ID" 0
+```
+
+**Expected event sequence with new nodes:**
+1. `turn.start`
+2. `reasoning` from `assess_ambiguity` node (`node: "assess_ambiguity"`)
+3. `reasoning` from `route` node (skill selection, `node: "route"`)
+4. `tool.start` + `tool.done` for skill execution
+5. `reasoning` from `verify` node if artifact is code or writing (`node: "verify"`)
+6. `answer.delta` chunks → `answer.done`
+7. `turn.done` with `"status": "complete"`
+
+**Specific checks:**
+- `assess_ambiguity` emits a `reasoning` event with `ambiguity` score in the summary
+- If ambiguity ≥ 0.6, a `turn.blocked` or approval event should appear before planning
+- `verify` emits a `reasoning` event with critique score when the artifact is code or writing
+- If critique score < 0.90, a `reflect` loop occurs (look for repeated `tool.start`/`tool.done`)
+
+**CLI streaming check:**
+```bash
+PYTHONPATH=. python -m services.cli \
+  "Write a Python function that returns the square of a number."
+```
+Expected: live frame renders with tool rows including the verify step. See the existing "Smoke test 2" section below for full expected output format.
+
+**If events are missing from new nodes:** check that `assess_ambiguity` and `verify` in `services/orchestrator/graph.py` both call `await events.emit(...)`. The emit calls should already be there — if not, add them following the pattern in the `plan` and `execute_node` functions.
+
+---
+
+## Eval Harness — Adding a New Skill
+
+Every new skill under `services/skills/<name>/` with a valid `SKILL.md` frontmatter is **automatically discovered** by `extend_eval.py` and `run_routing_eval.py`. No code changes to the eval scripts are needed.
+
+After adding a skill, run this on RunPod (requires live Gemma endpoint):
+
+### Step 1 — Generate routing cases for new skills
+
+```bash
+# Appends ~6 cases per new skill to routing_eval.jsonl (does not touch the seed)
+python eval/extend_eval.py \
+  --skills-dir services/skills \
+  --eval eval/routing_eval.jsonl \
+  --per-skill 6 \
+  --base-url http://localhost:8000/v1 \
+  --model gemma-4-31b
+```
+
+`extend_eval.py` reads each `SKILL.md`, generates positive routing cases ("use this skill for X") and disambiguation cases ("prefer this skill over Y"), and appends them to the working set. The seed file (`routing_eval.seed.jsonl`) is never modified.
+
+### Step 2 — Score routing accuracy
+
+```bash
+# Scores routing across the full eval set; saves report to eval/reports/
+python eval/run_routing_eval.py \
+  --eval eval/routing_eval.jsonl \
+  --skills-dir services/skills \
+  --base-url http://localhost:8000/v1 \
+  --model gemma-4-31b \
+  --repeats 3 \
+  --report eval/reports/
+```
+
+The runner reports:
+- **Overall accuracy** across all clusters
+- **Per-cluster accuracy** (code_nav, ui_gen, academic_grounding, research_data, etc.)
+- **Per-skill accuracy** for every skill in the catalog
+- **Confusion list** — which tasks routed to the wrong skill
+
+### What to check
+
+- The new skill's per-skill accuracy should be ≥ 0.80
+- No existing skill's accuracy should drop by more than 0.05 (neighbor regression)
+- If a skill bleeds into a neighbor (e.g. `dataset-search` steals from `web-search`), improve the SKILL.md description cross-references (see C4 template in the implementation guide) — the description is the routing signal
+
+### Seed file discipline
+
+```
+eval/routing_eval.seed.jsonl  ← PRISTINE — never append, never modify
+eval/routing_eval.jsonl       ← working set — extend_eval appends here
+```
+
+To reset the working set to seed: `cp eval/routing_eval.seed.jsonl eval/routing_eval.jsonl`
+
+---
+
 ## What NOT to Do
 
 - Do not load the model directly with `FastLanguageModel` in any M3+ code — that's the M2 pattern. Use the llama.cpp HTTP API (`llama-server` on port 8000).

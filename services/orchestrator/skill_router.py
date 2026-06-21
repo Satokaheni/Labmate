@@ -68,13 +68,62 @@ class SkillRouter:
         """Public accessor for the runner (SkillRunner with catalog and tool schema)."""
         return self._runner
 
+    async def _sample_select(self, task: str, thinking_budget: int) -> str | None:
+        catalog = self._runner.catalog_prompt()
+        schema = self._runner.tool_schema()
+        directive = (
+            "You are a skill router. If ANY available skill is relevant to the "
+            "user's task, you MUST call load_skill with that skill's name. Only "
+            "decline to call a tool if truly no skill fits."
+        )
+        try:
+            r = await litellm.acompletion(
+                model="openai/gemma-4-31b",
+                api_base=self._gemma_base,
+                api_key="not-needed",
+                messages=[
+                    {"role": "system", "content": f"{directive}\n\n{catalog}"},
+                    {"role": "user", "content": task},
+                ],
+                tools=[schema],
+                tool_choice="auto",
+                extra_body={"thinking_budget_tokens": thinking_budget},
+            )
+        except Exception as exc:
+            _log.warning("_sample_select error: %s", exc)
+            return None
+        choices = getattr(r, "choices", None)
+        if not choices:
+            return None
+        message = getattr(choices[0], "message", None)
+        tool_calls = getattr(message, "tool_calls", None) if message else None
+        if not tool_calls:
+            return None
+        for tc in tool_calls:
+            func = getattr(tc, "function", None)
+            if func is None or getattr(func, "name", None) != "load_skill":
+                continue
+            args_str = getattr(func, "arguments", "{}")
+            if isinstance(args_str, str):
+                try:
+                    args = json.loads(args_str)
+                except json.JSONDecodeError:
+                    continue
+            else:
+                args = args_str or {}
+            skill_name = args.get("name")
+            if skill_name and skill_name in self._runner.catalog:
+                self._last_reasoning = events.extract_reasoning(r)
+                return skill_name
+        return None
+
     async def select(self, task: str) -> str | None:
         """
         Ask Gemma 4 to select which skill to use for this task.
 
-        ONE acompletion call with tools=[runner.tool_schema()], system=catalog_prompt().
-        Returns the skill name if the model emits a load_skill tool call, else None.
-        Parses tool_calls defensively; returns None on any error.
+        Two-tier approach: first collect SELECT_ATTEMPTS independent samples with
+        zero thinking budget. If unanimous, return immediately. If disagreement,
+        run one tiebreak sample with full thinking budget.
 
         Args:
             task: Natural-language goal description
@@ -82,68 +131,24 @@ class SkillRouter:
         Returns:
             Skill name (str) if selected, None otherwise
         """
-        catalog = self._runner.catalog_prompt()
-        schema = self._runner.tool_schema()
-        # Without an explicit directive, Gemma 4 under-triggers: it returns no
-        # tool call for ~half of clearly-matching tasks. Instructing it to call
-        # load_skill whenever a skill fits raised live selection recall from
-        # 9/18 to 18/18 (precision was already 100%). See docs/e2e-setup-findings.
-        directive = (
-            "You are a skill router. If ANY available skill is relevant to the "
-            "user's task, you MUST call load_skill with that skill's name. Only "
-            "decline to call a tool if truly no skill fits."
+        picks = [await self._sample_select(task, 0) for _ in range(SELECT_ATTEMPTS)]
+        picks = [p for p in picks if p is not None]
+        if not picks:
+            return None
+        if len(set(picks)) == 1:
+            chosen = picks[0]
+        else:
+            chosen = await self._sample_select(task, 1024)
+        if chosen is None:
+            return None
+        _log.info("selected skill: %s", chosen)
+        await events.emit(
+            "reasoning",
+            node="route",
+            summary=events.reasoning_summary(self._last_reasoning),
+            text=self._last_reasoning,
         )
-        # Retry across independent samples: the local Q4 model is non-deterministic
-        # and occasionally emits no tool call for a clearly-matching task. Each
-        # attempt is an independent sample, so a few retries compound recall toward
-        # ~100% without ever picking a WRONG skill (we only accept catalog hits).
-        for attempt in range(SELECT_ATTEMPTS):
-            try:
-                r = await litellm.acompletion(
-                    model="openai/gemma-4-31b",
-                    api_base=self._gemma_base,
-                    api_key="not-needed",
-                    messages=[
-                        {"role": "system", "content": f"{directive}\n\n{catalog}"},
-                        {"role": "user", "content": task},
-                    ],
-                    tools=[schema],
-                    tool_choice="auto",
-                    extra_body={"thinking_budget_tokens": 0},
-                )
-                choices = getattr(r, "choices", None)
-                if not choices:
-                    continue
-                message = getattr(choices[0], "message", None)
-                tool_calls = getattr(message, "tool_calls", None) if message else None
-                if not tool_calls:
-                    continue  # no tool call this sample — retry
-                for tc in tool_calls:
-                    func = getattr(tc, "function", None)
-                    if func is None or getattr(func, "name", None) != "load_skill":
-                        continue
-                    args_str = getattr(func, "arguments", "{}")
-                    if isinstance(args_str, str):
-                        try:
-                            args = json.loads(args_str)
-                        except json.JSONDecodeError:
-                            continue
-                    else:
-                        args = args_str or {}
-                    skill_name = args.get("name")
-                    if skill_name and skill_name in self._runner.catalog:
-                        _log.info("selected skill: %s (attempt %d)", skill_name, attempt + 1)
-                        self._last_reasoning = events.extract_reasoning(r)
-                        await events.emit(
-                            "reasoning",
-                            node="route",
-                            summary=events.reasoning_summary(self._last_reasoning),
-                            text=self._last_reasoning,
-                        )
-                        return skill_name
-            except Exception as exc:
-                _log.warning("select() attempt %d error: %s", attempt + 1, exc)
-        return None
+        return chosen
 
     async def plan_tool_call(self, task: str, skill_name: str) -> dict | None:
         """
