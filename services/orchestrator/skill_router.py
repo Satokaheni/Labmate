@@ -56,6 +56,13 @@ _DECOMPOSE_PROMPT = (
     "- Maximum 4 sub-tasks. If you cannot decompose, return the original task as a "
     "single-element list.\n"
     "- Reply with ONLY a JSON array of strings. No markdown, no explanation.\n\n"
+    "Examples:\n"
+    'Task: "Summarize the key findings of this PDF."\n'
+    '["Summarize the key findings of this PDF"]\n\n'
+    'Task: "Write a function that reverses a string, and write a pytest unit test '
+    'for it"\n'
+    '["Write a Python function that reverses a string", "Write a pytest unit test '
+    'for the string-reversal function"]\n\n'
     "Task: {task}"
 )
 
@@ -270,6 +277,8 @@ class SkillRouter:
                 api_base=self._gemma_base,
                 api_key="not-needed",
                 messages=[{"role": "user", "content": prompt}],
+                temperature=0,
+                seed=0,
                 extra_body={"thinking_budget_tokens": 512},
             )
         except Exception as exc:

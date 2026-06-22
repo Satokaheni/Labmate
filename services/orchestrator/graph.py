@@ -369,7 +369,23 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             f"TASK: {goal}\n\n"
             "List the assumptions an agent must make to act on this as written. "
             "Then rate overall ambiguity from 0.0 (fully specified) to 1.0 (critically "
-            "underspecified). Respond as JSON: "
+            "underspecified).\n\n"
+            "RUBRIC — score HIGH (0.7-0.9) when the task has any of:\n"
+            "  - an undefined referent (e.g. \"make it better\", \"fix the thing\" — no "
+            "object is named),\n"
+            "  - no concrete deliverable (you cannot tell what artifact to produce),\n"
+            "  - undefined scope (you'd have to guess what 'done' means).\n"
+            "Score LOW (0.0-0.2) for a clear, actionable request where the deliverable "
+            "and scope are unambiguous (e.g. \"write a python function that reverses a "
+            "string\").\n"
+            "Examples:\n"
+            "  \"make it better\" -> 0.85\n"
+            "  \"fix the thing\" -> 0.9\n"
+            "  \"write a python function that reverses a string\" -> 0.1\n"
+            "  \"add a docstring to the reverse_string function in utils.py\" -> 0.1\n\n"
+            "When ambiguity is high, set \"blocking_question\" to the single most useful "
+            "question to ask the user; otherwise leave it empty.\n"
+            "Respond as JSON: "
             '{"assumptions": ["..."], "ambiguity": 0.0, "blocking_question": "" }'
         )
         raw = await orch.architect(prompt, thinking_budget=1024)
@@ -392,31 +408,38 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             ambiguity = 0.0
 
         assumptions = out.get("assumptions", []) or []
+        blocking_question = out.get("blocking_question", "") or ""
         await events.emit(
             "reasoning",
             node="assess_ambiguity",
             summary=f"ambiguity={ambiguity:.2f}; {len(assumptions)} assumption(s)",
-            text=out.get("blocking_question", "") or json.dumps(out),
+            text=blocking_question or json.dumps(out),
         )
-        # When this assessment will route to the human-approval gate (ambiguity_router),
-        # emit the "awaiting approval" event HERE — this node completes and is checkpointed,
-        # so the event fires exactly once (the approval node re-runs on resume and must not
-        # re-emit it). This is the only live path to approval (the check->approval branch
-        # requires AWAITING_APPROVAL status, which nothing currently sets).
-        if ambiguity >= AMBIGUITY_THRESHOLD:
-            await events.emit(
-                "reasoning",
-                node="approval",
-                summary="awaiting human approval",
-                text=f"Goal requires approval before proceeding (ambiguity={ambiguity:.2f})",
-            )
 
-        return {
+        result = {
             "root_goal": goal,
             "assumptions": assumptions,
             "ambiguity": ambiguity,
-            "blocking_question": out.get("blocking_question", "") or "",
+            "blocking_question": blocking_question,
         }
+
+        # On high ambiguity, HALT and ask the user a clarifying question rather than
+        # guessing. ambiguity_router sends this node's output to END; main._handle /
+        # coding_orchestrator.stream surface clarification_question as the answer and
+        # suppress any guess. Reuse the same clarification_request event the plan node
+        # emits so downstream consumers see one consistent shape.
+        if ambiguity >= AMBIGUITY_THRESHOLD:
+            question = blocking_question or "Could you clarify what you'd like me to do?"
+            await events.emit(
+                "clarification_request",
+                question=question,
+                task=goal,
+                session_id=state.get("session_id", ""),
+            )
+            result["awaiting_clarification"] = True
+            result["clarification_question"] = question
+
+        return result
 
     async def verify(state: State) -> dict:
         """
@@ -497,9 +520,10 @@ def router(state: State) -> str:
 
 
 def ambiguity_router(state: State) -> str:
-    """A1: route after assess_ambiguity."""
+    """A1: route after assess_ambiguity. On high ambiguity, HALT (END) so the agent
+    asks the user a clarifying question instead of guessing; otherwise plan."""
     if float(state.get("ambiguity", 0.0)) >= AMBIGUITY_THRESHOLD:
-        return "approval"
+        return END
     return "plan"
 
 
@@ -552,7 +576,7 @@ def build_graph(
     b.add_node("assess_ambiguity", assess_node)
 
     b.add_edge(START, "assess_ambiguity")
-    b.add_conditional_edges("assess_ambiguity", ambiguity_router, ["approval", "plan"])
+    b.add_conditional_edges("assess_ambiguity", ambiguity_router, ["plan", END])
     b.add_conditional_edges("plan", clarification_router, ["execute", END])
     b.add_edge("execute", "verify")
     b.add_conditional_edges("verify", verify_router, ["reflect", "check"])

@@ -896,7 +896,8 @@ class TestApprovalNode:
     @pytest.mark.asyncio
     async def test_approval_node_does_not_emit(self, fake_event_emitter):
         """Approval re-runs on every resume; it must NOT emit (would duplicate the event).
-        The 'awaiting approval' event is emitted once by assess_ambiguity instead."""
+        (The approval node stays reachable via the check->approval edge; FIX 7 only changed
+        the assess_ambiguity path to halt for clarification instead of routing here.)"""
         from services.orchestrator.graph import make_nodes
         from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
@@ -917,9 +918,11 @@ class TestApprovalNode:
         assert fake_event_emitter.events == []
 
     @pytest.mark.asyncio
-    async def test_assess_ambiguity_emits_approval_event_when_ambiguous(self, fake_event_emitter):
-        """When ambiguity >= threshold (routes to approval), assess_ambiguity emits a single
-        node='approval' 'awaiting human approval' event (so approval itself never re-emits)."""
+    async def test_assess_ambiguity_emits_clarification_event_when_ambiguous(self, fake_event_emitter):
+        """FIX 7: high-ambiguity tasks now HALT for clarification (ask a blocking question)
+        instead of routing to the approval interrupt. Previously this asserted a
+        node='approval' 'awaiting human approval' reasoning event; now assess_ambiguity
+        emits a clarification_request event (same shape the plan node uses)."""
         from services.orchestrator.graph import make_nodes
         from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
@@ -932,14 +935,20 @@ class TestApprovalNode:
         nodes = make_nodes(mock_orch, mock_async_orch)
         assess = nodes[5]
 
-        await assess(_make_state(root_goal="vague task"))
+        delta = await assess(_make_state(root_goal="vague task"))
 
-        # Two events: the assess_ambiguity score, then the approval notification.
-        nodes_emitted = [fields["node"] for _, fields in fake_event_emitter.events]
+        # The assess_ambiguity score event still fires.
+        nodes_emitted = [fields.get("node") for _, fields in fake_event_emitter.events]
         assert "assess_ambiguity" in nodes_emitted
-        assert nodes_emitted.count("approval") == 1
-        approval_evt = next(f for _, f in fake_event_emitter.events if f["node"] == "approval")
-        assert "awaiting human approval" in approval_evt["summary"]
+        # No approval reasoning event any more.
+        assert "approval" not in nodes_emitted
+        # A clarification_request event is emitted with the blocking question.
+        clar = [(name, f) for name, f in fake_event_emitter.events if name == "clarification_request"]
+        assert len(clar) == 1
+        assert clar[0][1]["question"] == "clarify?"
+        # The node halts for clarification.
+        assert delta["awaiting_clarification"] is True
+        assert delta["clarification_question"] == "clarify?"
 
 
 @pytest.mark.mocked
@@ -1077,10 +1086,13 @@ class TestVerifyRouter:
 
 @pytest.mark.mocked
 class TestAmbiguityRouter:
-    def test_ambiguity_router_routes_to_approval_when_high(self):
+    def test_ambiguity_router_halts_for_clarification_when_high(self):
+        # FIX 7: high ambiguity now halts (END) to ask the user a clarifying question,
+        # rather than routing to the approval interrupt.
         from services.orchestrator.graph import ambiguity_router
+        from langgraph.graph import END
         state = _make_state(ambiguity=0.7)
-        assert ambiguity_router(state) == "approval"
+        assert ambiguity_router(state) == END
 
     def test_ambiguity_router_routes_to_plan_when_low(self):
         from services.orchestrator.graph import ambiguity_router
