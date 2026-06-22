@@ -1,0 +1,70 @@
+{
+  "name": "Chain-of-Thought decomposition prompting",
+  "category": "Decomposition architecture",
+  "reference": "Wei et al. 2022 (Chain-of-Thought Prompting Elicits Reasoning in LLMs, arXiv:2201.11903); Kojima et al. 2022 (Large Language Models are Zero-Shot Reasoners, 'Let's think step by step', arXiv:2205.11916). Basis for ReAct (Yao et al. 2022, arXiv:2210.03629) and Voyager (Wang et al. 2023, arXiv:2305.16291).",
+
+  "decomposition_method": "LLM-prompted (zero-shot / few-shot CoT). The model is induced to generate intermediate reasoning steps before answering, either zero-shot by appending a cue such as 'Let's think step by step' (Kojima 2022) or via few-shot exemplars showing rationale chains (Wei 2022). Decomposition is implicit: there is no explicit splitter node, parser, fine-tuned classifier, or embedding clustering — sub-problems emerge inline within a single generated reasoning trace.",
+
+  "decomposition_granularity": "semantic unit — free-form natural-language reasoning steps / sub-problems emitted inline; granularity is emergent and unconstrained rather than fixed to a clause or tool call.",
+
+  "ordering_strategy": "fixed sequential — reasoning steps are produced left-to-right in a single linear chain, each step conditioning on the prior generated text. No DAG, no parallel fan-out, no explicit re-plan node (later variants like self-consistency sample multiple independent chains, and Plan-and-Solve / least-to-most add explicit planning, but plain CoT is sequential).",
+
+  "decomposition_validation": "None in the base method — blind trust in the LLM's split. Plain CoT does not verify solvability, completeness, or non-redundancy of the implicit sub-tasks; quality rests entirely on the model's emergent reasoning. Subsequent techniques add validation externally (self-consistency majority-vote over sampled chains, verifier-guided CoT, least-to-most's explicit decomposition-then-solve stages), but these are separate methods layered on top, not part of CoT itself.",
+
+  "hierarchy_depth": "flat — a single linear list of reasoning steps. No milestone+step structure or nested skill tree in base CoT (hierarchy appears only in derivatives such as Voyager's skill library).",
+
+  "router_type": "chain (sequential, implicit) — not a true router. Routing/skill selection is not a separate stage; any tool or skill choice emerges inside the reasoning trace. As a routing baseline it behaves like sequential reasoning that may then pick an action (most explicit in the ReAct extension). [uncertain]",
+
+  "routing_model": "prompted LLM (same model as main) — the same LLM both decomposes and (in agent extensions) selects actions; no separate fine-tuned classifier, embedding similarity, or RL router.",
+
+  "handles_ambiguity": "best-effort pick / overconfident-allow. Plain CoT reasons through to a single answer and does not abstain or ask the user to clarify; ambiguous sub-tasks are resolved by whatever the reasoning trace commits to. Clarification or abstention requires additional mechanisms not present in base CoT. [uncertain]",
+
+  "fallback_behavior": "route to general LLM — there is no skill-coverage check; the model simply continues reasoning and answers (or hallucinates) regardless of whether a suitable skill/tool exists. No error/abort, human escalation, or automatic re-decomposition in the base method. [uncertain]",
+
+  "skill_pool_scale_and_retrieval": "full-context (all tools/skills in prompt) — base CoT carries everything in-context and does not scale via embedding retrieval, rerank, or skill-tree traversal. Scaling to large skill pools requires pairing CoT with separate retrieval mechanisms (e.g., ReAct + retriever, Voyager's skill library). [uncertain]",
+
+  "router_agent_asymmetry": "None — a single LLM performs both reasoning and any selection over identical in-context information; no separate router with privileged skill text. [uncertain]",
+
+  "execution_pattern": "ReAct loop (implicit, one step at a time) for the agent extension; pure CoT is a single-pass sequential reasoning chain with no tool execution. When extended to acting (ReAct), reasoning and a single action are interleaved one tool at a time — no parallel/concurrent fan-out.",
+
+  "parallel_vs_concurrent": "Neither — base CoT is strictly sequential single-trace reasoning with no notion of parallel (multiple calls per turn) or concurrent (simultaneous) execution. The parallel/concurrent distinction is not addressed.",
+
+  "dependency_detection": "assumed-sequential (default, conservative) — CoT treats all steps as a dependent linear chain and performs no explicit independence analysis to identify parallelizable sub-tasks.",
+
+  "result_aggregation": "iterative — each reasoning step feeds the next within the same trace, and the final answer is read off the end of the chain. No separate LLM-joiner re-reading independent sub-results (self-consistency adds a majority-vote aggregation across multiple sampled chains, but that is a separate technique).",
+
+  "mid_chain_feedback": "soft — later reasoning steps naturally incorporate earlier generated steps (and, in ReAct, prior observations) within the running context, but there is no explicit hard re-planning node that detects failure and restarts the plan. [uncertain]",
+
+  "benchmark_name": "GSM8K (arithmetic), SVAMP, AQuA, MultiArith, ASDiv, CommonsenseQA, StrategyQA, and other arithmetic/commonsense/symbolic reasoning benchmarks (Wei 2022, Kojima 2022). Not a tool-routing benchmark like BFCL.",
+
+  "multi_intent_coverage": "No explicit multi-intent / compound-prompt categories. Benchmarks are single-task reasoning problems; CoT decomposes within a single intent rather than across multiple independent intents. Not organized into parallel/sequential/mixed routing categories. [uncertain]",
+
+  "accuracy_metric": "outcome-only — exact-match / final-answer accuracy on the reasoning benchmarks (e.g., final numeric answer on GSM8K). Intermediate reasoning steps are not scored in the base evaluation; process-supervision scoring of CoT steps came later (e.g., process-reward-model work).",
+
+  "clarification_capability": "Not measured and not supported. Base CoT has no when-to-ask vs. when-to-answer mechanism and no clarification-efficiency metric; it always proceeds to an answer. Relevant to the documented systematic overconfidence of LLMs (e.g., low InteractComp scores), but CoT itself offers nothing here.",
+
+  "process_vs_outcome_eval": "outcome — original CoT papers evaluate only the final answer, not intermediate steps. Process supervision over reasoning chains is a later, separate development.",
+
+  "eval_stability": "Reproducibility is moderate and prompt/sample-sensitive: results depend on exemplar choice, decoding temperature, and (for self-consistency) sampling. There is no API-drift concern since CoT is a pure reasoning method with no external tool APIs; the StableToolBench-style live-API instability axis does not apply. [uncertain]",
+
+  "integration_pattern": "in-context (prompted) — implemented purely as a prompting technique (exemplars or a 'Let's think step by step' cue) inside the model call. No LangGraph node, middleware, inference-engine layer, or standalone service required; trivially composable into any agent harness as a prompt pattern.",
+
+  "routing_layer": "application layer — it is a prompt-level technique applied at the model call within the application; no inference-engine-layer classification.",
+
+  "latency_overhead": "Adds reasoning tokens (often substantial) to every generation, increasing per-call latency and token cost, but adds no extra round-trips in the single-pass case (zero-shot CoT can use a second call to extract the final answer). Self-consistency multiplies cost by sampling N chains. As a decomposition step it is cheap to add but inflates output length.",
+
+  "online_adaptation": "static / none — pure prompting with no learning from production feedback; behavior is fixed at deploy time (any improvement comes from changing prompts or exemplars manually).",
+
+  "adoption": "production / ubiquitous — CoT and zero-shot 'Let's think step by step' are universally adopted prompting patterns, widely available in open-source and used across commercial APIs and agent frameworks; foundational to ReAct, Voyager, and most agentic systems."
+,
+  "uncertain": [
+    "router_type",
+    "handles_ambiguity",
+    "fallback_behavior",
+    "skill_pool_scale_and_retrieval",
+    "router_agent_asymmetry",
+    "mid_chain_feedback",
+    "multi_intent_coverage",
+    "eval_stability"
+  ]
+}

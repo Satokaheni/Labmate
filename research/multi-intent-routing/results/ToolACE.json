@@ -1,0 +1,56 @@
+{
+  "name": "ToolACE",
+  "category": "Training methodology",
+  "description": "ToolACE (ICLR 2025, arXiv:2409.00920) is an automatic agentic data-generation pipeline for LLM function calling. It builds a self-evolved pool of 26,507 diverse APIs (Tool Self-Evolution Synthesis using a speciation-adaptation-evolution process), then uses multi-agent interactive dialog generation (user/assistant/tool agents guided by a formalized thinking process) to produce function-calling dialogs covering simple, parallel, dependent, nested, multi-type, and non-tool-use scenarios. A self-guided complexity evaluator tunes data difficulty and a dual-layer (rule-based + model-based) verification ensures accuracy. The resulting ToolACE-8B model (fine-tuned on LLaMA-3.1-8B-Instruct) reaches state-of-the-art on the Berkeley Function-Calling Leaderboard.",
+
+  "decomposition_method": "ToolACE is a data-generation/training method rather than an inference-time decomposer; decomposition behavior is taught implicitly via supervised fine-tuning. Training dialogs are synthesized by a multi-agent pipeline (LLM-prompted agents acting as user, assistant, and tool environment) under a 'formalized thinking process'. The trained model performs decomposition in-context as a fine-tuned LLM, learning to emit the right set of tool calls (single, parallel, or dependent) for a given user turn. [uncertain]",
+  "decomposition_granularity": "tool call (each user intent maps to one or more function calls; dialogs are constructed at the granularity of individual API invocations)",
+  "ordering_strategy": "Mixed/learned: training data contains parallel function calls (independent, issued together) and dependent function calls (where a later call consumes an earlier call's output, implying sequential ordering). The model learns to reproduce these orderings; no explicit external DAG planner at inference. [uncertain]",
+  "decomposition_validation": "Dual-layer verification is applied to the synthesized training data (not to runtime decompositions): a rule-based checker validates API definition clarity, executability, and dialog correctness, and a model-based checker (LLM verifier) checks consistency/correctness of the generated calls. This validates solvability and correctness of the synthetic examples before they enter the training set. There is no described runtime decomposition validator; correctness at inference is whatever the fine-tuned model produces. [uncertain]",
+  "hierarchy_depth": "flat (dialogs are turn-by-turn lists of tool calls; supports nested parameter structures within a call but not a multi-level decomposition tree)",
+
+  "router_type": "Not a dedicated router; the fine-tuned LLM selects which function(s) to call from the provided tool list in-context. Effectively a prompted multi-label selector over the candidate API set per turn (can choose zero, one, or several calls). [uncertain]",
+  "routing_model": "prompted LLM (the same fine-tuned model performs tool selection and argument filling; ToolACE-8B is LLaMA-3.1-8B fine-tuned on ToolACE data)",
+  "handles_ambiguity": "Non-tool-use training dialogs explicitly cover two cases: (1) no suitable tool is available, and (2) insufficient information to call a tool. The model is trained to recognize these and decline to call / request more information rather than hallucinate a call, improving relevance/irrelevance (Rel/Irrel) detection on BFCL. This teaches an abstain / ask-for-info behavior for ambiguous or unanswerable intents.",
+  "fallback_behavior": "route to general LLM / non-tool response: when no tool fits or information is missing, the model is trained to respond without a tool call (non-tool-use data). General-ability retention (MMLU, GSM8K, etc.) is preserved so it can answer directly. [uncertain]",
+  "skill_pool_scale_and_retrieval": "full-context: candidate APIs are placed in the prompt and the model selects among them. The training-time API pool is large (26,507 APIs) for diversity, but at inference the relevant tool definitions are provided in context per query; no embedding retrieval layer is described in the method. [uncertain]",
+  "router_agent_asymmetry": "Not applicable / none described — the same model sees the tool definitions and executes; no separate router with privileged access to fuller skill text. [uncertain]",
+
+  "execution_pattern": "Mixed within a turn: supports parallel fan-out (multiple independent calls in one assistant turn) and dependent (sequential, output-chained) calls across turns, plus single calls. Modeled implicitly by the fine-tuned LLM, not a separate executor.",
+  "parallel_vs_concurrent": "parallel (multiple tool calls emitted in a single assistant turn / API round) — the paper distinguishes parallel calls from dependent calls; it does not claim true concurrent simultaneous execution. [uncertain]",
+  "dependency_detection": "Encoded by construction in the training data: dialogs are labeled as parallel (independent) vs dependent (output of one call feeds another). The model learns to distinguish these from examples; there is no separate runtime dependency classifier. [uncertain]",
+  "result_aggregation": "iterative / LLM joiner: in multi-turn dependent dialogs, tool results are fed back into the conversation and the model conditions subsequent calls and the final natural-language answer on them (handled in-context by the LLM). [uncertain]",
+  "mid_chain_feedback": "soft: later turns include prior tool outputs in context, so the model can adapt subsequent calls based on returned results; no explicit hard re-planning node is described. [uncertain]",
+
+  "benchmark_name": "Berkeley Function-Calling Leaderboard (BFCL, v3); plus general-ability benchmarks (MMLU, GSM8K, CommonSenseQA, HumanEval, etc.) to confirm capability retention",
+  "multi_intent_coverage": "Yes — BFCL v3 includes explicit parallel, multiple, and parallel_multiple categories (independent sub-tasks), as well as multi-turn/multi-step (dependent) and relevance/irrelevance categories. ToolACE training data covers parallel (independent) and dependent (sequential) calls.",
+  "accuracy_metric": "AST-based (Abstract Syntax Tree sub-string matching of function name + argument structure) for the AST categories, plus execution-response matching for the Execute categories; relevance/irrelevance detection accuracy is also reported.",
+  "clarification_capability": "Partial: non-tool-use training data teaches the model to recognize 'insufficient information to call the tools' and to not call a tool / ask for information, which is a when-to-ask vs when-to-answer signal. However, ToolACE does not introduce a dedicated clarification benchmark or measure clarification efficiency (questions per task); clarification is evaluated indirectly via BFCL irrelevance detection. [uncertain]",
+  "process_vs_outcome_eval": "Primarily outcome/structure-based via AST and execution matching on BFCL (correctness of the produced call(s)); no dedicated process-reward / intermediate-step supervision metric. [uncertain]",
+  "eval_stability": "Uses BFCL's AST sub-string matching for AST categories (stable, offline) and execution matching for Execute categories (subject to live-API drift). BFCL is a standardized public leaderboard; the paper reports numbers against a fixed BFCL-v3 snapshot (updated 09/20/2024). [uncertain]",
+
+  "integration_pattern": "in-context (prompted): the contribution is a training dataset/pipeline; the trained model is used as a standard function-calling LLM that consumes tool definitions in the prompt. Not tied to a specific harness (LangGraph, middleware, etc.).",
+  "routing_layer": "application-layer (in-model tool selection); no inference-engine-layer routing. [uncertain]",
+  "latency_overhead": "No explicit decomposition/planning step at inference, so minimal added latency beyond normal generation; the model emits calls directly. Parallel calls in one turn reduce round-trips vs sequential. (Heavy cost is in offline data generation, not inference.) [uncertain]",
+  "online_adaptation": "static (model fixed at deployment after SFT); no production-feedback / bandit / online learning loop described.",
+  "adoption": "open-source: ToolACE-8B model weights and the approach are publicly released (Hugging Face) and widely cited as a leading open-source function-calling data method; paper-only for the full proprietary data pipeline. Published at ICLR 2025.",
+
+  "uncertain": [
+    "decomposition_method",
+    "ordering_strategy",
+    "decomposition_validation",
+    "router_type",
+    "fallback_behavior",
+    "skill_pool_scale_and_retrieval",
+    "router_agent_asymmetry",
+    "parallel_vs_concurrent",
+    "dependency_detection",
+    "result_aggregation",
+    "mid_chain_feedback",
+    "clarification_capability",
+    "process_vs_outcome_eval",
+    "eval_stability",
+    "routing_layer",
+    "latency_overhead"
+  ]
+}

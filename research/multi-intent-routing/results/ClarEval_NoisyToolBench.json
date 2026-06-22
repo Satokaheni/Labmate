@@ -1,0 +1,58 @@
+{
+  "name": "ClarEval / NoisyToolBench",
+  "category": "Ambiguity handling",
+  "description": "Two evaluation benchmarks for clarification behavior. ClarEval (arXiv 2603.00187, Li/Wu/Chang, Jilin University, Feb 2026) measures the clarification skill of code agents by injecting three realistic ambiguity types (missing goal, missing premise, ambiguous terminology) into HumanEval + LiveCodeBench tasks; ambiguous terminology is empirically the hardest. NoisyToolBench (arXiv 2409.00557, 'Learning to Ask: When LLM Agents Meet Unclear Instruction', Wang et al., EMNLP 2025) measures clarifying-question behavior under noisy/underspecified tool-use instructions, paired with the Ask-when-Needed (AwN) prompting framework and the ToolEvaluator automated assessment system.",
+
+  "decomposition_method": "Not applicable — both are evaluation benchmarks, not decomposition systems. ClarEval and NoisyToolBench evaluate whether an agent asks clarifying questions before acting on an underspecified/ambiguous prompt; they do not split a compound prompt into routable sub-tasks. [uncertain]",
+  "decomposition_granularity": "Not applicable — no sub-task splitting in either benchmark. The unit of evaluation is a single ambiguous task/query plus the set of expected clarification questions. [uncertain]",
+  "ordering_strategy": "Not applicable — no multi-sub-task ordering. Evaluation proceeds turn-by-turn (single-turn or scripted multi-turn dialogue) rather than over a DAG of sub-tasks. [uncertain]",
+  "decomposition_validation": "Not applicable in the decomposition sense. However, both benchmarks validate ambiguity coverage: ClarEval uses GPT-4o to inject ambiguity then human verification/annotation to confirm each instance is genuinely ambiguous and has a golden set of missing premises/questions; NoisyToolBench specifies, per data entry, the golden clarifying questions the agent should ask, their answers, and the expected final function calls — effectively validating completeness of the required clarifications.",
+  "hierarchy_depth": "Flat — each benchmark instance is a single (ambiguous task) item, not a hierarchy. ClarEval categorizes by ambiguity type (Missing Goal A_G, Missing Premise A_P, Ambiguous Terminology); NoisyToolBench categorizes user-instruction issues (missing essential info, ambiguous references, inaccuracies, infeasible-for-tools).",
+
+  "router_type": "Not applicable — neither benchmark performs skill/tool routing. NoisyToolBench supplies a fixed set of provided APIs per query and measures whether the agent asks for missing arguments before selecting/calling an API; the API-selection step is evaluated (Act_EM / API selection accuracy) but is not a router design. [uncertain]",
+  "routing_model": "Not applicable — benchmarks, not routers. The evaluated agent (the system under test, e.g. GPT-4o, Claude, GPT-5-Coder) performs any tool selection; the benchmark only scores it. [uncertain]",
+  "handles_ambiguity": "Clarification request (ask user) is the explicitly rewarded behavior in BOTH benchmarks — this is their entire focus. ClarEval measures whether the code agent asks clarification questions to elicit requirements before/while generating code (single-turn: emit clarification questions; multi-turn: dialogue to resolve). NoisyToolBench measures whether the LLM detects ambiguity and poses relevant clarifying questions rather than hallucinating a missing argument. NoisyToolBench's AwN framework is a prompting method that pushes agents from 'overconfident-allow / arbitrary argument generation' toward proactive asking. Both quantify the overconfidence-vs-ask gap: weaker code agents in ClarEval make unsafe assumptions on ambiguous terminology; LLMs in NoisyToolBench arbitrarily generate missing arguments due to next-token-prediction bias.",
+  "fallback_behavior": "Not applicable in the routing sense (no 'no skill covers it' path). The closest analogue: NoisyToolBench includes an 'infeasible for available tools' instruction category, where the correct behavior is to recognize infeasibility rather than hallucinate a tool call. ClarEval has no skill-coverage fallback concept. [uncertain]",
+  "skill_pool_scale_and_retrieval": "Not applicable — neither benchmark studies large-pool skill/tool retrieval scaling. NoisyToolBench provides a curated set of relevant APIs per query (no thousand-tool retrieval challenge); ClarEval is code generation with no external tool pool. [uncertain]",
+  "router_agent_asymmetry": "Not applicable — no router/agent split in either benchmark. [uncertain]",
+
+  "execution_pattern": "Interactive dialogue loop rather than a sub-task execution graph. ClarEval: single-turn (one response with clarification questions) or scripted multi-turn (simulated user gives partial answers, may introduce new ambiguities) culminating in code generation. NoisyToolBench: ReAct-style tool-use loop where the agent may ask a question, receive a simulated user answer (via ToolEvaluator), then proceed to API calls — measured over Steps.",
+  "parallel_vs_concurrent": "Not applicable — neither benchmark concerns parallel vs concurrent tool dispatch. Evaluation is inherently sequential/turn-based. [uncertain]",
+  "dependency_detection": "Not applicable — no sub-task dependency analysis. [uncertain]",
+  "result_aggregation": "Not applicable — no multi-sub-task result merging. Final output is single code (ClarEval) or a final function-call sequence + response (NoisyToolBench), scored directly. [uncertain]",
+  "mid_chain_feedback": "Soft / hard via dialogue. ClarEval multi-turn uses pre-defined dialogue scripts where the simulated user supplies partial answers and occasionally introduces new ambiguities, so later turns adapt to earlier answers; NoisyToolBench's ToolEvaluator proxies the user to answer the agent's clarifying questions mid-loop, after which the agent re-plans its tool calls. This is interaction-driven re-planning, not formal re-routing.",
+
+  "benchmark_name": "ClarEval (HumanEval 150 + LiveCodeBench 600 = 750 source tasks x 3 ambiguity injections = 2,250 evaluation instances; arXiv 2603.00187). NoisyToolBench (real-world-derived ambiguous tool-use queries with provided APIs, golden clarifying questions, answers, and expected function calls; arXiv 2409.00557).",
+  "multi_intent_coverage": "Limited / not the focus. Both are single-intent-but-underspecified benchmarks: the intent is ambiguous or missing arguments rather than compound. They do NOT explicitly target parallel/sequential multi-intent prompts; their axis is ambiguity/under-specification, complementary to multi-intent decomposition benchmarks. [uncertain]",
+  "accuracy_metric": "ClarEval: code correctness (functional/test-based pass on the underlying HumanEval/LiveCodeBench task after clarification) PLUS collaboration metrics — Average Turns to Clarify (ATC, efficiency), Key Question Coverage (KQC, precision/coverage of clarification questions), and Premise Identification Rate (PIR = |detected premises| / |golden missing premises| from first-turn questions, a zero-shot planning-quality measure). NoisyToolBench: five metrics via ToolEvaluator — A1 (whether valid clarifying questions are generated under ambiguity; rule-based), A2 and A3 (LLM-as-judge, e.g. API selection / calling / final-answer correctness), Re (rule-based), and Steps (efficiency, number of interaction steps). Reported gains for AwN include ~+6.5% API selection accuracy for GPT-4o and ~+4.0% API calling accuracy for Claude.",
+  "clarification_capability": "Core purpose of both — they are among the key clarification benchmarks. They directly measure when-to-ask vs when-to-answer behavior and clarification efficiency. ClarEval: ATC (turns-to-clarify efficiency), KQC (coverage of the key questions a competent collaborator should ask), PIR (recognizing missing premises). Finding: ambiguous terminology is the hardest type — GPT-5-Coder clarifies sort order correctly while weaker agents ask inefficient questions or make unsafe assumptions; most of 11 evaluated agents lack systematic clarification skills. NoisyToolBench: measures detection of ambiguity and quality of clarifying questions vs hallucinating missing arguments; AwN prompting framework substantially improves ask-when-needed behavior across 8 LLMs and 2 tool frameworks. Both expose a systematic overconfidence gap consistent with InteractComp/ClarifyBench findings.",
+  "process_vs_outcome_eval": "Both blend process and outcome. ClarEval scores process (ATC, KQC, PIR on the clarification dialogue) alongside outcome (final code correctness). NoisyToolBench scores process (A1 valid clarifying questions, Steps) alongside outcome (final API call/answer correctness, A2/A3). This intermediate-step scoring is closer to process supervision than outcome-only.",
+  "eval_stability": "ClarEval is contamination-aware by design (mixes HumanEval with a challenging LiveCodeBench subset to reduce memorization) and uses fixed scripted multi-turn dialogues for reproducibility; the multi-turn simulated user is deterministic via predefined scripts. NoisyToolBench's ToolEvaluator mixes deterministic rule-based scoring (A1, Re, Steps) with LLM-as-judge (A2, A3, GPT-4o-driven simulated user), so the LLM-judge components introduce some variance; the provided-API set is fixed (no live external API drift). [uncertain]",
+
+  "integration_pattern": "In-context / prompted evaluation harness. Neither is an integrated production router. NoisyToolBench's AwN is a prompting framework layered on the agent, and ToolEvaluator is a standalone automated evaluation service (GPT-4o simulates the user). ClarEval is a standalone benchmark harness with single-turn and scripted multi-turn drivers. [uncertain]",
+  "routing_layer": "Not applicable — application/prompt-layer evaluation only; no inference-engine-layer routing. [uncertain]",
+  "latency_overhead": "Measured as interaction cost rather than decomposition tokens. ClarEval's ATC (Average Turns to Clarify) directly quantifies the dialogue-turn overhead of clarification; NoisyToolBench's Steps metric quantifies the extra interaction steps incurred by asking — AwN improves clarification accuracy at the explicit cost of more steps (documented trade-off). [uncertain]",
+  "online_adaptation": "Static — both are fixed evaluation benchmarks with no production-feedback learning loop. AwN is a static prompting strategy, not a learned/adaptive router. [uncertain]",
+  "adoption": "Paper / open-source benchmark. NoisyToolBench (arXiv 2409.00557, EMNLP 2025) states authors will release all code and datasets (AwN + ToolEvaluator). ClarEval (arXiv 2603.00187, OpenReview 4mJP93wlYm, Feb 2026) is described as an open-source benchmark framework. Both are research benchmarks, not commercial APIs. [uncertain]",
+
+  "uncertain": [
+    "decomposition_method",
+    "decomposition_granularity",
+    "ordering_strategy",
+    "router_type",
+    "routing_model",
+    "fallback_behavior",
+    "skill_pool_scale_and_retrieval",
+    "router_agent_asymmetry",
+    "parallel_vs_concurrent",
+    "dependency_detection",
+    "result_aggregation",
+    "multi_intent_coverage",
+    "eval_stability",
+    "integration_pattern",
+    "routing_layer",
+    "latency_overhead",
+    "online_adaptation",
+    "adoption"
+  ]
+}

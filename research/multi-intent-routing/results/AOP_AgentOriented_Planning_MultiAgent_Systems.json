@@ -1,0 +1,54 @@
+{
+  "topic": "Multi-intent task decomposition for LLM tool and skill routing",
+  "name": "AOP — Agent-Oriented Planning in Multi-Agent Systems",
+  "category": "Decomposition architecture",
+  "description": "AOP (arXiv:2410.02189; Li, Xie, Li, Tsung, Ding, Li; ICLR 2025) is a meta-agent query-decomposition framework for multi-agent systems. It formalizes three design principles for agent-oriented planning — solvability, completeness, and non-redundancy — and proposes a fast task-decomposition-and-allocation step followed by an efficient reward-model evaluation of sub-task solvability (without actual agent calls), plus a detector for missing dependencies and a feedback loop for replanning/plan-in-detail. Code: github.com/lalaliat/Agent-Oriented-Planning.",
+
+  "decomposition_method": "LLM-prompted meta-agent. The meta-agent performs fast task decomposition and allocation of the user query into sub-tasks; results are intermediate and revisable. Decomposition quality is then explicitly evaluated and adjusted, rather than blindly trusted.",
+  "decomposition_granularity": "tool call / agent-assignable sub-task. Each sub-task is a unit that can be allocated to a suitable specialized agent (each potentially invoking specific tools).",
+  "ordering_strategy": "topological (DAG) with dynamic re-planning. Dependencies are modeled as a directed acyclic graph G=(V,E): vertices are sub-tasks, directed edges denote that one sub-task depends on another's output; absence of an edge denotes independence and allows parallel execution. The meta-agent promptly adjusts sub-tasks and scheduling based on evaluation results.",
+  "decomposition_validation": "Yes — the most rigorous validation framework in this set. AOP explicitly enforces three principles: (1) solvability — a reward model evaluates whether each sub-task can be resolved by some agent, efficiently and without making actual agent calls; (2) completeness — a detector checks for missing dependencies/information and, if found, the meta-agent adds sub-tasks to complete them; (3) non-redundancy — the detector checks for identical information/requirements across sub-tasks and flags overlapping/duplicate sub-tasks. Enabling the dependency detector yielded a +2.5% accuracy gain on Husky-QA (43.7% -> 46.2%).",
+  "hierarchy_depth": "flat DAG of sub-tasks (graph of single-level sub-tasks with dependency edges), augmented by an iterative replan/plan-in-detail feedback loop rather than a fixed nested milestone tree. [uncertain]",
+
+  "router_type": "graph planner — the meta-agent plans a full DAG of sub-tasks upfront and allocates each to a suitable agent, with reward-model scoring and detector-driven revision before/while dispatching.",
+  "routing_model": "prompted LLM meta-agent (e.g., GPT-4o serving as meta-agent) combined with a separate trained reward model that scores sub-task solvability, plus a detector module for dependency/redundancy checks. Hybrid (LLM planner + reward model + detector).",
+  "handles_ambiguity": "Solvability-driven: the reward model scores whether each sub-task is solvable by an available agent before dispatch; unsolvable or under-specified sub-tasks trigger meta-agent adjustment (re-decomposition or adding dependency sub-tasks) rather than a best-effort blind call. It does not request user clarification; resolution is automatic via replanning. [uncertain]",
+  "fallback_behavior": "retry with re-decomposition. If a sub-task is not solvable or dependencies are missing, the meta-agent revises sub-tasks/scheduling and adds sub-tasks to complete dependencies via the integrated feedback loop. [uncertain]",
+  "skill_pool_scale_and_retrieval": "Allocation is across a curated set of specialized agents/tools (diverse expertise); the meta-agent selects suitable agents per sub-task. The paper targets effective allocation and solvability scoring rather than large-scale (hundreds/thousands) skill retrieval; no embedding top-k retrieval or skill-tree traversal mechanism is the focus. [uncertain]",
+  "router_agent_asymmetry": "Not explicitly studied. The meta-agent holds the full plan and agent descriptions while individual agents handle their assigned sub-tasks; the paper does not frame this as a router-vs-agent information-asymmetry result. [uncertain]",
+
+  "execution_pattern": "DAG (mixed). Independent sub-tasks (no connecting edge) can run in parallel; dependent sub-tasks run sequentially, with dependent sub-tasks' results provided as inputs to downstream sub-tasks.",
+  "parallel_vs_concurrent": "Parallel execution of independent DAG branches is supported (edge absence indicates independence); the paper emphasizes parallelizability via the DAG rather than the specific parallel-vs-concurrent API distinction. [uncertain]",
+  "dependency_detection": "explicit DAG from planner plus a dedicated detector for missing dependencies. The detector determines whether a sub-task has missing dependencies before assignment; if so, results of dependent sub-tasks must be provided as inputs, or new sub-tasks are added to satisfy them.",
+  "result_aggregation": "iterative / dependency-driven merge — outputs of upstream sub-tasks feed downstream sub-tasks per the DAG, and the meta-agent composes the final response to the user query. [uncertain]",
+  "mid_chain_feedback": "hard — AOP integrates an explicit feedback loop: reward-model and detector evaluation results drive the meta-agent to revise sub-tasks and scheduling (replan / plan-in-detail) during problem solving.",
+
+  "benchmark_name": "Husky-QA (real-world multi-step QA); compared against single-agent baselines (GPT-4o, CoT, Zero-Shot CoT) and existing multi-agent planning strategies.",
+  "multi_intent_coverage": "Yes — mixed. Complex queries are decomposed into multiple sub-tasks with both independent (parallel) and dependent (sequential) relations captured in the DAG.",
+  "accuracy_metric": "outcome (task accuracy on Husky-QA) plus internal ablations on the decomposition mechanism (e.g., +2.5% from the dependency detector; AOP outperforms GPT-4o, CoT, Zero-Shot CoT by 10.4%, 8.1%, 11.5% respectively). Decomposition quality is governed by solvability/completeness/non-redundancy rather than a single step-supervision metric. [uncertain]",
+  "clarification_capability": "Not measured — AOP resolves under-specification via automatic replanning and dependency completion, not by asking the user. [uncertain]",
+  "process_vs_outcome_eval": "Hybrid: final task accuracy is outcome-based, but the framework's reward model scores intermediate sub-task solvability (a process-level signal) before execution. Not a per-step process-supervision benchmark like ToolComp. [uncertain]",
+
+  "integration_pattern": "Standalone meta-agent planning framework (in-context LLM meta-agent + reward model + detector) that sits between the user query and the pool of specialized agents; open-source reference implementation. [uncertain]",
+  "routing_layer": "Application-layer (meta-agent orchestration); no inference-engine-layer routing. [uncertain]",
+  "latency_overhead": "Designed for efficiency: the reward model evaluates sub-task solvability WITHOUT making actual agent calls, and decomposition/allocation is described as 'fast', explicitly trading a lightweight evaluation step for fewer wasted agent calls. Exact token/round-trip overhead not quantified in the abstract. [uncertain]",
+  "online_adaptation": "Static at deploy (uses a trained reward model and detector); the runtime feedback loop adapts the plan within a query but the paper does not describe learning from production logs across queries. [uncertain]",
+  "adoption": "Open-source (code at github.com/lalaliat/Agent-Oriented-Planning, ~26 stars as of 2026-06); ICLR 2025 paper.",
+
+  "uncertain": [
+    "hierarchy_depth",
+    "handles_ambiguity",
+    "fallback_behavior",
+    "skill_pool_scale_and_retrieval",
+    "router_agent_asymmetry",
+    "parallel_vs_concurrent",
+    "result_aggregation",
+    "accuracy_metric",
+    "clarification_capability",
+    "process_vs_outcome_eval",
+    "integration_pattern",
+    "routing_layer",
+    "latency_overhead",
+    "online_adaptation"
+  ]
+}

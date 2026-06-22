@@ -1,0 +1,61 @@
+{
+  "topic": "Multi-intent task decomposition for LLM tool and skill routing",
+  "name": "ToolComp",
+  "category": "Benchmark",
+  "description": "ToolComp (arXiv:2501.01290, Nath et al., Jan 2025; Scale AI; NeurIPS 2025 Multi-Turn Interactions workshop spotlight) is a multi-tool reasoning and process-supervision benchmark. It is built via collaboration between models and human annotators, providing human-edited/verified prompts, final answers, and per-step process-supervision labels. It evaluates both final outcomes and intermediate reasoning steps of multi-step tool-use trajectories, and demonstrates that process-supervised reward models (PRMs) generalize substantially better than outcome-supervised reward models (ORMs) for ranking tool-use trajectories.",
+
+  "decomposition_method": "LLM-prompted (zero-shot/CoT, ReAct-style). ToolComp evaluates models that produce multi-step tool-use trajectories where the model itself decomposes a complex query into sequential Thought/Action/Action-Input steps. The benchmark does not prescribe a fixed decomposition algorithm; it measures the quality of the model-generated decomposition via human-verified process-supervision labels. [uncertain]",
+  "decomposition_granularity": "tool call. Each decomposition unit is an individual reasoning-and-tool-invocation step (Thought + Action + Action Input); the dataset provides 1,731 per-step supervision labels across 485 prompts.",
+  "ordering_strategy": "fixed sequential. Trajectories are evaluated as ordered sequences of tool-use steps (ReAct-style chains); ToolComp scores correctness of each step in order rather than imposing an explicit parallel DAG planner. [uncertain]",
+  "decomposition_validation": "Yes — this is ToolComp's central contribution. Each intermediate step is explicitly checked for correctness via human-edited/verified process-supervision labels covering the reasoning (Thought), tool choice (Action), and parameterization (Action Input). It is an evaluation benchmark rather than a runtime decomposer, so validation happens at scoring time (and via trained PRMs), not as a pre-dispatch gate. It scores intermediate-step quality, addressing solvability/correctness of each step, but does not formalize completeness/non-redundancy detectors the way AOP does.",
+  "hierarchy_depth": "flat — a linear sequence of tool-call steps per task. [uncertain]",
+
+  "router_type": "chain (sequential, ReAct-style tool selection per step). ToolComp does not define a dedicated router; tool selection is part of the model's per-step Action decision and is scored against ground-truth process labels. [uncertain]",
+  "routing_model": "prompted LLM (the evaluated model itself selects tools step-by-step). 16 models across 6 families were evaluated (e.g., o1-preview, GPT-4-class, Claude, etc.). [uncertain]",
+  "handles_ambiguity": "Not a focus. ToolComp measures correctness of tool choice and parameters against human-verified labels rather than clarification or abstention behavior; ambiguous-intent handling and when-to-ask behavior are out of scope. [uncertain]",
+  "fallback_behavior": "Not applicable / not measured. As a benchmark it scores trajectories; it does not define a runtime fallback for uncovered sub-intents. Incorrect tool selection is simply scored as a step error. [uncertain]",
+  "skill_pool_scale_and_retrieval": "Tasks span a fixed suite of real tools (e.g., calculator, web search, and other utilities used sequentially). The benchmark targets multi-step reasoning over a moderate, fixed tool set rather than large-scale (hundreds/thousands) skill retrieval; no embedding-retrieval or tree-traversal scaling mechanism is benchmarked. [uncertain]",
+  "router_agent_asymmetry": "Not addressed. ToolComp does not study router-vs-agent information asymmetry. [uncertain]",
+
+  "execution_pattern": "ReAct loop (one tool at a time), evaluated as a sequential chain of Thought/Action/Action-Input steps.",
+  "parallel_vs_concurrent": "Sequential; ToolComp does not evaluate parallel/concurrent multi-tool calls within a turn. [uncertain]",
+  "dependency_detection": "assumed-sequential. Steps are treated as an ordered chain where later steps consume earlier results; no explicit DAG/independence detector is part of the benchmark. [uncertain]",
+  "result_aggregation": "iterative — each step's tool result feeds the next reasoning step, culminating in a final answer that is scored against a human-verified ground-truth answer. [uncertain]",
+  "mid_chain_feedback": "soft — later steps incorporate prior tool results in the ReAct trajectory; the benchmark does not require an explicit re-planning node. [uncertain]",
+
+  "benchmark_name": "ToolComp (with two evaluation tracks: final-answer accuracy and process-supervision step accuracy).",
+  "multi_intent_coverage": "sequential / mixed. Prompts are complex multi-step tool-use tasks requiring chained, dependent sub-steps; this is the benchmark's explicit focus rather than independent parallel sub-tasks.",
+  "accuracy_metric": "Dual: (1) outcome-only final-answer accuracy against human-verified answers, and (2) process supervision — per-step intermediate-step correctness scored against human-edited per-step labels. Used to train/evaluate ORMs vs PRMs via rank@1 accuracy.",
+  "clarification_capability": "Not measured. ToolComp does not evaluate when-to-ask vs when-to-answer or clarification efficiency. [uncertain]",
+  "process_vs_outcome_eval": "Both, and this is the defining contribution: PRMs (process supervision) outperform ORMs (outcome-only) by 19% rank@1 on base-model trajectories and 11% on fine-tuned-model trajectories, demonstrating process supervision beats outcome-only for multi-step tool use.",
+  "eval_stability": "Provides fixed human-verified prompts, final answers, and step labels for reproducible scoring; tasks include live tools such as web search, so live-API drift could affect re-running trajectories, but evaluation of stored trajectories against fixed labels is stable. No dedicated cached/virtual API server like StableToolBench is reported. [uncertain]",
+
+  "integration_pattern": "Benchmark / dataset (standalone evaluation suite), not a runtime harness component. Used to evaluate models and to train/evaluate reward models (PRMs/ORMs). [uncertain]",
+  "routing_layer": "Not applicable (application-layer model evaluation; no inference-engine routing). [uncertain]",
+  "latency_overhead": "Not applicable — benchmark does not measure decomposition latency overhead. [uncertain]",
+  "online_adaptation": "Static benchmark; however it enables training PRMs/ORMs from trajectory data (supervised reward-model training), which can improve a downstream model's tool-use selection. [uncertain]",
+  "adoption": "Paper-only benchmark from Scale AI (arXiv:2501.01290; NeurIPS 2025 workshop spotlight). Dataset access/openness not fully confirmed from the abstract; treat as research benchmark. [uncertain]",
+
+  "uncertain": [
+    "decomposition_method",
+    "ordering_strategy",
+    "hierarchy_depth",
+    "router_type",
+    "routing_model",
+    "handles_ambiguity",
+    "fallback_behavior",
+    "skill_pool_scale_and_retrieval",
+    "router_agent_asymmetry",
+    "parallel_vs_concurrent",
+    "dependency_detection",
+    "result_aggregation",
+    "mid_chain_feedback",
+    "clarification_capability",
+    "eval_stability",
+    "integration_pattern",
+    "routing_layer",
+    "latency_overhead",
+    "online_adaptation",
+    "adoption"
+  ]
+}
