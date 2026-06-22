@@ -169,12 +169,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         else:
             raise ValueError(f"unknown tool: {name}")
 
-        # VISIBILITY: if running in unsandboxed (local) mode, prepend a warning to stdout.
-        # This makes the loss of isolation visible to the agent/user without changing the backend.
+        # VISIBILITY: if running in unsandboxed (local) mode, prepend a warning to the
+        # result's output field. This makes the loss of isolation visible to the agent/user
+        # without changing the backend. ExecutionResult carries output in "stdout";
+        # TestResult carries it in "output" — prepend to whichever exists (no phantom key).
         result_dict = result.model_dump()
         if not result.sandboxed:
             warning_line = "[WARNING: unsandboxed local mode — no isolation]\n"
-            result_dict["stdout"] = warning_line + result_dict.get("stdout", "")
+            target = "stdout" if "stdout" in result_dict else "output"
+            result_dict[target] = warning_line + (result_dict.get(target) or "")
 
         return [TextContent(type="text", text=json.dumps(result_dict))]
     except Exception as e:

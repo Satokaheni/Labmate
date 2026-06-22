@@ -152,6 +152,31 @@ async def test_call_tool_local_mode_includes_warning_prefix(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.mocked
+async def test_call_tool_local_mode_run_tests_warning_in_output(monkeypatch):
+    """Local-mode run_tests (TestResult) must carry the warning in 'output', not a phantom 'stdout'."""
+    import server as srv
+    from executor import TestResult
+
+    class FakeLocalExec:
+        def run_tests(self, test_path, framework="pytest", timeout=120):
+            return TestResult(
+                passed=1, failed=0, errors=0, duration_ms=5,
+                output="1 passed in 0.1s", backend="local", sandboxed=False,
+            )
+
+    monkeypatch.setattr(srv, "get_executor", lambda: FakeLocalExec())
+    out = await srv.call_tool("run_tests", {"test_path": "tests/"})
+    payload = json.loads(out[0].text)
+    # Warning lands in the canonical output field, and the real output is preserved
+    assert "[WARNING: unsandboxed local mode — no isolation]" in payload["output"]
+    assert "1 passed in 0.1s" in payload["output"]
+    # No phantom 'stdout' key is injected onto a TestResult
+    assert "stdout" not in payload
+    assert payload["backend"] == "local" and payload["sandboxed"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.mocked
 async def test_call_tool_docker_mode_no_warning_prefix(monkeypatch):
     """Test that docker-mode results do NOT include a warning prefix."""
     import server as srv
