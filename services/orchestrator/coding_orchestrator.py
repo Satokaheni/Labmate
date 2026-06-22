@@ -192,9 +192,28 @@ class AsyncOrchestrator:
                 # When a skill fails (ok=False), prefer the error message.
                 # If ok=True, extract the result payload and format it.
                 if not ok:
-                    # Skill failed: surface the error message, never the literal "null"
-                    # Use .get() with fallback, then coerce to str to handle None
-                    text = skill_result.get("error") or "skill failed"
+                    # Skill failed: surface the MOST SPECIFIC error available, not just the
+                    # generic discriminator. Worker failure shapes:
+                    #   tool_error        -> real text in result (MCP content list)
+                    #   skill_unavailable -> human message in detail
+                    #   dispatch_failed   -> human message in detail
+                    # Never the literal "null"; never crash on a None error value.
+                    err = skill_result.get("error") or "skill failed"
+                    detail = skill_result.get("detail")
+                    res = skill_result.get("result")
+                    if err == "tool_error" and res is not None:
+                        if isinstance(res, dict) and isinstance(res.get("content"), list):
+                            inner = "\n".join(
+                                c.get("text", "") for c in res["content"]
+                                if isinstance(c, dict) and c.get("text")
+                            )
+                        else:
+                            inner = json.dumps(res, default=str)
+                        text = f"{err}: {inner}" if inner else err
+                    elif detail:
+                        text = f"{err}: {detail}"
+                    else:
+                        text = err
                     text = str(text)[:2000]
                 else:
                     # Skill succeeded: extract and format the result

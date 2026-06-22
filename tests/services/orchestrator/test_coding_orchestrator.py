@@ -844,6 +844,49 @@ class TestReactExecute:
         assert "null" not in result["summary"]
 
     @pytest.mark.asyncio
+    async def test_react_execute_skill_failure_tool_error_surfaces_inner_content(self):
+        """tool_error: the real diagnostic lives in result content, not the discriminator."""
+        runner = MagicMock()
+        runner.reset_activations.return_value = None
+        skill_router = MagicMock()
+        skill_router.runner = runner
+        orch = self._make_orch(skill_router=skill_router)
+
+        skill_router.run = AsyncMock(return_value={
+            "ok": False,
+            "error": "tool_error",
+            "result": {"content": [{"type": "text", "text": "Traceback: ZeroDivisionError"}]},
+        })
+
+        result = await orch.react_execute("some goal that matches a skill")
+
+        assert result["ok"] is False
+        # discriminator kept, but the real error text is surfaced for the reflect loop
+        assert "tool_error" in result["summary"]
+        assert "ZeroDivisionError" in result["summary"]
+
+    @pytest.mark.asyncio
+    async def test_react_execute_skill_failure_surfaces_detail(self):
+        """skill_unavailable/dispatch_failed: the human cause lives in 'detail'."""
+        runner = MagicMock()
+        runner.reset_activations.return_value = None
+        skill_router = MagicMock()
+        skill_router.runner = runner
+        orch = self._make_orch(skill_router=skill_router)
+
+        skill_router.run = AsyncMock(return_value={
+            "ok": False,
+            "error": "skill_unavailable",
+            "detail": "no tool 'frobnicate' in skill 'foo'",
+        })
+
+        result = await orch.react_execute("some goal that matches a skill")
+
+        assert result["ok"] is False
+        assert "skill_unavailable" in result["summary"]
+        assert "frobnicate" in result["summary"]
+
+    @pytest.mark.asyncio
     async def test_react_execute_skill_success_with_content_list_no_text(self):
         """Skill-first shortcut: result with content list but no text fields."""
         runner = MagicMock()

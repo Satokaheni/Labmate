@@ -252,8 +252,11 @@ class LocalSubprocessExecutor:
             # RLIMIT_NPROC: per-UID process count. On busy hosts, the system-wide UID thread count
             # can exceed naive static limits (e.g., 128), causing "Cannot fork" errors. We drop
             # this limit entirely and rely on RLIMIT_CPU + timeout + killpg for containment.
-            # RLIMIT_CPU is the primary defense: when exceeded, the kernel sends SIGKILL to the
-            # entire process tree. The timeout + killpg provide host-level reaping for grace periods.
+            # NOTE on containment scope: RLIMIT_CPU is PER-PROCESS, not per-tree — each child
+            # inherits its own CPU ceiling, so a forked child gets its own SIGXCPU/SIGKILL when it
+            # individually exceeds the limit (the limit is not summed across the tree). True
+            # whole-tree teardown comes from launching in a new session (start_new_session) and
+            # os.killpg() on the wall-clock timeout, which reap escaped children/grandchildren.
             # Reference: RLIMIT_NPROC counts per real-UID threads system-wide, not per-process-tree.
             # Omitting it here avoids spurious fork failures on multi-tenant or busy hosts.
 
