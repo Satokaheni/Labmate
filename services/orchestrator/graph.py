@@ -29,6 +29,53 @@ AMBIGUITY_THRESHOLD = float(os.getenv("AMBIGUITY_THRESHOLD", "0.6"))
 # A2: artifacts scoring below this route back through reflect for revision.
 CRITIQUE_THRESHOLD = float(os.getenv("CRITIQUE_THRESHOLD", "0.90"))
 
+# FIX 9: latency knobs for the reflect/verify gate.
+# MAX_VERIFY_RETRIES: how many times a low critique_score may drive a verify->reflect pass
+#   before the artifact is ACCEPTED and we proceed to check. 1 -> at most one reflect pass;
+#   0 -> verify is advisory and never loops.
+MAX_VERIFY_RETRIES = int(os.getenv("MAX_VERIFY_RETRIES", "1"))
+# MAX_GOAL_ATTEMPTS: how many times a FAILED goal may be reflect-retried (replaces the old
+#   hardcoded cap of 3). A goal with attempts >= MAX_GOAL_ATTEMPTS is considered exhausted.
+MAX_GOAL_ATTEMPTS = int(os.getenv("MAX_GOAL_ATTEMPTS", "2"))
+# REFLECT_THINKING_BUDGET: thinking budget for the reflect node's architect() call
+#   (was hardcoded 3000; lower is faster on the local Q4 model).
+REFLECT_THINKING_BUDGET = int(os.getenv("REFLECT_THINKING_BUDGET", "1500"))
+
+# FIX 9: substrings (case-insensitive) that mark a failure as deterministic / environmental,
+# so reflect-retrying it can never help. Conservative on purpose — these are unambiguous
+# "this will fail identically every time" signals (missing tool/dep, no network, no creds).
+_NONRETRYABLE_ERROR_MARKERS = (
+    "skillunavailable",
+    "not available",
+    "unavailable",
+    "no such",
+    "not found",
+    "missing",
+    "docker",
+    "permission denied",
+    "eperm",
+    "enoent",
+    "connection refused",
+    "network",
+    "timed out",
+    "timeout",
+    "api key",
+    "apikey",
+    "credential",
+    "rate limit",
+    "429",
+)
+
+
+def _is_nonretryable_error(err: str) -> bool:
+    """FIX 9: True when an error string clearly describes a deterministic/environmental
+    failure that a reflect-retry cannot fix (missing tool/dep, no network/creds, etc.).
+    Case-insensitive conservative substring match."""
+    if not err:
+        return False
+    low = err.lower()
+    return any(marker in low for marker in _NONRETRYABLE_ERROR_MARKERS)
+
 
 def classify_artifact(text: str) -> str:
     """Cheap heuristic artifact classifier for the A2 verify gate."""
@@ -170,7 +217,15 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             new_status = Status.COMPLETED if r.ok else Status.FAILED
             # Increment attempts on FAILED (needed for router's reflect branch to trigger)
             if not r.ok:
-                tree[gid]["attempts"] = tree[gid].get("attempts", 0) + 1
+                # FIX 9: a deterministic/environmental failure (no Docker / no network /
+                # missing API key, etc.) will fail IDENTICALLY on every retry, so mark it
+                # EXHAUSTED immediately (attempts = MAX_GOAL_ATTEMPTS) instead of paying a
+                # reflect(budget)+re-execute for each of MAX_GOAL_ATTEMPTS identical failures.
+                # check()/router() then finalize with the error rather than reflect-retrying.
+                if _is_nonretryable_error(r.summary or ""):
+                    tree[gid]["attempts"] = MAX_GOAL_ATTEMPTS
+                else:
+                    tree[gid]["attempts"] = tree[gid].get("attempts", 0) + 1
             # Set both result and error on failure so reflect/check can surface the error
             if r.ok:
                 update_status(tree, gid, new_status, result=r.summary)
@@ -234,7 +289,7 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         failed_retryable = [
             c for c in children
             if tree.get(c, {}).get("status") == Status.FAILED.value
-            and tree.get(c, {}).get("attempts", 0) < 3
+            and tree.get(c, {}).get("attempts", 0) < MAX_GOAL_ATTEMPTS  # FIX 9: was hardcoded 3
         ]
         if failed_retryable:
             # Don't finalize; defer to reflect by routing to first failed child.
@@ -244,7 +299,7 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
                 "reasoning",
                 node="check",
                 summary="deferring to reflect for failed child retry",
-                text=f"Child {failed_retryable[0]} failed but retryable (attempts < 3)",
+                text=f"Child {failed_retryable[0]} failed but retryable (attempts < {MAX_GOAL_ATTEMPTS})",
             )
             return {"goal_tree": tree, "current_goal_id": failed_retryable[0]}
 
@@ -328,7 +383,7 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             f"Goal: {goal['description']}\n"
             f"Error: {goal['error']}\n"
             "Write a concise diagnosis and what to do differently on the next attempt.",
-            thinking_budget=3000,
+            thinking_budget=REFLECT_THINKING_BUDGET,  # FIX 9: was 3000
         )
         await events.emit(
             "reasoning",
@@ -475,7 +530,13 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
                 summary="skipped (no code/writing artifact)",
                 text="",
             )
-            return {"verified": True, "critique_score": 1.0, "critique_notes": ""}
+            # FIX 9: nothing to critique -> never reflect.
+            return {
+                "verified": True,
+                "critique_score": 1.0,
+                "critique_notes": "",
+                "_verify_reflect": False,
+            }
 
         score = 1.0
         notes = ""
@@ -498,13 +559,29 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             score = 1.0
             notes = ""
 
+        # FIX 9: bound verify-driven reflection. A below-threshold artifact reflects at most
+        # MAX_VERIFY_RETRIES times; after that we ACCEPT it and proceed to check. This stops
+        # the local Q4 critique (which routinely scores a CORRECT artifact < 0.90) from
+        # re-critiquing/re-generating a completed answer indefinitely.
+        prior_retries = state.get("verify_retries", 0)
+        should_reflect = (score < CRITIQUE_THRESHOLD) and (prior_retries < MAX_VERIFY_RETRIES)
+
         await events.emit(
             "reasoning",
             node="verify",
             summary=f"critique_score={score:.2f}",
             text=notes,
         )
-        return {"verified": True, "critique_score": score, "critique_notes": notes}
+        result: dict = {
+            "verified": True,
+            "critique_score": score,
+            "critique_notes": notes,
+            "_verify_reflect": should_reflect,
+        }
+        if should_reflect:
+            # Increment the committed counter so the next verify pass eventually accepts.
+            result["verify_retries"] = prior_retries + 1
+        return result
 
     return plan, execute_node, check, reflect, approval, assess_ambiguity, verify
 
@@ -528,7 +605,7 @@ def router(state: State) -> str:
     if goal is None:
         return END
 
-    if goal["status"] == Status.FAILED.value and goal["attempts"] < 3:
+    if goal["status"] == Status.FAILED.value and goal["attempts"] < MAX_GOAL_ATTEMPTS:  # FIX 9: was < 3
         return "reflect"
     if goal["status"] == Status.AWAITING_APPROVAL.value:
         return "approval"
@@ -546,7 +623,16 @@ def ambiguity_router(state: State) -> str:
 
 
 def verify_router(state: State) -> str:
-    """A2: route after verify. Sub-threshold artifacts loop through reflect."""
+    """A2 / FIX 9: route after verify. The verify node decides (and commits) whether a
+    reflect pass is warranted via `_verify_reflect`, which is True only when the artifact
+    scored below CRITIQUE_THRESHOLD AND fewer than MAX_VERIFY_RETRIES verify->reflect passes
+    have been taken. This router is a pure function of that committed flag, so the
+    verify<->reflect loop is bounded (it cannot loop forever).
+
+    Backward-compat: if `_verify_reflect` was never set by the verify node (e.g. a hand-built
+    state in older tests), fall back to the original threshold comparison."""
+    if "_verify_reflect" in state:
+        return "reflect" if state.get("_verify_reflect") else "check"
     if float(state.get("critique_score", 1.0)) < CRITIQUE_THRESHOLD:
         return "reflect"
     return "check"

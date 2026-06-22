@@ -60,6 +60,8 @@ class State(TypedDict, total=False):
     verified: bool                    # True once verify has run
     critique_score: float             # 0.0 .. 1.0 quality score from critique skill
     critique_notes: str               # human-readable critique summary
+    verify_retries: int               # FIX 9: count of verify->reflect passes taken (bounds the verify gate)
+    _verify_reflect: bool             # FIX 9: verify node's decision flag read by verify_router
     # Multi-intent routing clarification gate
     awaiting_clarification: bool      # True when route() needs user input before proceeding
     clarification_question: str       # the single question to surface to the user

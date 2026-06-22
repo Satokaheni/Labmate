@@ -1254,11 +1254,15 @@ class TestEndToEndGraphExecution:
     @pytest.mark.asyncio
     async def test_e2e_subtask_exhausted_attempts_finalizes_failed(self):
         """
-        FIX #5: Subtask fails 3 times, then root finalizes with FAILED status.
+        FIX #5: Subtask fails until exhausted, then root finalizes with FAILED status.
         - Architect returns 1 subtask
         - Execute: FAILED (attempts=1)
-        - Check/Reflect/Execute cycle repeats: FAILED (attempts=2), FAILED (attempts=3)
+        - Check/Reflect/Execute cycle repeats until attempts == MAX_GOAL_ATTEMPTS
         - Check: no retryables remain; finalizes with root FAILED and error set
+        FIX 9: the retry cap is now MAX_GOAL_ATTEMPTS (default 2), not the old hardcoded 3,
+        so the final attempts count is asserted against the constant. The failure summary
+        ("error: always fails") is retryable (no environmental marker), so attempts increments
+        by 1 per pass up to MAX_GOAL_ATTEMPTS.
         """
         from services.orchestrator.graph import build_graph
         from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator, Result
@@ -1298,8 +1302,9 @@ class TestEndToEndGraphExecution:
                 assert final_state["goal_tree"]["root"]["status"] == Status.FAILED.value
                 assert "error" in final_state
                 assert final_state.get("final_answer") != ""
-                # Child should have attempts == 3
+                # FIX 9: child should be exhausted at MAX_GOAL_ATTEMPTS (was hardcoded 3).
+                from services.orchestrator.graph import MAX_GOAL_ATTEMPTS
                 children = final_state["goal_tree"]["root"]["children"]
                 if children:
                     child_id = children[0]
-                    assert final_state["goal_tree"][child_id]["attempts"] == 3
+                    assert final_state["goal_tree"][child_id]["attempts"] == MAX_GOAL_ATTEMPTS

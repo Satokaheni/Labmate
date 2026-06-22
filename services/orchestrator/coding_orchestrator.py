@@ -613,6 +613,7 @@ class CodingOrchestrator:
             "workspace_id": workspace_id,
             "user_id": user_id,
             "root_goal": task,
+            "verify_retries": 0,  # FIX 9: bound verify->reflect passes
         }
         cfg = {
             "configurable": {
