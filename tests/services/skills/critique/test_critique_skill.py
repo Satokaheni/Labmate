@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import sys
+import importlib
+import importlib.util
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -229,3 +233,53 @@ def test_memory_window_is_bounded(make_critique):
 
     assert seen_memory_sizes  # refine was called
     assert max(seen_memory_sizes) <= CritiqueSkill.MEMORY_WINDOW
+
+
+# ---------------------------------------------------------------------------
+# Task 9 — Import path fallback coverage (FIX #3 test)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.mocked
+def test_critique_skill_fallback_import_path():
+    """Test the SCRIPT-context fallback import path (except ImportError branch).
+
+    This verifies that critique_skill.py can be imported with its skill dir
+    on sys.path, exercising the fallback:
+        except ImportError:
+            from schemas import ...
+
+    The normal package import path uses relative imports (from .schemas),
+    but when imported as a script (skill dir on sys.path), it falls back
+    to bare imports (from schemas).
+    """
+    # Locate the actual skill directory (not test directory)
+    # From test file at: tests/services/skills/critique/test_critique_skill.py
+    # Actual skill at: services/skills/critique/
+    workspace_root = Path(__file__).parent.parent.parent.parent.parent  # go up to /workspace/Labmate
+    skill_dir = workspace_root / "services" / "skills" / "critique"
+    critique_skill_py = skill_dir / "critique_skill.py"
+
+    assert critique_skill_py.exists(), f"critique_skill.py not found at {critique_skill_py}"
+
+    # Add skill dir to sys.path so bare imports (from schemas) resolve
+    sys.path.insert(0, str(skill_dir))
+    try:
+        # Dynamically import critique_skill.py as if it were a script
+        # This will exercise the fallback import: except ImportError: from schemas import ...
+        spec = importlib.util.spec_from_file_location("critique_skill_fallback_test", critique_skill_py)
+        assert spec is not None, "Failed to create module spec for critique_skill.py"
+        module = importlib.util.module_from_spec(spec)
+
+        # This will trigger the fallback import path when critique_skill tries to import schemas
+        spec.loader.exec_module(module)
+
+        # Verify the module loaded successfully by checking for key symbols
+        assert hasattr(module, 'CritiqueSkill'), "module should have 'CritiqueSkill' class"
+        assert hasattr(module, '_get_tokenizer'), "module should have '_get_tokenizer' function"
+    finally:
+        # Clean up sys.path
+        sys.path.pop(0)
+        # Also clean up the imported module from sys.modules to avoid side effects
+        for key in list(sys.modules.keys()):
+            if 'critique' in key.lower() or 'schemas' in key.lower():
+                sys.modules.pop(key, None)

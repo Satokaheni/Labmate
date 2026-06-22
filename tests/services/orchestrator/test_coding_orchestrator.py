@@ -777,6 +777,123 @@ class TestReactExecute:
         assert "skill execution completed successfully" in result["summary"]
         assert result["summary"] != "null"
 
+    @pytest.mark.asyncio
+    async def test_react_execute_skill_success_with_none_result(self):
+        """Skill-first shortcut: ok=True but result=None should NOT return literal 'null'."""
+        runner = MagicMock()
+        runner.reset_activations.return_value = None
+        skill_router = MagicMock()
+        skill_router.runner = runner
+        orch = self._make_orch(skill_router=skill_router)
+
+        # Mock skill_router.run() to return success with None result
+        skill_router.run = AsyncMock(return_value={
+            "ok": True,
+            "result": None
+        })
+
+        result = await orch.react_execute("some goal that matches a skill")
+
+        # Verify: ok=True but summary is NOT the literal string "null"
+        assert result["ok"] is True
+        assert result["summary"] != "null"
+        # Should use the neutral placeholder
+        assert result["summary"] == "(no output)"
+
+    @pytest.mark.asyncio
+    async def test_react_execute_skill_success_with_empty_result(self):
+        """Skill-first shortcut: ok=True with empty string or False result."""
+        runner = MagicMock()
+        runner.reset_activations.return_value = None
+        skill_router = MagicMock()
+        skill_router.runner = runner
+        orch = self._make_orch(skill_router=skill_router)
+
+        # Mock skill_router.run() to return success with empty string result
+        skill_router.run = AsyncMock(return_value={
+            "ok": True,
+            "result": ""
+        })
+
+        result = await orch.react_execute("some goal that matches a skill")
+
+        # Verify: ok=True but summary is NOT literal "null"
+        assert result["ok"] is True
+        assert result["summary"] == "(no output)"
+
+    @pytest.mark.asyncio
+    async def test_react_execute_skill_failure_with_none_error(self):
+        """Skill-first shortcut: ok=False with error=None should use fallback message."""
+        runner = MagicMock()
+        runner.reset_activations.return_value = None
+        skill_router = MagicMock()
+        skill_router.runner = runner
+        orch = self._make_orch(skill_router=skill_router)
+
+        # Mock skill_router.run() to return failure with error=None
+        skill_router.run = AsyncMock(return_value={
+            "ok": False,
+            "error": None
+        })
+
+        result = await orch.react_execute("some goal that matches a skill")
+
+        # Verify: should not crash and should use fallback message
+        assert result["ok"] is False
+        assert result["summary"] == "skill failed"
+        assert "null" not in result["summary"]
+
+    @pytest.mark.asyncio
+    async def test_react_execute_skill_success_with_content_list_no_text(self):
+        """Skill-first shortcut: result with content list but no text fields."""
+        runner = MagicMock()
+        runner.reset_activations.return_value = None
+        skill_router = MagicMock()
+        skill_router.runner = runner
+        orch = self._make_orch(skill_router=skill_router)
+
+        # Mock skill_router.run() to return success with content list but no text fields
+        skill_router.run = AsyncMock(return_value={
+            "ok": True,
+            "result": {
+                "content": [
+                    {"type": "file", "path": "/some/file"},
+                    {"type": "json", "data": {"key": "value"}}
+                ]
+            }
+        })
+
+        result = await orch.react_execute("some goal that matches a skill")
+
+        # Verify: content list with no text should use placeholder, not empty string
+        assert result["ok"] is True
+        assert result["summary"] == "(no output)"
+
+    @pytest.mark.asyncio
+    async def test_react_execute_skill_success_with_structured_dict_result(self):
+        """Skill-first shortcut: ok=True with structured dict result (JSON serialization)."""
+        runner = MagicMock()
+        runner.reset_activations.return_value = None
+        skill_router = MagicMock()
+        skill_router.runner = runner
+        orch = self._make_orch(skill_router=skill_router)
+
+        # Mock skill_router.run() to return success with structured dict result
+        skill_router.run = AsyncMock(return_value={
+            "ok": True,
+            "result": {
+                "status": "complete",
+                "count": 42
+            }
+        })
+
+        result = await orch.react_execute("some goal that matches a skill")
+
+        # Verify: structured result is JSON-serialized
+        assert result["ok"] is True
+        assert "complete" in result["summary"]
+        assert "42" in result["summary"]
+
 
 @pytest.mark.mocked
 class TestRunWorkerUsesReactExecute:

@@ -891,6 +891,40 @@ class TestAssessAmbiguityNode:
 
 
 @pytest.mark.mocked
+class TestApprovalNode:
+    @pytest.mark.asyncio
+    async def test_approval_emits_reasoning_event_before_interrupt(self, fake_event_emitter):
+        """Approval node should emit reasoning event BEFORE interrupt() so it lands in Redis on suspending pass (FIX #1 test)."""
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+        from langgraph.types import interrupt
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+
+        _, _, _, _, approval_node, _, _ = make_nodes(mock_orch, mock_async_orch)
+
+        state = _make_state()
+        update_status(state["goal_tree"], "root", Status.AWAITING_APPROVAL)
+
+        # The approval node will call interrupt(), which raises an exception.
+        # We want to verify the event was emitted before that happens.
+        try:
+            await approval_node(state)
+        except Exception:
+            # interrupt() raises, but we check the event was emitted first
+            pass
+
+        # Verify event was emitted (before interrupt)
+        assert len(fake_event_emitter.events) == 1
+        event_type, fields = fake_event_emitter.events[0]
+        assert event_type == "reasoning"
+        assert fields["node"] == "approval"
+        assert "awaiting human approval" in fields["summary"]
+        assert "root" in fields["text"]
+
+
+@pytest.mark.mocked
 class TestVerifyNode:
     @pytest.mark.asyncio
     async def test_verify_passes_through_non_code_writing(self):

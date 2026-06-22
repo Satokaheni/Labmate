@@ -249,13 +249,14 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         """
         import copy
         gid = state["current_goal_id"]
-        decision = interrupt({"action": "irreversible", "goal": gid})
+        # Emit reasoning event BEFORE interrupt() so it lands in Redis on the suspending pass
         await events.emit(
             "reasoning",
             node="approval",
             summary="awaiting human approval",
             text=f"Goal {gid} requires approval before proceeding",
         )
+        decision = interrupt({"action": "irreversible", "goal": gid})
         # Deep copy to avoid mutating the checkpoint's prior goal_tree.
         tree = copy.deepcopy(state["goal_tree"])
         new_status = Status.IN_PROGRESS if decision == "approve" else Status.BLOCKED

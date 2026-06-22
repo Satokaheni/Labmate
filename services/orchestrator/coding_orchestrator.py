@@ -193,17 +193,26 @@ class AsyncOrchestrator:
                 # If ok=True, extract the result payload and format it.
                 if not ok:
                     # Skill failed: surface the error message, never the literal "null"
-                    text = skill_result.get("error", "skill failed")
+                    # Use .get() with fallback, then coerce to str to handle None
+                    text = skill_result.get("error") or "skill failed"
+                    text = str(text)[:2000]
                 else:
                     # Skill succeeded: extract and format the result
                     res = skill_result.get("result")
                     if isinstance(res, dict) and isinstance(res.get("content"), list):
-                        text = "\n".join(
+                        # Extract text from content list items
+                        text_parts = [
                             c.get("text", "") for c in res["content"]
                             if isinstance(c, dict) and c.get("text")
-                        )
+                        ]
+                        # If content list had items but no text fields, use placeholder
+                        text = "\n".join(text_parts) if text_parts else "(no output)"
                     elif isinstance(res, str):
-                        text = res
+                        # Use placeholder for empty strings
+                        text = res if res else "(no output)"
+                    elif res is None or res is False:
+                        # None/missing/empty result: use neutral placeholder
+                        text = "(no output)"
                     else:
                         # Structured result: serialize to JSON
                         text = json.dumps(res, default=str)
