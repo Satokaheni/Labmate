@@ -869,8 +869,9 @@ class TestAssessAmbiguityNode:
         from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
+        # Low ambiguity (< AMBIGUITY_THRESHOLD) so ONLY the assess_ambiguity event fires.
         mock_orch.architect = AsyncMock(return_value=(
-            '{"assumptions": ["uses python"], "ambiguity": 0.7, "blocking_question": "which version?"}'
+            '{"assumptions": ["uses python"], "ambiguity": 0.3, "blocking_question": "which version?"}'
         ))
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
@@ -885,19 +886,19 @@ class TestAssessAmbiguityNode:
         event_type, fields = fake_event_emitter.events[0]
         assert event_type == "reasoning"
         assert fields["node"] == "assess_ambiguity"
-        assert "ambiguity=0.70" in fields["summary"]
+        assert "ambiguity=0.30" in fields["summary"]
         assert "1 assumption(s)" in fields["summary"]
-        assert delta["ambiguity"] == 0.7
+        assert delta["ambiguity"] == 0.3
 
 
 @pytest.mark.mocked
 class TestApprovalNode:
     @pytest.mark.asyncio
-    async def test_approval_emits_reasoning_event_before_interrupt(self, fake_event_emitter):
-        """Approval node should emit reasoning event BEFORE interrupt() so it lands in Redis on suspending pass (FIX #1 test)."""
+    async def test_approval_node_does_not_emit(self, fake_event_emitter):
+        """Approval re-runs on every resume; it must NOT emit (would duplicate the event).
+        The 'awaiting approval' event is emitted once by assess_ambiguity instead."""
         from services.orchestrator.graph import make_nodes
         from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
-        from langgraph.types import interrupt
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
@@ -907,21 +908,38 @@ class TestApprovalNode:
         state = _make_state()
         update_status(state["goal_tree"], "root", Status.AWAITING_APPROVAL)
 
-        # The approval node will call interrupt(), which raises an exception.
-        # We want to verify the event was emitted before that happens.
+        # approval calls interrupt(), which raises. No event should be emitted either way.
         try:
             await approval_node(state)
         except Exception:
-            # interrupt() raises, but we check the event was emitted first
             pass
 
-        # Verify event was emitted (before interrupt)
-        assert len(fake_event_emitter.events) == 1
-        event_type, fields = fake_event_emitter.events[0]
-        assert event_type == "reasoning"
-        assert fields["node"] == "approval"
-        assert "awaiting human approval" in fields["summary"]
-        assert "root" in fields["text"]
+        assert fake_event_emitter.events == []
+
+    @pytest.mark.asyncio
+    async def test_assess_ambiguity_emits_approval_event_when_ambiguous(self, fake_event_emitter):
+        """When ambiguity >= threshold (routes to approval), assess_ambiguity emits a single
+        node='approval' 'awaiting human approval' event (so approval itself never re-emits)."""
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        mock_orch.architect = AsyncMock(return_value=(
+            '{"assumptions": ["x"], "ambiguity": 0.9, "blocking_question": "clarify?"}'
+        ))
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+
+        nodes = make_nodes(mock_orch, mock_async_orch)
+        assess = nodes[5]
+
+        await assess(_make_state(root_goal="vague task"))
+
+        # Two events: the assess_ambiguity score, then the approval notification.
+        nodes_emitted = [fields["node"] for _, fields in fake_event_emitter.events]
+        assert "assess_ambiguity" in nodes_emitted
+        assert nodes_emitted.count("approval") == 1
+        approval_evt = next(f for _, f in fake_event_emitter.events if f["node"] == "approval")
+        assert "awaiting human approval" in approval_evt["summary"]
 
 
 @pytest.mark.mocked

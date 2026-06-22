@@ -249,13 +249,10 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         """
         import copy
         gid = state["current_goal_id"]
-        # Emit reasoning event BEFORE interrupt() so it lands in Redis on the suspending pass
-        await events.emit(
-            "reasoning",
-            node="approval",
-            summary="awaiting human approval",
-            text=f"Goal {gid} requires approval before proceeding",
-        )
+        # NOTE: the "awaiting approval" reasoning event is emitted by the upstream
+        # assess_ambiguity node (which completes and is checkpointed before this node),
+        # NOT here. interrupt() re-runs this whole node on resume, so emitting here would
+        # duplicate the event on every resume. assess_ambiguity fires it exactly once.
         decision = interrupt({"action": "irreversible", "goal": gid})
         # Deep copy to avoid mutating the checkpoint's prior goal_tree.
         tree = copy.deepcopy(state["goal_tree"])
@@ -299,6 +296,18 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             summary=f"ambiguity={ambiguity:.2f}; {len(assumptions)} assumption(s)",
             text=out.get("blocking_question", "") or json.dumps(out),
         )
+        # When this assessment will route to the human-approval gate (ambiguity_router),
+        # emit the "awaiting approval" event HERE — this node completes and is checkpointed,
+        # so the event fires exactly once (the approval node re-runs on resume and must not
+        # re-emit it). This is the only live path to approval (the check->approval branch
+        # requires AWAITING_APPROVAL status, which nothing currently sets).
+        if ambiguity >= AMBIGUITY_THRESHOLD:
+            await events.emit(
+                "reasoning",
+                node="approval",
+                summary="awaiting human approval",
+                text=f"Goal requires approval before proceeding (ambiguity={ambiguity:.2f})",
+            )
 
         return {
             "root_goal": goal,
