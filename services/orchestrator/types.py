@@ -60,6 +60,9 @@ class State(TypedDict, total=False):
     verified: bool                    # True once verify has run
     critique_score: float             # 0.0 .. 1.0 quality score from critique skill
     critique_notes: str               # human-readable critique summary
+    # Multi-intent routing clarification gate
+    awaiting_clarification: bool      # True when route() needs user input before proceeding
+    clarification_question: str       # the single question to surface to the user
 
 
 def now_iso() -> str:

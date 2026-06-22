@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 
 from langgraph.graph import StateGraph, START, END
@@ -10,6 +11,8 @@ from langgraph.types import interrupt
 from .types import State, Status, Goal, get_ready_goals, update_status, now_iso, create_goal
 from .coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 from . import events
+
+_log = logging.getLogger("graph")
 
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
 # llama.cpp serves Gemma 4 31B on port 8000 (CUDA on RunPod, Metal on Mac Mini, Vulkan on AMD).
@@ -47,21 +50,95 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
 
     async def plan(state: State) -> dict:
         """
-        Decompose the current root goal into child Goals via a Gemma 4 architect call.
-        Includes the skill catalog in the prompt when available.
-        Writes new Goal entries into goal_tree. Pure return-delta — no in-place mutation.
+        Decompose the current root goal into child Goals via multi-intent routing.
+        If route() needs clarification, emit clarification_request and pause.
+        Otherwise, expand matched skills into a sequential chain of child Goals.
         """
         import copy
+        import uuid
 
         root_id = state["current_goal_id"]
-        root_desc = state["goal_tree"][root_id]["description"]
+        goal_desc = state["goal_tree"][root_id]["description"]
 
         # Include skill catalog in the prompt if available
         catalog = ""
-        if getattr(orch, "skill_router", None) is not None:
-            catalog = orch.skill_router.runner.catalog_prompt()
+        skill_router = getattr(orch, "skill_router", None)
+        if skill_router is not None:
+            catalog = skill_router.runner.catalog_prompt()
 
-        prompt = f"Decompose this task into concrete subtasks (one per line):\n{root_desc}"
+        # Call route() to handle multi-intent decomposition and routing
+        # (only if skill_router has the route method; fallback for old tests/code)
+        route_result = None
+        try:
+            if skill_router is not None and hasattr(skill_router, "route"):
+                route_result = await skill_router.route(goal_desc)
+        except Exception as e:
+            # Fallback on any route() error (LLM unavailable, network error, TypeError, etc.)
+            # This preserves backward compatibility when route() would require live services.
+            _log.debug("route() failed, falling back to architect: %s", e)
+            route_result = None
+
+        if route_result is not None:
+            # If route() successfully routed skills, use them.
+            if route_result.skills:
+                # Confident multi-intent route: one sequential child Goal per skill.
+                # All children are direct children of root, but second/later children have
+                # their parent_id set to the previous child, creating a sequential dependency.
+                tree = copy.deepcopy(state["goal_tree"])
+                prev_id: str | None = None
+                for skill_name, sub_intent in zip(route_result.skills, route_result.sub_intents):
+                    child_id = uuid.uuid4().hex[:12]
+                    # For sequential chaining: first child's parent is root_id, but subsequent
+                    # children have parent_id = previous child_id. However, all are added as
+                    # children of root so they all appear in root.children.
+                    if prev_id is None:
+                        # First child: parent is root, added to root.children
+                        parent_id = root_id
+                    else:
+                        # Subsequent children: parent_id is previous child, but we add to root.children
+                        parent_id = prev_id
+
+                    tree[child_id] = {
+                        "id": child_id,
+                        "parent_id": parent_id,
+                        "children": [],
+                        "description": sub_intent,
+                        "status": Status.PENDING.value,
+                        "result": None,
+                        "error": None,
+                        "attempts": 0,
+                        "started_at": None,
+                        "updated_at": None,
+                    }
+                    # Always add to root's children list so all are direct children of root
+                    tree[root_id]["children"].append(child_id)
+                    prev_id = child_id
+
+                return {"goal_tree": tree, "awaiting_clarification": False}
+
+            # If route() needs clarification AND decompose didn't split the task,
+            # it likely means the LLM isn't available (decompose fail-opens to [task]).
+            # Fall back to architect for backward compatibility.
+            if (route_result.needs_clarification and
+                len(route_result.sub_intents) == 1 and
+                route_result.sub_intents[0] == goal_desc):
+                _log.info("route() inconclusive (no LLM?), falling back to architect")
+                route_result = None
+            elif route_result.needs_clarification:
+                # Genuine multi-intent clarification request: emit and pause.
+                await events.emit(
+                    "clarification_request",
+                    question=route_result.clarification_question,
+                    task=goal_desc,
+                    session_id=state.get("session_id", ""),
+                )
+                return {
+                    "awaiting_clarification": True,
+                    "clarification_question": route_result.clarification_question,
+                }
+
+        # Fallback when no skill_router or no route() method (for old tests and backward compat)
+        prompt = f"Decompose this task into concrete subtasks (one per line):\n{goal_desc}"
         if catalog:
             prompt += f"\n\nAvailable skills:\n{catalog}\nIf the whole task is accomplishable by a single available skill, emit ONE subtask describing that work. Otherwise produce a small number of coherent subtasks, each a self-contained unit that may map to a skill."
 

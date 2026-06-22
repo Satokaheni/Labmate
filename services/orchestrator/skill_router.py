@@ -18,6 +18,7 @@ import json
 import logging
 import time
 import uuid
+from dataclasses import dataclass, field
 from typing import Any
 
 import litellm
@@ -37,6 +38,50 @@ RESULT_PREFIX = "labmate:result:"
 # recall toward ~100% (precision is unaffected — we only accept catalog hits).
 SELECT_ATTEMPTS = 3
 PLAN_ATTEMPTS = 3
+
+# Confidence threshold for accepting a sub-intent's routing without clarification.
+# 2/3 (0.666...) == "at least 2 of 3 samples agreed". Below this (and not unanimous)
+# we treat the sub-intent as ambiguous and ask the user rather than guessing.
+CONFIDENCE_THRESHOLD = 2.0 / 3.0
+
+_DECOMPOSE_PROMPT = (
+    "You are a task decomposer for an AI agent. Split the following task into the "
+    "minimum number of independent sub-tasks, each of which can be handled by a "
+    "single specialized skill.\n\n"
+    "Rules:\n"
+    "- If the task needs only ONE skill, return a list with ONE element (the original "
+    "task, possibly rephrased).\n"
+    "- If the task needs multiple skills, return each as a separate, self-contained "
+    "sub-task with enough context to be routed independently.\n"
+    "- Maximum 4 sub-tasks. If you cannot decompose, return the original task as a "
+    "single-element list.\n"
+    "- Reply with ONLY a JSON array of strings. No markdown, no explanation.\n\n"
+    "Task: {task}"
+)
+
+_CLARIFY_PROMPT = (
+    "You are an AI agent that could not confidently choose a skill for part of a "
+    "user's request. Write a SINGLE, short clarifying question whose answer would "
+    "tell you which approach the user wants for the ambiguous parts.\n\n"
+    "Reply with ONLY the question text. No preamble, no markdown.\n\n"
+    "Original task: {task}\n\n"
+    "Ambiguous parts:\n{parts}"
+)
+_CLARIFY_FALLBACK = "Could you clarify what you'd like me to do here?"
+
+
+@dataclass
+class RouteResult:
+    """Outcome of multi-intent routing.
+
+    skills and sub_intents are positionally parallel: skills[i] is the skill
+    chosen for sub_intents[i]. When needs_clarification is True, skills is empty
+    and clarification_question holds the single question to ask the user.
+    """
+    skills: list[str]
+    needs_clarification: bool = False
+    clarification_question: str = ""
+    sub_intents: list[str] = field(default_factory=list)
 
 
 class SkillRouter:
@@ -149,6 +194,149 @@ class SkillRouter:
             text=self._last_reasoning,
         )
         return chosen
+
+    async def route(self, task: str) -> RouteResult:
+        """Multi-intent routing: decompose, confidence-check each, clarify if unsure.
+
+        Pipeline:
+          1. decompose(task) -> sub_intents
+          2. for each: _confidence_check(); flag if no skill OR confidence below
+             CONFIDENCE_THRESHOLD
+          3. if anything flagged: _generate_clarification() and return a clarification
+             RouteResult (no blind dispatch)
+          4. else: return ordered skills parallel to sub_intents
+
+        select() (single-intent path) is intentionally left unchanged; route() is the
+        new entry point for the multi-intent flow.
+        """
+        sub_intents = await self.decompose(task)
+
+        routed_skills: list[str] = []
+        flagged: list[str] = []
+        for sub in sub_intents:
+            skill, confidence = await self._confidence_check(sub)
+            if skill is None or confidence < CONFIDENCE_THRESHOLD:
+                flagged.append(sub)
+            else:
+                routed_skills.append(skill)
+
+        if flagged:
+            question = await self._generate_clarification(task, flagged)
+            _log.info("route() needs clarification for %d sub-intent(s)", len(flagged))
+            return RouteResult(
+                skills=[],
+                needs_clarification=True,
+                clarification_question=question,
+                sub_intents=sub_intents,
+            )
+
+        _log.info("route() resolved %d sub-intent(s) to skills: %s",
+                  len(routed_skills), routed_skills)
+        await events.emit(
+            "reasoning",
+            node="route",
+            summary=events.reasoning_summary(self._last_reasoning),
+            text=self._last_reasoning,
+        )
+        return RouteResult(skills=routed_skills, sub_intents=sub_intents)
+
+    async def decompose(self, task: str) -> list[str]:
+        """Split a compound task into sub-intents (fail-open to [task]).
+
+        One litellm call at thinking_budget=512 asking for a JSON array of sub-tasks.
+        Strips code fences, json.loads, validates it is a list of non-empty strings,
+        caps at 4. Any error returns [task] — routing a single intent is always
+        preferable to crashing the pipeline.
+        """
+        prompt = _DECOMPOSE_PROMPT.format(task=task)
+        try:
+            r = await litellm.acompletion(
+                model="openai/gemma-4-31b",
+                api_base=self._gemma_base,
+                api_key="not-needed",
+                messages=[{"role": "user", "content": prompt}],
+                extra_body={"thinking_budget_tokens": 512},
+            )
+        except Exception as exc:
+            _log.warning("decompose() llm error: %s", exc)
+            return [task]
+        choices = getattr(r, "choices", None)
+        if not choices:
+            return [task]
+        raw = getattr(getattr(choices[0], "message", None), "content", None)
+        if not raw:
+            return [task]
+        raw = raw.strip()
+        if raw.startswith("```json"):
+            raw = raw[7:]
+        elif raw.startswith("```"):
+            raw = raw[3:]
+        if raw.endswith("```"):
+            raw = raw[:-3]
+        raw = raw.strip()
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            _log.warning("decompose() non-JSON response; routing single intent")
+            return [task]
+        if not isinstance(parsed, list):
+            return [task]
+        cleaned = [s.strip() for s in parsed if isinstance(s, str) and s.strip()]
+        if not cleaned:
+            return [task]
+        return cleaned[:4]
+
+    async def _validate_solvable(self, sub_intent: str) -> bool:
+        """Solvability gate: True iff a single zero-budget sample picks a known skill.
+
+        Sub-intents that map to no skill are flagged for clarification rather than
+        silently dropped (AOP-style — no blind dispatch).
+        """
+        return await self._sample_select(sub_intent, 0) is not None
+
+    async def _confidence_check(self, sub_intent: str) -> tuple[str | None, float]:
+        """Run SELECT_ATTEMPTS zero-budget samples; return (winning_skill, confidence).
+
+        confidence = (votes for the winning skill) / SELECT_ATTEMPTS. None samples
+        count against confidence (they are part of the denominator) so a sub-intent
+        that only sometimes matches a skill reads as low-confidence. Returns
+        (None, 0.0) when no sample picked any skill.
+        """
+        from collections import Counter
+
+        picks = [await self._sample_select(sub_intent, 0) for _ in range(SELECT_ATTEMPTS)]
+        hits = [p for p in picks if p is not None]
+        if not hits:
+            return None, 0.0
+        winner, votes = Counter(hits).most_common(1)[0]
+        confidence = votes / SELECT_ATTEMPTS
+        return winner, confidence
+
+    async def _generate_clarification(self, task: str, ambiguous_sub_intents: list[str]) -> str:
+        """Ask Gemma for one clarifying question for the ambiguous sub-intents.
+
+        One litellm call at thinking_budget=256. Returns a generic fallback question
+        on any error (we still need *a* question to pause on).
+        """
+        parts = "\n".join(f"- {s}" for s in ambiguous_sub_intents)
+        prompt = _CLARIFY_PROMPT.format(task=task, parts=parts)
+        try:
+            r = await litellm.acompletion(
+                model="openai/gemma-4-31b",
+                api_base=self._gemma_base,
+                api_key="not-needed",
+                messages=[{"role": "user", "content": prompt}],
+                extra_body={"thinking_budget_tokens": 256},
+            )
+            choices = getattr(r, "choices", None)
+            if not choices:
+                return _CLARIFY_FALLBACK
+            text = getattr(getattr(choices[0], "message", None), "content", None)
+            text = (text or "").strip()
+            return text or _CLARIFY_FALLBACK
+        except Exception as exc:
+            _log.warning("_generate_clarification() error: %s", exc)
+            return _CLARIFY_FALLBACK
 
     async def plan_tool_call(self, task: str, skill_name: str) -> dict | None:
         """
