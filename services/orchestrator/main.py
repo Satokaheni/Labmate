@@ -250,8 +250,18 @@ class OrchestratorProcess:
                 task_text, session_id, user_id=user_id, workspace_id=workspace_id
             )
             task_succeeded = True
-            # Stream the final answer with typewriter effect (answer.delta + answer.done)
-            if hasattr(orch, "stream_final_answer"):
+            # If the graph halted for clarification, surface the question — do NOT
+            # call stream_final_answer (it would guess an answer to the ambiguous task).
+            if isinstance(final_state, dict) and final_state.get("awaiting_clarification"):
+                _question = final_state.get("clarification_question", "")
+                final_state["final_answer"] = _question
+                try:
+                    await events.emit("answer.delta", text=_question)
+                    await events.emit("answer.done", text=_question)
+                except Exception:
+                    pass  # best-effort; never let event emission block the result
+            # Otherwise stream the final answer with typewriter effect (answer.delta + answer.done)
+            elif hasattr(orch, "stream_final_answer"):
                 try:
                     streamed = await orch.stream_final_answer(task_text, final_state)
                     if isinstance(final_state, dict) and streamed:

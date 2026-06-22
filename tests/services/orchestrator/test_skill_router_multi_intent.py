@@ -408,6 +408,10 @@ async def test_route_multi_intent_all_confident():
 
 @pytest.mark.asyncio
 async def test_route_low_confidence_triggers_clarification():
+    # Trigger refinement (FIX 5): a SINGLE skill-less/low-confidence intent is NOT
+    # ambiguous — it is a trivial direct-answer task. route() now falls through
+    # (skills=[], needs_clarification=False) instead of clarifying. Clarification is
+    # reserved for genuine MULTI-intent ambiguity (see the multi-intent tests below).
     from services.orchestrator.skill_router import SkillRouter
 
     router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
@@ -415,11 +419,12 @@ async def test_route_low_confidence_triggers_clarification():
          patch.object(router, "_confidence_check",
                       AsyncMock(return_value=("dataset-search", 1 / 3))), \
          patch.object(router, "_generate_clarification",
-                      AsyncMock(return_value="Which one?")):
+                      AsyncMock(return_value="Which one?")) as gc:
         result = await router.route("ambiguous thing")
-    assert result.needs_clarification is True
+    assert result.needs_clarification is False
     assert result.skills == []
-    assert result.clarification_question == "Which one?"
+    # No clarification is generated for a single skill-less intent.
+    gc.assert_not_awaited()
 
 
 @pytest.mark.asyncio

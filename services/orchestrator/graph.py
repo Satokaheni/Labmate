@@ -82,50 +82,31 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             # If route() successfully routed skills, use them.
             if route_result.skills:
                 # Confident multi-intent route: one sequential child Goal per skill.
-                # All children are direct children of root, but second/later children have
-                # their parent_id set to the previous child, creating a sequential dependency.
+                # Build a real dependency CHAIN so get_ready_goals() (which releases a
+                # PENDING goal only once ALL its children are COMPLETED — i.e. the
+                # DEEPEST LEAF first) executes the sub-intents in SUBMISSION ORDER.
+                #
+                # FIX 3: nest the sub-intents in REVERSE so the FIRST sub-intent becomes
+                # the deepest leaf (runs first) and the LAST sub-intent is root's direct
+                # child (runs last):
+                #     root -> sub3 -> sub2 -> sub1(leaf, runs first)
+                # Iterating reversed() means each sub-intent is nested as the child of the
+                # NEXT sub-intent's goal. create_goal keeps parent_id and the parent's
+                # children[] mutually consistent. The previous (buggy) forward chaining made
+                # the LAST sub-intent the leaf, so the chain executed backwards.
                 tree = copy.deepcopy(state["goal_tree"])
-                prev_id: str | None = None
-                for skill_name, sub_intent in zip(route_result.skills, route_result.sub_intents):
+                prev_id = root_id
+                for sub_intent in reversed(route_result.sub_intents):
                     child_id = uuid.uuid4().hex[:12]
-                    # For sequential chaining: first child's parent is root_id, but subsequent
-                    # children have parent_id = previous child_id. However, all are added as
-                    # children of root so they all appear in root.children.
-                    if prev_id is None:
-                        # First child: parent is root, added to root.children
-                        parent_id = root_id
-                    else:
-                        # Subsequent children: parent_id is previous child, but we add to root.children
-                        parent_id = prev_id
-
-                    tree[child_id] = {
-                        "id": child_id,
-                        "parent_id": parent_id,
-                        "children": [],
-                        "description": sub_intent,
-                        "status": Status.PENDING.value,
-                        "result": None,
-                        "error": None,
-                        "attempts": 0,
-                        "started_at": None,
-                        "updated_at": None,
-                    }
-                    # Always add to root's children list so all are direct children of root
-                    tree[root_id]["children"].append(child_id)
+                    create_goal(tree, child_id, prev_id, sub_intent)
                     prev_id = child_id
 
                 return {"goal_tree": tree, "awaiting_clarification": False}
 
-            # If route() needs clarification AND decompose didn't split the task,
-            # it likely means the LLM isn't available (decompose fail-opens to [task]).
-            # Fall back to architect for backward compatibility.
-            if (route_result.needs_clarification and
-                len(route_result.sub_intents) == 1 and
-                route_result.sub_intents[0] == goal_desc):
-                _log.info("route() inconclusive (no LLM?), falling back to architect")
-                route_result = None
-            elif route_result.needs_clarification:
-                # Genuine multi-intent clarification request: emit and pause.
+            # If route() needs clarification, ALWAYS pause and ask — never guess.
+            # This applies even to a single ambiguous intent (sub_intents == [goal_desc]).
+            if route_result.needs_clarification:
+                # Clarification request: emit and pause.
                 await events.emit(
                     "clarification_request",
                     question=route_result.clarification_question,
@@ -218,26 +199,47 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         root_id = "root"
         root = tree.get(root_id, {})
 
-        children = root.get("children", [])
+        # FIX (regression): after FIX 3 the sub-intents form a nested CHAIN under root
+        # (root -> subN -> ... -> sub1), so root["children"] holds ONLY the last
+        # sub-intent. Iterating root["children"] therefore (a) drops every nested
+        # sub-intent's result from the final answer and (b) risks finalizing as soon
+        # as the single direct child is terminal while deeper descendants are still
+        # PENDING. Walk the FULL subtree (all transitive descendants of root) instead.
+        descendants: list[tuple[int, str]] = []
+        seen: set[str] = set()
+        stack: list[tuple[int, str]] = [(1, c) for c in root.get("children", [])]
+        while stack:
+            depth, cid = stack.pop()
+            if cid in tree and cid not in seen:
+                seen.add(cid)
+                descendants.append((depth, cid))
+                stack.extend((depth + 1, gc) for gc in tree[cid].get("children", []))
+        # Order DEEPEST-first so the final answer lists sub-intents in SUBMISSION
+        # order (FIX 3 makes the first sub-intent the deepest leaf). Tie-break on id
+        # for determinism within a depth.
+        descendants.sort(key=lambda dc: (-dc[0], dc[1]))
+        children = [cid for _depth, cid in descendants]
         if not children:
             return {}
 
-        # Only check finalization when every child has reached a terminal status
-        all_terminal = all(
-            tree.get(c, {}).get("status") in (Status.COMPLETED.value, Status.FAILED.value)
-            for c in children
-        )
-        if not all_terminal:
-            return {}
-
-        # Check for failed children that can still be retried (attempts < 3)
+        # FIX (regression from FIX 3): a FAILED descendant PERMANENTLY blocks all of
+        # its ancestors in the nested chain — every goal upstream of it stays PENDING
+        # forever because its child never COMPLETED, so get_ready_goals() never
+        # releases them and all_terminal is never reached. If we only handled the
+        # failed_retryable branch inside the all_terminal block, a mid-chain failure
+        # would fall through to `return {}` and the router would END the task with no
+        # final_answer and no error (the failed sub-intent never reaching reflect).
+        # So detect retryable FAILED descendants FIRST, regardless of all_terminal,
+        # and route to reflect for the deepest-first one so it can be retried.
         failed_retryable = [
             c for c in children
             if tree.get(c, {}).get("status") == Status.FAILED.value
             and tree.get(c, {}).get("attempts", 0) < 3
         ]
         if failed_retryable:
-            # Don't finalize; defer to reflect by routing to first failed child
+            # Don't finalize; defer to reflect by routing to first failed child.
+            # (children is ordered deepest-first / submission order, so this retries
+            # the earliest-submitted failed sub-intent first.)
             await events.emit(
                 "reasoning",
                 node="check",
@@ -246,7 +248,30 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             )
             return {"goal_tree": tree, "current_goal_id": failed_retryable[0]}
 
-        # All children are terminal and no retryables remain: FINALIZE
+        # Only finalize when every descendant has reached a terminal status.
+        # (No retryable failures remain at this point — a FAILED-and-exhausted
+        # descendant still blocks its ancestors at PENDING, so guard finalization
+        # below on whether finalization is actually possible.)
+        all_terminal = all(
+            tree.get(c, {}).get("status") in (Status.COMPLETED.value, Status.FAILED.value)
+            for c in children
+        )
+        if not all_terminal:
+            # Non-terminal descendants remain but NONE are retryable-failed (the
+            # branch above handled those). The only way a descendant stays
+            # non-terminal here is being PENDING behind a FAILED-and-exhausted
+            # (attempts >= 3) descendant that permanently blocks it. Finalize as a
+            # failure rather than silently ending with no answer.
+            exhausted_failed = [
+                c for c in children
+                if tree.get(c, {}).get("status") == Status.FAILED.value
+            ]
+            if not exhausted_failed:
+                # Genuinely still in progress (no failures): keep waiting.
+                return {}
+            # Fall through to finalization below, surfacing the exhausted failure(s).
+
+        # All retryable failures handled above; no retryables remain: FINALIZE
         # Build answer from all children, noting failures
         completed_results = [
             f"**{tree[c]['description'][:80]}**\n{tree[c]['result']}"
@@ -485,6 +510,15 @@ def verify_router(state: State) -> str:
     return "check"
 
 
+def clarification_router(state: State) -> str:
+    """Route after the 'plan' node. Halt the graph (END) when the plan node has
+    requested clarification from the user, so the agent does NOT proceed to
+    execute and guess at an ambiguous task. Otherwise continue to execute."""
+    if state.get("awaiting_clarification"):
+        return END
+    return "execute"
+
+
 # ---------------------------------------------------------------------------
 # Graph factory
 # ---------------------------------------------------------------------------
@@ -519,7 +553,7 @@ def build_graph(
 
     b.add_edge(START, "assess_ambiguity")
     b.add_conditional_edges("assess_ambiguity", ambiguity_router, ["approval", "plan"])
-    b.add_edge("plan", "execute")
+    b.add_conditional_edges("plan", clarification_router, ["execute", END])
     b.add_edge("execute", "verify")
     b.add_conditional_edges("verify", verify_router, ["reflect", "check"])
     b.add_conditional_edges("check", router, ["execute", "reflect", "approval", END])

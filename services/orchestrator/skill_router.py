@@ -221,6 +221,21 @@ class SkillRouter:
                 routed_skills.append(skill)
 
         if flagged:
+            # Clarification is reserved for GENUINE multi-intent ambiguity. A skill-less
+            # SINGLE intent (e.g. "What is 2+2?") has no confident skill but is not
+            # ambiguous — clarifying it would wrongly interrogate a trivial direct-answer
+            # task. So only clarify when there are >=2 sub-intents and at least one is
+            # unresolved; otherwise fall through (skills=[], needs_clarification=False)
+            # so the plan node routes to the architect/direct-answer path.
+            if len(sub_intents) == 1:
+                _log.info(
+                    "route() single skill-less intent -> direct answer (no clarification)"
+                )
+                return RouteResult(
+                    skills=[],
+                    needs_clarification=False,
+                    sub_intents=sub_intents,
+                )
             question = await self._generate_clarification(task, flagged)
             _log.info("route() needs clarification for %d sub-intent(s)", len(flagged))
             return RouteResult(

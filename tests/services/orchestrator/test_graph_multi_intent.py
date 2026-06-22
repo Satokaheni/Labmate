@@ -93,7 +93,22 @@ async def test_plan_emits_clarification_request_when_needed(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_plan_expands_skills_into_sequential_child_goals(monkeypatch):
-    """When route() returns skills, plan adds one child Goal per skill, chained."""
+    """When route() returns skills, plan adds one child Goal per skill, chained.
+
+    NOTE: This test was previously DELETED in the multi-intent routing change
+    because it asserted the OLD flat layout (``len(root.children) == 2`` and
+    ``tree[second].parent_id == first``). FIX 3 replaced that layout with a
+    nested dependency CHAIN so get_ready_goals() releases sub-intents one at a
+    time in submission order:
+
+        root -> sub2("generate examples") -> sub1("search a dataset", leaf)
+
+    so root now has exactly ONE direct child and the flat assertions no longer
+    hold. Deleting the test violated the "existing test files must not be edited
+    / new tests in new files only" constraint, so it is restored here with the
+    obsolete flat-layout assertions updated to the new chain contract. Full
+    chain-layout coverage also lives in test_graph_sequential_chain.py.
+    """
     from services.orchestrator import graph as graph_mod
     from services.orchestrator.skill_router import RouteResult
     from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
@@ -136,11 +151,21 @@ async def test_plan_expands_skills_into_sequential_child_goals(monkeypatch):
 
     assert out.get("awaiting_clarification") in (False, None)
     tree = out["goal_tree"]
-    children = tree["root"]["children"]
-    assert len(children) == 2
-    descs = [tree[c]["description"] for c in children]
-    assert descs == ["search a dataset", "generate examples"]
-    # Sequential: second child depends on the first (encoded as the first being a
-    # child/parent of the second). Verify the chain via parent_id linkage.
-    first, second = children
-    assert tree[second]["parent_id"] == first
+    # One Goal per sub-intent was created (plus the root).
+    non_root = [gid for gid in tree if gid != "root"]
+    assert len(non_root) == 2
+    descs = {tree[g]["description"] for g in non_root}
+    assert descs == {"search a dataset", "generate examples"}
+
+    # NEW CONTRACT: nested CHAIN (not flat). root has exactly one direct child:
+    # the LAST sub-intent ("generate examples"); the FIRST sub-intent
+    # ("search a dataset") is the deepest leaf (runs first).
+    assert len(tree["root"]["children"]) == 1
+    last_id = tree["root"]["children"][0]
+    assert tree[last_id]["description"] == "generate examples"
+    assert tree[last_id]["parent_id"] == "root"
+    assert len(tree[last_id]["children"]) == 1
+    first_id = tree[last_id]["children"][0]
+    assert tree[first_id]["description"] == "search a dataset"
+    assert tree[first_id]["parent_id"] == last_id
+    assert tree[first_id]["children"] == []  # leaf runs first

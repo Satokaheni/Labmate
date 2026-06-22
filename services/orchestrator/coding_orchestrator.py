@@ -768,6 +768,9 @@ class CodingOrchestrator:
         session_id = str(uuid.uuid4())
         state = await self.run_task(prompt, session_id, user_id=user_id, workspace_id=workspace_id)
         root = state.get("goal_tree", {}).get("root", {})
+        if state.get("awaiting_clarification"):
+            yield state.get("clarification_question", "") or state.get("final_answer") or root.get("result", "") or str(state)
+            return
         yield state.get("final_answer") or root.get("result", "") or str(state)
 
     # ── Human-in-the-loop gate interface (approve / reject via any connector) ──
