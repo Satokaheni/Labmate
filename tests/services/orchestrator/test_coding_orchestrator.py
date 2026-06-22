@@ -732,6 +732,51 @@ class TestReactExecute:
             assert result["ok"] is True
             assert "fallback works" in result["summary"]
 
+    @pytest.mark.asyncio
+    async def test_react_execute_skill_failure_surfaces_error_message(self):
+        """Skill-first shortcut: when skill fails, summary must contain error, never literal 'null'."""
+        runner = MagicMock()
+        runner.reset_activations.return_value = None
+        skill_router = MagicMock()
+        skill_router.runner = runner
+        orch = self._make_orch(skill_router=skill_router)
+
+        # Mock skill_router.run() to return a failure response
+        skill_router.run = AsyncMock(return_value={
+            "ok": False,
+            "error": "timeout"
+        })
+
+        result = await orch.react_execute("some goal that matches a skill")
+
+        # Verify the result reflects failure
+        assert result["ok"] is False
+        # The summary must surface the actual error, NOT the literal string "null"
+        assert result["summary"] != "null"
+        assert "timeout" in result["summary"]
+
+    @pytest.mark.asyncio
+    async def test_react_execute_skill_success_with_string_result(self):
+        """Skill-first shortcut: when skill succeeds with string result, return it."""
+        runner = MagicMock()
+        runner.reset_activations.return_value = None
+        skill_router = MagicMock()
+        skill_router.runner = runner
+        orch = self._make_orch(skill_router=skill_router)
+
+        # Mock skill_router.run() to return a success response with string result
+        skill_router.run = AsyncMock(return_value={
+            "ok": True,
+            "result": "skill execution completed successfully"
+        })
+
+        result = await orch.react_execute("some goal that matches a skill")
+
+        # Verify the result reflects success
+        assert result["ok"] is True
+        assert "skill execution completed successfully" in result["summary"]
+        assert result["summary"] != "null"
+
 
 @pytest.mark.mocked
 class TestRunWorkerUsesReactExecute:

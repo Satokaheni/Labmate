@@ -188,17 +188,26 @@ class AsyncOrchestrator:
             except Exception:
                 skill_result = None
             if isinstance(skill_result, dict):
-                res = skill_result.get("result")
-                if isinstance(res, dict) and isinstance(res.get("content"), list):
-                    text = "\n".join(
-                        c.get("text", "") for c in res["content"]
-                        if isinstance(c, dict) and c.get("text")
-                    )
-                elif isinstance(res, str):
-                    text = res
+                ok = bool(skill_result.get("ok"))
+                # When a skill fails (ok=False), prefer the error message.
+                # If ok=True, extract the result payload and format it.
+                if not ok:
+                    # Skill failed: surface the error message, never the literal "null"
+                    text = skill_result.get("error", "skill failed")
                 else:
-                    text = json.dumps(res, default=str)
-                return {"ok": bool(skill_result.get("ok")), "summary": text[:2000]}
+                    # Skill succeeded: extract and format the result
+                    res = skill_result.get("result")
+                    if isinstance(res, dict) and isinstance(res.get("content"), list):
+                        text = "\n".join(
+                            c.get("text", "") for c in res["content"]
+                            if isinstance(c, dict) and c.get("text")
+                        )
+                    elif isinstance(res, str):
+                        text = res
+                    else:
+                        # Structured result: serialize to JSON
+                        text = json.dumps(res, default=str)
+                return {"ok": ok, "summary": text[:2000]}
 
         # Build tool list
         tools = []
