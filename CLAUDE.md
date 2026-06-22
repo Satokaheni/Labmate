@@ -31,7 +31,39 @@ The codebase is mid-migration. Do not confuse the two:
 
 ---
 
-## Session Log — 2026-06-22 (read this first)
+## Session Log — 2026-06-22 (late) — READ THIS FIRST: resume here
+
+Branch `feat/agent-event-stream`. Everything below is **pushed** EXCEPT the one ⚠️ item, which is the **first thing to do tomorrow**.
+
+### ⚠️ RESUME HERE: multi-intent routing has 3 confirmed defects — fix before the feature is usable
+
+The multi-intent routing feature is **committed (`d21a21f`) and pushed but BROKEN** — an independent adversarial review caught that its core promise ("ask, don't guess") does not actually work end-to-end. The `route()` method + plan-node wiring are in place and unit-tested, but the **graph never halts on clarification**, so the agent generates a clarification question and then *answers anyway*. A fix workflow was authored and was running when we stopped for the night (killed mid-run; working tree restored to `d21a21f`, clean). The fix script is saved at:
+`/root/.claude/projects/-workspace-Labmate/5d2835e2-325e-4bcf-9d3f-bbe062d11cfb/workflows/scripts/fix-routing-clarification-halt-wf_ecb7d396-e51.js` (re-run via Workflow `{scriptPath}`), OR just implement the 3 fixes directly:
+
+1. **HIGH — graph never halts on `awaiting_clarification`** (`graph.py` `build_graph`, the `b.add_edge("plan","execute")`). It's unconditional and nothing reads `awaiting_clarification`, so when the plan node sets it and returns without touching `goal_tree`, the graph still goes to `execute_node` (where `get_ready_goals` returns `[root]`) and the ReAct executor answers the ambiguous task. **Fix:** replace with `b.add_conditional_edges("plan", clarification_router, ["execute", END])`; `clarification_router(state)` returns `END` when `state.get("awaiting_clarification")` else `"execute"`. Add a test asserting the graph does NOT reach `execute_node` on clarification.
+2. **HIGH — single-intent clarification escape** (`graph.py` plan node, ~lines 122-126): when `needs_clarification` AND `len(sub_intents)==1 and sub_intents[0]==goal_desc`, it sets `route_result=None` and falls through to architect-decompose-and-proceed (guesses) — reachable on a genuine single-intent ambiguous task. **Fix:** remove that escape; on `needs_clarification` ALWAYS emit `clarification_request` + set `awaiting_clarification`. Keep the SEPARATE no-router/`route()`-raises-`TypeError` backward-compat fallback intact.
+3. **MEDIUM — "sequential" child goals run in parallel** (`graph.py` plan node skills-expansion, ~lines 84-115): `parent_id` chaining is a no-op because `get_ready_goals` keys off the `children[]` array, not `parent_id`; every expanded child has `children=[]` so all become ready in the first `execute` pass and run concurrently (+ broken tree invariant: `parent_id` vs `children` disagree). **Fix:** nest each subsequent goal as the CHILD of the previous (append `child_id` to `tree[prev_id]["children"]`, `parent_id=prev_id`), so `get_ready_goals` releases them one at a time. Prefer `create_goal`.
+
+Also LOW (do if cheap): `_validate_solvable()` is defined+tested but **never wired into `route()`**; `route()`'s confidence-checked skill choice is discarded (child goals store only the sub-intent and get re-routed at execute time). The full review with verbatim findings is at `tasks/wllauvbl2.output` (run `wf_f4b0dd03-ebc`).
+
+**Hard constraints when fixing:** `select()/_sample_select()/plan_tool_call()/execute()/run()` in `skill_router.py` must stay byte-for-byte unchanged; `make_nodes` returns 7 nodes; tests in NEW files only. After fixing: re-run the routing review (`wf_f4b0dd03-ebc` scriptPath) until pass, then live-e2e — submit *"Write a Python function that reverses a string, and write a pytest unit test for it"* and confirm `awaiting_clarification: True` **with NO guessed `final_answer`** (today it wrongly returns both), then push.
+
+### Done & pushed this session (late)
+- **SearXNG self-hosting** (`6f9c9b0`) for the `web-search` skill — native (Docker-less pod: `install.sh` clones+builds into `/workspace/searxng`, JSON output on, public limiter off; `start.sh`/`stop.sh`/`status.sh` manage it on `:8080`; `local.env` exports `SEARXNG_URL`) + docker (compose bind-mount fix + `SEARXNG_URL` wired into mcp-bridge/orchestrator/skill-worker; `lm-searxng` in `run-services.sh`). Live-verified: `web-search` returns real results.
+- **Bare tool names for 3 TS skills** (`14c3b58`): `web-search`, `react-doctor`, `component-doc-gen` exposed prefixed names (`web_search.search`, etc.) — same registry bug as the Python skills, missed earlier because that scan was Python-only. Renamed to bare + rebuilt `dist`. Live-verified (`web-search` dispatches with bare `search`).
+- **Full-project review of the day's earlier work** → fixed all findings (local executor hardening + visible auto-fallback, null-fix completeness, approval-emit ordering, run_tests warning field, real-error surfacing) — commits `28bb351`…`2c0b4f5`, all pushed; review loop reached a clean pass.
+
+### Environment / credentials (for tomorrow)
+- The user has a **Figma token** and **Semantic Scholar key** to add to a `.env` tomorrow. Vars: `FIGMA_ACCESS_TOKEN` (Figma PAT, scope **`file_content:read`** read-only) and `SS_API_KEY` (optional; Academic Graph + Recommendations APIs; no per-endpoint scopes). `web-search` needs `SEARXNG_URL` (now self-hosted). All other external skills use the local Gemma model or anonymous free APIs (HF, PapersWithCode, OpenAlex). **No paid keys.**
+- This pod: no Docker (namespace syscalls seccomp-blocked → `unshare` EPERM), so code-sandbox runs via the local subprocess fallback; web/citation skills reach the network but public APIs rate-limit (Semantic Scholar 429 without a key).
+
+### Other next steps (lower priority)
+- Cap reflect-retries on cleanly-failing skills (documented latency lever).
+- `critique` routes ~0.36 on the adversarial set (inherent multi-intent ambiguity) — the `2026-06-21-multi-intent-routing.md` plan (this feature) is the proper fix once defects above are resolved.
+
+---
+
+## Session Log — 2026-06-22 (earlier)
 
 This session installed the full stack on a fresh container, live-verified the event stream + CLI streaming, then found and fixed four bugs (each via a haiku-implement → opus-judge → opus-project-review workflow), and ran the routing eval. Branch: `feat/agent-event-stream`.
 
