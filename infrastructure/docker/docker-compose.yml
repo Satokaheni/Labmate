@@ -20,6 +20,8 @@ services:
       - INFERENCE_URL=${INFERENCE_URL:-http://host.docker.internal:8000}
       - MCP_PORT=${MCP_PORT:-9000}
       - LOG_LEVEL=${LOG_LEVEL:-info}
+      # web-search skill -> SearXNG (lm-searxng container) JSON API
+      - SEARXNG_URL=${SEARXNG_URL:-http://searxng:8080}
     extra_hosts:
       # Linux: routes host.docker.internal to the Docker host gateway.
       # Mac: noop — Docker Desktop resolves host.docker.internal natively.
@@ -47,6 +49,7 @@ services:
       - CHROMA_URL=http://chroma:8000
       - REDIS_URL=redis://redis:6379/0
       - LOG_LEVEL=${LOG_LEVEL:-info}
+      - SEARXNG_URL=${SEARXNG_URL:-http://searxng:8080}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -72,6 +75,7 @@ services:
       - MCP_BRIDGE_URL=http://mcp-bridge:9000
       - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-2}
       - LOG_LEVEL=${LOG_LEVEL:-info}
+      - SEARXNG_URL=${SEARXNG_URL:-http://searxng:8080}
     depends_on:
       redis:
         condition: service_healthy
@@ -120,7 +124,10 @@ services:
     ports:
       - "${SEARXNG_PORT:-8888}:8080"
     volumes:
-      - searxng-config:/etc/searxng
+      # Bind-mount our settings.yml (JSON output enabled, limiter off) so the
+      # web-search skill's GET /search?format=json works. A named volume would be
+      # empty on first run and SearXNG would fall back to HTML-only defaults.
+      - ./searxng-config:/etc/searxng:ro
     environment:
       - SEARXNG_BASE_URL=${SEARXNG_BASE_URL:-http://localhost:8888/}
     networks: [labmate]
@@ -150,8 +157,8 @@ volumes:
     # ChromaDB vector embeddings — expensive to rebuild
   redis-data:
     # Redis AOF log — preserves task queue across restarts
-  searxng-config:
-    # SearXNG settings (settings.yml with JSON format enabled)
+  # NOTE: SearXNG settings are bind-mounted from ./searxng-config (see the searxng
+  # service above), NOT a named volume — so the JSON-enabled settings.yml is always used.
 
 # ─── Networks ─────────────────────────────────────────────────────────────────
 networks:

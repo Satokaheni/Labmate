@@ -28,6 +28,11 @@ IMG_SKILL_WORKER="${IMG_SKILL_WORKER:-labmate/skill-worker:latest}"
 
 LOG_LEVEL="${LOG_LEVEL:-info}"
 MCP_PORT="${MCP_PORT:-9000}"
+SEARXNG_PORT="${SEARXNG_PORT:-8888}"
+SEARXNG_URL="${SEARXNG_URL:-http://searxng:8080}"   # in-network URL the web-search skill uses
+# Host path to the bind-mounted SearXNG settings (JSON output enabled, limiter off).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SEARXNG_CONFIG_DIR="${SEARXNG_CONFIG_DIR:-${SCRIPT_DIR}/../searxng-config}"
 
 # ─── Parse arguments ──────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -116,7 +121,7 @@ fi
 # ─── Stop ─────────────────────────────────────────────────────────────────────
 if [[ "$ACTION" == "stop" ]]; then
   section "Stopping Labmate services"
-  CONTAINERS=(lm-mcp-bridge lm-orchestrator lm-mongodb lm-chroma lm-redis)
+  CONTAINERS=(lm-mcp-bridge lm-orchestrator lm-mongodb lm-chroma lm-redis lm-searxng)
   for i in $(seq 1 "${SKILL_WORKER_REPLICAS}"); do
     CONTAINERS+=("lm-skill-worker-${i}")
   done
@@ -212,6 +217,25 @@ ensure_running lm-redis \
   redis:7-alpine \
   redis-server --appendonly yes --appendfsync everysec
 
+# ── SearXNG (web-search skill backend) ────────────────────────────────────────
+# Bind-mounts our settings.yml (JSON output enabled, limiter off). The web-search
+# skill queries it at http://searxng:8080/search?format=json on the labmate network.
+section "SearXNG"
+ensure_running lm-searxng \
+  --detach \
+  --restart unless-stopped \
+  --network "${NETWORK}" \
+  --network-alias searxng \
+  --publish "${SEARXNG_PORT}:8080" \
+  --volume "${SEARXNG_CONFIG_DIR}:/etc/searxng:ro" \
+  --env SEARXNG_BASE_URL="http://localhost:${SEARXNG_PORT}/" \
+  --health-cmd 'wget -qO- "http://localhost:8080/search?q=ping&format=json" >/dev/null || exit 1' \
+  --health-interval 10s \
+  --health-timeout 5s \
+  --health-retries 5 \
+  --health-start-period 20s \
+  searxng/searxng:latest
+
 if [[ "${INFRA_ONLY}" == "true" ]]; then
   echo ""
   echo "══ Infra-only mode — skipping app services ══"
@@ -242,6 +266,7 @@ wait_healthy() {
 wait_healthy lm-mongodb
 wait_healthy lm-chroma
 wait_healthy lm-redis
+wait_healthy lm-searxng   # non-blocking: web-search is optional, app services start regardless
 
 # ── MCP Bridge ────────────────────────────────────────────────────────────────
 section "MCP Bridge"
@@ -257,6 +282,7 @@ else
     --publish "${MCP_PORT}:9000" \
     --env INFERENCE_URL="${INFERENCE_URL}" \
     --env MCP_PORT=9000 \
+    --env SEARXNG_URL="${SEARXNG_URL}" \
     --env LOG_LEVEL="${LOG_LEVEL}" \
     "${HOST_GATEWAY_FLAG[@]}" \
     "${IMG_MCP_BRIDGE}"
@@ -278,6 +304,7 @@ else
     --env MONGO_URI="mongodb://mongodb:27017/labmate" \
     --env CHROMA_URL="http://chroma:8000" \
     --env REDIS_URL="redis://redis:6379/0" \
+    --env SEARXNG_URL="${SEARXNG_URL}" \
     --env LOG_LEVEL="${LOG_LEVEL}" \
     "${HOST_GATEWAY_FLAG[@]}" \
     "${IMG_ORCHESTRATOR}"
@@ -297,6 +324,7 @@ else
       --env REDIS_URL="redis://redis:6379/0" \
       --env MCP_BRIDGE_URL="http://mcp-bridge:9000" \
       --env WORKER_CONCURRENCY=2 \
+      --env SEARXNG_URL="${SEARXNG_URL}" \
       --env LOG_LEVEL="${LOG_LEVEL}" \
       "${IMG_SKILL_WORKER}"
   done

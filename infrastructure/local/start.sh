@@ -119,6 +119,39 @@ for i in $(seq 1 30); do
 done
 pass "Chroma ready :8765"
 
+# ─── SearXNG (native metasearch for the web-search skill) ─────────────────────
+# Internal instance with JSON output enabled. Non-fatal: if SearXNG isn't installed
+# or won't start, the rest of the stack still comes up (web-search is just unavailable).
+SEARXNG_DIR="${SEARXNG_DIR:-/workspace/searxng}"
+SEARXNG_SRC="${SEARXNG_DIR}/searxng-src"
+SEARXNG_VENV="${SEARXNG_DIR}/searx-pyenv"
+SEARXNG_SETTINGS="${SEARXNG_DIR}/settings.yml"
+SEARXNG_PORT="${SEARXNG_PORT:-8080}"
+searxng_alive() { curl -fsS "http://127.0.0.1:${SEARXNG_PORT}/search?q=ping&format=json" >/dev/null 2>&1; }
+if [[ ! -x "${SEARXNG_VENV}/bin/python" || ! -d "${SEARXNG_SRC}/searx" ]]; then
+  info "SearXNG not installed (run install.sh) — skipping; web-search skill will be unavailable"
+elif searxng_alive; then
+  info "searxng already running on :${SEARXNG_PORT}"
+else
+  info "starting SearXNG on :${SEARXNG_PORT} ..."
+  (
+    cd "$SEARXNG_SRC"
+    SEARXNG_SETTINGS_PATH="$SEARXNG_SETTINGS" \
+      nohup "${SEARXNG_VENV}/bin/python" -m searx.webapp >"$LOGS/searxng.log" 2>&1 &
+    echo $! >"$PIDS/searxng.pid"
+  )
+  for i in $(seq 1 30); do
+    searxng_alive && break
+    kill -0 "$(cat "$PIDS/searxng.pid" 2>/dev/null)" 2>/dev/null || { info "WARN: SearXNG exited — see $LOGS/searxng.log"; break; }
+    sleep 1
+  done
+fi
+if searxng_alive; then
+  pass "SearXNG ready :${SEARXNG_PORT}  (web-search skill -> SEARXNG_URL=http://localhost:${SEARXNG_PORT})"
+else
+  info "WARN: SearXNG not responding on :${SEARXNG_PORT} — web-search skill will be unavailable (see $LOGS/searxng.log)"
+fi
+
 # ─── MCP bridge (TypeScript) — build only; the orchestrator spawns it as a child ─
 MCP_BRIDGE_DIR="${REPO_ROOT}/services/mcp-bridge"
 MCP_DIST="${MCP_BRIDGE_DIR}/dist/index.js"
@@ -221,6 +254,7 @@ pass "Labmate stack is up. Connection settings:"
 echo "    MONGO_URI=mongodb://localhost:27017/labmate?replicaSet=rs0"
 echo "    REDIS_URL=redis://localhost:6379/0"
 echo "    CHROMA_URL=http://localhost:8765  (CHROMA_HOST=localhost CHROMA_PORT=8765)"
+echo "    SEARXNG_URL=http://localhost:${SEARXNG_PORT:-8080}  (web-search skill)"
 echo "    GEMMA_BASE=http://localhost:8000/v1"
 echo "    -> source infrastructure/local/local.env to export these."
 echo "    -> Logs: $LOGS/  PIDs: $PIDS/"
