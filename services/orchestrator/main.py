@@ -260,6 +260,16 @@ class OrchestratorProcess:
                     await events.emit("answer.done", text=_question)
                 except Exception:
                     pass  # best-effort; never let event emission block the result
+            # FIX 10: direct-answer fast-path — the plan node already produced final_answer,
+            # so do NOT call stream_final_answer (it would re-ask the model to re-answer).
+            # Surface the existing final_answer via the same answer.delta/answer.done events.
+            elif isinstance(final_state, dict) and final_state.get("direct_answer"):
+                _answer = final_state.get("final_answer", "")
+                try:
+                    await events.emit("answer.delta", text=_answer)
+                    await events.emit("answer.done", text=_answer)
+                except Exception:
+                    pass  # best-effort; never let event emission block the result
             # Otherwise stream the final answer with typewriter effect (answer.delta + answer.done)
             elif hasattr(orch, "stream_final_answer"):
                 try:

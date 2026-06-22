@@ -120,15 +120,17 @@ async def test_decompose_strips_code_fences():
 
 
 @pytest.mark.asyncio
-async def test_decompose_uses_budget_512():
-    from services.orchestrator.skill_router import SkillRouter
+async def test_decompose_uses_configured_budget():
+    # FIX 10 (A3): decompose()'s thinking budget is now DECOMPOSE_THINKING_BUDGET
+    # (configurable, default 384 — was the hardcoded 512 this test originally pinned).
+    from services.orchestrator.skill_router import SkillRouter, DECOMPOSE_THINKING_BUDGET
 
     router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
     with patch("services.orchestrator.skill_router.litellm.acompletion") as m:
         m.return_value = content_response('["x"]')
         await router.decompose("x")
     kwargs = m.call_args.kwargs
-    assert kwargs["extra_body"] == {"thinking_budget_tokens": 512}
+    assert kwargs["extra_body"] == {"thinking_budget_tokens": DECOMPOSE_THINKING_BUDGET}
     assert kwargs["model"] == "openai/gemma-4-31b"
     assert kwargs["api_key"] == "not-needed"
     assert kwargs["api_base"] == "http://test/v1"

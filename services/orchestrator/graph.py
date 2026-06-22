@@ -29,6 +29,23 @@ AMBIGUITY_THRESHOLD = float(os.getenv("AMBIGUITY_THRESHOLD", "0.6"))
 # A2: artifacts scoring below this route back through reflect for revision.
 CRITIQUE_THRESHOLD = float(os.getenv("CRITIQUE_THRESHOLD", "0.90"))
 
+# FIX 10 (A3): thinking budget for the assess_ambiguity node's architect() call
+#   (was hardcoded 1024; a lower default is faster on the local Q4 model).
+ASSESS_THINKING_BUDGET = int(os.getenv("ASSESS_THINKING_BUDGET", "768"))
+
+# FIX 10 (B2): direct-answer fast-path. When route() reports a skill-less SINGLE intent
+# (e.g. "What is 2+2?"), the plan node answers directly via architect() and HALTS the
+# graph instead of architect-decomposing + re-routing through execute/ReAct (which would
+# re-run select() and even dispatch a skill to compute a trivial answer). This collapses
+# ~10 model calls / ~65 s down to a single architect() call.
+ENABLE_DIRECT_ANSWER_FASTPATH = os.getenv("ENABLE_DIRECT_ANSWER_FASTPATH", "1") not in (
+    "0",
+    "false",
+    "False",
+    "",
+)
+DIRECT_ANSWER_THINKING_BUDGET = int(os.getenv("DIRECT_ANSWER_THINKING_BUDGET", "1024"))
+
 # FIX 9: latency knobs for the reflect/verify gate.
 # MAX_VERIFY_RETRIES: how many times a low critique_score may drive a verify->reflect pass
 #   before the artifact is ACCEPTED and we proceed to check. 1 -> at most one reflect pass;
@@ -163,6 +180,37 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
                 return {
                     "awaiting_clarification": True,
                     "clarification_question": route_result.clarification_question,
+                }
+
+            # FIX 10 (B3): direct-answer fast-path for a skill-less SINGLE intent.
+            # route() returns (skills=[], needs_clarification=False, sub_intents=[the_intent])
+            # for a trivial / no-skill-needed single task (e.g. "What is 2+2?"). Previously
+            # this fell through to architect-decompose + execute/ReAct, which re-ran select()
+            # and could even dispatch code-sandbox to compute the answer (~40 s of wasted work
+            # the routing decision already said was unnecessary). Instead, answer directly with
+            # ONE architect() call, mark root COMPLETED, and HALT (clarification_router sees
+            # final_answer/direct_answer and returns END).
+            if (
+                ENABLE_DIRECT_ANSWER_FASTPATH
+                and not route_result.skills
+                and not route_result.needs_clarification
+                and len(route_result.sub_intents) == 1
+            ):
+                answer = await orch.architect(
+                    goal_desc, thinking_budget=DIRECT_ANSWER_THINKING_BUDGET
+                )
+                tree = copy.deepcopy(state["goal_tree"])
+                update_status(tree, root_id, Status.COMPLETED, result=answer)
+                await events.emit(
+                    "reasoning",
+                    node="plan",
+                    summary="answering directly (no skill needed)",
+                    text=answer[:500],
+                )
+                return {
+                    "goal_tree": tree,
+                    "final_answer": answer,
+                    "direct_answer": True,
                 }
 
         # Fallback when no skill_router or no route() method (for old tests and backward compat)
@@ -461,7 +509,7 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             "Respond as JSON: "
             '{"assumptions": ["..."], "ambiguity": 0.0, "blocking_question": "" }'
         )
-        raw = await orch.architect(prompt, thinking_budget=1024)
+        raw = await orch.architect(prompt, thinking_budget=ASSESS_THINKING_BUDGET)  # FIX 10 (A3): was 1024
         text = (raw or "").strip()
         if text.startswith("```json"):
             text = text[7:]
@@ -640,9 +688,14 @@ def verify_router(state: State) -> str:
 
 def clarification_router(state: State) -> str:
     """Route after the 'plan' node. Halt the graph (END) when the plan node has
-    requested clarification from the user, so the agent does NOT proceed to
-    execute and guess at an ambiguous task. Otherwise continue to execute."""
-    if state.get("awaiting_clarification"):
+    already produced a terminal outcome, so the agent does NOT proceed to execute
+    and guess / redo work. This is END when the plan node:
+      - requested clarification (awaiting_clarification), so we don't guess at an
+        ambiguous task; OR
+      - FIX 10: took the direct-answer fast-path (direct_answer / final_answer set),
+        so we don't re-decompose and re-route a question the plan already answered.
+    Otherwise continue to execute."""
+    if state.get("awaiting_clarification") or state.get("direct_answer") or state.get("final_answer"):
         return END
     return "execute"
 

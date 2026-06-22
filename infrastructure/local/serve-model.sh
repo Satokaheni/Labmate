@@ -21,7 +21,7 @@ ALIAS="${ALIAS:-gemma-4}"
 PORT="${PORT:-8000}"
 CTX="${CTX:-16384}"
 NGL="${NGL:-999}"          # offload all layers to GPU (A6000 48GB fits the 18.8GB model)
-PARALLEL="${PARALLEL:-2}"  # concurrent request slots
+PARALLEL="${PARALLEL:-4}"  # concurrent request slots (FIX 10: was 2; KV cache for 4 slots @ ctx 16384 fits 48GB GPU w/ 18GB model)
 
 LOGS="${REPO_ROOT}/.data/logs"; PIDS="${REPO_ROOT}/.data/pids"
 mkdir -p "$LOGS" "$PIDS"

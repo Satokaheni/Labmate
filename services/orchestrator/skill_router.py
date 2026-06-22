@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -43,6 +44,11 @@ PLAN_ATTEMPTS = 3
 # 2/3 (0.666...) == "at least 2 of 3 samples agreed". Below this (and not unanimous)
 # we treat the sub-intent as ambiguous and ask the user rather than guessing.
 CONFIDENCE_THRESHOLD = 2.0 / 3.0
+
+# FIX 10 (A3): thinking budget for decompose()'s single LLM call (was hardcoded 512).
+# Decompose only needs to split a task into a small JSON array; a modest budget is
+# faster on the local Q4 model with no measurable accuracy cost.
+DECOMPOSE_THINKING_BUDGET = int(os.getenv("DECOMPOSE_THINKING_BUDGET", "384"))
 
 _DECOMPOSE_PROMPT = (
     "You are a task decomposer for an AI agent. Split the following task into the "
@@ -279,7 +285,7 @@ class SkillRouter:
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0,
                 seed=0,
-                extra_body={"thinking_budget_tokens": 512},
+                extra_body={"thinking_budget_tokens": DECOMPOSE_THINKING_BUDGET},  # FIX 10 (A3): was 512
             )
         except Exception as exc:
             _log.warning("decompose() llm error: %s", exc)
@@ -328,7 +334,13 @@ class SkillRouter:
         """
         from collections import Counter
 
-        picks = [await self._sample_select(sub_intent, 0) for _ in range(SELECT_ATTEMPTS)]
+        # FIX 10 (A1): run the SELECT_ATTEMPTS samples CONCURRENTLY (was a sequential
+        # list comprehension). The voting logic below is identical — only the wall-clock
+        # latency of gathering the samples changes (3 sequential ~6 s calls -> ~6 s total
+        # given llama-server --parallel >= SELECT_ATTEMPTS).
+        picks = await asyncio.gather(
+            *(self._sample_select(sub_intent, 0) for _ in range(SELECT_ATTEMPTS))
+        )
         hits = [p for p in picks if p is not None]
         if not hits:
             return None, 0.0

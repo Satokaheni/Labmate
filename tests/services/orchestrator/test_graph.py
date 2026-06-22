@@ -195,10 +195,18 @@ class TestPlanNode:
         mock_orch.skill_router = skill_router
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
-        plan_node, *_ = make_nodes(mock_orch, mock_async_orch)
+        # FIX 10: this test verifies the .runner property access + the architect
+        # decompose fall-through (catalog in prompt). It previously relied on route()
+        # implicitly returning a skill-less single intent (which used to fall through to
+        # architect-decompose). Fix 10 routes that case to the NEW direct-answer fast-path
+        # instead, so to still exercise the decompose fall-through we force route() onto the
+        # documented backward-compat path (route() raises -> route_result is None).
+        from unittest.mock import patch as _patch
+        with _patch.object(skill_router, "route", AsyncMock(side_effect=TypeError("no live LLM"))):
+            plan_node, *_ = make_nodes(mock_orch, mock_async_orch)
 
-        state = _make_state()
-        delta = await plan_node(state)
+            state = _make_state()
+            delta = await plan_node(state)
 
         # Verify the plan executed without AttributeError
         assert "goal_tree" in delta

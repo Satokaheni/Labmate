@@ -45,8 +45,11 @@ async def test_decompose_uses_deterministic_decoding():
     kwargs = mock_acompletion.call_args.kwargs
     assert kwargs["temperature"] == 0
     assert kwargs["seed"] == 0
-    # thinking_budget stays at 512
-    assert kwargs["extra_body"] == {"thinking_budget_tokens": 512}
+    # FIX 10 (A3): decompose()'s thinking budget is now the configurable
+    # DECOMPOSE_THINKING_BUDGET (default 384, was hardcoded 512). temperature=0/seed=0
+    # (FIX 6) are unchanged — those are what this test actually guards.
+    from services.orchestrator.skill_router import DECOMPOSE_THINKING_BUDGET
+    assert kwargs["extra_body"] == {"thinking_budget_tokens": DECOMPOSE_THINKING_BUDGET}
 
 
 @pytest.mark.asyncio

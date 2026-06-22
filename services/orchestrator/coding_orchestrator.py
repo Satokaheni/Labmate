@@ -614,6 +614,7 @@ class CodingOrchestrator:
             "user_id": user_id,
             "root_goal": task,
             "verify_retries": 0,  # FIX 9: bound verify->reflect passes
+            "direct_answer": False,  # FIX 10: set True by the plan node's direct-answer fast-path
         }
         cfg = {
             "configurable": {
