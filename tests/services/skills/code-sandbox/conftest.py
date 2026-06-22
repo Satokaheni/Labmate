@@ -41,3 +41,10 @@ def patched_executor(mock_docker_client, monkeypatch):
     monkeypatch.setattr(docker, "from_env", lambda: mock_docker_client)
     from executor import DockerExecutor
     return DockerExecutor(), mock_docker_client, mock_docker_client.containers.create.return_value
+
+
+@pytest.fixture
+def local_executor():
+    """LocalSubprocessExecutor instance for testing."""
+    from executor import LocalSubprocessExecutor
+    return LocalSubprocessExecutor()
