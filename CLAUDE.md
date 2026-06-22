@@ -31,7 +31,27 @@ The codebase is mid-migration. Do not confuse the two:
 
 ---
 
-## Session Log — 2026-06-20 (read this first)
+## Session Log — 2026-06-22 (read this first)
+
+This session installed the full stack on a fresh container, live-verified the event stream + CLI streaming, then found and fixed four bugs (each via a haiku-implement → opus-judge → opus-project-review workflow), and ran the routing eval. Branch: `feat/agent-event-stream`.
+
+**Bring-up (done):** `infrastructure/local/install.sh` (Node 22, MongoDB 8, Redis 7, mongosh, `hf`, all Python + per-skill deps; llama.cpp + the 18GB GGUF were already present and skipped) → `serve-model.sh` → `start.sh`. All services green; Redis round-trip `ok:true`.
+
+**Smoke tests (done, live):** Event stream emits all 6 event types in order (`turn.start → reasoning → tool.start/done → answer.delta → answer.done → turn.done`); CLI one-shot streams live (seed `~/.labmate/identity.json` + a `--workspace` to run non-interactively).
+
+**Four bugs fixed & committed (4 commits on `feat/agent-event-stream`):**
+1. **`react_execute` "null" summary** (`coding_orchestrator.py`) — a failed skill returns `{ok:False, error:...}` with no `result`; the code did `json.dumps(None)` → the literal string `"null"`, discarding the real error. Now surfaces `skill_result["error"]`.
+2. **11 skills' prefixed tool names → bare** (`ast-search, citation-check, design-critique, design-token-transform, figma-to-component, paper-rag, repo-fault-localize, repo-graph, screenshot-to-component, test-gen`, plus `code-sandbox`). Servers exposed `code_sandbox.run_python`-style names; the registry resolves the name *after* the skill-dir prefix, so the model's bare `run_python` never matched → `SkillUnavailable` → ReAct thrash to `max_steps`. Renamed `Tool(name=)`, the `call_tool` handler, and `SKILL.md` to bare names (completes the 6-skill fix from 2026-06-21). **This was the real cause of the "over-decompose / max_steps" symptom — selection was always correct; invocation was broken.**
+3. **`critique` relative-import crash** (`critique_skill.py`) — `from .schemas` broke when the registry spawns `server.py` as a standalone script (no parent package) → critique never registered → the A2 verify gate silently always passed. Now a dual-safe `try: from .schemas … except ImportError: from schemas …`.
+4. **code-sandbox `LocalSubprocessExecutor` + Docker→local auto-fallback** (`executor.py`, `server.py`) — this pod blocks namespace syscalls (`unshare` → EPERM), so Docker (and nsjail/bwrap/gVisor) cannot run. Added a subprocess executor with `setrlimit` (CPU/AS/NPROC/FSIZE) + wall-clock timeout. `get_executor()` honors **`CODE_SANDBOX_BACKEND=docker|local`** and otherwise auto-falls-back Docker→local with a **loud stderr warning**. Docker stays the secure default; local mode is unsandboxed (trusted code only). With this, the coding e2e now **succeeds** on this pod (`'labmate'`→`'etambal'`, `ok:true`, 0 retries, 31s).
+
+**Routing eval (done):** `run_routing_eval.py` on the pristine 77-case seed (×3 repeats) → **overall 1.000, stability 1.000, FP-rate 0.0, all 28 skills 1.000, no misroutes**. `extend_eval.py` is a no-op (all 28 skills already covered). A harder fresh-generated adversarial set was also produced (`eval/routing_eval.generated.jsonl`) and scored — see `eval/reports/`.
+
+**New knob:** `CODE_SANDBOX_BACKEND` (`docker` | `local` | unset=auto). Unset → prefer Docker (`client.ping()` guard), fall back to local subprocess with a loud warning. Local = NO fs/network/PID isolation; rlimits + timeout only; trusted code only.
+
+---
+
+## Session Log — 2026-06-20
 
 This session took the M3 stack from "unit tests pass" to a **working, skill-aware orchestrator** running live on the pod. Branches: `fix/e2e-setup-and-redis` (pushed; the e2e + skill-selection milestone) → `feat/agent-event-stream` (current; latency/reliability fixes + the event-stream plan).
 
