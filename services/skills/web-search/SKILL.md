@@ -7,9 +7,9 @@ description: >
   Operates fully locally via Docker (no cloud search API required).
 trigger: "Use when needing current information not available in the local document library"
 tools:
-  - web_search.search
-  - web_search.fetch_page
-  - web_search.search_code
+  - search
+  - fetch_page
+  - search_code
 version: "0.1.0"
 license: MIT
 requires: []
@@ -22,15 +22,15 @@ live web search and page-content extraction.
 
 ## Tools
 
-### web_search.search(query, limit=10, categories=["general"])
+### search(query, limit=10, categories=["general"])
 Returns JSONL; one `SearchResult` per line: `title`, `url`, `snippet`, `source`,
 `published_date`.
 
-### web_search.fetch_page(url, max_length=8000)
+### fetch_page(url, max_length=8000)
 Fetches a URL and extracts main text via cheerio. Returns JSON: `url`, `title`,
 `text` (truncated to `max_length`), `truncated`.
 
-### web_search.search_code(query, limit=5)
+### search_code(query, limit=5)
 Searches the SearXNG `code` category (GitHub / StackOverflow). Returns JSONL.
 
 ## Configuration

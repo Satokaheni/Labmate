@@ -12,7 +12,7 @@ const server = new McpServer({
 });
 
 server.registerTool(
-  'react_doctor.audit',
+  'audit',
   {
     title: 'Audit a React project',
     description:
@@ -57,7 +57,7 @@ server.registerTool(
 );
 
 server.registerTool(
-  'react_doctor.list_rules',
+  'list_rules',
   {
     title: 'List react-doctor rules',
     description:

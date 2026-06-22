@@ -8,7 +8,7 @@ const server = new McpServer({
     name: 'react-doctor',
     version: '0.1.0',
 });
-server.registerTool('react_doctor.audit', {
+server.registerTool('audit', {
     title: 'Audit a React project',
     description: 'Run react-doctor static analysis on a React project. Returns JSONL of issues, ' +
         'one per line, each with rule_id, category, severity, file, line, column, message.',
@@ -44,7 +44,7 @@ server.registerTool('react_doctor.audit', {
         content: [{ type: 'text', text: `${summary}\n${jsonl}`.trimEnd() }],
     };
 });
-server.registerTool('react_doctor.list_rules', {
+server.registerTool('list_rules', {
     title: 'List react-doctor rules',
     description: 'List all available react-doctor rule IDs grouped by category ' +
         '(state_effects, performance, architecture, security, accessibility).',

@@ -7,8 +7,8 @@ description: >
   React components. Extracts props, types, required/optional status, and JSDoc.
 trigger: "Use when generating documentation or Storybook stories for React components"
 tools:
-  - component_doc.generate
-  - component_doc.generate_batch
+  - generate
+  - generate_batch
 version: "0.1.0"
 license: MIT
 requires: []
@@ -42,7 +42,7 @@ is made by default.
 
 ## Available Tools
 
-### `component_doc.generate`
+### `generate`
 
 Generate docs (and, by default, a Storybook story) for a single component file.
 
@@ -56,7 +56,7 @@ Generate docs (and, by default, a Storybook story) for a single component file.
 Returns a JSON `ComponentDoc`:
 `{ "component_name": "...", "file_path": "...", "props": [...], "props_table": "...", "story_code": "...", "markdown_doc": "..." }`.
 
-### `component_doc.generate_batch`
+### `generate_batch`
 
 Generate docs for every component matching a glob under a directory.
 
