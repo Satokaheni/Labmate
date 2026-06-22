@@ -1,6 +1,7 @@
 # services/orchestrator/graph.py
 from __future__ import annotations
 
+import json
 import os
 
 from langgraph.graph import StateGraph, START, END
@@ -8,6 +9,7 @@ from langgraph.types import interrupt
 
 from .types import State, Status, Goal, get_ready_goals, update_status, now_iso, create_goal
 from .coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+from . import events
 
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
 # llama.cpp serves Gemma 4 31B on port 8000 (CUDA on RunPod, Metal on Mac Mini, Vulkan on AMD).
@@ -66,10 +68,18 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         raw_plan = await orch.architect(prompt)
         # Deep copy to avoid mutating the checkpoint's prior goal_tree.
         tree = copy.deepcopy(state["goal_tree"])
+        children_created = 0
         for i, line in enumerate(raw_plan.strip().splitlines()):
             if line.strip():
                 gid = f"{root_id}_sub{i}"
                 create_goal(tree, gid, root_id, line.strip())
+                children_created += 1
+        await events.emit(
+            "reasoning",
+            node="plan",
+            summary=f"decomposed into {children_created} subtask(s)",
+            text=raw_plan[:500],
+        )
         return {"goal_tree": tree}
 
     async def execute_node(state: State) -> dict:
@@ -151,6 +161,12 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         ]
         if failed_retryable:
             # Don't finalize; defer to reflect by routing to first failed child
+            await events.emit(
+                "reasoning",
+                node="check",
+                summary="deferring to reflect for failed child retry",
+                text=f"Child {failed_retryable[0]} failed but retryable (attempts < 3)",
+            )
             return {"goal_tree": tree, "current_goal_id": failed_retryable[0]}
 
         # All children are terminal and no retryables remain: FINALIZE
@@ -176,6 +192,13 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         failed_any = bool(failed_children)
         final_status = Status.FAILED if failed_any else Status.COMPLETED
         update_status(tree, root_id, final_status, result=answer)
+
+        await events.emit(
+            "reasoning",
+            node="check",
+            summary="finalizing" if not failed_any else f"{len(failed_children)} child(ren) failed",
+            text=answer[:500],
+        )
 
         result = {
             "goal_tree": tree,
@@ -205,6 +228,12 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             "Write a concise diagnosis and what to do differently on the next attempt.",
             thinking_budget=3000,
         )
+        await events.emit(
+            "reasoning",
+            node="reflect",
+            summary="diagnosing failed subtask",
+            text=reflection[:500],
+        )
         # Deep copy to avoid mutating the checkpoint's prior goal_tree.
         tree = copy.deepcopy(state["goal_tree"])
         update_status(tree, gid, Status.PENDING)
@@ -221,6 +250,12 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         import copy
         gid = state["current_goal_id"]
         decision = interrupt({"action": "irreversible", "goal": gid})
+        await events.emit(
+            "reasoning",
+            node="approval",
+            summary="awaiting human approval",
+            text=f"Goal {gid} requires approval before proceeding",
+        )
         # Deep copy to avoid mutating the checkpoint's prior goal_tree.
         tree = copy.deepcopy(state["goal_tree"])
         new_status = Status.IN_PROGRESS if decision == "approve" else Status.BLOCKED
@@ -228,7 +263,6 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         return {"goal_tree": tree}
 
     async def assess_ambiguity(state: State) -> dict:
-        import json
         goal = state.get("root_goal") or state["goal_tree"][state["current_goal_id"]]["description"]
         prompt = (
             "You are triaging a task before an autonomous agent executes it.\n"
@@ -256,9 +290,18 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             ambiguity = float(out.get("ambiguity", 0.0))
         except (TypeError, ValueError):
             ambiguity = 0.0
+
+        assumptions = out.get("assumptions", []) or []
+        await events.emit(
+            "reasoning",
+            node="assess_ambiguity",
+            summary=f"ambiguity={ambiguity:.2f}; {len(assumptions)} assumption(s)",
+            text=out.get("blocking_question", "") or json.dumps(out),
+        )
+
         return {
             "root_goal": goal,
-            "assumptions": out.get("assumptions", []) or [],
+            "assumptions": assumptions,
             "ambiguity": ambiguity,
             "blocking_question": out.get("blocking_question", "") or "",
         }
@@ -273,6 +316,12 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         atype = artifact.get("type")
         router_obj = getattr(orch, "skill_router", None)
         if atype not in ("code", "writing") or router_obj is None:
+            await events.emit(
+                "reasoning",
+                node="verify",
+                summary="skipped (no code/writing artifact)",
+                text="",
+            )
             return {"verified": True, "critique_score": 1.0, "critique_notes": ""}
 
         score = 1.0
@@ -295,6 +344,13 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         except Exception:
             score = 1.0
             notes = ""
+
+        await events.emit(
+            "reasoning",
+            node="verify",
+            summary=f"critique_score={score:.2f}",
+            text=notes,
+        )
         return {"verified": True, "critique_score": score, "critique_notes": notes}
 
     return plan, execute_node, check, reflect, approval, assess_ambiguity, verify

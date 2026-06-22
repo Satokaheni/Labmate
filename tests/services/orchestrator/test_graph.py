@@ -1,11 +1,13 @@
 # tests/services/orchestrator/test_graph.py
 from __future__ import annotations
 import pytest
+from contextvars import copy_context
 from unittest.mock import AsyncMock, MagicMock
 
 from services.orchestrator.types import (
     Status, create_goal, update_status, get_ready_goals,
 )
+from services.orchestrator import events
 
 
 def _make_state(**overrides) -> dict:
@@ -204,6 +206,29 @@ class TestPlanNode:
         call_args = mock_orch.architect.call_args
         prompt = call_args[0][0]
         assert "Test skill" in prompt
+
+    @pytest.mark.asyncio
+    async def test_plan_node_emits_reasoning_event(self, fake_event_emitter):
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        mock_orch.architect = AsyncMock(return_value="Subtask 1\nSubtask 2\nSubtask 3")
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+
+        plan_node, *_ = make_nodes(mock_orch, mock_async_orch)
+
+        state = _make_state()
+        delta = await plan_node(state)
+
+        # Verify event was emitted
+        assert len(fake_event_emitter.events) == 1
+        event_type, fields = fake_event_emitter.events[0]
+        assert event_type == "reasoning"
+        assert fields["node"] == "plan"
+        assert "decomposed into 3 subtask(s)" in fields["summary"]
+        assert "Subtask" in fields["text"]
+        assert len(delta["goal_tree"]["root"]["children"]) == 3
 
 
 @pytest.mark.mocked
@@ -453,6 +478,62 @@ class TestExecuteNodeArtifact:
 
 
 @pytest.mark.mocked
+class TestCheckNodeEvents:
+    @pytest.mark.asyncio
+    async def test_check_node_emits_reasoning_event_on_finalize(self, fake_event_emitter):
+        """Check node should emit reasoning event when finalizing."""
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+
+        _, _, check_node, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
+
+        state = _make_state()
+        create_goal(state["goal_tree"], "task1", "root", "Task 1")
+        create_goal(state["goal_tree"], "task2", "root", "Task 2")
+        update_status(state["goal_tree"], "task1", Status.COMPLETED, result="Task 1 done")
+        update_status(state["goal_tree"], "task2", Status.COMPLETED, result="Task 2 done")
+
+        delta = await check_node(state)
+
+        # Verify event was emitted
+        assert len(fake_event_emitter.events) == 1
+        event_type, fields = fake_event_emitter.events[0]
+        assert event_type == "reasoning"
+        assert fields["node"] == "check"
+        assert "finalizing" in fields["summary"]
+
+    @pytest.mark.asyncio
+    async def test_check_node_emits_reasoning_event_on_defer(self, fake_event_emitter):
+        """Check node should emit reasoning event when deferring to reflect."""
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+
+        _, _, check_node, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
+
+        state = _make_state()
+        create_goal(state["goal_tree"], "task1", "root", "Task 1")
+        create_goal(state["goal_tree"], "task2", "root", "Task 2")
+        update_status(state["goal_tree"], "task1", Status.COMPLETED, result="Task 1 done")
+        update_status(state["goal_tree"], "task2", Status.FAILED, error="Task 2 failed")
+        state["goal_tree"]["task2"]["attempts"] = 1
+
+        delta = await check_node(state)
+
+        # Verify event was emitted
+        assert len(fake_event_emitter.events) == 1
+        event_type, fields = fake_event_emitter.events[0]
+        assert event_type == "reasoning"
+        assert fields["node"] == "check"
+        assert "deferring" in fields["summary"]
+
+
+@pytest.mark.mocked
 class TestCheckNode:
     @pytest.mark.asyncio
     async def test_check_returns_empty_when_no_children(self):
@@ -680,6 +761,49 @@ class TestReflectNode:
         assert delta["messages"][0]["role"] == "reflection"
         assert "differently" in delta["messages"][0]["content"]
 
+    @pytest.mark.asyncio
+    async def test_reflect_emits_reasoning_event(self, fake_event_emitter):
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        mock_orch.architect = AsyncMock(return_value="Try a different approach: check for edge cases")
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+
+        _, _, _, reflect_node, _, _, _ = make_nodes(mock_orch, mock_async_orch)
+
+        state = _make_state()
+        update_status(state["goal_tree"], "root", Status.FAILED, error="assertion failed")
+        state["goal_tree"]["root"]["attempts"] = 1
+
+        delta = await reflect_node(state)
+
+        # Verify event was emitted
+        assert len(fake_event_emitter.events) == 1
+        event_type, fields = fake_event_emitter.events[0]
+        assert event_type == "reasoning"
+        assert fields["node"] == "reflect"
+        assert "diagnosing failed subtask" in fields["summary"]
+        assert "edge cases" in fields["text"]
+
+
+@pytest.fixture
+def fake_event_emitter():
+    """Fixture that provides a fake EventEmitter for testing event emissions."""
+    class FakeEventEmitter:
+        def __init__(self):
+            self.events = []
+
+        async def emit(self, type: str, **fields):
+            self.events.append((type, fields))
+
+    emitter = FakeEventEmitter()
+    # Set it in the ContextVar for this test
+    token = events.current_emitter.set(emitter)
+    yield emitter
+    # Reset after test
+    events.current_emitter.reset(token)
+
 
 @pytest.mark.mocked
 class TestAssessAmbiguityNode:
@@ -738,6 +862,32 @@ class TestAssessAmbiguityNode:
         state = _make_state(root_goal="x")
         delta = await assess(state)
         assert delta["ambiguity"] == 0.3
+
+    @pytest.mark.asyncio
+    async def test_assess_ambiguity_emits_reasoning_event(self, fake_event_emitter):
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        mock_orch.architect = AsyncMock(return_value=(
+            '{"assumptions": ["uses python"], "ambiguity": 0.7, "blocking_question": "which version?"}'
+        ))
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+
+        nodes = make_nodes(mock_orch, mock_async_orch)
+        assess = nodes[5]
+
+        state = _make_state(root_goal="build a python app")
+        delta = await assess(state)
+
+        # Verify event was emitted
+        assert len(fake_event_emitter.events) == 1
+        event_type, fields = fake_event_emitter.events[0]
+        assert event_type == "reasoning"
+        assert fields["node"] == "assess_ambiguity"
+        assert "ambiguity=0.70" in fields["summary"]
+        assert "1 assumption(s)" in fields["summary"]
+        assert delta["ambiguity"] == 0.7
 
 
 @pytest.mark.mocked
@@ -800,6 +950,59 @@ class TestVerifyNode:
         delta = await verify(state)
         assert delta["critique_score"] == 1.0
         assert delta["verified"] is True
+
+    @pytest.mark.asyncio
+    async def test_verify_emits_reasoning_event_for_code_artifact(self, fake_event_emitter):
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+
+        mock_router = MagicMock()
+        mock_router.execute = AsyncMock(return_value={
+            "ok": True,
+            "result": {"score": 0.85, "notes": "good code but missing error handling"},
+        })
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        mock_orch.skill_router = mock_router
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+
+        nodes = make_nodes(mock_orch, mock_async_orch)
+        verify = nodes[6]
+
+        state = _make_state(last_artifact={"type": "code", "payload": "def f(): pass"})
+        delta = await verify(state)
+
+        # Verify event was emitted
+        assert len(fake_event_emitter.events) == 1
+        event_type, fields = fake_event_emitter.events[0]
+        assert event_type == "reasoning"
+        assert fields["node"] == "verify"
+        assert "critique_score=0.85" in fields["summary"]
+        assert "error handling" in fields["text"]
+        assert delta["critique_score"] == 0.85
+
+    @pytest.mark.asyncio
+    async def test_verify_emits_reasoning_event_when_skipped(self, fake_event_emitter):
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        mock_orch.skill_router = None
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+
+        nodes = make_nodes(mock_orch, mock_async_orch)
+        verify = nodes[6]
+
+        state = _make_state(last_artifact={"type": "other", "payload": "some data"})
+        delta = await verify(state)
+
+        # Verify event was emitted even when skipped
+        assert len(fake_event_emitter.events) == 1
+        event_type, fields = fake_event_emitter.events[0]
+        assert event_type == "reasoning"
+        assert fields["node"] == "verify"
+        assert "skipped" in fields["summary"]
+        assert delta["verified"] is True
+        assert delta["critique_score"] == 1.0
 
 
 @pytest.mark.mocked
