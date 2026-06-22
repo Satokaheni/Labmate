@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 from rich.console import Console
+from rich.markdown import Markdown
+from rich.text import Text
 
 
 def _plain(renderable) -> str:
@@ -97,3 +99,54 @@ def test_unknown_event_is_ignored():
     r.handle({"type": "context.update", "window": {}})        # not emitted — dropped
     r.handle({"type": "agent.status", "status": {}})          # not emitted — dropped
     assert r.answer_text == "" and r.reasoning_text == ""
+
+
+# --- Markdown caching tests ---
+
+def test_answer_md_is_none_before_done():
+    from services.cli.stream_renderer import StreamRenderer
+    r = StreamRenderer()
+    r.handle({"type": "answer.delta", "text": "Hello "})
+    r.handle({"type": "answer.delta", "text": "world"})
+    assert r._answer_md is None
+
+
+def test_answer_md_is_markdown_after_done():
+    from services.cli.stream_renderer import StreamRenderer
+    r = StreamRenderer()
+    r.handle({"type": "answer.delta", "text": "Hello "})
+    r.handle({"type": "answer.done", "text": "Hello world"})
+    assert isinstance(r._answer_md, Markdown)
+
+
+def test_render_uses_plain_text_during_deltas():
+    from services.cli.stream_renderer import StreamRenderer
+    from rich.console import Group
+    r = StreamRenderer()
+    r.handle({"type": "answer.delta", "text": "streaming..."})
+    group = r.render()
+    # during streaming, answer is rendered as Text, not Markdown
+    assert any(isinstance(p, Text) for p in group.renderables)
+    assert not any(isinstance(p, Markdown) for p in group.renderables)
+
+
+def test_render_uses_cached_markdown_after_done():
+    from services.cli.stream_renderer import StreamRenderer
+    from rich.console import Group
+    r = StreamRenderer()
+    r.handle({"type": "answer.delta", "text": "Hello "})
+    r.handle({"type": "answer.done", "text": "Hello world"})
+    cached = r._answer_md
+    group = r.render()
+    assert any(p is cached for p in group.renderables)
+
+
+def test_markdown_object_not_recreated_on_repeated_render():
+    from services.cli.stream_renderer import StreamRenderer
+    r = StreamRenderer()
+    r.handle({"type": "answer.done", "text": "# Title\n\nBody text."})
+    md_before = r._answer_md
+    r.render()
+    r.render()
+    r.render()
+    assert r._answer_md is md_before

@@ -22,6 +22,7 @@ class StreamRenderer:
         self._active: bool = False       # True after turn.start, False after turn.done
         self.reasoning_text: str = ""
         self.answer_text: str = ""
+        self._answer_md: Markdown | None = None  # cached; rebuilt only on answer.done
         self.done: bool = False
         self.status: str = ""
         self._tools: dict[str, _ToolRow] = {}
@@ -55,6 +56,7 @@ class StreamRenderer:
             self.answer_text += event.get("text", "")
         elif etype == "answer.done":
             self.answer_text = event.get("text", self.answer_text)
+            self._answer_md = Markdown(self.answer_text)
         elif etype == "turn.done":
             self._active = False
             self.done = True
@@ -81,8 +83,10 @@ class StreamRenderer:
         if self.reasoning_text:
             parts.append(Text(self.reasoning_text, style="dim italic"))
 
-        if self.answer_text:
-            parts.append(Markdown(self.answer_text))
+        if self._answer_md is not None:
+            parts.append(self._answer_md)
+        elif self.answer_text:
+            parts.append(Text(self.answer_text))
 
         if not parts:
             parts.append(Text("waiting…", style="dim"))
