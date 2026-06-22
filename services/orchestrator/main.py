@@ -50,8 +50,9 @@ from services.orchestrator.graph import build_graph, GEMMA_BASE, QWEN_BASE
 from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 from services.orchestrator.storage_manager import StorageManager
 from services.orchestrator.mcp_client_manager import MCPClientManager
-from services.orchestrator.skill_router import SkillRouter
+from services.orchestrator.skill_router import SkillRouter, ROUTING_MODE
 from services.orchestrator import events
+from services.orchestrator import call_counter
 from services.skill_runner.skill_runner import SkillRunner
 
 _log = logging.getLogger("orchestrator")
@@ -212,6 +213,8 @@ class OrchestratorProcess:
         task_succeeded = False
         _emitter: events.EventEmitter | None = None
         _token = None
+        _counter_token = None
+        routing_mode = ROUTING_MODE
 
         try:
             payload    = json.loads(fields.get("payload", "{}"))
@@ -220,9 +223,14 @@ class OrchestratorProcess:
             session_id = payload.get("session_id") or task_id
             user_id    = payload.get("user_id", "")
             workspace_id = payload.get("workspace_id", "")
+            # A/B routing: per-request override; fall back to the env default.
+            routing_mode = payload.get("routing_mode") or ROUTING_MODE
 
             _emitter = events.EventEmitter(self._redis, task_id)
             _token = events.current_emitter.set(_emitter)
+            # Per-task LLM call counter (A/B instrumentation): set a fresh counter for
+            # this task's context; the litellm success callback increments it.
+            _counter_token = call_counter.start()
             await _emitter.emit("turn.start", task=task_text)
 
             # Fix 2: Record session if user_id and workspace_id are present
@@ -245,9 +253,10 @@ class OrchestratorProcess:
                 except Exception:
                     pass  # upsert failure never blocks task
 
-            _log.info("task %s: %.80s", task_id, task_text)
+            _log.info("task %s: %.80s (routing_mode=%s)", task_id, task_text, routing_mode)
             final_state = await orch.run_task(
-                task_text, session_id, user_id=user_id, workspace_id=workspace_id
+                task_text, session_id, user_id=user_id, workspace_id=workspace_id,
+                routing_mode=routing_mode,
             )
             task_succeeded = True
             # If the graph halted for clarification, surface the question — do NOT
@@ -280,12 +289,22 @@ class OrchestratorProcess:
                     pass  # best-effort; never let streaming block the result
             # Derive ok from final_state.error (FIX #2: failed subtasks now finalize with error set, not exception)
             ok_flag = final_state.get("error") is None
-            await self._write_result(task_id, {"ok": ok_flag, "state": final_state})
+            # A/B instrumentation: llm_calls is the approximate per-task count of
+            # successful litellm completions (see call_counter.py for exactly what it counts).
+            await self._write_result(task_id, {
+                "ok": ok_flag,
+                "state": final_state,
+                "llm_calls": call_counter.get_count(),
+            })
             _log.info("task %s complete", task_id)
 
         except Exception:
             _log.exception("task %s failed", task_id)
-            await self._write_result(task_id, {"ok": False, "error": "task_failed"})
+            await self._write_result(task_id, {
+                "ok": False,
+                "error": "task_failed",
+                "llm_calls": call_counter.get_count(),
+            })
         finally:
             # Fix 2: Complete session in finally block
             if user_id and workspace_id:
@@ -310,6 +329,8 @@ class OrchestratorProcess:
                 pass
             if _token is not None:
                 events.current_emitter.reset(_token)
+            if _counter_token is not None:
+                call_counter.reset(_counter_token)
             await self._redis.xack(GOALS_STREAM, GOALS_GROUP, msg_id)
 
     async def _write_result(self, task_id: str, result: dict) -> None:

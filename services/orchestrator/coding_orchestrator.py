@@ -595,11 +595,17 @@ class CodingOrchestrator:
         session_id: str,
         user_id: str = "",
         workspace_id: str = "",
+        routing_mode: str = "",
     ) -> dict:
         """
         Entry point. Pass the same session_id to resume after a crash.
         Returns the final State dict.
+
+        routing_mode: A/B routing override ("multi" | "single"). Empty falls back to
+        the ROUTING_MODE env default ("multi"). Seeded into State and read by the plan
+        node; "multi" (default) is byte-for-byte unchanged behavior.
         """
+        import os
         from .types import create_goal
 
         initial: State = {
@@ -615,6 +621,7 @@ class CodingOrchestrator:
             "root_goal": task,
             "verify_retries": 0,  # FIX 9: bound verify->reflect passes
             "direct_answer": False,  # FIX 10: set True by the plan node's direct-answer fast-path
+            "routing_mode": routing_mode or os.getenv("ROUTING_MODE", "multi"),  # A/B routing
         }
         cfg = {
             "configurable": {

@@ -34,6 +34,12 @@ _log = logging.getLogger("skill_router")
 SKILL_TASKS_STREAM = "labmate:skill-tasks"
 RESULT_PREFIX = "labmate:result:"
 
+# A/B routing mode default. "multi" = current behavior (decompose into N sub-intents
+# and confidence-check each). "single" = treat the whole message as ONE intent
+# (decompose() is skipped, sub_intents=[task]); everything downstream is reused.
+# Per-request override flows through State["routing_mode"] -> plan node -> route(mode=...).
+ROUTING_MODE = os.getenv("ROUTING_MODE", "multi")
+
 # Retry budgets: the local Q4 model is non-deterministic, so a clearly-matching
 # skill is occasionally missed on a single sample. Independent retries compound
 # recall toward ~100% (precision is unaffected — we only accept catalog hits).
@@ -208,7 +214,7 @@ class SkillRouter:
         )
         return chosen
 
-    async def route(self, task: str) -> RouteResult:
+    async def route(self, task: str, *, mode: str = "multi") -> RouteResult:
         """Multi-intent routing: decompose, confidence-check each, clarify if unsure.
 
         Pipeline:
@@ -221,8 +227,21 @@ class SkillRouter:
 
         select() (single-intent path) is intentionally left unchanged; route() is the
         new entry point for the multi-intent flow.
+
+        A/B routing mode (additive, gated; DEFAULT "multi" is byte-for-byte unchanged):
+          - mode == "single": treat the WHOLE message as ONE intent — skip the
+            decompose() LLM call entirely and use sub_intents=[task]. Everything after
+            this assignment (confidence-check loop, flagged/clarification logic, the
+            skill-less direct-answer fall-through, the skills return) is REUSED UNCHANGED;
+            ReAct sequences any sub-steps within the single goal.
+          - any other value (incl. the default "multi"): UNCHANGED — call decompose().
         """
-        sub_intents = await self.decompose(task)
+        if mode == "single":
+            _log.info("route() mode=single -> 1 intent (decompose skipped)")
+            sub_intents = [task]
+        else:
+            _log.info("route() mode=%s -> decompose()", mode)
+            sub_intents = await self.decompose(task)
 
         routed_skills: list[str] = []
         flagged: list[str] = []

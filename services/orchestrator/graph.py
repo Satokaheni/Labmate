@@ -23,6 +23,11 @@ GEMMA_BASE = os.getenv("GEMMA_BASE", "http://localhost:8000/v1")
 # On dual-GPU, set QWEN_BASE=http://localhost:8001/v1 to enable the specialist Qwen worker.
 QWEN_BASE  = os.getenv("QWEN_BASE",  GEMMA_BASE)
 
+# A/B routing mode default. Re-exported from skill_router so callers (plan node,
+# coding_orchestrator.run_task) share one source of truth. "multi" = current default
+# (decompose + per-sub-intent routing); "single" = whole message as one intent.
+from .skill_router import ROUTING_MODE
+
 # A1: tasks at or above this ambiguity score route to the approval gate before planning.
 AMBIGUITY_THRESHOLD = float(os.getenv("AMBIGUITY_THRESHOLD", "0.6"))
 
@@ -132,10 +137,14 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
 
         # Call route() to handle multi-intent decomposition and routing
         # (only if skill_router has the route method; fallback for old tests/code)
+        # A/B routing mode: per-request override (State["routing_mode"]) falls back to
+        # the ROUTING_MODE env default. When != "single", route() is byte-for-byte
+        # unchanged (it calls decompose()); "single" skips decompose (sub_intents=[task]).
+        mode = state.get("routing_mode") or ROUTING_MODE
         route_result = None
         try:
             if skill_router is not None and hasattr(skill_router, "route"):
-                route_result = await skill_router.route(goal_desc)
+                route_result = await skill_router.route(goal_desc, mode=mode)
         except Exception as e:
             # Fallback on any route() error (LLM unavailable, network error, TypeError, etc.)
             # This preserves backward compatibility when route() would require live services.
