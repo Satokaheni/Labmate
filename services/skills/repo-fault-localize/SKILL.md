@@ -7,9 +7,9 @@ description: >
   Three-stage pipeline: locate_files → locate_symbols → suggest_edit_sites.
 trigger: "Use at the start of a bug-fix task to identify which files and functions to edit"
 tools:
-  - fault_localize.locate_files
-  - fault_localize.locate_symbols
-  - fault_localize.suggest_edit_sites
+  - locate_files
+  - locate_symbols
+  - suggest_edit_sites
 version: "0.1.0"
 license: MIT
 requires: [repo-graph]
@@ -38,14 +38,14 @@ Stop at any stage to inspect, then drive the next stage with the chosen inputs.
 
 ## Available Tools
 
-### `fault_localize.locate_files(issue, repo_path, top_k=5)`
+### `locate_files(issue, repo_path, top_k=5)`
 Return the top-k files most likely to need edits. JSONL with `file`, `score`, `reason`.
 
-### `fault_localize.locate_symbols(issue, file, repo_path)`
+### `locate_symbols(issue, file, repo_path)`
 Within a located file, return the functions/classes most likely to contain the bug.
 JSONL with `file`, `symbol`, `kind`, `start_line`, `end_line`, `reason`.
 
-### `fault_localize.suggest_edit_sites(issue, file, symbols)`
+### `suggest_edit_sites(issue, file, symbols)`
 Return specific line ranges (edit hunks) within the given symbols. JSONL with
 `file`, `start_line`, `end_line`, `reason`.
 

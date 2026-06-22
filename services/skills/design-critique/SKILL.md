@@ -8,8 +8,8 @@ description: >
   audit an existing design.
 trigger: "Use when reviewing a UI design, screenshot, or rendered component for quality"
 tools:
-  - design_critique.critique
-  - design_critique.compare
+  - critique
+  - compare
 version: "0.1.0"
 license: MIT
 requires: []
@@ -21,13 +21,13 @@ Single-shot Gemma 4 vision critique of UI screenshots.
 
 ## Tools
 
-### `design_critique.critique(image_path, focus_areas?)`
+### `critique(image_path, focus_areas?)`
 Critique one UI screenshot. `focus_areas` is an optional subset of:
 `visual_hierarchy`, `spacing_alignment`, `color_contrast`, `typography`,
 `layout_balance`, `responsive_concerns`, `accessibility_surface`.
 Returns a JSON `CritiqueResult` with a per-item checklist and an overall verdict.
 
-### `design_critique.compare(before_path, after_path)`
+### `compare(before_path, after_path)`
 Send a before/after pair in one vision call and return a diff-focused critique
 (what improved, what regressed, what is still unresolved).
 

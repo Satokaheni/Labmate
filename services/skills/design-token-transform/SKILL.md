@@ -8,9 +8,9 @@ description: >
   Requires FIGMA_ACCESS_TOKEN env var.
 trigger: "Use when syncing design tokens from Figma or converting a design system to code"
 tools:
-  - design_token.extract
-  - design_token.transform
-  - design_token.extract_and_transform
+  - extract
+  - transform
+  - extract_and_transform
 version: "0.1.0"
 license: MIT
 requires: []
@@ -37,7 +37,7 @@ personal access token). Without it, every tool returns an error.
 
 ## Available Tools
 
-### `design_token.extract`
+### `extract`
 
 Fetch raw tokens from a Figma file. Returns JSON: a `TokenSet`.
 
@@ -47,7 +47,7 @@ Fetch raw tokens from a Figma file. Returns JSON: a `TokenSet`.
 
 `node_id` is optional; omit it to scan the whole document.
 
-### `design_token.transform`
+### `transform`
 
 Convert a raw `TokenSet` JSON string into a target format.
 
@@ -57,7 +57,7 @@ Convert a raw `TokenSet` JSON string into a target format.
 
 `format` is one of `tailwind` | `css-vars` | `shadcn`.
 
-### `design_token.extract_and_transform`
+### `extract_and_transform`
 
 Extract then transform in one call. Optionally write the result to a file.
 

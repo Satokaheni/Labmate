@@ -32,7 +32,7 @@ _synth: ComponentSynthesizer | None = None
 async def list_tools() -> list[Tool]:
     return [
         Tool(
-            name="figma_to_component.convert",
+            name="convert",
             description=(
                 "Fetch a Figma node's structured data and synthesize a React + Tailwind "
                 "component. Returns JSON: component_code, component_name, props_interface, framework."
@@ -48,7 +48,7 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="figma_to_component.inspect",
+            name="inspect",
             description="Fetch and return the structured Figma node data (ComponentSpec) as JSON.",
             inputSchema={
                 "type": "object",
@@ -71,10 +71,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         if _synth is None:
             _synth = ComponentSynthesizer()
 
-        if name == "figma_to_component.inspect":
+        if name == "inspect":
             spec = await _fetcher.get_node(arguments["figma_file_key"], arguments["node_id"])
             text = spec.model_dump_json()
-        elif name == "figma_to_component.convert":
+        elif name == "convert":
             spec = await _fetcher.get_node(arguments["figma_file_key"], arguments["node_id"])
             framework = arguments.get("framework", "react-tailwind")
             result = _synth.synthesize(spec, framework)

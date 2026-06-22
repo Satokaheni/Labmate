@@ -32,7 +32,7 @@ async def list_tools() -> list[Tool]:
     }
     return [
         Tool(
-            name="design_token.extract",
+            name="extract",
             description=(
                 "Fetch design tokens from a Figma file via the REST API. "
                 "Returns a TokenSet as JSON."
@@ -53,7 +53,7 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="design_token.transform",
+            name="transform",
             description=(
                 "Transform a raw TokenSet JSON string into a target format "
                 "(tailwind | css-vars | shadcn). Returns the format string."
@@ -71,7 +71,7 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="design_token.extract_and_transform",
+            name="extract_and_transform",
             description=(
                 "Extract tokens from a Figma file and transform them in one call. "
                 "Optionally writes the result to output_path. Returns the format string."
@@ -105,19 +105,19 @@ def _get_client() -> FigmaClient:
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     try:
-        if name == "design_token.extract":
+        if name == "extract":
             token_set = await _get_client().get_file_tokens(
                 arguments["figma_file_key"], arguments.get("node_id")
             )
             text = token_set.model_dump_json()
 
-        elif name == "design_token.transform":
+        elif name == "transform":
             token_set = TokenSet.model_validate_json(arguments["tokens_json"])
             text = transformer.transform(
                 token_set, arguments.get("format", "tailwind")
             )
 
-        elif name == "design_token.extract_and_transform":
+        elif name == "extract_and_transform":
             token_set = await _get_client().get_file_tokens(
                 arguments["figma_file_key"]
             )

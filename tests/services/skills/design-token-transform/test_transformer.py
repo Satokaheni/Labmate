@@ -68,7 +68,7 @@ async def test_extract_and_transform(monkeypatch, tmp_path, figma_file_response)
 
     out_file = tmp_path / "tokens.css"
     result = await server.call_tool(
-        "design_token.extract_and_transform",
+        "extract_and_transform",
         {"figma_file_key": "abc123", "format": "css-vars",
          "output_path": str(out_file)},
     )

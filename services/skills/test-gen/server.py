@@ -32,7 +32,7 @@ _generator: TestGenerator | None = None
 async def list_tools() -> list[Tool]:
     return [
         Tool(
-            name="test_gen.generate",
+            name="generate",
             description=(
                 "Generate a pytest unit test suite for a Python source file. "
                 "Returns JSON with test_code and explanation."
@@ -47,7 +47,7 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="test_gen.run_mutations",
+            name="run_mutations",
             description=(
                 "Run mutation testing (mutmut) on a source file with a test "
                 "file. Returns JSON with mutation_score, surviving_mutants "
@@ -63,7 +63,7 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="test_gen.improve",
+            name="improve",
             description=(
                 "Given surviving mutant diffs, generate additional pytest tests "
                 "targeting those fault classes. Returns JSON with "
@@ -95,18 +95,18 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         _generator = TestGenerator()
 
     try:
-        if name == "test_gen.generate":
+        if name == "generate":
             payload = _generator.generate(
                 source_file=arguments["source_file"],
                 existing_tests=arguments.get("existing_tests", ""),
             )
-        elif name == "test_gen.run_mutations":
+        elif name == "run_mutations":
             result = _runner.run(
                 source_file=arguments["source_file"],
                 test_file=arguments["test_file"],
             )
             payload = result.to_dict()
-        elif name == "test_gen.improve":
+        elif name == "improve":
             payload = _generator.improve(
                 source_file=arguments["source_file"],
                 test_file=arguments["test_file"],

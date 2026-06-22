@@ -7,9 +7,9 @@ description: >
   string literals or comments. For TypeScript type-aware cross-file rename, use ast-ts-refactor instead.
 trigger: "Use when searching for or rewriting a code pattern across files"
 tools:
-  - ast.search.find_code
-  - ast.search.rewrite
-  - ast.search.find_by_rule
+  - find_code
+  - rewrite
+  - find_by_rule
 version: "0.1.0"
 license: MIT
 requires: []
@@ -22,16 +22,16 @@ Fast polyglot structural search and rewrite, wrapping `ast-grep-py`. Operates on
 
 ## Tools
 
-### ast.search.find_code(pattern, language, path)
+### find_code(pattern, language, path)
 Find all AST nodes matching `pattern` in a file or directory.
 Meta-variables: `$VAR` (single node), `$$$MULTI` (zero-or-more nodes).
 Example: `requests.get($URL)` matches every GET call regardless of the URL expression.
 
-### ast.search.rewrite(pattern, replacement, language, path)
+### rewrite(pattern, replacement, language, path)
 Rewrite matched nodes. Returns a **unified diff for review** — it never writes to disk.
 Always preview the diff before applying it.
 
-### ast.search.find_by_rule(rule_yaml, path)
+### find_by_rule(rule_yaml, path)
 Accepts a YAML rule with `pattern`, `kind`, `inside`, `has`, and `not` constraints for
 surgical, context-aware matches. The YAML must include top-level `language` and `rule` keys.
 
