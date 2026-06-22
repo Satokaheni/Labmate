@@ -116,3 +116,64 @@ def test_get_executor_caches_singleton(monkeypatch):
     executor2 = srv.get_executor()
 
     assert executor1 is executor2
+
+
+# Hardening tests (FIX 5: VISIBILITY)
+
+
+@pytest.mark.asyncio
+@pytest.mark.mocked
+async def test_call_tool_local_mode_includes_warning_prefix(monkeypatch):
+    """Test that local-mode results include a [WARNING] prefix in stdout."""
+    import server as srv
+    from executor import ExecutionResult
+
+    class FakeLocalExec:
+        def run_python(self, code, timeout=30, packages=[]):
+            return ExecutionResult(
+                stdout="hello world",
+                stderr="",
+                exit_code=0,
+                duration_ms=5,
+                backend="local",
+                sandboxed=False,
+            )
+
+    monkeypatch.setattr(srv, "get_executor", lambda: FakeLocalExec())
+    out = await srv.call_tool("run_python", {"code": "print('hello world')"})
+    payload = json.loads(out[0].text)
+    # Verify the warning prefix is in stdout
+    assert "[WARNING: unsandboxed local mode — no isolation]" in payload["stdout"]
+    assert "hello world" in payload["stdout"]
+    # Verify backend and sandboxed are in the response
+    assert payload["backend"] == "local"
+    assert payload["sandboxed"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.mocked
+async def test_call_tool_docker_mode_no_warning_prefix(monkeypatch):
+    """Test that docker-mode results do NOT include a warning prefix."""
+    import server as srv
+    from executor import ExecutionResult
+
+    class FakeDockerExec:
+        def run_python(self, code, timeout=30, packages=[]):
+            return ExecutionResult(
+                stdout="hello docker",
+                stderr="",
+                exit_code=0,
+                duration_ms=5,
+                backend="docker",
+                sandboxed=True,
+            )
+
+    monkeypatch.setattr(srv, "get_executor", lambda: FakeDockerExec())
+    out = await srv.call_tool("run_python", {"code": "print('hello docker')"})
+    payload = json.loads(out[0].text)
+    # Verify NO warning prefix in docker mode
+    assert "[WARNING: unsandboxed local mode — no isolation]" not in payload["stdout"]
+    assert payload["stdout"] == "hello docker"
+    # Verify backend and sandboxed are in the response
+    assert payload["backend"] == "docker"
+    assert payload["sandboxed"] is True
