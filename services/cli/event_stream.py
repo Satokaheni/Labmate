@@ -12,10 +12,8 @@ from typing import AsyncGenerator, AsyncIterator, Optional
 
 import redis.asyncio as aioredis
 
-from services.orchestrator.events import EVENTS_STREAM_PREFIX
-
-
 EVENTS_PREFIX = "labmate:events:"
+EVENTS_STREAM_PREFIX = EVENTS_PREFIX
 
 
 def event_channel(task_id: str) -> str:

@@ -1,9 +1,12 @@
 from __future__ import annotations
 import asyncio
+import re
 import subprocess
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+
+_AT_REF = re.compile(r"@([\w./\\\-]+)")
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
@@ -50,7 +53,7 @@ class REPL:
 
     async def run(self) -> None:
         self._renderer.print_workspace(self._ctx.workspace_name, self._ctx.workspace_id)
-        self._renderer.print_info(
+        self._renderer.print_header(
             f"Hi {self._ctx.identity.display_name}! "
             "Type your task, !<cmd> to run shell commands, or /help."
         )
@@ -112,7 +115,33 @@ class REPL:
             self._renderer.print_error(f"Unknown command: {line}")
         return True
 
+    def _expand_at_refs(self, task: str) -> str:
+        """Replace @path references with file/dir contents."""
+        def _sub(m: re.Match) -> str:
+            raw = m.group(1)
+            path = Path(raw).expanduser()
+            if not path.is_absolute():
+                path = Path.cwd() / path
+            if path.is_dir():
+                files = sorted(
+                    str(p.relative_to(path))
+                    for p in path.rglob("*")
+                    if p.is_file()
+                )
+                listing = "\n".join(files[:200])
+                return f"<dir: {raw}>\n{listing}\n</dir>"
+            if path.is_file():
+                try:
+                    return f"<file: {raw}>\n{path.read_text(errors='replace')}\n</file>"
+                except OSError:
+                    pass
+            self._renderer.print_info(f"@{raw}: not found, skipped")
+            return m.group(0)
+
+        return _AT_REF.sub(_sub, task)
+
     async def _send_task(self, task: str) -> None:
+        task = self._expand_at_refs(task)
         task_id = str(uuid.uuid4())
         turn_session_id = str(uuid.uuid4())
         self._sessions.append(SessionRecord(

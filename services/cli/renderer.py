@@ -58,6 +58,10 @@ class Renderer:
     def print_error(self, message: str) -> None:
         self._console.print(f"[bold red]Error:[/bold red] {message}")
 
+    def print_header(self, message: str) -> None:
+        """Startup / session lines — readable on any terminal background."""
+        self._console.print(message, highlight=False)
+
     def print_info(self, message: str) -> None:
         self._console.print(f"[dim]{message}[/dim]")
 

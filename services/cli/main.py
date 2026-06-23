@@ -163,7 +163,7 @@ async def _async_main(
 
     session_id = resume_id or str(uuid.uuid4())
     if not resume_id:
-        _renderer.print_info(f"Session: {session_id}  (resume with --resume {session_id})")
+        _renderer.print_header(f"Session: {session_id}  (resume with --resume {session_id})")
     redis_url = _redis_url()
 
     if one_shot:
