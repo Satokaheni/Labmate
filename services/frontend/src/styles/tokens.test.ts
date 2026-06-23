@@ -1,8 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { describe, it, expect } from 'vitest';
-
-const css = readFileSync(resolve(__dirname, 'tokens.css'), 'utf8');
+import css from './tokens.css?raw';
 
 describe('design tokens', () => {
   it('defines core surface tokens', () => {

@@ -86,7 +86,7 @@ export interface AgentStatus {
     thinkingBudget: number;
   };
   nervousSystem: {
-    name: 'MCP bridge';
+    name: string;
     transport: string;
     state: 'connected' | 'disconnected' | 'error';
     toolsRegistered: number;
