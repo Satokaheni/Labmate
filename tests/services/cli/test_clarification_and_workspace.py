@@ -95,4 +95,17 @@ def test_default_workspace_is_idempotent(tmp_path, monkeypatch):
     cli_main._default_workspace("user-1")
     cli_main._default_workspace("user-1")
     saved = json.loads(cache.read_text())
-    assert sum(1 for w in saved if w["workspace_id"] == "default") == 1
+    assert sum(1 for w in saved if w["workspace_id"] == "default" and w["user_id"] == "user-1") == 1
+
+
+def test_default_workspace_persists_per_user(tmp_path, monkeypatch):
+    """Two users sharing the literal 'default' id are both persisted (dedup is
+    by (workspace_id, user_id), not workspace_id alone)."""
+    from services.cli import main as cli_main
+    cache = tmp_path / "workspaces.json"
+    monkeypatch.setattr(cli_main, "_WS_CACHE", cache)
+    cli_main._default_workspace("user-1")
+    cli_main._default_workspace("user-2")
+    saved = json.loads(cache.read_text())
+    defaults = [w for w in saved if w["workspace_id"] == "default"]
+    assert {w["user_id"] for w in defaults} == {"user-1", "user-2"}

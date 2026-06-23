@@ -64,7 +64,13 @@ def _save_workspace(ws: dict) -> None:
             existing = json.loads(_WS_CACHE.read_text())
         except Exception:
             pass
-    if not any(w.get("workspace_id") == ws["workspace_id"] for w in existing):
+    # Dedup by (workspace_id, user_id): the same literal id (e.g. "default") can
+    # legitimately exist for different users on a shared host.
+    if not any(
+        w.get("workspace_id") == ws["workspace_id"]
+        and w.get("user_id") == ws.get("user_id")
+        for w in existing
+    ):
         existing.append(ws)
     _WS_CACHE.parent.mkdir(parents=True, exist_ok=True)
     _WS_CACHE.write_text(json.dumps(existing, indent=2))
