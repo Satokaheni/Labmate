@@ -31,7 +31,7 @@ searcher = AstSearcher()
 async def list_tools() -> list[Tool]:
     return [
         Tool(
-            name="ast.search.find_code",
+            name="find_code",
             description=(
                 "Find all AST nodes matching a structural pattern in a file or directory. "
                 "Meta-variables: $VAR (single node), $$$MULTI (zero-or-more). "
@@ -52,7 +52,7 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="ast.search.rewrite",
+            name="rewrite",
             description=(
                 "Rewrite nodes matching `pattern` to `replacement`. Returns a unified diff "
                 "for review — NEVER writes to disk. Always preview before applying."
@@ -72,7 +72,7 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="ast.search.find_by_rule",
+            name="find_by_rule",
             description=(
                 "Find nodes via a YAML rule supporting pattern, kind, inside, has, not "
                 "constraints. The YAML must include top-level 'language' and 'rule' fields."
@@ -93,14 +93,14 @@ async def list_tools() -> list[Tool]:
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     log.info("call_tool %s args=%s", name, list(arguments))
     try:
-        if name == "ast.search.find_code":
+        if name == "find_code":
             result = searcher.find_code(
                 pattern=arguments["pattern"],
                 language=arguments["language"],
                 path=arguments["path"],
             )
             payload = [asdict(m) for m in result]
-        elif name == "ast.search.rewrite":
+        elif name == "rewrite":
             diff = searcher.rewrite(
                 pattern=arguments["pattern"],
                 replacement=arguments["replacement"],
@@ -108,7 +108,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 path=arguments["path"],
             )
             payload = asdict(diff)
-        elif name == "ast.search.find_by_rule":
+        elif name == "find_by_rule":
             result = searcher.find_by_rule(
                 rule_yaml=arguments["rule_yaml"],
                 path=arguments["path"],

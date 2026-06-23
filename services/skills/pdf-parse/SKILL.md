@@ -7,9 +7,9 @@ description: >
   Default mode uses Docling (CPU). Use mode=mineru for higher fidelity (requires GPU).
 trigger: "Use when reading or extracting content from a PDF file"
 tools:
-  - pdf_parse.parse
-  - pdf_parse.parse_batch
-  - pdf_parse.extract_figures
+  - parse
+  - parse_batch
+  - extract_figures
 version: "0.1.0"
 license: MIT
 requires: []
@@ -29,7 +29,7 @@ instead of trying to read raw PDF bytes.
 
 ## Available Tools
 
-### `pdf_parse.parse`
+### `parse`
 
 Parse one PDF. Returns a JSON object: `markdown`, `figures`, `tables`, `metadata`.
 
@@ -37,7 +37,7 @@ Parse one PDF. Returns a JSON object: `markdown`, `figures`, `tables`, `metadata
 { "path": "/papers/attention.pdf", "mode": "docling" }
 ```
 
-### `pdf_parse.parse_batch`
+### `parse_batch`
 
 Parse several PDFs. Returns JSONL, one result object per line, in input order.
 
@@ -45,7 +45,7 @@ Parse several PDFs. Returns JSONL, one result object per line, in input order.
 { "paths": ["/papers/a.pdf", "/papers/b.pdf"], "mode": "docling" }
 ```
 
-### `pdf_parse.extract_figures`
+### `extract_figures`
 
 Extract only figures (image path + caption + page) as a JSON list.
 

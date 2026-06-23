@@ -1,0 +1,74 @@
+{
+  "name": "LLM-Tool Compiler — Fused Parallel Function Calling",
+  "category": "Decomposition architecture",
+  "reference": "arXiv:2405.17438 — An LLM-Tool Compiler for Fused Parallel Function Calling (Singh, Karatzas, Fore, Anagnostopoulos, Stamoulis; Microsoft / Southern Illinois University, May 2024)",
+
+  "decomposition_method": "LLM-prompted (zero-shot, GPT-driven). A lightweight GPT-driven 'fuser' module runs prior to the main agent API calls and uses intent-based in-context prompting. Rather than splitting a prompt into smaller pieces, it does the inverse: it identifies groups of similar tool operations that can be fused into a single, more granular unified task. User-supplied predefined prompts instruct the fuser which tools are associated with which task types (intent-based in-context prompting), and the fuser emits JSON describing the fused tasks.",
+
+  "decomposition_granularity": "tool call — operates at the level of individual tool/function operations, grouping similar tool calls into fused composite operations presented to the agent as a single function.",
+
+  "ordering_strategy": "parallel fan-out. For each query the compiler dynamically identifies tools that can run concurrently and/or be fused; fusion is designed to raise the parallelization rate (multiple tools returned per single GPT API call) rather than enforce a strict topological order. [uncertain] No explicit DAG/dependency graph is constructed for ordering — fusion targets independent/similar operations.",
+
+  "decomposition_validation": "Limited / confidence-gated rather than a formal validator. The fuser is instructed to return the JSON of fused tasks only when confident; otherwise it returns an empty list, in which case the toolset is left unchanged and the agent proceeds as usual. There is no separate detector + reward model verifying solvability, completeness, or non-redundancy of the decomposition. Correctness is checked indirectly: on a reset/error the fuser call is bypassed and the operation re-run with the full (unfused) toolset, providing a fallback rather than upfront validation. [uncertain]",
+
+  "hierarchy_depth": "flat — produces a flat updated list of (fused) functions the agent selects from; no milestone/step or multi-level skill tree.",
+
+  "router_type": "graph planner-lite / pre-execution compiler. The 'compiler' pre-processes the toolset before execution, mapping multiple tools into fused operations; the agent then performs ordinary function-calling selection over the updated, more granular function list. It is closer to a tool-set rewriter than a per-subtask classifier. [uncertain]",
+
+  "routing_model": "prompted LLM (same family as main agent) — the fuser is a fully GPT-driven module using in-context intent prompts; no separate fine-tuned classifier, embedding similarity, or RL router is used.",
+
+  "handles_ambiguity": "abstain / best-effort fallback. When the fuser is not confident it abstains by returning an empty list, leaving the original toolset intact so the agent proceeds normally. There is no clarification request to the user and no POMDP-style reasoning; ambiguity is resolved conservatively by not fusing. [uncertain]",
+
+  "fallback_behavior": "retry with un-fused toolset / route to normal agent. On low confidence the fuser returns an empty list (no fusion). On a reset or detected inaccuracy in tool selection, the fuser API call is bypassed and the operation is repeated with the full toolset, allowing real-time correction. No human escalation or hard abort.",
+
+  "skill_pool_scale_and_retrieval": "full-context tool fusion at scale. Evaluated on a large-scale cloud Copilot framework with hundreds of GPT endpoints, terabytes of data, and long-horizon tasks. The compiler does not use embedding retrieval or two-stage rerank; instead it fuses similar tools to reduce the effective number of distinct functions the agent must reason over, improving scalability of parallel selection. [uncertain]",
+
+  "router_agent_asymmetry": "Not a focus of the paper. The fuser sees the full toolset and user-defined intent prompts to decide fusions; the agent then sees the rewritten/fused function list. This is a mild asymmetry (fuser pre-processes, agent selects) but the paper does not frame or measure router/agent information asymmetry. [uncertain]",
+
+  "execution_pattern": "parallel fan-out with explicit parallel-vs-concurrent distinction. Fused operations let a single GPT API call return multiple tool selections (parallel), and identified tools can be executed simultaneously (concurrent). Reduces round-trips versus sequential compositional prompting.",
+
+  "parallel_vs_concurrent": "Explicit and central to the paper. The authors define 'concurrent' as the simultaneous execution of multiple tools, and 'parallel' specifically as the capability of a single GPT API call to return multiple tools. The compiler raises the parallelization rate (tools per API call) and also enables concurrent execution.",
+
+  "dependency_detection": "LLM-prompted, similarity/intent-based. The fuser uses intent-based in-context prompts to identify tools of similar type that can be grouped/parallelized; it does not build an explicit dependency DAG or use a learned dependency classifier. Independence is inferred from tool-type similarity guided by user-defined prompts. [uncertain]",
+
+  "result_aggregation": "map-back + standard agent join. After the agent selects fused operations, the compiler 'maps' each fused operation back to its corresponding per-tool code for execution; results then feed the agent's normal final-answer API call. No dedicated typed structured-merge node beyond this mapping step. [uncertain]",
+
+  "mid_chain_feedback": "soft / corrective. The plan is largely set by the pre-execution fuser, but on error or reset the system bypasses fusion and re-runs with the full toolset, giving real-time corrective adaptability rather than full mid-chain re-planning.",
+
+  "benchmark_name": "GeoLLM-Engine — a realistic geospatial copilot environment (remote sensing / satellite imagery) with hundreds of GPT endpoints and long-horizon tasks.",
+
+  "multi_intent_coverage": "Yes, implicitly — the workload is compound multi-tool geospatial copilot tasks with many independent tool operations per query (parallel-amenable). The benchmark is not organized into formal parallel/sequential/mixed categories the way BFCL v3 is. [uncertain]",
+
+  "accuracy_metric": "Multiple task-quality metrics rather than pure tool-name exact-match: success rate, correctness ratio, ROUGE-L, F1 for object detection, recall for land-coverage classification, plus efficiency metrics (average tokens per task, average time per API tool call, and parallelization rate = average tools called in parallel per API call). Closest to outcome/state-based plus efficiency profiling.",
+
+  "clarification_capability": "Not measured. The system does not implement or evaluate when-to-ask vs. when-to-answer behavior; ambiguity is handled by abstaining from fusion, not by asking the user. No ClarifyBench/InteractComp-style clarification evaluation.",
+
+  "process_vs_outcome_eval": "outcome-oriented with efficiency profiling. Evaluation centers on final-task quality metrics and runtime/token efficiency (via a Look-up-Table runtime model), not intermediate process-reward scoring of the decomposition steps. [uncertain]",
+
+  "eval_stability": "Custom in-house measurement: a Look-up-Table (LUT) model records average runtime per tool and per key API component (fuser call, final-answer call), then a randomly sampled fifth of datapoints is rerun to record overall and per-tool runtime. Not a cached/virtual stabilized API server like StableToolBench; reproducibility depends on the live GeoLLM-Engine + GPT endpoints. [uncertain]",
+
+  "integration_pattern": "in-context, pre-execution compiler layer. Implemented as a GPT-driven fuser module inserted before the main agent's function-calling loop, without modifying the underlying function-calling API; it rewrites/compiles the toolset and maps fused operations back to per-tool code at execution.",
+
+  "routing_layer": "application layer — operates as a prompt/tool-compilation step within the agent application stack, not below the app in the inference engine (no Envoy/ext_proc inference-engine routing).",
+
+  "latency_overhead": "Adds one extra fuser GPT API call before execution, but the net effect is a reduction: reported up to 12% latency reduction and up to ~40% token-cost reduction overall, because fusion cuts the number of sequential round-trips. The fuser-call cost is explicitly profiled in the LUT runtime model.",
+
+  "online_adaptation": "static — fusion behavior is driven by fixed user-supplied intent prompts; no bandit/RL or supervised fine-tuning from production logs. Adaptation is limited to runtime fallback (bypass fusion on error).",
+
+  "adoption": "paper-only / research prototype from Microsoft. Evaluated on GeoLLM-Engine; no public open-source code release identified for the LLM-Tool Compiler itself. [uncertain]",
+
+  "uncertain": [
+    "ordering_strategy",
+    "decomposition_validation",
+    "router_type",
+    "handles_ambiguity",
+    "skill_pool_scale_and_retrieval",
+    "router_agent_asymmetry",
+    "dependency_detection",
+    "result_aggregation",
+    "multi_intent_coverage",
+    "process_vs_outcome_eval",
+    "eval_stability",
+    "adoption"
+  ]
+}

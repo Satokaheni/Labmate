@@ -35,7 +35,7 @@ pipeline: Pipeline | None = None
 async def list_tools() -> list[Tool]:
     return [
         Tool(
-            name="screenshot_to_component.generate",
+            name="generate",
             description=(
                 "Full 3-stage pipeline (grounding -> planning -> generation). "
                 "Returns JSON with component_code, layout_plan, and output_path."
@@ -62,7 +62,7 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="screenshot_to_component.ground",
+            name="ground",
             description=(
                 "Grounding stage only. Returns JSON with detected UI elements "
                 "(bounding boxes + semantic labels). Useful for inspection."
@@ -79,7 +79,7 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="screenshot_to_component.plan",
+            name="plan",
             description=(
                 "Planning stage only. Takes grounding JSON, returns a "
                 "hierarchical layout plan as JSON."
@@ -106,17 +106,17 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         log.info("Pipeline initialized")
 
     try:
-        if name == "screenshot_to_component.generate":
+        if name == "generate":
             result = pipeline.generate(
                 arguments["image_path"],
                 framework=arguments.get("framework", "react-tailwind"),
                 output_path=arguments.get("output_path"),
             )
             text = json.dumps(result, ensure_ascii=False)
-        elif name == "screenshot_to_component.ground":
+        elif name == "ground":
             grounding = pipeline.grounder.ground(arguments["image_path"])
             text = grounding.model_dump_json()
-        elif name == "screenshot_to_component.plan":
+        elif name == "plan":
             plan = pipeline.planner.plan(arguments["grounding_result"])
             text = plan.model_dump_json()
         else:

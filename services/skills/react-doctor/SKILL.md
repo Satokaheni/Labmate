@@ -7,8 +7,8 @@ description: >
   before returning code to the user. Returns issues with stable rule IDs.
 trigger: "Use after generating or modifying React code to catch anti-patterns"
 tools:
-  - react_doctor.audit
-  - react_doctor.list_rules
+  - audit
+  - list_rules
 version: "0.1.0"
 license: MIT
 requires: []
@@ -21,7 +21,7 @@ server. Purely deterministic static analysis — no LLM inference.
 
 ## Tools
 
-### `react_doctor.audit(project_path, rules?, ci_mode?)`
+### `audit(project_path, rules?, ci_mode?)`
 
 Run react-doctor on a React project root. Returns a summary line followed by JSONL,
 one issue per line. Each issue has:
@@ -40,7 +40,7 @@ Parameters:
 On a missing CLI or unexpected failure, returns a structured error object
 (`{ "error": true, ... }`) with `isError: true` — it never crashes.
 
-### `react_doctor.list_rules()`
+### `list_rules()`
 
 Returns all available rule IDs grouped by category.
 

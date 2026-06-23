@@ -24,7 +24,7 @@ app = Server("citation-check")
 async def list_tools() -> list[Tool]:
     return [
         Tool(
-            name="citation_check.verify_claims",
+            name="verify_claims",
             description="Decompose text into claim-triplets and verify each against references.",
             inputSchema={
                 "type": "object",
@@ -36,7 +36,7 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="citation_check.verify_citations",
+            name="verify_citations",
             description="Verify BibTeX entries against Crossref/Semantic Scholar.",
             inputSchema={
                 "type": "object",
@@ -51,12 +51,12 @@ async def list_tools() -> list[Tool]:
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-    if name == "citation_check.verify_claims":
+    if name == "verify_claims":
         result = claim_verifier.verify_claims(
             arguments["text"], arguments.get("references", [])
         )
         return [TextContent(type="text", text=result.model_dump_json())]
-    if name == "citation_check.verify_citations":
+    if name == "verify_citations":
         results = citation_verifier.verify_citations(arguments["bibliography"])
         payload = json.dumps([r.model_dump() for r in results])
         return [TextContent(type="text", text=payload)]

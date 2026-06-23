@@ -4,11 +4,14 @@ from __future__ import annotations
 import asyncio
 import litellm
 import subprocess
+import time
+import uuid
 from dataclasses import dataclass, field
 from typing import AsyncGenerator
 from aiolimiter import AsyncLimiter
 
 from .types import Goal, State, Status, get_ready_goals, update_status, now_iso
+from . import events
 
 
 # ---------------------------------------------------------------------------
@@ -185,17 +188,54 @@ class AsyncOrchestrator:
             except Exception:
                 skill_result = None
             if isinstance(skill_result, dict):
-                res = skill_result.get("result")
-                if isinstance(res, dict) and isinstance(res.get("content"), list):
-                    text = "\n".join(
-                        c.get("text", "") for c in res["content"]
-                        if isinstance(c, dict) and c.get("text")
-                    )
-                elif isinstance(res, str):
-                    text = res
+                ok = bool(skill_result.get("ok"))
+                # When a skill fails (ok=False), prefer the error message.
+                # If ok=True, extract the result payload and format it.
+                if not ok:
+                    # Skill failed: surface the MOST SPECIFIC error available, not just the
+                    # generic discriminator. Worker failure shapes:
+                    #   tool_error        -> real text in result (MCP content list)
+                    #   skill_unavailable -> human message in detail
+                    #   dispatch_failed   -> human message in detail
+                    # Never the literal "null"; never crash on a None error value.
+                    err = skill_result.get("error") or "skill failed"
+                    detail = skill_result.get("detail")
+                    res = skill_result.get("result")
+                    if err == "tool_error" and res is not None:
+                        if isinstance(res, dict) and isinstance(res.get("content"), list):
+                            inner = "\n".join(
+                                c.get("text", "") for c in res["content"]
+                                if isinstance(c, dict) and c.get("text")
+                            )
+                        else:
+                            inner = json.dumps(res, default=str)
+                        text = f"{err}: {inner}" if inner else err
+                    elif detail:
+                        text = f"{err}: {detail}"
+                    else:
+                        text = err
+                    text = str(text)[:2000]
                 else:
-                    text = json.dumps(res, default=str)
-                return {"ok": bool(skill_result.get("ok")), "summary": text[:2000]}
+                    # Skill succeeded: extract and format the result
+                    res = skill_result.get("result")
+                    if isinstance(res, dict) and isinstance(res.get("content"), list):
+                        # Extract text from content list items
+                        text_parts = [
+                            c.get("text", "") for c in res["content"]
+                            if isinstance(c, dict) and c.get("text")
+                        ]
+                        # If content list had items but no text fields, use placeholder
+                        text = "\n".join(text_parts) if text_parts else "(no output)"
+                    elif isinstance(res, str):
+                        # Use placeholder for empty strings
+                        text = res if res else "(no output)"
+                    elif res is None or res is False:
+                        # None/missing/empty result: use neutral placeholder
+                        text = "(no output)"
+                    else:
+                        # Structured result: serialize to JSON
+                        text = json.dumps(res, default=str)
+                return {"ok": ok, "summary": text[:2000]}
 
         # Build tool list
         tools = []
@@ -265,7 +305,10 @@ class AsyncOrchestrator:
             "when a code-search, test-generation, parsing, audit, or documentation skill exists). "
             "Use run_bash ONLY when no available skill fits the task. "
             "Do NOT call finish until the work is actually done — and when a matching skill exists, "
-            "finish only AFTER call_skill_tool has returned its result. Call finish(summary) to end."
+            "finish only AFTER call_skill_tool has returned its result. Call finish(summary) to end. "
+            "SANDBOX RULE: run_bash is for read-only inspection (ls, cat, grep, git status) only. "
+            "Any code you author or execute — Python, Node, shell scripts, pytest — MUST go through "
+            "the code-sandbox skill (load_skill('code-sandbox') then call_skill_tool), NEVER run_bash."
         )
         if catalog:
             system += f"\n\n{catalog}"
@@ -289,6 +332,15 @@ class AsyncOrchestrator:
                 )
 
                 msg = r.choices[0].message
+
+                # Emit reasoning event if present
+                _turn_reasoning = events.extract_reasoning(r)
+                if _turn_reasoning:
+                    await events.emit(
+                        "reasoning", node="execute",
+                        summary=events.reasoning_summary(_turn_reasoning),
+                        text=_turn_reasoning,
+                    )
 
                 # Check for tool calls early (before appending assistant turn)
                 tool_calls = getattr(msg, "tool_calls", None)
@@ -341,7 +393,21 @@ class AsyncOrchestrator:
                             "summary": str(args.get("summary", ""))[:2000],
                         }
 
-                    elif name == "load_skill" and self.skill_router is not None:
+                    # Emit tool.start for all non-finish tools
+                    _tool_id = uuid.uuid4().hex[:12]
+                    _kind = "skill" if name == "call_skill_tool" else "tool"
+                    _emit_name = args.get("skill", name) if name == "call_skill_tool" else name
+                    _t0 = time.monotonic()
+                    await events.emit(
+                        "tool.start",
+                        tool_id=_tool_id,
+                        name=_emit_name,
+                        kind=_kind,
+                        args=args,
+                        reasoning_why=_turn_reasoning,
+                    )
+
+                    if name == "load_skill" and self.skill_router is not None:
                         obs = self.skill_router.runner.load_skill(args.get("name", ""))
                         content = json.dumps(obs)
 
@@ -374,6 +440,21 @@ class AsyncOrchestrator:
 
                     else:
                         content = json.dumps({"error": f"unknown tool: {name}"})
+
+                    # Emit tool.done — derive status from content (error key = error)
+                    try:
+                        _parsed = json.loads(content) if isinstance(content, str) else content
+                        _td_status = "error" if isinstance(_parsed, dict) and "error" in _parsed else "done"
+                    except Exception:
+                        _td_status = "done"
+                    await events.emit(
+                        "tool.done",
+                        tool_id=_tool_id,
+                        status=_td_status,
+                        summary=str(content)[:200],
+                        result=content,
+                        duration_ms=int((time.monotonic() - _t0) * 1000),
+                    )
 
                     # Append tool result
                     messages.append({
@@ -518,6 +599,9 @@ class CodingOrchestrator:
         """
         Entry point. Pass the same session_id to resume after a crash.
         Returns the final State dict.
+
+        Routing is single-intent only (the multi-intent decompose path + routing_mode
+        A/B toggle were removed after an A/B showed no quality benefit at higher cost).
         """
         from .types import create_goal
 
@@ -531,6 +615,9 @@ class CodingOrchestrator:
             "final_answer": "",
             "workspace_id": workspace_id,
             "user_id": user_id,
+            "root_goal": task,
+            "verify_retries": 0,  # FIX 9: bound verify->reflect passes
+            "direct_answer": False,  # FIX 10: set True by the plan node's direct-answer fast-path
         }
         cfg = {
             "configurable": {
@@ -633,6 +720,47 @@ class CodingOrchestrator:
 
         return await asyncio.to_thread(self.execute_in_sandbox, cmd, 60)
 
+    async def stream_final_answer(self, task: str, final_state: dict) -> str:
+        """Compose the user-facing reply with a streamed LLM call.
+
+        Emits answer.delta per chunk (typewriter effect) and answer.done at the end.
+        Best-effort: on any error, returns the assembled final_answer without raising.
+        """
+        assembled = ""
+        if isinstance(final_state, dict):
+            assembled = (
+                final_state.get("final_answer")
+                or final_state.get("goal_tree", {}).get("root", {}).get("result", "")
+                or ""
+            )
+        prompt = (
+            "Write a concise, friendly answer to the user's request using the results below. "
+            "Do not mention tools, skills, or internal steps.\n\n"
+            f"Request: {task}\n\nResults:\n{assembled}"
+        )
+        acc = ""
+        try:
+            stream = await litellm.acompletion(
+                model="openai/gemma-4-31b",
+                api_base=self._gemma_base,
+                api_key="not-needed",
+                messages=[{"role": "user", "content": prompt}],
+                stream=True,
+                extra_body={"thinking_budget_tokens": 0},
+            )
+            async for chunk in stream:
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    acc += delta
+                    await events.emit("answer.delta", text=delta)
+            await events.emit("answer.done", text=acc)
+            return acc or assembled
+        except Exception as exc:
+            import logging
+            _log = logging.getLogger("orchestrator")
+            _log.warning("stream_final_answer failed, using assembled answer: %s", exc)
+            return assembled
+
     async def stream(self, prompt: str, user_id: str = "", workspace_id: str = "") -> "AsyncGenerator[str, None]":
         """Async generator — run a task and yield the final answer as a single chunk.
 
@@ -645,6 +773,9 @@ class CodingOrchestrator:
         session_id = str(uuid.uuid4())
         state = await self.run_task(prompt, session_id, user_id=user_id, workspace_id=workspace_id)
         root = state.get("goal_tree", {}).get("root", {})
+        if state.get("awaiting_clarification"):
+            yield state.get("clarification_question", "") or state.get("final_answer") or root.get("result", "") or str(state)
+            return
         yield state.get("final_answer") or root.get("result", "") or str(state)
 
     # ── Human-in-the-loop gate interface (approve / reject via any connector) ──

@@ -39,12 +39,18 @@ MODEL_DIR="${MODEL_DIR:-/workspace/models/gemma-4-gguf}"
 GGUF_REPO="${GGUF_REPO:-unsloth/gemma-4-31B-it-GGUF}"
 GGUF_FILE="${GGUF_FILE:-gemma-4-31B-it-UD-Q4_K_XL.gguf}"
 
+# SearXNG (native metasearch for the web-search skill).
+SEARXNG_DIR="${SEARXNG_DIR:-/workspace/searxng}"
+SEARXNG_PORT="${SEARXNG_PORT:-8080}"
+
 SKIP_MODEL=false
 SKIP_SKILLS=false
+SKIP_SEARXNG=false
 for arg in "$@"; do
   case "$arg" in
-    --no-model)  SKIP_MODEL=true ;;
-    --no-skills) SKIP_SKILLS=true ;;
+    --no-model)   SKIP_MODEL=true ;;
+    --no-skills)  SKIP_SKILLS=true ;;
+    --no-searxng) SKIP_SEARXNG=true ;;
   esac
 done
 
@@ -163,7 +169,69 @@ else
   fi
 fi
 
+# ─── 5. SearXNG (native metasearch for the web-search skill) ──────────────────
+# The web-search skill calls a SearXNG instance's JSON API (GET /search?format=json).
+# We run SearXNG NATIVELY here (this pod cannot run Docker — see the WHY note above).
+# The public-abuse limiter is DISABLED (this is an internal, single-agent instance),
+# so SearXNG needs no valkey/redis backend. JSON output is enabled (required by the skill).
+# The Docker stack runs SearXNG as the `lm-searxng` container instead — see
+# infrastructure/docker/docker-compose.yml + infrastructure/docker/searxng-config/settings.yml.
+# Pass --no-searxng to skip this section.
+if $SKIP_SEARXNG; then
+  log "skipping SearXNG (--no-searxng)."
+else
+  SEARXNG_SRC="${SEARXNG_DIR}/searxng-src"
+  SEARXNG_VENV="${SEARXNG_DIR}/searx-pyenv"
+  SEARXNG_SETTINGS="${SEARXNG_DIR}/settings.yml"
+  if [[ -x "${SEARXNG_VENV}/bin/python" && -d "${SEARXNG_SRC}/searx" ]]; then
+    log "SearXNG already installed: ${SEARXNG_SRC}"
+  else
+    log "installing SearXNG (native, into ${SEARXNG_DIR}) ..."
+    apt-get install -y python3-dev python3-babel python3-venv build-essential \
+      libxslt1-dev zlib1g-dev libffi-dev libssl-dev git >/dev/null 2>&1 \
+      || log "  WARN: some SearXNG apt deps failed to install"
+    mkdir -p "$SEARXNG_DIR"
+    [[ -d "$SEARXNG_SRC/.git" ]] || git clone --depth 1 https://github.com/searxng/searxng "$SEARXNG_SRC" >/dev/null 2>&1
+    [[ -x "${SEARXNG_VENV}/bin/python" ]] || python3 -m venv "$SEARXNG_VENV"
+    "${SEARXNG_VENV}/bin/pip" install -U pip setuptools wheel pyyaml msgspec typing-extensions pybind11 >/dev/null 2>&1
+    if ( cd "$SEARXNG_SRC" && "${SEARXNG_VENV}/bin/pip" install --use-pep517 --no-build-isolation -e . \
+          >"${REPO_ROOT}/.data/logs/searxng-build.log" 2>&1 ); then
+      log "SearXNG installed."
+    else
+      log "  WARN: SearXNG pip install FAILED — see .data/logs/searxng-build.log (web-search skill will be unavailable)"
+    fi
+  fi
+  # Settings: enable JSON format (required by the skill); disable the limiter (internal use).
+  if [[ ! -f "$SEARXNG_SETTINGS" ]]; then
+    log "writing SearXNG settings: ${SEARXNG_SETTINGS}"
+    SEARXNG_SECRET="$(openssl rand -hex 32 2>/dev/null || echo labmate-dev-secret)"
+    cat > "$SEARXNG_SETTINGS" <<YAML
+# Labmate local SearXNG settings — internal instance for the web-search skill.
+# JSON output is REQUIRED by the skill (GET /search?format=json). The limiter is
+# disabled because this instance is private (loopback only), so no valkey/redis is needed.
+use_default_settings: true
+general:
+  debug: false
+  instance_name: "labmate-searxng"
+search:
+  safe_search: 0
+  autocomplete: "duckduckgo"
+  formats:
+    - html
+    - json
+server:
+  bind_address: "127.0.0.1"
+  port: ${SEARXNG_PORT}
+  secret_key: "${SEARXNG_SECRET}"
+  limiter: false
+  image_proxy: false
+YAML
+  else
+    log "SearXNG settings already present: ${SEARXNG_SETTINGS}"
+  fi
+fi
+
 log "DONE. Next:"
-log "  infrastructure/local/start.sh         # Mongo(rs0) + Redis + Chroma"
+log "  infrastructure/local/start.sh         # Mongo(rs0) + Redis + Chroma + SearXNG"
 log "  infrastructure/local/serve-model.sh   # Gemma 4 via llama.cpp on :8000"
-log "  source infrastructure/local/local.env # export connection URLs"
+log "  source infrastructure/local/local.env # export connection URLs (incl. SEARXNG_URL)"

@@ -8,11 +8,11 @@ description: >
   (for hallucination verification).
 trigger: "Use when finding related papers, doing literature review, or tracing citation chains"
 tools:
-  - citation_graph.search_papers
-  - citation_graph.get_citations
-  - citation_graph.get_references
-  - citation_graph.find_similar
-  - citation_graph.get_paper
+  - search_papers
+  - get_citations
+  - get_references
+  - find_similar
+  - get_paper
 version: "0.1.0"
 license: MIT
 requires: []
@@ -26,12 +26,12 @@ and `citation-check`.
 
 ## Tools
 
-- `citation_graph.search_papers(query, limit=10, year_from=None)` — keyword/semantic
+- `search_papers(query, limit=10, year_from=None)` — keyword/semantic
   search. Returns JSONL of papers.
-- `citation_graph.get_citations(paper_id, limit=20)` — forward citations (who cites this). JSONL.
-- `citation_graph.get_references(paper_id, limit=20)` — backward citations (what this cites). JSONL.
-- `citation_graph.find_similar(paper_id, limit=10)` — SPECTER-embedding similar papers. JSONL.
-- `citation_graph.get_paper(paper_id)` — full metadata (abstract, venue, tldr, open_access_url). One JSON line.
+- `get_citations(paper_id, limit=20)` — forward citations (who cites this). JSONL.
+- `get_references(paper_id, limit=20)` — backward citations (what this cites). JSONL.
+- `find_similar(paper_id, limit=10)` — SPECTER-embedding similar papers. JSONL.
+- `get_paper(paper_id)` — full metadata (abstract, venue, tldr, open_access_url). One JSON line.
 
 ## Paper ID formats accepted
 

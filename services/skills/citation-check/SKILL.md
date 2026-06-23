@@ -5,11 +5,12 @@ description: >
   LLM text into claim-triplets and checks each against supplied references (entailed/
   contradicted/unverifiable). verify_citations checks BibTeX entries against
   Semantic Scholar/Crossref (exact/minor/major hallucination). Use as the grounding
-  layer in any critique or academic writing workflow.
+  layer in any critique or academic writing workflow. Exposed as verify_claims and
+  verify_citations tools.
 trigger: "Use when verifying factual claims or bibliography entries in generated text"
 tools:
-  - citation_check.verify_claims
-  - citation_check.verify_citations
+  - verify_claims
+  - verify_citations
 version: "0.1.0"
 license: MIT
 requires: []
@@ -20,13 +21,13 @@ requires: []
 External grounding layer for the `critique` Reflexion loop and citation-validation
 supplement for `academic-writing`. Two complementary verification tools:
 
-- **`citation_check.verify_claims(text, references)`** — RefChecker (arXiv:2405.14486).
+- **`verify_claims(text, references)`** — RefChecker (arXiv:2405.14486).
   Decomposes `text` into (subject, predicate, object) claim-triplets via a local Gemma
   call, then classifies each triplet against the supplied `references` as
   **entailed**, **contradicted**, or **unverifiable**. Returns JSON with per-claim
   verdicts and aggregate counts.
 
-- **`citation_check.verify_citations(bibliography)`** — CiteCheck (arXiv:2605.27700).
+- **`verify_citations(bibliography)`** — CiteCheck (arXiv:2605.27700).
   Verifies each BibTeX entry against the deterministic cascade
   (DOI→Crossref→arXiv→Semantic Scholar) and classifies as **exact_match**,
   **minor_hallucination** (correct paper, corrupted field), or **major_hallucination**

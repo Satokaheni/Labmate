@@ -7,9 +7,9 @@ description: >
   Requires code-sandbox skill for isolated test execution.
 trigger: "Use when generating or improving unit tests for Python code"
 tools:
-  - test_gen.generate
-  - test_gen.run_mutations
-  - test_gen.improve
+  - generate
+  - run_mutations
+  - improve
 version: "0.1.0"
 license: MIT
 requires: [code-sandbox]
@@ -29,7 +29,7 @@ that actually catch regressions, not just tests that execute lines.
 
 ## Available Tools
 
-### `test_gen.generate`
+### `generate`
 
 Generate an initial unit test suite for a source file.
 
@@ -39,7 +39,7 @@ Generate an initial unit test suite for a source file.
 
 Returns JSON: `{"test_code": "...", "explanation": "..."}`.
 
-### `test_gen.run_mutations`
+### `run_mutations`
 
 Run mutation testing (mutmut) on a source file with a test file. Executes
 inside the code-sandbox skill for isolation.
@@ -51,7 +51,7 @@ inside the code-sandbox skill for isolation.
 Returns JSON: `{"mutation_score": 0.82, "surviving_mutants": ["<diff>", ...],
 "killed_count": 18, "total_count": 22, "raw_output": "..."}`.
 
-### `test_gen.improve`
+### `improve`
 
 Given surviving mutants, generate additional tests that target those specific
 fault classes.

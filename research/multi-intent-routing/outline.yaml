@@ -1,0 +1,206 @@
+topic: Multi-intent task decomposition for LLM tool and skill routing
+description: >
+  How to handle compound prompts that span multiple tools/skills in an agent harness.
+  Focus on decomposer nodes, intent splitting, sequential skill chaining, and
+  classifier-based approaches. Covers decomposition quality, routing mechanisms,
+  parallel execution, ambiguity/clarification handling, and production infrastructure.
+
+items:
+  # --- Foundational routing benchmarks ---
+  - name: BFCL v3 (Berkeley Function Calling Leaderboard)
+    category: Benchmark
+    description: >
+      De-facto function-calling benchmark with explicit parallel, multiple,
+      parallel_multiple, and multi-turn/multi-step categories. AST + state-based
+      evaluation. Live leaderboard. Supersedes original Gorilla/ToolBench as
+      the standard reference. arXiv/gorilla.cs.berkeley.edu.
+
+  - name: Gorilla / ToolBench (original)
+    category: Benchmark
+    description: >
+      Berkeley's original tool-use benchmark and routing model; established
+      baseline for single-intent tool selection. Predecessor to BFCL v3.
+
+  - name: TaskBench
+    category: Benchmark
+    description: >
+      Microsoft's benchmark measuring multi-step tool dependency graphs and
+      decomposition quality. ICLR 2024. Explicit DAG-structured task evaluation.
+
+  - name: StableToolBench / UltraTool
+    category: Benchmark
+    description: >
+      ToolBench successors: StableToolBench adds virtual/cached API server for
+      reproducibility (solves API drift); UltraTool adds explicit planning,
+      dynamic tool creation, complex parameter filling.
+
+  - name: ToolComp
+    category: Benchmark
+    description: >
+      2025 benchmark using human-in-the-loop process supervision of intermediate
+      decomposition steps. Process-reward models beat outcome-only for multi-step
+      tool use. Directly evaluates decomposition quality, not just final answer.
+
+  # --- Decomposition / planning architectures ---
+  - name: AOP — Agent-Oriented Planning in Multi-Agent Systems
+    category: Decomposition architecture
+    description: >
+      ICLR 2025 (arXiv:2410.02189). Formalizes meta-agent query decomposition
+      under solvability, completeness, non-redundancy principles. Detector +
+      reward model scores sub-task solvability before calling agents. Replan/
+      plan-in-detail feedback loop. Most rigorous decomposition-quality
+      framework to date. Code: github.com/lalaliat/Agent-Oriented-Planning.
+
+  - name: HuggingGPT / TaskMatrix
+    category: Decomposition architecture
+    description: >
+      Early decomposer-then-dispatch architecture. LLM decomposes compound
+      prompt into sub-tasks, each routed to a specialist model or tool.
+      Foundation pattern for most modern multi-intent systems.
+
+  - name: HiPlan / GoalAct (Global Planning + Hierarchical Execution)
+    category: Decomposition architecture
+    description: >
+      2025 (arXiv:2504.16563). Hierarchical planners combining coarse milestone
+      guides with fine-grained step hints via retrieval-augmented milestone
+      library. Adds hierarchical decomposition dimension absent from flat-list approaches.
+
+  - name: Corpus2Skill
+    category: Decomposition architecture
+    description: >
+      Compiles corpus offline into hierarchical skill tree the agent traverses
+      at query time. Replaces retrieval with skill-tree traversal — a distinct
+      routing paradigm contrasting with embedding retrieval and classifiers.
+
+  - name: LLM-Compiler
+    category: Decomposition architecture
+    description: >
+      Parallelizes sub-tasks from a single compound prompt via planner →
+      dispatcher → joiner graph. Directly relevant to parallel multi-intent
+      execution. Foundation for fan-out routing patterns.
+
+  - name: LLM-Tool Compiler — Fused Parallel Function Calling
+    category: Decomposition architecture
+    description: >
+      arXiv:2405.17438. Intent-based in-context prompting to fuse independent
+      sub-tasks into parallel tool calls. Distinguishes parallel (multiple calls
+      per turn) from concurrent (simultaneous execution). More granular than
+      LLM-Compiler.
+
+  - name: Chain-of-Thought decomposition prompting
+    category: Decomposition architecture
+    description: >
+      Zero-shot "break this into steps" before routing. Simple but effective
+      baseline. Implicit decomposition via CoT without an explicit splitter node.
+      Basis for ReAct and Voyager.
+
+  # --- Training data / fine-tuning for decomposition ---
+  - name: ToolACE
+    category: Training methodology
+    description: >
+      ICLR 2025 (arXiv:2409.00920). Multi-agent interactive dialog generation
+      producing simple/parallel/dependent/non-tool dialogs. Trains models to
+      identify when, what, and how many tool calls. Key data-generation method
+      behind strong open-source function callers.
+
+  - name: Compositional Instruction Tuning for Multi-turn Function Calling
+    category: Training methodology
+    description: >
+      arXiv:2410.12952. Bottom-up generation of compositional tasks where
+      parallel-ability of sub-tasks is known by construction; toggles parallel
+      calling 50% during training. Directly about training decomposition behavior.
+
+  - name: ToolLLM / ToolLLaMA
+    category: Training methodology
+    description: >
+      Fine-tuned routing models using DFSDT (depth-first search decision tree)
+      for multi-step tool chains. Early supervised approach to multi-tool routing.
+
+  # --- Routing mechanisms ---
+  - name: SkillRouter (2026)
+    category: Routing mechanism
+    description: >
+      arXiv:2603.22455. Retrieve-and-rerank skill selection for LLM agents at
+      scale. The single closest match to the Labmate routing problem. Key insight:
+      router sees full skill text; agent sees only name+description. Addresses
+      the practical "thousands of skills" regime.
+
+  - name: LangGraph multi-agent routing (supervisor pattern)
+    category: Routing mechanism
+    description: >
+      Supervisor pattern where a classifier LLM routes sub-intents to specialist
+      subgraphs. Primary integration target for Labmate skill_router. Directly
+      actionable.
+
+  - name: Semantic Router
+    category: Routing mechanism
+    description: >
+      Embedding similarity routing. Struggles with compound prompts by design
+      (picks one centroid). Baseline to benchmark against.
+
+  - name: vLLM Semantic Router
+    category: Routing mechanism
+    description: >
+      arXiv:2510.08731. Rust/Candle intent-classifying router pushed into the
+      inference engine (Envoy/ext_proc). Semantic caching, when-to-reason gating,
+      online feedback adaptation. Production deployment reference; new architectural
+      axis (inference-engine-layer vs application-layer).
+
+  - name: RouteLLM
+    category: Routing mechanism
+    description: >
+      Binary strong/weak model routing. Not multi-intent but relevant to
+      classifier gate design and latency/cost trade-off framing.
+
+  - name: MasRouter / Router-R1
+    category: Routing mechanism
+    description: >
+      2025. MasRouter formalizes multi-agent routing (which agents, how many,
+      in what topology). Router-R1 is RL-trained reasoning router. Extends
+      RouteLLM's binary gate toward multi-intent/multi-agent decisions.
+
+  - name: LiteLLM Router
+    category: Routing mechanism
+    description: >
+      Production proxy router: load balancing, fallback, 100+ models. Most-adopted
+      real-world integration layer. Relevant to adoption and routing_layer fields.
+
+  # --- Agent execution models ---
+  - name: Voyager / ReAct variants
+    category: Execution model
+    description: >
+      Agent-loop approaches where decomposition is implicit in LLM's CoT.
+      No explicit splitter node; routing happens turn-by-turn via tool selection.
+
+  - name: CrewAI / AutoGen task decomposition
+    category: Execution model
+    description: >
+      Orchestrator assigns sub-tasks to specialized agents. Implicit multi-intent
+      handling through agent role specialization rather than explicit routing.
+
+  # --- Ambiguity / clarification ---
+  - name: ClarifyBench + SAGE-Agent
+    category: Ambiguity handling
+    description: >
+      arXiv:2511.08798. First multi-turn tool-augmented disambiguation benchmark.
+      Models tool-argument clarification as a POMDP with Expected Value of Perfect
+      Information. +7-39% coverage on ambiguous tasks with 1.5-2.7x fewer questions.
+
+  - name: InteractComp
+    category: Ambiguity handling
+    description: >
+      arXiv:2510.24668. Tests whether agents know when to search vs. ask vs. answer.
+      SOTA models score <14%, revealing systematic overconfidence. Quantifies the
+      ambiguity gap.
+
+  - name: ClarEval / NoisyToolBench
+    category: Ambiguity handling
+    description: >
+      ClarEval measures clarification skill of code agents (ambiguous terminology
+      hardest). NoisyToolBench measures clarifying-question behavior under noisy/
+      underspecified tool instructions.
+
+execution:
+  batch_size: 4
+  items_per_agent: 2
+  output_dir: ./results

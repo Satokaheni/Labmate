@@ -1,0 +1,58 @@
+{
+  "name": "ClarifyBench + SAGE-Agent",
+  "category": "Ambiguity handling",
+  "description": "arXiv:2511.08798 'Structured Uncertainty guided Clarification for LLM Agents'. ClarifyBench is the first multi-turn tool-augmented disambiguation benchmark with LLM-based user simulation. SAGE-Agent models joint tool-argument clarification as a POMDP with an Expected Value of Perfect Information (EVPI) objective, achieving +7-39% coverage on ambiguous tasks with 1.5-2.7x fewer clarification questions.",
+
+  "decomposition_method": "LLM-prompted with structured uncertainty representation. Rather than decomposing a compound prompt into separate sub-tasks, the system decomposes the ambiguity of a single tool call into structured uncertainty over tool parameters and their value domains. It cleanly separates specification uncertainty (what the user wants) from model uncertainty (what the LLM predicts), enumerating candidate parameter values/aspects that require disambiguation. [uncertain]",
+  "decomposition_granularity": "tool call — specifically the individual tool-call arguments/parameters (aspects) of a single tool invocation, not full sentences or clauses",
+  "ordering_strategy": "dynamic (mid-chain re-plan) — clarification questions are selected greedily turn-by-turn at inference time via the EVPI objective; after each user answer the belief state is updated and the next highest-value question is chosen, so question order is determined dynamically during the multi-turn dialogue rather than fixed upfront",
+  "decomposition_validation": "Yes — explicit, principled validation is the core contribution. The POMDP/EVPI framework computes the Expected Value of Perfect Information for each candidate clarification, and aspect-based cost modeling prevents redundant questions (non-redundancy). The system only asks a question when its expected information value exceeds its cost, and stops asking once residual uncertainty is low enough to act (completeness/solvability check on whether the tool call can be confidently grounded). This replaces blind trust in an LLM split with a Bayesian Value-of-Information criterion for which questions to ask and when to stop.",
+  "hierarchy_depth": "flat — uncertainty is represented over the flat set of tool-call parameters/aspects for a single tool call; no milestone+step or multi-level tree structure [uncertain]",
+
+  "router_type": "single-label classifier (action selection) — at each turn the agent chooses one of a small action set; for training (When2Call) the four actions are AskQuestion, CallTool(parameters), Decline, DirectAnswer. The decision of which clarification question to ask is framed as POMDP action selection under EVPI rather than as routing to a tool from a large pool. [uncertain]",
+  "routing_model": "prompted LLM (same as main) for SAGE-Agent at inference time, augmented with the structured-uncertainty EVPI computation. For the training-signal variant, an RL-trained policy (Qwen-2.5-3B/7B) is fine-tuned with uncertainty-weighted GRPO. Hybrid: prompted LLM + Bayesian VoI scoring.",
+  "handles_ambiguity": "POMDP-based (SAGE) — this is the defining feature. Ambiguous tool-argument situations are resolved by modeling clarification as a POMDP over a belief state of parameter values; the agent selects the clarification question that maximizes Expected Value of Perfect Information (EVPI / Bayesian Value of Information), asks the user, updates beliefs, and repeats until uncertainty is low enough to act. Aspect-based cost modeling prevents redundant questions, yielding 1.5-2.7x fewer questions than prompting/uncertainty baselines.",
+  "fallback_behavior": "escalate to human (clarification request to the user) is the primary mechanism; the When2Call action set also includes Decline (refuse when not answerable) and DirectAnswer (act without asking when confident). No explicit re-decomposition fallback described. [uncertain]",
+  "skill_pool_scale_and_retrieval": "Not a focus — the work targets argument-level clarification within a tool call, not retrieval over a large skill/tool pool. The tool set per task is assumed given (full-context, small toolset). Scaling to hundreds/thousands of skills is not addressed. [uncertain]",
+  "router_agent_asymmetry": "Not addressed — the paper does not discuss differential skill information between a router and an executing agent. [uncertain]",
+
+  "execution_pattern": "ReAct loop (implicit) within a multi-turn interactive dialogue — the agent alternates between asking clarification questions and (eventually) issuing the tool call; one action per turn over the conversation until the call is grounded. [uncertain]",
+  "parallel_vs_concurrent": "Not addressed — clarification questions are selected and asked sequentially (one per turn); no parallel/concurrent tool-call execution distinction is made. [uncertain]",
+  "dependency_detection": "assumed-sequential (default) — clarification turns are inherently sequential and dependent (each user answer updates the belief state before the next question). No independent-sub-task parallelization is modeled. [uncertain]",
+  "result_aggregation": "iterative — each user clarification answer is folded back into the structured-uncertainty belief state, progressively narrowing parameter values until a single confident tool call is produced; the accumulated answers feed the final grounded tool invocation. [uncertain]",
+  "mid_chain_feedback": "hard — the belief state is explicitly updated after each user answer and the next question (or the decision to act) is re-derived via EVPI, i.e. explicit re-planning of the next clarification action each turn",
+
+  "benchmark_name": "ClarifyBench (primary, introduced by this paper — first multi-turn tool-augmented disambiguation benchmark with LLM-based user simulation across document editing, vehicle control, and travel booking). Also evaluated on When2Call for the training-signal experiments.",
+  "multi_intent_coverage": "Yes — multi-turn ambiguity is explicit. ClarifyBench targets dynamic, multi-turn tool-calling disambiguation with an LLM-based user simulator supporting realistic conversational progression and task continuation. Focus is on within-tool-call argument ambiguity (sequential clarification) rather than independent parallel multi-intent sub-tasks. [uncertain]",
+  "accuracy_metric": "Coverage on ambiguous tasks (task success in correctly grounding/resolving the ambiguous tool call) plus interaction efficiency (number of clarification questions asked). For When2Call: action-selection accuracy (choosing correctly among AskQuestion / CallTool / Decline / DirectAnswer). Headline: +7-39% coverage with 1.5-2.7x fewer questions; When2Call accuracy 36.5%->65.2% (3B) and 36.7%->62.9% (7B).",
+  "clarification_capability": "Yes — this is the central capability the paper measures and optimizes. It explicitly evaluates when-to-ask vs. when-to-answer and clarification efficiency: coverage improvement (+7-39%) traded against questions-per-task (1.5-2.7x reduction). The POMDP/EVPI formulation gives a principled criterion for which question to ask and when to stop. Uncertainty-weighted GRPO uses the structured-uncertainty signal as a training reward, lifting When2Call accuracy by up to +28.7 points, showing it is a better signal than binary success/failure rewards.",
+  "process_vs_outcome_eval": "Mixed — outcome (final coverage/task success) plus per-turn interaction-efficiency (questions asked) which is a process-level signal; structured uncertainty itself acts as a per-step process reward in training. [uncertain]",
+  "eval_stability": "ClarifyBench relies on an LLM-based user simulator for multi-turn interaction, so reproducibility depends on the simulator model; no cached/virtual API server (like StableToolBench) is described. [uncertain]",
+
+  "integration_pattern": "in-context (prompted) for SAGE-Agent inference-time question selection, plus an RL training pipeline (uncertainty-weighted GRPO) for the training-signal variant. Implemented as an agent policy over a given toolset rather than a harness node or middleware. [uncertain]",
+  "routing_layer": "application-layer (in-context agent policy); no inference-engine-layer routing described [uncertain]",
+  "latency_overhead": "Additional round-trips for clarification turns, but the EVPI + aspect-based cost objective is explicitly designed to minimize them, achieving 1.5-2.7x fewer clarification questions than baselines (lower interaction overhead). The structured-uncertainty computation adds per-turn scoring cost over candidate parameter values. [uncertain]",
+  "online_adaptation": "bandit/RL — uncertainty-weighted GRPO trains the policy from the structured-uncertainty signal; however this is offline RL training on When2Call (9K examples) rather than continuous production-feedback adaptation. Inference-time SAGE-Agent is static. [uncertain]",
+  "adoption": "paper-only (arXiv:2511.08798, Nov 2025; under OpenReview review). No public code repository confirmed at time of research. [uncertain]",
+
+  "uncertain": [
+    "decomposition_method",
+    "hierarchy_depth",
+    "router_type",
+    "fallback_behavior",
+    "skill_pool_scale_and_retrieval",
+    "router_agent_asymmetry",
+    "execution_pattern",
+    "parallel_vs_concurrent",
+    "dependency_detection",
+    "result_aggregation",
+    "multi_intent_coverage",
+    "process_vs_outcome_eval",
+    "eval_stability",
+    "integration_pattern",
+    "routing_layer",
+    "latency_overhead",
+    "online_adaptation",
+    "adoption"
+  ]
+}

@@ -1,0 +1,69 @@
+{
+  "name": "TaskBench",
+  "category": "Benchmark",
+  "description": "Microsoft's benchmark (ICLR 2024) for evaluating LLM task automation across three stages: task decomposition, tool invocation, and parameter prediction. Its central innovation is the Tool Graph (TG), where nodes are tools and edges are resource/temporal dependencies. Subgraphs are sampled in three explicit topologies (node, chain, DAG) and a Back-Instruct method inversely generates user instructions, task steps, and a ground-truth tool-invocation graph. The DAG structure makes multi-step tool dependency and decomposition quality directly measurable.",
+
+  "decomposition_method": "LLM-prompted. TaskBench evaluates a model's own decomposition rather than imposing one: given a user instruction, the LLM under test produces task steps plus a tool-invocation graph (zero-shot / in-context). The benchmark's ground truth is generated via the Back-Instruct method, which prompts an LLM to inversely craft user instructions, task steps, and tool-invocation graphs from sampled tool subgraphs.",
+
+  "decomposition_granularity": "tool call. Each decomposed sub-task maps to a tool node in the tool-invocation graph, with accompanying natural-language task steps; the fundamental routable unit is the individual tool invocation plus its predicted parameters.",
+
+  "ordering_strategy": "topological (DAG). The ground-truth tool-invocation graph is a directed acyclic graph whose edges encode resource dependencies (output of one tool feeds another) and temporal dependencies; sampled task structures span node (single), chain (linear sequential), and DAG (multi-dependency / branching) topologies. Models are scored on recovering this dependency ordering via edge prediction.",
+
+  "decomposition_validation": "Benchmark-side, not system-side. TaskBench evaluates decomposition quality rather than providing a runtime validator. Dataset ground truth is filtered through a multi-step quality-control pipeline: structured graph sampling, LLM-based and rule-based self-critic mechanisms (consistency review), and human verification across syntax checking, instruction checking, and tool-invocation-graph checking. The benchmark measures completeness/correctness via node-F1 (tool coverage) and edge-F1 (dependency correctness); the most prevalent failure mode reported is 'Incorrect Tool Dependency'.",
+
+  "hierarchy_depth": "two-level. Each task is represented as natural-language task steps (decomposition) plus a structured tool-invocation graph (tools + dependency edges); the graph itself can be flat (node), linear (chain), or a multi-dependency DAG, but the representation is steps-over-graph rather than a deep nested skill tree.",
+
+  "router_type": "graph planner. The evaluated model must plan the full tool-invocation DAG upfront (which tools and how they are connected) from the instruction, then predict parameters. TaskBench scores the planned graph against ground truth rather than a single classification decision.",
+
+  "routing_model": "prompted LLM (the model under evaluation). TaskBench is model-agnostic and benchmarks 17 LLMs (GPT-4, Claude-2, GPT-3.5-turbo, and open-source models) each acting as the planner/router via prompting; it does not prescribe a fixed routing model.",
+
+  "handles_ambiguity": "Not modeled. TaskBench evaluates against a single deterministic ground-truth tool graph and does not measure clarification, abstention, or ambiguity resolution; models are expected to produce the correct decomposition and tool graph directly. [uncertain]",
+
+  "fallback_behavior": "Not applicable. TaskBench is an offline evaluation benchmark with no execution-time fallback path; incorrect or missing tool predictions simply lower node-F1/edge-F1 scores rather than triggering re-decomposition or escalation. [uncertain]",
+
+  "skill_pool_scale_and_retrieval": "Full-context tool library per domain. The candidate tool set (the tool graph / library for the domain) is provided to the model in context; TaskBench spans three domains with their own tool libraries (Hugging Face tools, multimedia tools, daily-life APIs). It does not impose an embedding-retrieval stage — it tests whether the model can select and connect the correct tools from the provided library. Tool counts are on the order of a few hundred per domain. [uncertain]",
+
+  "router_agent_asymmetry": "Not applicable / symmetric. A single evaluated model both plans and predicts parameters from the same provided tool documentation; there is no separate router-vs-agent information split.",
+
+  "execution_pattern": "DAG (mixed) at the planning level; no live execution. TaskBench evaluates the predicted tool-invocation DAG (which encodes both sequential chains and parallel/branching independent sub-tasks) but does not actually execute tools — it is a static graph-prediction evaluation.",
+
+  "parallel_vs_concurrent": "Distinction captured structurally but not executed. DAG-sampled tasks contain branches (independent sub-tasks that could run in parallel) versus chains (strictly sequential); however TaskBench scores the predicted dependency structure rather than measuring real parallel/concurrent execution latency. [uncertain]",
+
+  "dependency_detection": "Explicit DAG from the model, scored against ground-truth edges. The model must predict the dependency edges of the tool-invocation graph; correctness is measured by edge-F1 (e-F1), which directly reflects whether the model identified the right inter-tool dependencies (resource and temporal). The ground-truth dependencies derive from the constructed tool graph.",
+
+  "result_aggregation": "Not applicable. Results are not executed or aggregated; evaluation compares the predicted decomposition, tool graph, and parameters to ground truth. [uncertain]",
+
+  "mid_chain_feedback": "none. The model produces a complete plan (task steps + full tool-invocation graph) in one pass; TaskBench does not model mid-chain re-planning from intermediate execution results.",
+
+  "benchmark_name": "TaskBench (TaskEval evaluation framework), across three domains: Hugging Face, Multimedia, and Daily Life.",
+
+  "multi_intent_coverage": "mixed. Tasks are sampled as node (single intent), chain (sequential dependent sub-tasks), and DAG (mixed: independent parallel branches plus dependent chains), explicitly covering compound / multi-intent instructions with both sequential and parallel sub-task structure.",
+
+  "accuracy_metric": "AST/graph-structure-based and text-overlap based. Task decomposition: Rouge-1 (R1), Rouge-2 (R2), BERTScore-F1 (BsF). Tool invocation: node-prediction F1 (n-F1) and edge-prediction F1 (e-F1), plus normalized edit distance (NED) over the invocation sequence. Parameter prediction: parameter type/name F1 (t-F1) and parameter value F1 (v-F1). It is process-style structural matching against ground truth, not live world-state execution.",
+
+  "clarification_capability": "Not measured. TaskBench does not evaluate when-to-ask vs. when-to-answer behavior or clarification efficiency; it assumes a fully specified instruction with a single correct tool-graph answer.",
+
+  "process_vs_outcome_eval": "process. Evaluation scores intermediate structure — the decomposed task steps, every predicted tool node, and every dependency edge — rather than only a final answer, making it a process-supervision-style (graph-level) evaluation of multi-step tool use.",
+
+  "eval_stability": "High for reproducibility of inputs (static, offline dataset with fixed ground-truth tool graphs and deterministic F1/Rouge metrics; no live API calls), so it does not suffer ToolBench-style API drift. Note that decomposition text metrics rely on Rouge/BERTScore against reference steps, which adds some sensitivity to phrasing. [uncertain]",
+
+  "integration_pattern": "in-context (prompted) evaluation harness. The model is prompted with the instruction and tool documentation and asked to emit task steps + tool-invocation graph + parameters; TaskBench provides the dataset and TaskEval scoring scripts rather than a production routing component.",
+
+  "routing_layer": "application-layer (offline benchmark). TaskBench operates at the prompted-LLM application level; it is not an inference-engine-layer routing mechanism.",
+
+  "latency_overhead": "Not a focus. As an offline graph-prediction benchmark TaskBench does not report decomposition latency or token overhead; cost is a single planning pass per instruction. [uncertain]",
+
+  "online_adaptation": "none. TaskBench is a static evaluation benchmark with no production-feedback or online learning component.",
+
+  "adoption": "open-source (with code, dataset, and leaderboard). Published at ICLR 2024; code under microsoft/JARVIS (taskbench/), dataset on Hugging Face (microsoft/Taskbench). Widely cited as a reference benchmark for multi-step tool dependency and decomposition evaluation.",
+
+  "uncertain": [
+    "handles_ambiguity",
+    "fallback_behavior",
+    "skill_pool_scale_and_retrieval",
+    "parallel_vs_concurrent",
+    "result_aggregation",
+    "eval_stability",
+    "latency_overhead"
+  ]
+}

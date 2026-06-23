@@ -7,10 +7,10 @@ description: >
   Docker-based isolation with network disabled, memory limited, read-only filesystem.
 trigger: "Use when executing code that has not been human-reviewed"
 tools:
-  - code_sandbox.run_python
-  - code_sandbox.run_shell
-  - code_sandbox.run_tests
-  - code_sandbox.install_packages
+  - run_python
+  - run_shell
+  - run_tests
+  - install_packages
 version: "0.1.0"
 license: MIT
 requires: []

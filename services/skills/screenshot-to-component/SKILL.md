@@ -7,9 +7,9 @@ description: >
   compatible Tailwind components. Chain with react-doctor for immediate quality checking.
 trigger: "Use when converting a UI screenshot, mockup, or design image into a React component"
 tools:
-  - screenshot_to_component.generate
-  - screenshot_to_component.ground
-  - screenshot_to_component.plan
+  - generate
+  - ground
+  - plan
 version: "0.1.0"
 license: MIT
 requires: [react-doctor]
@@ -30,7 +30,7 @@ image-in/code-out prompt, which produces more faithful layouts.
 
 ## Available Tools
 
-### `screenshot_to_component.generate`
+### `generate`
 
 Run the full pipeline. Returns JSON: `component_code`, `layout_plan`, `output_path`.
 
@@ -38,7 +38,7 @@ Run the full pipeline. Returns JSON: `component_code`, `layout_plan`, `output_pa
 { "image_path": "/mocks/dashboard.png", "framework": "react-tailwind", "output_path": "/out/Dashboard.tsx" }
 ```
 
-### `screenshot_to_component.ground`
+### `ground`
 
 Grounding stage only. Returns JSON with bounding boxes + semantic labels. Useful
 for inspecting what the vision model detected.
@@ -47,7 +47,7 @@ for inspecting what the vision model detected.
 { "image_path": "/mocks/dashboard.png" }
 ```
 
-### `screenshot_to_component.plan`
+### `plan`
 
 Planning stage only. Takes a grounding JSON string, returns a hierarchical layout plan.
 

@@ -1,9 +1,12 @@
 from __future__ import annotations
 import asyncio
+import re
 import subprocess
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+
+_AT_REF = re.compile(r"@([\w./\\\-]+)")
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
@@ -50,7 +53,7 @@ class REPL:
 
     async def run(self) -> None:
         self._renderer.print_workspace(self._ctx.workspace_name, self._ctx.workspace_id)
-        self._renderer.print_info(
+        self._renderer.print_header(
             f"Hi {self._ctx.identity.display_name}! "
             "Type your task, !<cmd> to run shell commands, or /help."
         )
@@ -112,9 +115,35 @@ class REPL:
             self._renderer.print_error(f"Unknown command: {line}")
         return True
 
+    def _expand_at_refs(self, task: str) -> str:
+        """Replace @path references with file/dir contents."""
+        def _sub(m: re.Match) -> str:
+            raw = m.group(1)
+            path = Path(raw).expanduser()
+            if not path.is_absolute():
+                path = Path.cwd() / path
+            if path.is_dir():
+                files = sorted(
+                    str(p.relative_to(path))
+                    for p in path.rglob("*")
+                    if p.is_file()
+                )
+                listing = "\n".join(files[:200])
+                return f"<dir: {raw}>\n{listing}\n</dir>"
+            if path.is_file():
+                try:
+                    return f"<file: {raw}>\n{path.read_text(errors='replace')}\n</file>"
+                except OSError:
+                    pass
+            self._renderer.print_info(f"@{raw}: not found, skipped")
+            return m.group(0)
+
+        return _AT_REF.sub(_sub, task)
+
     async def _send_task(self, task: str) -> None:
+        task = self._expand_at_refs(task)
         task_id = str(uuid.uuid4())
-        turn_session_id = str(uuid.uuid4())  # fresh per-turn session (Fix 4)
+        turn_session_id = str(uuid.uuid4())
         self._sessions.append(SessionRecord(
             session_id=turn_session_id,
             workspace_id=self._ctx.workspace_id,
@@ -122,16 +151,16 @@ class REPL:
             task_preview=task[:120],
         ))
 
-        try:  # Fix 6: error handling
-            with self._renderer.thinking("Working…"):
-                await self._redis.push_task(
-                    task_id=task_id,
-                    task=task,
-                    session_id=turn_session_id,
-                    user_id=self._ctx.identity.user_id,
-                    workspace_id=self._ctx.workspace_id,
-                )
-                result = await self._redis.get_result(task_id, timeout=300.0)
+        try:
+            await self._redis.push_task(
+                task_id=task_id,
+                task=task,
+                session_id=turn_session_id,
+                user_id=self._ctx.identity.user_id,
+                workspace_id=self._ctx.workspace_id,
+            )
+            from .event_stream import run_task_with_streaming
+            result = await run_task_with_streaming(self._redis, self._renderer, task_id)
         except Exception as exc:
             self._renderer.print_error(f"Connection error: {exc}")
             return
@@ -140,5 +169,14 @@ class REPL:
             self._renderer.print_error(result.get("error", "Unknown error"))
             return
 
-        answer = extract_answer(result.get("state", {}))
-        self._renderer.print_answer(answer, session_id=turn_session_id)
+        state = result.get("state", {})
+        if isinstance(state, dict) and state.get("awaiting_clarification"):
+            # Agent halted to ask for more info — render distinctly. The same
+            # session continues, so the user's next message builds on this turn.
+            self._renderer.print_clarification(
+                state.get("clarification_question") or extract_answer(state),
+                session_id=turn_session_id,
+            )
+        else:
+            answer = extract_answer(result.get("state", {}))
+            self._renderer.print_answer(answer, session_id=turn_session_id)

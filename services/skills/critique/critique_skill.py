@@ -3,7 +3,10 @@ from __future__ import annotations
 import subprocess
 from typing import TYPE_CHECKING, Literal
 
-from .schemas import Critique, ExternalSignals, Issue, Reflection
+try:
+    from .schemas import Critique, ExternalSignals, Issue, Reflection
+except ImportError:
+    from schemas import Critique, ExternalSignals, Issue, Reflection
 
 # Lazy tokenizer: loaded on first use so import of this module does not
 # trigger the heavy transformers + sklearn stack at test-collection time.

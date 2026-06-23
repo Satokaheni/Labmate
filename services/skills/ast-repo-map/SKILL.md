@@ -7,8 +7,8 @@ description: >
   and class definitions ranked by PageRank over the call graph.
 trigger: "Use when starting a new task requiring codebase orientation"
 tools:
-  - ast.repo-map.get_repo_map
-  - ast.repo-map.get_symbols
+  - get_repo_map
+  - get_symbols
 version: "0.2.0"
 license: MIT
 requires: []
@@ -30,7 +30,7 @@ code structure:
 
 ## Available Tools
 
-### `ast.repo-map.get_repo_map`
+### `get_repo_map`
 
 Returns a JSONL list of the most important symbols in the repository, ranked
 by personalized PageRank and bounded by a configurable token budget.
@@ -44,7 +44,7 @@ by personalized PageRank and bounded by a configurable token budget.
 
 Each output line: `{"name": "...", "kind": "function|class|method", "signature": "...", "parent": "...", "loc": "path/to/file:42"}`
 
-### `ast.repo-map.get_symbols`
+### `get_symbols`
 
 Returns all symbols defined in a specific file.
 

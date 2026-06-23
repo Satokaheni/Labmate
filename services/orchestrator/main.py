@@ -51,6 +51,8 @@ from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncO
 from services.orchestrator.storage_manager import StorageManager
 from services.orchestrator.mcp_client_manager import MCPClientManager
 from services.orchestrator.skill_router import SkillRouter
+from services.orchestrator import events
+from services.orchestrator import call_counter
 from services.skill_runner.skill_runner import SkillRunner
 
 _log = logging.getLogger("orchestrator")
@@ -209,6 +211,9 @@ class OrchestratorProcess:
         task_text = ""
         final_state = {}
         task_succeeded = False
+        _emitter: events.EventEmitter | None = None
+        _token = None
+        _counter_token = None
 
         try:
             payload    = json.loads(fields.get("payload", "{}"))
@@ -217,6 +222,13 @@ class OrchestratorProcess:
             session_id = payload.get("session_id") or task_id
             user_id    = payload.get("user_id", "")
             workspace_id = payload.get("workspace_id", "")
+
+            _emitter = events.EventEmitter(self._redis, task_id)
+            _token = events.current_emitter.set(_emitter)
+            # Per-task LLM call counter (A/B instrumentation): set a fresh counter for
+            # this task's context; the litellm success callback increments it.
+            _counter_token = call_counter.start()
+            await _emitter.emit("turn.start", task=task_text)
 
             # Fix 2: Record session if user_id and workspace_id are present
             if user_id and workspace_id:
@@ -240,17 +252,55 @@ class OrchestratorProcess:
 
             _log.info("task %s: %.80s", task_id, task_text)
             final_state = await orch.run_task(
-                task_text, session_id, user_id=user_id, workspace_id=workspace_id
+                task_text, session_id, user_id=user_id, workspace_id=workspace_id,
             )
             task_succeeded = True
+            # If the graph halted for clarification, surface the question — do NOT
+            # call stream_final_answer (it would guess an answer to the ambiguous task).
+            if isinstance(final_state, dict) and final_state.get("awaiting_clarification"):
+                _question = final_state.get("clarification_question", "")
+                final_state["final_answer"] = _question
+                try:
+                    await events.emit("answer.delta", text=_question)
+                    await events.emit("answer.done", text=_question)
+                except Exception:
+                    pass  # best-effort; never let event emission block the result
+            # FIX 10: direct-answer fast-path — the plan node already produced final_answer,
+            # so do NOT call stream_final_answer (it would re-ask the model to re-answer).
+            # Surface the existing final_answer via the same answer.delta/answer.done events.
+            elif isinstance(final_state, dict) and final_state.get("direct_answer"):
+                _answer = final_state.get("final_answer", "")
+                try:
+                    await events.emit("answer.delta", text=_answer)
+                    await events.emit("answer.done", text=_answer)
+                except Exception:
+                    pass  # best-effort; never let event emission block the result
+            # Otherwise stream the final answer with typewriter effect (answer.delta + answer.done)
+            elif hasattr(orch, "stream_final_answer"):
+                try:
+                    streamed = await orch.stream_final_answer(task_text, final_state)
+                    if isinstance(final_state, dict) and streamed:
+                        final_state["final_answer"] = streamed
+                except Exception:
+                    pass  # best-effort; never let streaming block the result
             # Derive ok from final_state.error (FIX #2: failed subtasks now finalize with error set, not exception)
             ok_flag = final_state.get("error") is None
-            await self._write_result(task_id, {"ok": ok_flag, "state": final_state})
+            # A/B instrumentation: llm_calls is the approximate per-task count of
+            # successful litellm completions (see call_counter.py for exactly what it counts).
+            await self._write_result(task_id, {
+                "ok": ok_flag,
+                "state": final_state,
+                "llm_calls": call_counter.get_count(),
+            })
             _log.info("task %s complete", task_id)
 
         except Exception:
             _log.exception("task %s failed", task_id)
-            await self._write_result(task_id, {"ok": False, "error": "task_failed"})
+            await self._write_result(task_id, {
+                "ok": False,
+                "error": "task_failed",
+                "llm_calls": call_counter.get_count(),
+            })
         finally:
             # Fix 2: Complete session in finally block
             if user_id and workspace_id:
@@ -265,6 +315,18 @@ class OrchestratorProcess:
                     await storage.workspaces.complete_session(session_id, ok=ok_flag)
                 except Exception:
                     pass
+            try:
+                _status = "complete" if task_succeeded and (
+                    not isinstance(final_state, dict) or final_state.get("error") is None
+                ) else "error"
+                _answer = final_state.get("final_answer", "") if isinstance(final_state, dict) else ""
+                await events.emit("turn.done", status=_status, final_answer=_answer)
+            except Exception:
+                pass
+            if _token is not None:
+                events.current_emitter.reset(_token)
+            if _counter_token is not None:
+                call_counter.reset(_counter_token)
             await self._redis.xack(GOALS_STREAM, GOALS_GROUP, msg_id)
 
     async def _write_result(self, task_id: str, result: dict) -> None:

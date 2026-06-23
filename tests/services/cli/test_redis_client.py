@@ -48,3 +48,14 @@ async def test_get_result_ok(mock_redis):
     result = await client.get_result("t-1", timeout=5.0)
     assert result["ok"] is True
     assert result["state"]["final_answer"] == "hello"
+
+
+def test_subscribe_events_returns_event_stream():
+    from services.cli.event_stream import EventStream
+    client = LabmateRedisClient.__new__(LabmateRedisClient)
+    client._redis_url = "redis://localhost:6379/0"
+
+    stream = client.subscribe_events("t-99")
+    assert isinstance(stream, EventStream)
+    assert stream._task_id == "t-99"
+    assert stream._redis_url == "redis://localhost:6379/0"

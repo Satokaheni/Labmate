@@ -42,6 +42,21 @@ def _load_workspaces(user_id: str) -> list[dict]:
         return []
 
 
+def _default_workspace(user_id: str) -> dict:
+    """A zero-setup default workspace (rooted at the current dir), persisted so it
+    is reused across sessions. Lets the user start a session without manually
+    creating/picking a workspace each time."""
+    ws = {
+        "workspace_id": "default",
+        "name": "default",
+        "paths": [os.getcwd()],
+        "instructions": "",
+        "user_id": user_id,
+    }
+    _save_workspace(ws)
+    return ws
+
+
 def _save_workspace(ws: dict) -> None:
     existing = []
     if _WS_CACHE.exists():
@@ -49,7 +64,13 @@ def _save_workspace(ws: dict) -> None:
             existing = json.loads(_WS_CACHE.read_text())
         except Exception:
             pass
-    if not any(w.get("workspace_id") == ws["workspace_id"] for w in existing):
+    # Dedup by (workspace_id, user_id): the same literal id (e.g. "default") can
+    # legitimately exist for different users on a shared host.
+    if not any(
+        w.get("workspace_id") == ws["workspace_id"]
+        and w.get("user_id") == ws.get("user_id")
+        for w in existing
+    ):
         existing.append(ws)
     _WS_CACHE.parent.mkdir(parents=True, exist_ok=True)
     _WS_CACHE.write_text(json.dumps(existing, indent=2))
@@ -107,11 +128,28 @@ async def _async_main(
 
     if workspace_id_flag:
         match = next((w for w in existing_ws if w["workspace_id"] == workspace_id_flag), None)
-        if not match:
-            _renderer.print_error(f"Workspace {workspace_id_flag} not found.")
-            raise SystemExit(1)
-        ws_choice_raw = match
+        if match:
+            ws_choice_raw = match
+        else:
+            # Frictionless: auto-create a seeded workspace with the requested id
+            # instead of erroring, so a new --workspace name just works.
+            ws_choice_raw = {
+                "workspace_id": workspace_id_flag,
+                "name": workspace_id_flag,
+                "paths": [os.getcwd()],
+                "instructions": "",
+                "user_id": identity.user_id,
+            }
+            _save_workspace(ws_choice_raw)
+            _renderer.print_info(
+                f"Workspace '{workspace_id_flag}' not found — created a seeded workspace."
+            )
+    elif one_shot or not existing_ws:
+        # No workspace specified: auto-seed a default so a session needs zero setup.
+        # (One-shot can't show the interactive picker; a first-run REPL has nothing to pick.)
+        ws_choice_raw = _default_workspace(identity.user_id)
     else:
+        # REPL with existing workspaces: let the user pick.
         from .workspace_picker import WorkspaceChoice
         ws_choice = pick_workspace(existing_ws)
         ws_choice_raw = {
@@ -124,22 +162,24 @@ async def _async_main(
         _save_workspace(ws_choice_raw)
 
     session_id = resume_id or str(uuid.uuid4())
+    if not resume_id:
+        _renderer.print_header(f"Session: {session_id}  (resume with --resume {session_id})")
     redis_url = _redis_url()
 
     if one_shot:
+        from .event_stream import run_task_with_streaming
         client = LabmateRedisClient(redis_url)
         task_id = str(uuid.uuid4())
         _renderer.print_workspace(ws_choice_raw["name"], ws_choice_raw["workspace_id"])
         try:
-            with _renderer.thinking("Working…"):
-                await client.push_task(
-                    task_id=task_id,
-                    task=one_shot,
-                    session_id=session_id,
-                    user_id=identity.user_id,
-                    workspace_id=ws_choice_raw["workspace_id"],
-                )
-                result = await client.get_result(task_id, timeout=300.0)
+            await client.push_task(
+                task_id=task_id,
+                task=one_shot,
+                session_id=session_id,
+                user_id=identity.user_id,
+                workspace_id=ws_choice_raw["workspace_id"],
+            )
+            result = await run_task_with_streaming(client, _renderer, task_id)
         except Exception as exc:
             _renderer.print_error(f"Connection error: {exc}")
             await client.aclose()
@@ -148,7 +188,14 @@ async def _async_main(
         if not result.get("ok"):
             _renderer.print_error(result.get("error", "unknown"))
             raise SystemExit(1)
-        _renderer.print_answer(extract_answer(result.get("state", {})), session_id=session_id)
+        state = result.get("state", {})
+        if isinstance(state, dict) and state.get("awaiting_clarification"):
+            _renderer.print_clarification(
+                state.get("clarification_question") or extract_answer(state),
+                session_id=session_id,
+            )
+        else:
+            _renderer.print_answer(extract_answer(state), session_id=session_id)
         return
 
     ctx = REPLContext(

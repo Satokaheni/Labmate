@@ -30,30 +30,30 @@ _LAST_REPO: dict[str, str] = {}  # holds {"path": <repo_path>}
 @app.list_tools()
 async def list_tools() -> list[Tool]:
     return [
-        Tool(name="repo_graph.build",
+        Tool(name="build",
              description="Build/update the line-level code graph for a repo. Returns summary stats.",
              inputSchema={"type": "object",
                           "properties": {"repo_path": {"type": "string"}},
                           "required": ["repo_path"]}),
-        Tool(name="repo_graph.search",
+        Tool(name="search",
              description="Search symbols by name. Returns JSONL of file:line matches.",
              inputSchema={"type": "object",
                           "properties": {"query": {"type": "string"},
                                          "top_k": {"type": "integer", "default": 10}},
                           "required": ["query"]}),
-        Tool(name="repo_graph.get_references",
+        Tool(name="get_references",
              description="All sites that reference a symbol. Returns JSONL.",
              inputSchema={"type": "object",
                           "properties": {"file": {"type": "string"},
                                          "symbol": {"type": "string"}},
                           "required": ["file", "symbol"]}),
-        Tool(name="repo_graph.get_callers",
+        Tool(name="get_callers",
              description="Functions/methods that call a symbol. Returns JSONL.",
              inputSchema={"type": "object",
                           "properties": {"file": {"type": "string"},
                                          "symbol": {"type": "string"}},
                           "required": ["file", "symbol"]}),
-        Tool(name="repo_graph.get_callees",
+        Tool(name="get_callees",
              description="Functions/methods this symbol calls. Returns JSONL.",
              inputSchema={"type": "object",
                           "properties": {"file": {"type": "string"},
@@ -64,7 +64,7 @@ async def list_tools() -> list[Tool]:
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-    if name == "repo_graph.build":
+    if name == "build":
         repo_path = arguments["repo_path"]
         builder = RepoGraphBuilder(repo_path)
         edges = builder.build()
@@ -84,16 +84,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     repo_path = _LAST_REPO.get("path")
     if repo_path is None:
         return [TextContent(type="text",
-                            text=json.dumps({"error": "call repo_graph.build first"}))]
+                            text=json.dumps({"error": "call build first"}))]
     store = GraphStore(_db_path(repo_path))
     try:
-        if name == "repo_graph.search":
+        if name == "search":
             rows = store.search(arguments["query"], int(arguments.get("top_k", 10)))
-        elif name == "repo_graph.get_references":
+        elif name == "get_references":
             rows = store.get_references(arguments["file"], arguments["symbol"])
-        elif name == "repo_graph.get_callers":
+        elif name == "get_callers":
             rows = store.get_callers(arguments["file"], arguments["symbol"])
-        elif name == "repo_graph.get_callees":
+        elif name == "get_callees":
             rows = store.get_callees(arguments["file"], arguments["symbol"])
         else:
             return [TextContent(type="text",

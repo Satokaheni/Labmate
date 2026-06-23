@@ -1,0 +1,55 @@
+{
+  "name": "Compositional Instruction Tuning for Multi-turn Function Calling (BUTTON)",
+  "category": "Training methodology",
+  "description": "BUTTON (Bottom-Up Then Top-dOwN, ICLR 2025, arXiv:2410.12952; PKU-Baichuan-MLSystemLab) is a compositional instruction-tuning data pipeline for multi-turn function calling. Bottom-up: generate simple atomic tasks from real-world scenarios, then compose them into compositional tasks via two heuristics — Sequential Composition and Parallel-then-Sequential Composition — and synthesize matching function definitions. Because tasks are built from atomic sub-tasks, the parallel-vs-sequential structure (which sub-tasks are independent) is known by construction. Top-down: a multi-agent environment (simulated human, assistant, tools) generates multi-turn function-calling trajectories. The released BUTTONInstruct dataset (8k points) trains models to decompose and plan multi-step tool use; fine-tuned LLaMA3/Qwen2 models gain large multi-turn gains (e.g., LLaMA3-8B answer accuracy 1.4% to 30.5%).",
+
+  "decomposition_method": "Fine-tuned splitter (implicitly): the model is trained via compositional instruction tuning so that it learns to decompose a compositional user task into atomic sub-tasks and plan the corresponding tool calls across turns. Data is generated bottom-up (atomic tasks composed into compositional tasks) so the decomposition structure is known by construction during data creation; the trained LLM then performs decomposition in-context.",
+  "decomposition_granularity": "semantic unit / atomic task (each atomic task is 'simple, clear, and executable in a single step without planning' and maps to a function call); compositional tasks aggregate multiple atomic tasks.",
+  "ordering_strategy": "Mixed by construction: Sequential Composition yields dependent ordering (later atomic task depends on an earlier one), and Parallel-then-Sequential Composition yields a set of independent (parallelizable) atomic tasks whose results then feed a sequential step. The parallel-ability of sub-tasks is thus known when the data is built.",
+  "decomposition_validation": "Compositionality is enforced/checked during data construction: tasks are decomposed into atomic subgoals and LLM-based verification ensures the generated instructions are complex, reasonable, and solvable, and that the instruction is compatible with its synthesized functions. This explicitly targets solvability and compatibility (function-instruction match). No runtime decomposition validator is described — the trained model is trusted at inference. [uncertain]",
+  "hierarchy_depth": "two-level (compositional task -> atomic sub-tasks); composition is a flat set/sequence of atomic tasks rather than a deep multi-level tree. [uncertain]",
+
+  "router_type": "Not a dedicated router; the fine-tuned LLM acts as planner+selector, choosing which function(s) to call per turn from the provided definitions. Effectively in-context multi-label selection with multi-turn planning. [uncertain]",
+  "routing_model": "prompted LLM (the same fine-tuned model plans and selects tools; models tuned include LLaMA3-8B/70B and Qwen2-7B/72B with BUTTON data)",
+  "handles_ambiguity": "Not a focus of the method. Training emphasizes correct decomposition and planning of solvable compositional tasks; there is no explicit clarification/abstain mechanism for genuinely ambiguous sub-tasks described. Default behavior is best-effort planning by the trained model. [uncertain]",
+  "fallback_behavior": "Not explicitly specified; the model produces a best-effort plan/answer. No described error/abort or escalation path when no function covers a sub-intent (data construction enforces function-instruction compatibility so this is avoided at training time rather than handled at runtime). [uncertain]",
+  "skill_pool_scale_and_retrieval": "full-context: relevant function definitions (synthesized for the compositional task) are provided in the prompt and the model selects among them; no embedding retrieval / large-pool scaling mechanism is part of the method. [uncertain]",
+  "router_agent_asymmetry": "Not applicable / none described — single model sees the function definitions and plans/executes; no privileged separate router. [uncertain]",
+
+  "execution_pattern": "DAG (mixed) within multi-turn trajectories: sequential chains (dependent sub-tasks) and parallel fan-out (independent sub-tasks issued together) combined, reflecting the Sequential and Parallel-then-Sequential composition strategies. Trajectories are multi-turn (assistant calls tools, receives results, continues).",
+  "parallel_vs_concurrent": "parallel (multiple independent calls grouped in a turn via Parallel-then-Sequential composition); the paper toggles/enables parallel calling in constructed data rather than guaranteeing concurrent simultaneous execution. [uncertain]",
+  "dependency_detection": "Explicit by construction: because compositional tasks are assembled from atomic tasks using Sequential vs Parallel-then-Sequential strategies, which sub-tasks are independent (parallelizable) vs dependent (sequential) is known at generation time and baked into the training trajectories — the model learns the distinction from these labeled structures.",
+  "result_aggregation": "iterative / LLM joiner: in top-down multi-turn trajectories, tool outputs are returned into the dialog and the assistant conditions later calls and the final answer on them; the model integrates sub-results in-context. [uncertain]",
+  "mid_chain_feedback": "soft: multi-turn trajectories feed prior tool results back into context so subsequent calls/plan can adapt; no explicit hard re-planning node described. [uncertain]",
+
+  "benchmark_name": "Custom compositional multi-turn function-calling evaluation derived from the BUTTON pipeline (reported with process rate and success rate metrics); also evaluated on a GTA-style multi-turn tool-use benchmark with Inst./Tool./Arg./Summ./Answer-accuracy metrics. [uncertain]",
+  "multi_intent_coverage": "Yes — explicitly compositional and multi-turn: the benchmark/data include sequential (dependent) and parallel (independent) sub-goal structures, the core target of the method.",
+  "accuracy_metric": "Process rate (whether intermediate steps / correct functions are executed, i.e., process supervision) and success rate (final answer/goal achieved, outcome-based); GTA-style evaluation also scores tool selection, argument correctness, and final answer accuracy.",
+  "clarification_capability": "Not measured — the method/benchmark focus on decomposition and multi-step planning quality, not when-to-ask vs when-to-answer or clarification efficiency. [uncertain]",
+  "process_vs_outcome_eval": "Both: reports a process rate (intermediate step correctness, process supervision) alongside a success rate (final outcome). Ablations note that without BUTTON, models retain some process rate but suffer larger success-rate drops due to weak planning.",
+  "eval_stability": "Synthetic multi-agent-simulated trajectories and offline scoring (process/success rate) reduce live-API drift; however the evaluation set is paper-specific rather than a standardized stable-API server, limiting cross-paper comparability. [uncertain]",
+
+  "integration_pattern": "in-context (prompted): the contribution is the BUTTONInstruct dataset + compositional instruction-tuning recipe; the resulting model is a standard multi-turn function-calling LLM. Not tied to a specific agent harness.",
+  "routing_layer": "application-layer (in-model planning and tool selection); no inference-engine-layer routing. [uncertain]",
+  "latency_overhead": "No explicit separate decomposition/planning call at inference — the fine-tuned model plans and emits calls directly within the dialog; parallel sub-tasks reduce round-trips. Cost concentrated in offline data generation (multi-agent simulation), not inference. [uncertain]",
+  "online_adaptation": "static (model fixed after supervised fine-tuning on BUTTONInstruct); no online/bandit/RL adaptation from production feedback.",
+  "adoption": "open-source: code and BUTTONInstruct dataset (8k data points) released on GitHub (PKU-Baichuan-MLSystemLab/BUTTON); published at ICLR 2025. Paper/research artifact, no commercial API.",
+
+  "uncertain": [
+    "decomposition_validation",
+    "hierarchy_depth",
+    "router_type",
+    "handles_ambiguity",
+    "fallback_behavior",
+    "skill_pool_scale_and_retrieval",
+    "router_agent_asymmetry",
+    "parallel_vs_concurrent",
+    "result_aggregation",
+    "mid_chain_feedback",
+    "benchmark_name",
+    "clarification_capability",
+    "eval_stability",
+    "routing_layer",
+    "latency_overhead"
+  ]
+}

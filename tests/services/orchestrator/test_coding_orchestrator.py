@@ -6,7 +6,54 @@ import pytest
 import graphlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from services.orchestrator.coding_orchestrator import TokenBudget, AsyncOrchestrator, Result, SubTask
+from services.orchestrator.coding_orchestrator import TokenBudget, AsyncOrchestrator, Result, SubTask, CodingOrchestrator
+
+
+def _chunk(text):
+    return MagicMock(choices=[MagicMock(delta=MagicMock(content=text))])
+
+
+@pytest.mark.asyncio
+async def test_stream_final_answer_emits_deltas_and_returns_text():
+    from services.orchestrator import events
+    orch = CodingOrchestrator(graph=None, workspace_path=".", docker_container="")
+
+    async def fake_stream(*a, **k):
+        for t in ["Hel", "lo ", "world"]:
+            yield _chunk(t)
+
+    captured = []
+
+    class FakeEmitter:
+        async def emit(self, type, **f):
+            captured.append({"type": type, **f})
+
+    with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
+               new_callable=AsyncMock, return_value=fake_stream()):
+        token = events.current_emitter.set(FakeEmitter())
+        try:
+            text = await orch.stream_final_answer(
+                "say hi",
+                {"final_answer": "Hello world",
+                 "goal_tree": {"root": {"result": "Hello world"}}}
+            )
+        finally:
+            events.current_emitter.reset(token)
+
+    assert text == "Hello world"
+    deltas = [e["text"] for e in captured if e["type"] == "answer.delta"]
+    assert deltas == ["Hel", "lo ", "world"]
+    assert any(e["type"] == "answer.done" and e["text"] == "Hello world" for e in captured)
+
+
+@pytest.mark.asyncio
+async def test_stream_final_answer_falls_back_on_error():
+    from services.orchestrator import events
+    orch = CodingOrchestrator(graph=None, workspace_path=".", docker_container="")
+    with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
+               new_callable=AsyncMock, side_effect=RuntimeError("stream boom")):
+        text = await orch.stream_final_answer("x", {"final_answer": "assembled answer"})
+    assert text == "assembled answer"
 
 
 def _make_mock_response(content: str = "done") -> MagicMock:
@@ -14,6 +61,55 @@ def _make_mock_response(content: str = "done") -> MagicMock:
     r.choices = [MagicMock()]
     r.choices[0].message.content = content
     return r
+
+
+def _msg_with_tool_call(name, arguments_json, reasoning=""):
+    tc = MagicMock()
+    tc.id = "call-1"
+    tc.function = MagicMock()
+    tc.function.name = name
+    tc.function.arguments = arguments_json
+    msg = MagicMock()
+    msg.tool_calls = [tc]
+    msg.content = ""
+    msg.reasoning_content = reasoning
+    msg.model_dump = lambda: {"role": "assistant", "content": "", "tool_calls": []}
+    return msg
+
+
+@pytest.mark.asyncio
+async def test_react_execute_emits_tool_events_for_run_bash():
+    from services.orchestrator import events
+    orch = AsyncOrchestrator(skill_router=None, mcp=MagicMock())
+    orch.mcp.call_tool = AsyncMock(return_value=MagicMock(
+        content=[MagicMock(text="hi")], isError=False
+    ))
+
+    resp1 = MagicMock(choices=[MagicMock(
+        message=_msg_with_tool_call("run_bash", '{"command":"echo hi"}', "need shell")
+    )])
+    finish_msg = MagicMock(tool_calls=None, content="done")
+    finish_msg.model_dump = lambda: {"role": "assistant", "content": "done"}
+    resp2 = MagicMock(choices=[MagicMock(message=finish_msg)])
+
+    captured = []
+
+    class FakeEmitter:
+        async def emit(self, type, **f):
+            captured.append({"type": type, **f})
+
+    with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
+               new_callable=AsyncMock, side_effect=[resp1, resp2]):
+        token = events.current_emitter.set(FakeEmitter())
+        try:
+            await orch.react_execute("run echo")
+        finally:
+            events.current_emitter.reset(token)
+
+    types = [e["type"] for e in captured]
+    assert "tool.start" in types and "tool.done" in types
+    start = next(e for e in captured if e["type"] == "tool.start")
+    assert start["name"] == "run_bash" and start["kind"] == "tool"
 
 
 @pytest.mark.mocked
@@ -636,6 +732,211 @@ class TestReactExecute:
             assert result["ok"] is True
             assert "fallback works" in result["summary"]
 
+    @pytest.mark.asyncio
+    async def test_react_execute_skill_failure_surfaces_error_message(self):
+        """Skill-first shortcut: when skill fails, summary must contain error, never literal 'null'."""
+        runner = MagicMock()
+        runner.reset_activations.return_value = None
+        skill_router = MagicMock()
+        skill_router.runner = runner
+        orch = self._make_orch(skill_router=skill_router)
+
+        # Mock skill_router.run() to return a failure response
+        skill_router.run = AsyncMock(return_value={
+            "ok": False,
+            "error": "timeout"
+        })
+
+        result = await orch.react_execute("some goal that matches a skill")
+
+        # Verify the result reflects failure
+        assert result["ok"] is False
+        # The summary must surface the actual error, NOT the literal string "null"
+        assert result["summary"] != "null"
+        assert "timeout" in result["summary"]
+
+    @pytest.mark.asyncio
+    async def test_react_execute_skill_success_with_string_result(self):
+        """Skill-first shortcut: when skill succeeds with string result, return it."""
+        runner = MagicMock()
+        runner.reset_activations.return_value = None
+        skill_router = MagicMock()
+        skill_router.runner = runner
+        orch = self._make_orch(skill_router=skill_router)
+
+        # Mock skill_router.run() to return a success response with string result
+        skill_router.run = AsyncMock(return_value={
+            "ok": True,
+            "result": "skill execution completed successfully"
+        })
+
+        result = await orch.react_execute("some goal that matches a skill")
+
+        # Verify the result reflects success
+        assert result["ok"] is True
+        assert "skill execution completed successfully" in result["summary"]
+        assert result["summary"] != "null"
+
+    @pytest.mark.asyncio
+    async def test_react_execute_skill_success_with_none_result(self):
+        """Skill-first shortcut: ok=True but result=None should NOT return literal 'null'."""
+        runner = MagicMock()
+        runner.reset_activations.return_value = None
+        skill_router = MagicMock()
+        skill_router.runner = runner
+        orch = self._make_orch(skill_router=skill_router)
+
+        # Mock skill_router.run() to return success with None result
+        skill_router.run = AsyncMock(return_value={
+            "ok": True,
+            "result": None
+        })
+
+        result = await orch.react_execute("some goal that matches a skill")
+
+        # Verify: ok=True but summary is NOT the literal string "null"
+        assert result["ok"] is True
+        assert result["summary"] != "null"
+        # Should use the neutral placeholder
+        assert result["summary"] == "(no output)"
+
+    @pytest.mark.asyncio
+    async def test_react_execute_skill_success_with_empty_result(self):
+        """Skill-first shortcut: ok=True with empty string or False result."""
+        runner = MagicMock()
+        runner.reset_activations.return_value = None
+        skill_router = MagicMock()
+        skill_router.runner = runner
+        orch = self._make_orch(skill_router=skill_router)
+
+        # Mock skill_router.run() to return success with empty string result
+        skill_router.run = AsyncMock(return_value={
+            "ok": True,
+            "result": ""
+        })
+
+        result = await orch.react_execute("some goal that matches a skill")
+
+        # Verify: ok=True but summary is NOT literal "null"
+        assert result["ok"] is True
+        assert result["summary"] == "(no output)"
+
+    @pytest.mark.asyncio
+    async def test_react_execute_skill_failure_with_none_error(self):
+        """Skill-first shortcut: ok=False with error=None should use fallback message."""
+        runner = MagicMock()
+        runner.reset_activations.return_value = None
+        skill_router = MagicMock()
+        skill_router.runner = runner
+        orch = self._make_orch(skill_router=skill_router)
+
+        # Mock skill_router.run() to return failure with error=None
+        skill_router.run = AsyncMock(return_value={
+            "ok": False,
+            "error": None
+        })
+
+        result = await orch.react_execute("some goal that matches a skill")
+
+        # Verify: should not crash and should use fallback message
+        assert result["ok"] is False
+        assert result["summary"] == "skill failed"
+        assert "null" not in result["summary"]
+
+    @pytest.mark.asyncio
+    async def test_react_execute_skill_failure_tool_error_surfaces_inner_content(self):
+        """tool_error: the real diagnostic lives in result content, not the discriminator."""
+        runner = MagicMock()
+        runner.reset_activations.return_value = None
+        skill_router = MagicMock()
+        skill_router.runner = runner
+        orch = self._make_orch(skill_router=skill_router)
+
+        skill_router.run = AsyncMock(return_value={
+            "ok": False,
+            "error": "tool_error",
+            "result": {"content": [{"type": "text", "text": "Traceback: ZeroDivisionError"}]},
+        })
+
+        result = await orch.react_execute("some goal that matches a skill")
+
+        assert result["ok"] is False
+        # discriminator kept, but the real error text is surfaced for the reflect loop
+        assert "tool_error" in result["summary"]
+        assert "ZeroDivisionError" in result["summary"]
+
+    @pytest.mark.asyncio
+    async def test_react_execute_skill_failure_surfaces_detail(self):
+        """skill_unavailable/dispatch_failed: the human cause lives in 'detail'."""
+        runner = MagicMock()
+        runner.reset_activations.return_value = None
+        skill_router = MagicMock()
+        skill_router.runner = runner
+        orch = self._make_orch(skill_router=skill_router)
+
+        skill_router.run = AsyncMock(return_value={
+            "ok": False,
+            "error": "skill_unavailable",
+            "detail": "no tool 'frobnicate' in skill 'foo'",
+        })
+
+        result = await orch.react_execute("some goal that matches a skill")
+
+        assert result["ok"] is False
+        assert "skill_unavailable" in result["summary"]
+        assert "frobnicate" in result["summary"]
+
+    @pytest.mark.asyncio
+    async def test_react_execute_skill_success_with_content_list_no_text(self):
+        """Skill-first shortcut: result with content list but no text fields."""
+        runner = MagicMock()
+        runner.reset_activations.return_value = None
+        skill_router = MagicMock()
+        skill_router.runner = runner
+        orch = self._make_orch(skill_router=skill_router)
+
+        # Mock skill_router.run() to return success with content list but no text fields
+        skill_router.run = AsyncMock(return_value={
+            "ok": True,
+            "result": {
+                "content": [
+                    {"type": "file", "path": "/some/file"},
+                    {"type": "json", "data": {"key": "value"}}
+                ]
+            }
+        })
+
+        result = await orch.react_execute("some goal that matches a skill")
+
+        # Verify: content list with no text should use placeholder, not empty string
+        assert result["ok"] is True
+        assert result["summary"] == "(no output)"
+
+    @pytest.mark.asyncio
+    async def test_react_execute_skill_success_with_structured_dict_result(self):
+        """Skill-first shortcut: ok=True with structured dict result (JSON serialization)."""
+        runner = MagicMock()
+        runner.reset_activations.return_value = None
+        skill_router = MagicMock()
+        skill_router.runner = runner
+        orch = self._make_orch(skill_router=skill_router)
+
+        # Mock skill_router.run() to return success with structured dict result
+        skill_router.run = AsyncMock(return_value={
+            "ok": True,
+            "result": {
+                "status": "complete",
+                "count": 42
+            }
+        })
+
+        result = await orch.react_execute("some goal that matches a skill")
+
+        # Verify: structured result is JSON-serialized
+        assert result["ok"] is True
+        assert "complete" in result["summary"]
+        assert "42" in result["summary"]
+
 
 @pytest.mark.mocked
 class TestRunWorkerUsesReactExecute:
@@ -688,3 +989,11 @@ class TestAsyncOrchestratorInit:
         assert orch.mcp is None
         assert orch.workspace == "."
         assert orch.max_steps == 6
+
+
+def test_react_system_prompt_directs_code_to_sandbox():
+    import inspect
+    from services.orchestrator import coding_orchestrator
+    src = inspect.getsource(coding_orchestrator.AsyncOrchestrator.react_execute)
+    assert "code-sandbox" in src
+    assert "run_bash" in src

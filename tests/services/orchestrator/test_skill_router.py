@@ -7,6 +7,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from services.orchestrator.skill_router import SkillRouter
+from services.orchestrator import events
 from services.skill_runner.skill_runner import SkillRunner, SkillMeta
 from pathlib import Path
 
@@ -103,11 +104,11 @@ class TestSkillRouter:
             result = await router.select("Map this repository")
 
             assert result == "ast-repo-map"
-            mock_acomp.assert_awaited_once()
-            call_kwargs = mock_acomp.call_args.kwargs
-            assert call_kwargs["model"] == "openai/gemma-4-31b"
-            assert call_kwargs["api_key"] == "not-needed"
-            assert call_kwargs["extra_body"]["thinking_budget_tokens"] == 0
+            # Two-tier: unanimous agreement on first 3 samples → no tiebreak
+            assert mock_acomp.await_count == 3
+            # All calls should use thinking_budget_tokens == 0
+            for call in mock_acomp.await_args_list:
+                assert call.kwargs["extra_body"]["thinking_budget_tokens"] == 0
 
     @pytest.mark.asyncio
     async def test_select_returns_none_on_no_tool_call(self, router):
@@ -349,6 +350,36 @@ class TestSkillRouter:
             result = await router.run("task")
             assert result is None
 
+    @pytest.mark.asyncio
+    async def test_run_emits_tool_start_and_done(self, router):
+        """run() emits tool.start and tool.done events with reasoning."""
+        router.select = AsyncMock(return_value="ast-repo-map")
+        router._last_reasoning = "the task asks to map the repo"
+        router.plan_tool_call = AsyncMock(return_value={"tool": "map", "arguments": {"path": "."}})
+        router.execute = AsyncMock(return_value={"ok": True, "result": {"content": [{"text": "ok"}]}})
+
+        captured = []
+
+        class FakeEmitter:
+            async def emit(self, type, **f):
+                captured.append({"type": type, **f})
+
+        token = events.current_emitter.set(FakeEmitter())
+        try:
+            await router.run("map the repo")
+        finally:
+            events.current_emitter.reset(token)
+
+        types = [e["type"] for e in captured]
+        assert "tool.start" in types and "tool.done" in types
+        start = next(e for e in captured if e["type"] == "tool.start")
+        assert start["name"] == "ast-repo-map"
+        assert start["kind"] == "skill"
+        assert start["reasoning_why"] == "the task asks to map the repo"
+        done = next(e for e in captured if e["type"] == "tool.done")
+        assert done["status"] == "done"
+        assert "tool_id" in start and start["tool_id"] == done["tool_id"]
+
 
 @pytest.mark.mocked
 class TestSkillRouterIntegration:
@@ -388,10 +419,11 @@ class TestSkillRouterIntegration:
         )
 
         # Mock acompletion calls
+        # Two-tier select: 3 unanimous calls, then 1 plan call
         select_response = _make_tool_call_response("test-skill")
         plan_response = _make_mock_acompletion_response('{"tool": "do_work", "arguments": {"input": "data"}}')
 
-        responses = [select_response, plan_response]
+        responses = [select_response, select_response, select_response, plan_response]
         call_count = [0]
 
         async def mock_acomp(*args, **kwargs):
@@ -420,3 +452,73 @@ class TestSkillRouterIntegration:
         )
 
         assert router._redis is not None
+
+
+@pytest.mark.mocked
+class TestTwoTierSelect:
+    @pytest.fixture
+    def router(self):
+        runner = MagicMock(spec=SkillRunner)
+        runner.catalog = {
+            "ast-repo-map": SkillMeta("ast-repo-map", "Map a repo",
+                                      Path("/fake/SKILL.md"), "bundled"),
+            "web-search": SkillMeta("web-search", "Search the web",
+                                    Path("/fake/SKILL.md"), "bundled"),
+        }
+        runner.catalog_prompt.return_value = "- ast-repo-map: Map a repo\n- web-search: Search the web"
+        runner.tool_schema.return_value = {"type": "function", "function": {"name": "load_skill"}}
+        return SkillRouter(runner=runner, redis=AsyncMock(),
+                           gemma_api_base="http://localhost:8000/v1")
+
+    @pytest.mark.asyncio
+    async def test_unanimous_returns_immediately_without_tiebreak(self, router):
+        """3 agreeing samples → return pick; no 4th (tiebreak) call."""
+        resp = _make_tool_call_response("web-search")
+        with patch("services.orchestrator.skill_router.litellm.acompletion",
+                   new=AsyncMock(return_value=resp)) as mac:
+            pick = await router.select("find recent papers")
+        assert pick == "web-search"
+        # Exactly SELECT_ATTEMPTS (3) calls — no tiebreak sample.
+        assert mac.await_count == 3
+        # All three used a zero thinking budget.
+        for call in mac.await_args_list:
+            assert call.kwargs["extra_body"]["thinking_budget_tokens"] == 0
+
+    @pytest.mark.asyncio
+    async def test_disagreement_runs_tiebreak_with_budget(self, router):
+        """Disagreeing samples → one extra tiebreak call with budget=1024."""
+        responses = [
+            _make_tool_call_response("web-search"),
+            _make_tool_call_response("ast-repo-map"),
+            _make_tool_call_response("web-search"),
+            _make_tool_call_response("ast-repo-map"),  # tiebreak result
+        ]
+        with patch("services.orchestrator.skill_router.litellm.acompletion",
+                   new=AsyncMock(side_effect=responses)) as mac:
+            pick = await router.select("ambiguous task")
+        assert pick == "ast-repo-map"
+        assert mac.await_count == 4  # 3 samples + 1 tiebreak
+        # The 4th call uses the thinking budget.
+        assert mac.await_args_list[3].kwargs["extra_body"]["thinking_budget_tokens"] == 1024
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_sample_picks(self, router):
+        """No sample emits a valid catalog pick → None, no tiebreak."""
+        no_call = MagicMock()
+        no_call.choices = [MagicMock()]
+        no_call.choices[0].message.tool_calls = None
+        with patch("services.orchestrator.skill_router.litellm.acompletion",
+                   new=AsyncMock(return_value=no_call)) as mac:
+            pick = await router.select("nothing matches")
+        assert pick is None
+        assert mac.await_count == 3  # no tiebreak when there are zero picks
+
+    @pytest.mark.asyncio
+    async def test_sample_select_returns_validated_pick(self, router):
+        """_sample_select returns a catalog-valid name, ignores out-of-catalog."""
+        good = _make_tool_call_response("web-search")
+        bad = _make_tool_call_response("not-a-real-skill")
+        with patch("services.orchestrator.skill_router.litellm.acompletion",
+                   new=AsyncMock(side_effect=[good, bad])):
+            assert await router._sample_select("t", 0) == "web-search"
+            assert await router._sample_select("t", 0) is None

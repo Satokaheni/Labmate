@@ -141,3 +141,27 @@ class TestStateJsonSerializable:
         assert restored["goal_tree"]["root"]["id"] == "root"
         assert restored["session_id"] == "test-session-001"
         assert restored["goal_tree"]["root"]["status"] == "PENDING"
+
+
+@pytest.mark.mocked
+class TestAmbiguityFields:
+    def test_state_has_ambiguity_fields(self):
+        """A1: State must carry root_goal, assumptions, ambiguity, blocking_question."""
+        from services.orchestrator.types import State
+        annotations = State.__annotations__
+        assert "root_goal" in annotations
+        assert "assumptions" in annotations
+        assert "ambiguity" in annotations
+        assert "blocking_question" in annotations
+
+
+@pytest.mark.mocked
+class TestVerificationFields:
+    def test_state_has_verification_fields(self):
+        """A2: State must carry last_artifact, verified, critique_score, critique_notes."""
+        from services.orchestrator.types import State
+        annotations = State.__annotations__
+        assert "last_artifact" in annotations
+        assert "verified" in annotations
+        assert "critique_score" in annotations
+        assert "critique_notes" in annotations

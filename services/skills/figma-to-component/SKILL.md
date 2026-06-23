@@ -7,8 +7,8 @@ description: >
   with auto-layout and design variables. Requires FIGMA_ACCESS_TOKEN env var.
 trigger: "Use when converting a specific Figma component or frame to React code"
 tools:
-  - figma_to_component.convert
-  - figma_to_component.inspect
+  - convert
+  - inspect
 version: "0.1.0"
 license: MIT
 requires: [design-token-transform]

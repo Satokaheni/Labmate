@@ -7,10 +7,10 @@ description: >
   Produces cited answers — each claim traceable to a source paper and page.
 trigger: "Use when answering questions from a local PDF library or finding evidence for academic claims"
 tools:
-  - paper_rag.add_papers
-  - paper_rag.query
-  - paper_rag.search
-  - paper_rag.list_papers
+  - add_papers
+  - query
+  - search
+  - list_papers
 version: "0.1.0"
 license: MIT
 requires: [pdf-parse]
@@ -22,10 +22,10 @@ Cited agentic RAG over scientific PDFs using PaperQA2, backed by the shared Chro
 
 ## Tools
 
-- `paper_rag.add_papers(paths: list[str]) -> str` — ingest PDFs (parse, embed, store). Returns JSON `{added, errors, count}`.
-- `paper_rag.query(question: str, top_k: int = 5) -> str` — cited answer. Returns JSON `{question, answer, evidence, citations}`.
-- `paper_rag.search(query: str, top_k: int = 10) -> str` — similarity search. Returns JSONL, one match per line.
-- `paper_rag.list_papers() -> str` — list ingested papers. Returns JSON array of `{title, path, docname, citation}`.
+- `add_papers(paths: list[str]) -> str` — ingest PDFs (parse, embed, store). Returns JSON `{added, errors, count}`.
+- `query(question: str, top_k: int = 5) -> str` — cited answer. Returns JSON `{question, answer, evidence, citations}`.
+- `search(query: str, top_k: int = 10) -> str` — similarity search. Returns JSONL, one match per line.
+- `list_papers() -> str` — list ingested papers. Returns JSON array of `{title, path, docname, citation}`.
 
 ## Environment
 

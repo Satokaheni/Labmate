@@ -42,6 +42,9 @@ _stop_pid "orchestrator.main" "$PIDS/orchestrator.pid"
 # ─── Skill worker ─────────────────────────────────────────────────────────────
 _stop_pid "skill_worker.worker" "$PIDS/skill-worker.pid"
 
+# ─── SearXNG (native metasearch) ──────────────────────────────────────────────
+_stop_pid "searx.webapp" "$PIDS/searxng.pid"
+
 # ─── Model server (Gemma 4 via llama.cpp) — only with --all/--model ───────────
 if $STOP_MODEL; then
   if [[ -f "$PIDS/llama-server.pid" ]] && kill -0 "$(cat "$PIDS/llama-server.pid")" 2>/dev/null; then

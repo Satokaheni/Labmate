@@ -61,13 +61,13 @@ const server = new Server(
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
-      name: "component_doc.generate",
+      name: "generate",
       description:
         "Generate a markdown prop table, full markdown doc, and optional Storybook CSF3 story for a single React component file. AST-based (ts-morph), deterministic. component_path must be absolute.",
       inputSchema: GENERATE_SCHEMA,
     },
     {
-      name: "component_doc.generate_batch",
+      name: "generate_batch",
       description:
         "Generate documentation for every React component matching a glob pattern under a directory. Returns JSONL (one ComponentDoc JSON per line). dir_path must be absolute.",
       inputSchema: BATCH_SCHEMA,
@@ -79,12 +79,12 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args } = req.params;
   try {
     switch (name) {
-      case "component_doc.generate": {
+      case "generate": {
         const a = generateInput.parse(args);
         const doc = await buildDoc(a.component_path, a.include_stories);
         return { content: [{ type: "text", text: JSON.stringify(doc, null, 2) }] };
       }
-      case "component_doc.generate_batch": {
+      case "generate_batch": {
         const a = batchInput.parse(args);
         if (!path.isAbsolute(a.dir_path)) {
           throw new Error(`dir_path must be an absolute path, got: ${a.dir_path}`);

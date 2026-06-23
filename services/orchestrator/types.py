@@ -50,6 +50,23 @@ class State(TypedDict, total=False):
     final_answer: str                 # Clean summary for Discord/user display
     workspace_id: str                 # which workspace this session belongs to
     user_id: str                      # stable user identifier
+    # A1 ambiguity gate
+    root_goal: str                    # the original incoming task text
+    assumptions: list[str]            # assumptions an agent must make to proceed
+    ambiguity: float                  # 0.0 fully specified .. 1.0 critically underspecified
+    blocking_question: str            # the single question to ask the user, if any
+    # A2 critique/verify gate
+    last_artifact: dict               # {"type": "code"|"writing"|"other", "payload": str}
+    verified: bool                    # True once verify has run
+    critique_score: float             # 0.0 .. 1.0 quality score from critique skill
+    critique_notes: str               # human-readable critique summary
+    verify_retries: int               # FIX 9: count of verify->reflect passes taken (bounds the verify gate)
+    _verify_reflect: bool             # FIX 9: verify node's decision flag read by verify_router
+    # Multi-intent routing clarification gate
+    awaiting_clarification: bool      # True when route() needs user input before proceeding
+    clarification_question: str       # the single question to surface to the user
+    # FIX 10: direct-answer fast-path
+    direct_answer: bool               # True when the plan node answered a skill-less single intent directly
 
 
 def now_iso() -> str:

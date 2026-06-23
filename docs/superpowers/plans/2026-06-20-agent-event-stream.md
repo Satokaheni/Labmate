@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the orchestrator emit a live, transport-agnostic event stream so any client (CLI or future WebSocket frontend) can see (1) which skill/tool was selected for a task, (2) when each starts running and finishes, and (3) the model's reasoning for the call — for debugging.
+**Goal:** Make the orchestrator emit a live, transport-agnostic event stream so any client (CLI or future WebSocket frontend) can see (1) which skill/tool was selected for a task, (2) when each starts running and finishes, (3) the model's reasoning for the call (for debugging), and (4) the final answer streamed token-by-token so it feels like the agent is typing (Claude-style).
 
 **Architecture:** The orchestrator publishes JSON events to a per-task **Redis Stream** `labmate:events:<task_id>` (`XADD`). This is transport-neutral: a CLI tails it with `XREAD BLOCK`; a future WebSocket gateway tails it the same way and relays frames. A task-scoped `EventEmitter` is held in a `contextvars.ContextVar` set once per goal in `main._handle`, so the deeply-nested emit sites (skill router, ReAct executor) emit without threading an emitter through every signature. When no emitter is set (unit tests), emission is a no-op. Event shapes are a subset of `FRONTEND_SPEC.md §4 StreamEvent` so the frontend later consumes identical JSON.
 
@@ -18,6 +18,88 @@
 - Emission MUST be best-effort: a Redis/emit failure must never break task execution (wrap every emit in try/except inside the emitter).
 - Event channel name: `labmate:events:<task_id>` (Redis Stream). Result blob (`labmate:result:<task_id>`) and goals stream are unchanged.
 - Scope: ONLY the 3 asks (tool selection, run/finish lifecycle, reasoning). No auth, artifacts, context accounting, modes, or WebSocket gateway.
+
+---
+
+## Architecture & Event Flow
+
+```
+ producer (orchestrator process)                          consumers
+ ───────────────────────────────                          ─────────
+ main._handle(goal)                                        CLI:
+   set current_emitter = EventEmitter(redis, task_id)        XREAD BLOCK labmate:events:<id>
+   emit turn.start                                           → render rows live
+   ├─ graph.ainvoke (LangGraph)                            WS gateway (future):
+   │    plan_node      ── architect reasoning              → emit reasoning            XREAD BLOCK same stream
+   │    execute_node ─ plan_and_dispatch                                               → relay frames to browser
+   │      react_execute (per subtask)                      replay/reconnect:
+   │        skill_router.run                                 XRANGE labmate:events:<id>
+   │          select   ── emit reasoning + tool.start          from last seq
+   │          execute  ── emit tool.done
+   │        (ReAct loop fallback) ── emit tool.start/done + reasoning
+   │    check_node / reflect_node
+   ├─ stream_final_answer ── emit answer.delta* → answer.done
+   emit turn.done
+                         │
+                         ▼
+        Redis Stream  labmate:events:<task_id>   (XADD, MAXLEN ~2000)
+```
+
+**Why this shape:**
+- **One transport for all clients.** The orchestrator only ever does `XADD` to `labmate:events:<task_id>`. A CLI tails it with `XREAD BLOCK`; a WebSocket gateway tails it the same way and relays to browsers. No client-specific code in the orchestrator. (Matches `FRONTEND_SPEC.md §4`, whose `StreamEvent` union our events are a subset of.)
+- **Redis Stream (not pub/sub)** so events are ordered, carry a `seq`, survive a slow/late consumer, and support reconnect via `XRANGE` from the last-seen id (`FRONTEND_SPEC.md §8`). Pub/sub would drop events for a client that connects mid-task.
+- **Emitter via `ContextVar`**, set once per goal in `main._handle`. The deeply-nested emit sites (`skill_router`, `react_execute`) call a module-level `emit()` that reads the ContextVar — no emitter threaded through every signature. Unset (unit tests) ⇒ no-op.
+- **Best-effort**: every `XADD` is wrapped in try/except; telemetry can never break task execution.
+- **Reasoning** comes from `message.reasoning_content` (server runs `--reasoning-format deepseek`), captured at each LLM call and attached to `reasoning` events and `tool.start.reasoning_why`. `reasoning_content` and `content` stay separate (`FRONTEND_SPEC.md §9.2`).
+
+## Event Reference (full schemas)
+
+Every event is a JSON object with this envelope plus its type-specific fields:
+
+```jsonc
+{ "type": "<event type>", "task_id": "<goal id>", "seq": <monotonic int>, "ts": <epoch seconds> }
+```
+
+| type | type-specific fields | emitted by |
+|---|---|---|
+| `turn.start` | `task: string` | `main._handle` (Task 2) |
+| `reasoning` | `node: "route"\|"execute"\|...`, `summary: string` (≤120 chars), `text: string` | `skill_router.select`, `react_execute` (Tasks 3,4) |
+| `tool.start` | `tool_id: string`, `name: string`, `kind: "skill"\|"tool"`, `args: object`, `reasoning_why: string` | `skill_router.run`, `react_execute` (Tasks 3,4) |
+| `tool.done` | `tool_id: string`, `status: "done"\|"error"`, `summary: string`, `result: any`, `duration_ms: int` | `skill_router.run`, `react_execute` (Tasks 3,4) |
+| `answer.delta` | `text: string` (incremental chunk) | `stream_final_answer` (Task 6) |
+| `answer.done` | `text: string` (full answer) | `stream_final_answer` (Task 6) |
+| `turn.done` | `status: "complete"\|"error"`, `final_answer: string` | `main._handle` (Task 2) |
+
+`tool_id` correlates a `tool.start` with its `tool.done`. Mapping to `FRONTEND_SPEC.md §4`: `turn.start`→`turn.created`, `tool.start`/`tool.done`→`tool.start`/`tool.done`, `reasoning`→`reasoning.done`, `answer.delta`→`answer.delta`, `turn.done`→`turn.done`. Out-of-scope `StreamEvent` members (`node.enter`, `context.update`, `agent.status`, `artifact.created`, `tool.frame`) are deferred — adding them later is additive, no channel change.
+
+## Event Sequence — a typical skill task
+
+For "Parse the PDF at /tmp/x.pdf into markdown" (single skill, with answer streaming):
+
+```
+turn.start    {task:"Parse the PDF ..."}
+reasoning     {node:"route", summary:"task matches pdf-parse", text:"..."}
+tool.start    {tool_id:"a1b2", name:"pdf-parse", kind:"skill", args:{path:"/tmp/x.pdf"}, reasoning_why:"..."}
+tool.done     {tool_id:"a1b2", status:"done", summary:"parsed 1 page", result:{...}, duration_ms:11200}
+answer.delta  {text:"The PDF "}
+answer.delta  {text:"contains ..."}            (many)
+answer.done   {text:"The PDF contains ..."}
+turn.done     {status:"complete", final_answer:"The PDF contains ..."}
+```
+
+A non-skill subtask that runs shell instead would emit `tool.start`/`tool.done` with `name:"run_bash", kind:"tool"`. A multi-subtask goal repeats the `reasoning`/`tool.*` group per subtask before the single `answer.*` + `turn.done`.
+
+## Consumer Contract
+
+A client renders by reducing the ordered event stream:
+1. Open the task's view on `turn.start`.
+2. Append a collapsible reasoning row on `reasoning` (show `summary`, expand to `text`).
+3. Append a tool row on `tool.start` (status "running", show `name`/`args`, expandable `reasoning_why`); flip it to done/error and fill `summary`/`result`/`duration_ms` on the matching `tool.done` (by `tool_id`).
+4. Stream the answer typewriter-style by appending each `answer.delta.text`; finalize on `answer.done`.
+5. Close the turn on `turn.done` (`status` drives success/error styling).
+6. **Reconnect/replay:** persist the last `seq`; on reconnect, `XRANGE labmate:events:<id> <lastid> +` to catch up, then resume `XREAD BLOCK`.
+
+The reference CLI consumer is `services/cli/event_stream.py::tail_events` (Task 5); a WebSocket gateway is the same loop with a `websocket.send(json)` per event (not built in this plan).
 
 ---
 
@@ -39,7 +121,11 @@ Event types emitted (transport-neutral JSON; all carry `type`, `task_id`, `seq`,
 | `reasoning` | after any reasoning-bearing LLM call | `node`, `summary`, `text` |
 | `tool.start` | a skill/tool is selected & about to run | `tool_id`, `name`, `kind` (`skill`\|`tool`), `args`, `reasoning_why` |
 | `tool.done` | that skill/tool returns | `tool_id`, `status` (`done`\|`error`), `summary`, `result`, `duration_ms` |
+| `answer.delta` | each chunk of the streamed final answer | `text` (the incremental delta) |
+| `answer.done` | final answer fully streamed | `text` (the complete answer) |
 | `turn.done` | run_task returns/raises | `status` (`complete`\|`error`), `final_answer` |
+
+**Streaming the answer (the "agent is typing" effect):** after the graph finishes, the orchestrator composes the user-facing reply with a single **streamed** LLM call (`litellm.acompletion(stream=True)`), emitting one `answer.delta` per chunk so any client renders it token-by-token like the Claude UI, then `answer.done` with the full text. This matches `FRONTEND_SPEC.md §4` `answer.delta`. `reasoning_content` and `content` stream as separate fields — only `content` deltas become `answer.delta` (reasoning deltas are out of scope for this slice but trivially addable as `reasoning.delta`).
 
 ---
 
@@ -755,13 +841,160 @@ git commit -m "feat(events): reference event-stream consumer + live e2e verifica
 
 ---
 
+## Task 6: Stream the final answer (the "agent is typing" effect)
+
+**Files:**
+- Modify: `services/orchestrator/coding_orchestrator.py` (add `CodingOrchestrator.stream_final_answer`)
+- Modify: `services/orchestrator/main.py` (call it in `_handle` after `run_task`, before writing the result)
+- Test: `tests/services/orchestrator/test_coding_orchestrator.py`
+
+**Interfaces:**
+- Produces: `async def stream_final_answer(self, task: str, final_state: dict) -> str` on `CodingOrchestrator`. Runs ONE streamed `litellm.acompletion(stream=True)` that composes the user-facing reply from the goal-tree results, emits an `answer.delta` per content chunk, then `answer.done` with the full text, and returns the full text. Best-effort: on any streaming error, fall back to the already-assembled `final_state["final_answer"]` (no `answer.*` events) so a task never fails because of streaming.
+- Consumes: `events.emit` (Task 1). Called by `main._handle` while the `current_emitter` ContextVar (Task 2) is set, so deltas land on `labmate:events:<task_id>`.
+
+Rationale: the current `final_answer` is concatenated subtask output (no generation to stream). To get the Claude-like typing feel for every task type, compose the reply once with a streamed call at the response boundary. It streams, so perceived latency is low (first token fast) even though it adds one call.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/services/orchestrator/test_coding_orchestrator.py  (add)
+import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
+from services.orchestrator import events
+from services.orchestrator.coding_orchestrator import CodingOrchestrator
+
+
+def _chunk(text):
+    return MagicMock(choices=[MagicMock(delta=MagicMock(content=text))])
+
+
+@pytest.mark.asyncio
+async def test_stream_final_answer_emits_deltas_and_returns_text():
+    orch = CodingOrchestrator(graph=None, workspace_path=".", docker_container="")
+
+    async def fake_stream(*a, **k):
+        for t in ["Hel", "lo ", "world"]:
+            yield _chunk(t)
+
+    captured = []
+    class FakeEmitter:
+        async def emit(self, type, **f): captured.append({"type": type, **f})
+
+    with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
+               new_callable=AsyncMock, return_value=fake_stream()):
+        token = events.current_emitter.set(FakeEmitter())
+        try:
+            text = await orch.stream_final_answer("say hi", {"final_answer": "Hello world",
+                                                              "goal_tree": {"root": {"result": "Hello world"}}})
+        finally:
+            events.current_emitter.reset(token)
+
+    assert text == "Hello world"
+    deltas = [e["text"] for e in captured if e["type"] == "answer.delta"]
+    assert deltas == ["Hel", "lo ", "world"]
+    assert any(e["type"] == "answer.done" and e["text"] == "Hello world" for e in captured)
+
+
+@pytest.mark.asyncio
+async def test_stream_final_answer_falls_back_on_error():
+    orch = CodingOrchestrator(graph=None, workspace_path=".", docker_container="")
+    with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
+               new_callable=AsyncMock, side_effect=RuntimeError("stream boom")):
+        text = await orch.stream_final_answer("x", {"final_answer": "assembled answer"})
+    assert text == "assembled answer"  # falls back, no raise
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `PYTHONPATH=. python -m pytest tests/services/orchestrator/test_coding_orchestrator.py -k stream_final_answer -q -p no:cacheprovider`
+Expected: FAIL (`AttributeError: 'CodingOrchestrator' object has no attribute 'stream_final_answer'`)
+
+- [ ] **Step 3: Implement**
+
+Add to `coding_orchestrator.py` (imports: ensure `from services.orchestrator import events` and `import litellm` present):
+
+```python
+    async def stream_final_answer(self, task: str, final_state: dict) -> str:
+        """Compose the user-facing reply with a streamed LLM call, emitting
+        answer.delta per chunk (typewriter effect) and answer.done at the end.
+        Best-effort: on any error, fall back to the assembled final_answer."""
+        assembled = ""
+        if isinstance(final_state, dict):
+            assembled = final_state.get("final_answer") or \
+                final_state.get("goal_tree", {}).get("root", {}).get("result", "") or ""
+        prompt = (
+            "Write a concise, friendly answer to the user's request using the results below. "
+            "Do not mention tools, skills, or internal steps.\n\n"
+            f"Request: {task}\n\nResults:\n{assembled}"
+        )
+        acc = ""
+        try:
+            stream = await litellm.acompletion(
+                model="openai/gemma-4-31b",
+                api_base=self._gemma_base,
+                api_key="not-needed",
+                messages=[{"role": "user", "content": prompt}],
+                stream=True,
+                extra_body={"thinking_budget_tokens": 0},
+            )
+            async for chunk in stream:
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    acc += delta
+                    await events.emit("answer.delta", text=delta)
+            await events.emit("answer.done", text=acc)
+            return acc or assembled
+        except Exception as exc:
+            _log.warning("stream_final_answer failed, using assembled answer: %s", exc)
+            return assembled
+```
+
+In `main.py._handle`, after `final_state = await orch.run_task(...)` succeeds and before `_write_result`, replace the answer with the streamed one (guard so failure never blocks):
+
+```python
+            try:
+                streamed = await orch.stream_final_answer(task_text, final_state)
+                if isinstance(final_state, dict) and streamed:
+                    final_state["final_answer"] = streamed
+            except Exception:
+                pass
+```
+
+(The `turn.done` event from Task 2 then carries the streamed `final_answer`.)
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `PYTHONPATH=. python -m pytest tests/services/orchestrator/test_coding_orchestrator.py -k stream_final_answer -q -p no:cacheprovider`
+Expected: PASS (2 passed)
+
+- [ ] **Step 5: Extend the live verification (Task 5 Step 6)**
+
+Add to the subscriber's printout so you can watch the answer stream in:
+
+```python
+        elif t=="answer.delta": print(e["text"], end="", flush=True)
+        elif t=="answer.done": print("\n[answer complete]")
+```
+
+Expected: the answer prints token-by-token (typewriter) after the tool events, before `turn.done`.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add services/orchestrator/coding_orchestrator.py services/orchestrator/main.py tests/services/orchestrator/test_coding_orchestrator.py
+git commit -m "feat(events): stream the final answer (answer.delta/answer.done) for a typing effect"
+```
+
+---
+
 ## Self-Review
 
 **1. Spec coverage (the 3 asks):**
 - "Which tools/skills were selected" → `tool.start` (`name`, `kind`, `args`) — Tasks 3 (skill path) & 4 (ReAct tools). ✓
 - "When running and when finished" → `tool.start` then `tool.done` (`status`, `duration_ms`) — Tasks 3 & 4. ✓
 - "Reasoning of the model in the tool call (debug)" → `reasoning` events + `tool.start.reasoning_why` from `reasoning_content` — Tasks 1 (capture), 3, 4. ✓
-- Transport-agnostic → Redis Stream + `tail_events` consumed identically by CLI now and a WS gateway later — Tasks 1 & 5. ✓
+- "Stream the final response so it feels like the agent is typing" → `answer.delta`/`answer.done` via a streamed compose call — Task 6. ✓
+- Transport-agnostic → Redis Stream + `tail_events` consumed identically by CLI now and a WS gateway later — Tasks 1, 5, 6. ✓
 
 **2. Placeholder scan:** No TBD/TODO; every code step has real code; commands have expected output. ✓
 

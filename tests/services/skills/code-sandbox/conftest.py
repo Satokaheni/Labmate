@@ -1,20 +1,44 @@
 """Shared fixtures: a mocked Docker SDK so tests need no Docker daemon.
 
 Since the skill directory is named 'code-sandbox' (hyphenated), it cannot be
-imported as a Python package directly. We add the skill directory to sys.path
-so modules can be imported by their bare names (e.g., `from executor import DockerExecutor`).
+imported as a Python package directly. Other skills also ship a bare `server.py`
+and `executor.py`, so a shared pytest session can leave a SIBLING skill's module
+cached under the bare name `server`/`executor`, and a plain `import server` here
+would then bind to the wrong skill.
+
+To make this deterministic, we EXPLICITLY load THIS skill's executor.py and
+server.py from their file paths into sys.modules (under the bare names) at conftest
+import time — which runs immediately before this directory's test files are
+collected. The test files' `import server` / `from executor import ...` then
+resolve to the code-sandbox modules regardless of collection order.
 """
 import sys
-import os
+import importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
-# Add the skill directory to sys.path for direct module imports.
 SKILL_DIR = Path(__file__).parent.parent.parent.parent.parent / "services" / "skills" / "code-sandbox"
+# Kept as a fallback for any intra-skill relative imports.
 if str(SKILL_DIR) not in sys.path:
     sys.path.insert(0, str(SKILL_DIR))
+
+
+def _load_skill_module(name: str):
+    """Load <SKILL_DIR>/<name>.py into sys.modules[name], overwriting any stale
+    sibling-skill module cached under the same bare name."""
+    spec = importlib.util.spec_from_file_location(name, SKILL_DIR / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    # Register BEFORE exec so server.py's `from executor import ...` resolves to THIS one.
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+# Order matters: executor first (server.py imports from it).
+_load_skill_module("executor")
+_load_skill_module("server")
 
 
 @pytest.fixture
@@ -41,3 +65,10 @@ def patched_executor(mock_docker_client, monkeypatch):
     monkeypatch.setattr(docker, "from_env", lambda: mock_docker_client)
     from executor import DockerExecutor
     return DockerExecutor(), mock_docker_client, mock_docker_client.containers.create.return_value
+
+
+@pytest.fixture
+def local_executor():
+    """LocalSubprocessExecutor instance for testing."""
+    from executor import LocalSubprocessExecutor
+    return LocalSubprocessExecutor()

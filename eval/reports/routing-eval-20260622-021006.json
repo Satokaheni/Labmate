@@ -1,0 +1,4007 @@
+{
+  "summary": {
+    "overall": 0.9494949494949495,
+    "n": 297,
+    "mean_stability": 0.9983164983164983,
+    "by_cluster": {
+      "a11y_audit": 1.0,
+      "academic_writing": 1.0,
+      "ast_repo_map": 1.0,
+      "ast_search": 0.9090909090909091,
+      "ast_ts_refactor": 1.0,
+      "citation_check": 1.0,
+      "citation_graph": 0.9090909090909091,
+      "code_sandbox": 1.0,
+      "commit_pr": 1.0,
+      "component_doc_gen": 1.0,
+      "critique": 0.36363636363636365,
+      "dataset_generation": 1.0,
+      "dataset_search": 0.9090909090909091,
+      "design_critique": 1.0,
+      "design_token_transform": 0.9090909090909091,
+      "figma_to_component": 1.0,
+      "paper_rag": 1.0,
+      "paper_to_slides": 1.0,
+      "pdf_parse": 1.0,
+      "react_doctor": 0.9090909090909091,
+      "rebuttal_response": 1.0,
+      "repo_fault_localize": 1.0,
+      "repo_graph": 0.9090909090909091,
+      "results_analysis": 1.0,
+      "screenshot_to_component": 0.9090909090909091,
+      "test_gen": 1.0,
+      "web_search": 0.9090909090909091
+    },
+    "by_skill": {
+      "a11y-audit": 1.0,
+      "academic-writing": 1.0,
+      "arxiv-prep": 1.0,
+      "ast-repo-map": 1.0,
+      "ast-search": 0.9090909090909091,
+      "ast-ts-refactor": 1.0,
+      "citation-check": 1.0,
+      "citation-graph": 0.9090909090909091,
+      "code-sandbox": 1.0,
+      "commit-pr": 1.0,
+      "component-doc-gen": 1.0,
+      "critique": 0.4166666666666667,
+      "dataset-generation": 1.0,
+      "dataset-search": 0.9166666666666666,
+      "design-critique": 1.0,
+      "design-token-transform": 0.9,
+      "figma-to-component": 1.0,
+      "paper-rag": 1.0,
+      "paper-to-slides": 1.0,
+      "pdf-parse": 1.0,
+      "react-doctor": 0.9090909090909091,
+      "rebuttal-response": 1.0,
+      "repo-fault-localize": 1.0,
+      "repo-graph": 0.9166666666666666,
+      "results-analysis": 1.0,
+      "screenshot-to-component": 0.9166666666666666,
+      "test-gen": 1.0,
+      "web-search": 0.9
+    },
+    "false_positive_rate": null,
+    "confusion": [
+      [
+        "ast-search",
+        "repo-graph",
+        "Where is the calculateTotal function being called in this project?"
+      ],
+      [
+        "citation-graph",
+        "pdf-parse",
+        "I need a full list of the works referenced in the bibliography of this paper."
+      ],
+      [
+        "critique",
+        "code-sandbox",
+        "I just finished this Python function. Can you run the tests and the linter on it, then tell me how to make it better?"
+      ],
+      [
+        "critique",
+        "citation-check",
+        "I've written this blog post about quantum physics. Please check that all my citations are accurate and then suggest some improvements to the writing."
+      ],
+      [
+        "critique",
+        "code-sandbox",
+        "Can you double-check this script? Run the test suite first to see if it's actually working before you suggest any changes."
+      ],
+      [
+        "critique",
+        "citation-check",
+        "Please verify the facts in this research summary against the provided sources and then refine the prose for a professional tone."
+      ],
+      [
+        "critique",
+        "repo-fault-localize",
+        "My code is passing most tests but failing one edge case. Help me figure out why it's failing and rewrite it to be more robust."
+      ],
+      [
+        "critique",
+        "code-sandbox",
+        "I've written a Python data processing script. Please run the test suite and the linter, then use those results to iteratively improve the code until all tests pass and warnings are gone."
+      ],
+      [
+        "critique",
+        "citation-check",
+        "Review this academic essay. Use the citation verification tools to find hallucinated references, and then rewrite the affected paragraphs to ensure they are grounded in the provided sources."
+      ],
+      [
+        "dataset-search",
+        "web-search",
+        "What are the most commonly used benchmarks for image segmentation in autonomous driving?"
+      ],
+      [
+        "design-token-transform",
+        "screenshot-to-component",
+        "Build this hero section from the screenshot, but use the actual design tokens from my Figma project instead of hardcoding the hex values."
+      ],
+      [
+        "react-doctor",
+        "a11y-audit",
+        "I need to make sure this UI code is fully accessible and secure before I push it to production."
+      ],
+      [
+        "repo-graph",
+        "ast-ts-refactor",
+        "I'm planning to rename the UserAuth class; can you show me every place it's referenced in the codebase?"
+      ],
+      [
+        "screenshot-to-component",
+        "figma-to-component",
+        "Can you take this Figma export and build the actual component for me?"
+      ],
+      [
+        "web-search",
+        null,
+        "I'm getting a deprecation warning in my React code; what's the current recommended replacement for this hook?"
+      ]
+    ]
+  },
+  "results": [
+    {
+      "id": "a11y_audit_a11y_audit_gen_1",
+      "task": "Can you check if the login form I just built has any accessibility violations?",
+      "expected": "a11y-audit",
+      "cluster": "a11y_audit",
+      "preds": [
+        "a11y-audit",
+        "a11y-audit"
+      ],
+      "prediction": "a11y-audit",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "a11y_audit_a11y_audit_gen_2",
+      "task": "I need to make sure this landing page meets WCAG standards before we go live.",
+      "expected": "a11y-audit",
+      "cluster": "a11y_audit",
+      "preds": [
+        "a11y-audit",
+        "a11y-audit"
+      ],
+      "prediction": "a11y-audit",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "a11y_audit_a11y_audit_gen_3",
+      "task": "Run a quick a11y scan on the dashboard to see if there are any critical issues.",
+      "expected": "a11y-audit",
+      "cluster": "a11y_audit",
+      "preds": [
+        "a11y-audit",
+        "a11y-audit"
+      ],
+      "prediction": "a11y-audit",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "a11y_audit_a11y_audit_gen_4",
+      "task": "I suspect there are some contrast or labeling errors on this page; can you give me a full accessibility report?",
+      "expected": "a11y-audit",
+      "cluster": "a11y_audit",
+      "preds": [
+        "a11y-audit",
+        "a11y-audit"
+      ],
+      "prediction": "a11y-audit",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "a11y_audit_a11y_audit_gen_5",
+      "task": "Perform an automated audit on the navigation menu to find any missing ARIA labels.",
+      "expected": "a11y-audit",
+      "cluster": "a11y_audit",
+      "preds": [
+        "a11y-audit",
+        "a11y-audit"
+      ],
+      "prediction": "a11y-audit",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "a11y_audit_a11y_audit_gen_6",
+      "task": "Does the current HTML for the checkout flow pass a basic accessibility check?",
+      "expected": "a11y-audit",
+      "cluster": "a11y_audit",
+      "preds": [
+        "a11y-audit",
+        "a11y-audit"
+      ],
+      "prediction": "a11y-audit",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "a11y_audit_a11y_audit_disambig_7",
+      "task": "Run a WCAG accessibility check on the rendered output of this React component to identify specific DOM violations and their impact severity.",
+      "expected": "a11y-audit",
+      "cluster": "a11y_audit",
+      "preds": [
+        "a11y-audit",
+        "a11y-audit"
+      ],
+      "prediction": "a11y-audit",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "a11y_audit_a11y_audit_disambig_8",
+      "task": "Use axe-core via Playwright to audit the final HTML of the page and return the rule IDs for any accessibility failures.",
+      "expected": "a11y-audit",
+      "cluster": "a11y_audit",
+      "preds": [
+        "a11y-audit",
+        "a11y-audit"
+      ],
+      "prediction": "a11y-audit",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "a11y_audit_a11y_audit_disambig_9",
+      "task": "Perform a deterministic accessibility audit of the rendered UI to find missing aria-labels and incorrect heading levels using DOM selectors.",
+      "expected": "a11y-audit",
+      "cluster": "a11y_audit",
+      "preds": [
+        "a11y-audit",
+        "a11y-audit"
+      ],
+      "prediction": "a11y-audit",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "a11y_audit_a11y_audit_disambig_10",
+      "task": "Analyze the React source code for accessibility anti-patterns and state management issues before the component is deployed.",
+      "expected": "react-doctor",
+      "cluster": "a11y_audit",
+      "preds": [
+        "react-doctor",
+        "react-doctor"
+      ],
+      "prediction": "react-doctor",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "a11y_audit_a11y_audit_disambig_11",
+      "task": "Review the screenshot of the dashboard to check if the color contrast and visual hierarchy meet accessibility standards.",
+      "expected": "design-critique",
+      "cluster": "a11y_audit",
+      "preds": [
+        "design-critique",
+        "design-critique"
+      ],
+      "prediction": "design-critique",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "academic_writing_academic_writing_gen_1",
+      "task": "I have all my data from the clinical trial; can you help me write a full formal research paper based on these findings?",
+      "expected": "academic-writing",
+      "cluster": "academic_writing",
+      "preds": [
+        "academic-writing",
+        "academic-writing"
+      ],
+      "prediction": "academic-writing",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "academic_writing_academic_writing_gen_2",
+      "task": "I need a comprehensive literature review on the impact of microplastics in urban soil for my thesis.",
+      "expected": "academic-writing",
+      "cluster": "academic_writing",
+      "preds": [
+        "academic-writing",
+        "academic-writing"
+      ],
+      "prediction": "academic-writing",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "academic_writing_academic_writing_gen_3",
+      "task": "Could you draft a professional report on the current state of quantum computing, making sure all the references are accurate and properly cited?",
+      "expected": "academic-writing",
+      "cluster": "academic_writing",
+      "preds": [
+        "academic-writing",
+        "academic-writing"
+      ],
+      "prediction": "academic-writing",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "academic_writing_academic_writing_gen_4",
+      "task": "I'm starting a paper on behavioral economics. Can you create a detailed outline for me to follow?",
+      "expected": "academic-writing",
+      "cluster": "academic_writing",
+      "preds": [
+        "academic-writing",
+        "academic-writing"
+      ],
+      "prediction": "academic-writing",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "academic_writing_academic_writing_gen_5",
+      "task": "I've written a rough draft of my study on renewable energy, but it doesn't sound academic enough. Can you rewrite it in a formal scholarly tone?",
+      "expected": "academic-writing",
+      "cluster": "academic_writing",
+      "preds": [
+        "academic-writing",
+        "academic-writing"
+      ],
+      "prediction": "academic-writing",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "academic_writing_academic_writing_gen_6",
+      "task": "I've finished my paper on neural networks; can you write a concise, high-density abstract for it?",
+      "expected": "academic-writing",
+      "cluster": "academic_writing",
+      "preds": [
+        "academic-writing",
+        "academic-writing"
+      ],
+      "prediction": "academic-writing",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "academic_writing_academic_writing_disambig_7",
+      "task": "Draft a full research paper following the IMRaD format based on my experimental results and the provided outline.",
+      "expected": "academic-writing",
+      "cluster": "academic_writing",
+      "preds": [
+        "academic-writing",
+        "academic-writing"
+      ],
+      "prediction": "academic-writing",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "academic_writing_academic_writing_disambig_8",
+      "task": "Write a comprehensive literature review section for my paper, starting with an outline and then expanding it into a validated draft.",
+      "expected": "academic-writing",
+      "cluster": "academic_writing",
+      "preds": [
+        "academic-writing",
+        "academic-writing"
+      ],
+      "prediction": "academic-writing",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "academic_writing_academic_writing_disambig_9",
+      "task": "Convert these raw research notes into a formal academic manuscript with a structured abstract and validated citations.",
+      "expected": "academic-writing",
+      "cluster": "academic_writing",
+      "preds": [
+        "academic-writing",
+        "academic-writing"
+      ],
+      "prediction": "academic-writing",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "academic_writing_academic_writing_disambig_10",
+      "task": "I have finished my LaTeX source files; please clean the project, strip comments, and create a double-blind submission tarball for arXiv.",
+      "expected": "arxiv-prep",
+      "cluster": "academic_writing",
+      "preds": [
+        "arxiv-prep",
+        "arxiv-prep"
+      ],
+      "prediction": "arxiv-prep",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "academic_writing_academic_writing_disambig_11",
+      "task": "Search through my uploaded PDF library to find specific evidence and page numbers that support the claim that transformers outperform RNNs in this specific domain.",
+      "expected": "paper-rag",
+      "cluster": "academic_writing",
+      "preds": [
+        "paper-rag",
+        "paper-rag"
+      ],
+      "prediction": "paper-rag",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_repo_map_ast_repo_map_gen_1",
+      "task": "Where is the main entry point for the API handlers in this project?",
+      "expected": "ast-repo-map",
+      "cluster": "ast_repo_map",
+      "preds": [
+        "ast-repo-map",
+        "ast-repo-map"
+      ],
+      "prediction": "ast-repo-map",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_repo_map_ast_repo_map_gen_2",
+      "task": "I just cloned this repo and I'm totally lost. Can you show me how the codebase is structured?",
+      "expected": "ast-repo-map",
+      "cluster": "ast_repo_map",
+      "preds": [
+        "ast-repo-map",
+        "ast-repo-map"
+      ],
+      "prediction": "ast-repo-map",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_repo_map_ast_repo_map_gen_3",
+      "task": "I need to add a new field to the user profile; which files do I actually need to modify?",
+      "expected": "ast-repo-map",
+      "cluster": "ast_repo_map",
+      "preds": [
+        "ast-repo-map",
+        "ast-repo-map"
+      ],
+      "prediction": "ast-repo-map",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_repo_map_ast_repo_map_gen_4",
+      "task": "Can you give me an overview of the core classes that handle the payment processing logic?",
+      "expected": "ast-repo-map",
+      "cluster": "ast_repo_map",
+      "preds": [
+        "ast-repo-map",
+        "ast-repo-map"
+      ],
+      "prediction": "ast-repo-map",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_repo_map_ast_repo_map_gen_5",
+      "task": "I'm trying to trace the data flow from the request middleware to the database—which functions are the most important to look at?",
+      "expected": "ast-repo-map",
+      "cluster": "ast_repo_map",
+      "preds": [
+        "ast-repo-map",
+        "ast-repo-map"
+      ],
+      "prediction": "ast-repo-map",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_repo_map_ast_repo_map_gen_6",
+      "task": "Find the primary service classes responsible for authentication.",
+      "expected": "ast-repo-map",
+      "cluster": "ast_repo_map",
+      "preds": [
+        "ast-repo-map",
+        "ast-repo-map"
+      ],
+      "prediction": "ast-repo-map",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_repo_map_ast_repo_map_disambig_7",
+      "task": "I'm new to this codebase and need a high-level overview of the most important classes and functions to understand the general architecture.",
+      "expected": "ast-repo-map",
+      "cluster": "ast_repo_map",
+      "preds": [
+        "ast-repo-map",
+        "ast-repo-map"
+      ],
+      "prediction": "ast-repo-map",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_repo_map_ast_repo_map_disambig_8",
+      "task": "I need to implement a new feature in the payment module; can you identify the most central functions and symbols that define the core logic of that module?",
+      "expected": "ast-repo-map",
+      "cluster": "ast_repo_map",
+      "preds": [
+        "ast-repo-map",
+        "ast-repo-map"
+      ],
+      "prediction": "ast-repo-map",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_repo_map_ast_repo_map_disambig_9",
+      "task": "I want to see a ranked list of the most critical symbols in the project based on their connectivity in the call graph to help me decide which files to explore first.",
+      "expected": "ast-repo-map",
+      "cluster": "ast_repo_map",
+      "preds": [
+        "ast-repo-map",
+        "ast-repo-map"
+      ],
+      "prediction": "ast-repo-map",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_repo_map_ast_repo_map_disambig_10",
+      "task": "I have a specific function `calculate_tax` and I need to find every single line across the entire repository where this function is called.",
+      "expected": "repo-graph",
+      "cluster": "ast_repo_map",
+      "preds": [
+        "repo-graph",
+        "repo-graph"
+      ],
+      "prediction": "repo-graph",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_repo_map_ast_repo_map_disambig_11",
+      "task": "There is a regression in the user registration flow; please identify the exact files and functions that are likely causing the bug so I can fix them.",
+      "expected": "repo-fault-localize",
+      "cluster": "ast_repo_map",
+      "preds": [
+        "repo-fault-localize",
+        "repo-fault-localize"
+      ],
+      "prediction": "repo-fault-localize",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_search_ast_search_gen_1",
+      "task": "Where is the calculateTotal function being called in this project?",
+      "expected": "ast-search",
+      "cluster": "ast_search",
+      "preds": [
+        "repo-graph",
+        "repo-graph"
+      ],
+      "prediction": "repo-graph",
+      "correct": false,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_search_ast_search_gen_2",
+      "task": "I need to change all instances of myLib.init(config) to myLib.setup(config, true) across all files.",
+      "expected": "ast-search",
+      "cluster": "ast_search",
+      "preds": [
+        "ast-search",
+        "ast-search"
+      ],
+      "prediction": "ast-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_search_ast_search_gen_3",
+      "task": "Can you find all the places where we're using a try-catch block but the catch block is empty?",
+      "expected": "ast-search",
+      "cluster": "ast_search",
+      "preds": [
+        "ast-search",
+        "ast-search"
+      ],
+      "prediction": "ast-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_search_ast_search_gen_4",
+      "task": "Find all call sites for validateUser.",
+      "expected": "ast-search",
+      "cluster": "ast_search",
+      "preds": [
+        "ast-search",
+        "ast-search"
+      ],
+      "prediction": "ast-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_search_ast_search_gen_5",
+      "task": "Update every call to fetchData to pass the cache: false option as the second argument.",
+      "expected": "ast-search",
+      "cluster": "ast_search",
+      "preds": [
+        "ast-search",
+        "ast-search"
+      ],
+      "prediction": "ast-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_search_ast_search_gen_6",
+      "task": "List all classes that implement the IStorage interface.",
+      "expected": "ast-search",
+      "cluster": "ast_search",
+      "preds": [
+        "ast-search",
+        "ast-search"
+      ],
+      "prediction": "ast-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_search_ast_search_disambig_7",
+      "task": "Find all call sites of the function `updateUser` across the codebase where the second argument is specifically a boolean literal `true`.",
+      "expected": "ast-search",
+      "cluster": "ast_search",
+      "preds": [
+        "ast-search",
+        "ast-search"
+      ],
+      "prediction": "ast-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_search_ast_search_disambig_8",
+      "task": "Locate all occurrences of the pattern `await Promise.all([...])` and rewrite them to use a for-of loop for better error handling.",
+      "expected": "ast-search",
+      "cluster": "ast_search",
+      "preds": [
+        "ast-search",
+        "ast-search"
+      ],
+      "prediction": "ast-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_search_ast_search_disambig_9",
+      "task": "Identify every place in the project where a method named `validate` is called on an object, regardless of the object's type, to ensure they all pass a configuration object as the first argument.",
+      "expected": "ast-search",
+      "cluster": "ast_search",
+      "preds": [
+        "ast-search",
+        "ast-search"
+      ],
+      "prediction": "ast-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_search_ast_search_disambig_10",
+      "task": "Rename the `AuthService` class to `IdentityManager` across the entire project, ensuring that only the actual class references are updated and not similarly named variables in other modules.",
+      "expected": "ast-ts-refactor",
+      "cluster": "ast_search",
+      "preds": [
+        "ast-ts-refactor",
+        "ast-ts-refactor"
+      ],
+      "prediction": "ast-ts-refactor",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_search_ast_search_disambig_11",
+      "task": "Find all functions that call `api.request()` to map out the dependency chain and understand which high-level controllers are triggering network calls.",
+      "expected": "repo-graph",
+      "cluster": "ast_search",
+      "preds": [
+        "repo-graph",
+        "repo-graph"
+      ],
+      "prediction": "repo-graph",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_ts_refactor_ast_ts_refactor_gen_1",
+      "task": "I need to rename the ApiConfig class to GlobalConfig throughout the entire project.",
+      "expected": "ast-ts-refactor",
+      "cluster": "ast_ts_refactor",
+      "preds": [
+        "ast-ts-refactor",
+        "ast-ts-refactor"
+      ],
+      "prediction": "ast-ts-refactor",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_ts_refactor_ast_ts_refactor_gen_2",
+      "task": "Can you find every place where the CustomerProfile type is referenced?",
+      "expected": "ast-ts-refactor",
+      "cluster": "ast_ts_refactor",
+      "preds": [
+        "ast-ts-refactor",
+        "ast-ts-refactor"
+      ],
+      "prediction": "ast-ts-refactor",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_ts_refactor_ast_ts_refactor_gen_3",
+      "task": "Move the validateEmail function from utils.ts to validation-helpers.ts and update all the imports.",
+      "expected": "ast-ts-refactor",
+      "cluster": "ast_ts_refactor",
+      "preds": [
+        "ast-ts-refactor",
+        "ast-ts-refactor"
+      ],
+      "prediction": "ast-ts-refactor",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_ts_refactor_ast_ts_refactor_gen_4",
+      "task": "I'm changing the userId property to accountId in my User interface; please update all occurrences across the codebase.",
+      "expected": "ast-ts-refactor",
+      "cluster": "ast_ts_refactor",
+      "preds": [
+        "ast-ts-refactor",
+        "ast-ts-refactor"
+      ],
+      "prediction": "ast-ts-refactor",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_ts_refactor_ast_ts_refactor_gen_5",
+      "task": "The PaymentProcessor class in main.ts has grown too large. Please move it to its own file and fix the references.",
+      "expected": "ast-ts-refactor",
+      "cluster": "ast_ts_refactor",
+      "preds": [
+        "ast-ts-refactor",
+        "ast-ts-refactor"
+      ],
+      "prediction": "ast-ts-refactor",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_ts_refactor_ast_ts_refactor_gen_6",
+      "task": "I have a shared constant exported via an index file that is used in several modules. I need to rename it globally without breaking things.",
+      "expected": "ast-ts-refactor",
+      "cluster": "ast_ts_refactor",
+      "preds": [
+        "ast-ts-refactor",
+        "ast-ts-refactor"
+      ],
+      "prediction": "ast-ts-refactor",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_ts_refactor_ast_ts_refactor_disambig_7",
+      "task": "Rename the `UserAccount` interface to `AccountProfile` across the entire TypeScript project, ensuring all imports and usages are updated.",
+      "expected": "ast-ts-refactor",
+      "cluster": "ast_ts_refactor",
+      "preds": [
+        "ast-ts-refactor",
+        "ast-ts-refactor"
+      ],
+      "prediction": "ast-ts-refactor",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_ts_refactor_ast_ts_refactor_disambig_8",
+      "task": "Move the `AuthHelper` class from `src/utils/auth.ts` to `src/services/auth-service.ts` and update all referencing files.",
+      "expected": "ast-ts-refactor",
+      "cluster": "ast_ts_refactor",
+      "preds": [
+        "ast-ts-refactor",
+        "ast-ts-refactor"
+      ],
+      "prediction": "ast-ts-refactor",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_ts_refactor_ast_ts_refactor_disambig_9",
+      "task": "Find all references to the `PaymentGateway` symbol across the codebase to determine where its method signatures are being used before updating the type definition.",
+      "expected": "ast-ts-refactor",
+      "cluster": "ast_ts_refactor",
+      "preds": [
+        "ast-ts-refactor",
+        "ast-ts-refactor"
+      ],
+      "prediction": "ast-ts-refactor",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_ts_refactor_ast_ts_refactor_disambig_10",
+      "task": "Find all call sites of the `logError` function where the second argument is a string literal and replace that literal with a localized constant.",
+      "expected": "ast-search",
+      "cluster": "ast_ts_refactor",
+      "preds": [
+        "ast-search",
+        "ast-search"
+      ],
+      "prediction": "ast-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "ast_ts_refactor_ast_ts_refactor_disambig_11",
+      "task": "Analyze the dependency structure of the `OrderProcessor` class to identify all the services that call its `process()` method.",
+      "expected": "repo-graph",
+      "cluster": "ast_ts_refactor",
+      "preds": [
+        "repo-graph",
+        "repo-graph"
+      ],
+      "prediction": "repo-graph",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "citation_check_citation_check_gen_1",
+      "task": "Can you check if the references in my bibliography are actually real or if the AI hallucinated them?",
+      "expected": "citation-check",
+      "cluster": "citation_check",
+      "preds": [
+        "citation-check",
+        "citation-check"
+      ],
+      "prediction": "citation-check",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "citation_check_citation_check_gen_2",
+      "task": "I've attached a draft of my literature review; please verify that every factual claim is actually supported by the cited papers.",
+      "expected": "citation-check",
+      "cluster": "citation_check",
+      "preds": [
+        "citation-check",
+        "citation-check"
+      ],
+      "prediction": "citation-check",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "citation_check_citation_check_gen_3",
+      "task": "Please scan these BibTeX entries and let me know if any of the metadata is incorrect or doesn't exist in Semantic Scholar.",
+      "expected": "citation-check",
+      "cluster": "citation_check",
+      "preds": [
+        "citation-check",
+        "citation-check"
+      ],
+      "prediction": "citation-check",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "citation_check_citation_check_gen_4",
+      "task": "I used an LLM to summarize these three articles. Can you double-check the summary to make sure it doesn't contradict the original sources?",
+      "expected": "citation-check",
+      "cluster": "citation_check",
+      "preds": [
+        "citation-check",
+        "citation-check"
+      ],
+      "prediction": "citation-check",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "citation_check_citation_check_gen_5",
+      "task": "Check these citations for any major errors.",
+      "expected": "citation-check",
+      "cluster": "citation_check",
+      "preds": [
+        "citation-check",
+        "citation-check"
+      ],
+      "prediction": "citation-check",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "citation_check_citation_check_gen_6",
+      "task": "I need a grounding check on this section of my thesis to ensure all the claim-triplets are properly entailed by the provided references.",
+      "expected": "citation-check",
+      "cluster": "citation_check",
+      "preds": [
+        "citation-check",
+        "citation-check"
+      ],
+      "prediction": "citation-check",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "citation_check_citation_check_disambig_7",
+      "task": "I have a draft of my introduction and a list of references. Please check if the claims I've made are actually supported by these references and flag any contradictions.",
+      "expected": "citation-check",
+      "cluster": "citation_check",
+      "preds": [
+        "citation-check",
+        "citation-check"
+      ],
+      "prediction": "citation-check",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "citation_check_citation_check_disambig_8",
+      "task": "Please verify that the following BibTeX entries are real papers and that the titles and authors match the records in Semantic Scholar.",
+      "expected": "citation-check",
+      "cluster": "citation_check",
+      "preds": [
+        "citation-check",
+        "citation-check"
+      ],
+      "prediction": "citation-check",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "citation_check_citation_check_disambig_9",
+      "task": "Decompose the following paragraph into claim-triplets and verify each one against the provided PDF excerpts to ensure there are no hallucinations.",
+      "expected": "citation-check",
+      "cluster": "citation_check",
+      "preds": [
+        "citation-check",
+        "citation-check"
+      ],
+      "prediction": "citation-check",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "citation_check_citation_check_disambig_10",
+      "task": "I need to find all the papers that have cited this specific study since 2020 to see how the field has evolved.",
+      "expected": "citation-graph",
+      "cluster": "citation_check",
+      "preds": [
+        "citation-graph",
+        "citation-graph"
+      ],
+      "prediction": "citation-graph",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "citation_check_citation_check_disambig_11",
+      "task": "Based on the PDFs in my library, can you explain the specific results of the ablation study in the 'Attention is All You Need' paper?",
+      "expected": "paper-rag",
+      "cluster": "citation_check",
+      "preds": [
+        "paper-rag",
+        "paper-rag"
+      ],
+      "prediction": "paper-rag",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "citation_graph_citation_graph_gen_1",
+      "task": "Can you find all the papers that have cited 'Attention is All You Need' since it was published?",
+      "expected": "citation-graph",
+      "cluster": "citation_graph",
+      "preds": [
+        "citation-graph",
+        "citation-graph"
+      ],
+      "prediction": "citation-graph",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "citation_graph_citation_graph_gen_2",
+      "task": "I'm starting a literature review on CRISPR; I found one great paper, can you help me find other related research by following its citations?",
+      "expected": "citation-graph",
+      "cluster": "citation_graph",
+      "preds": [
+        "citation-graph",
+        "citation-graph"
+      ],
+      "prediction": "citation-graph",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "citation_graph_citation_graph_gen_3",
+      "task": "Who else is citing this specific study on climate change?",
+      "expected": "citation-graph",
+      "cluster": "citation_graph",
+      "preds": [
+        "citation-graph",
+        "citation-graph"
+      ],
+      "prediction": "citation-graph",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "citation_graph_citation_graph_gen_4",
+      "task": "I need a full list of the works referenced in the bibliography of this paper.",
+      "expected": "citation-graph",
+      "cluster": "citation_graph",
+      "preds": [
+        "pdf-parse",
+        "pdf-parse"
+      ],
+      "prediction": "pdf-parse",
+      "correct": false,
+      "stability": 1.0
+    },
+    {
+      "id": "citation_graph_citation_graph_gen_5",
+      "task": "Are there any other studies semantically similar to the one by Vaswani et al. regarding sequence-to-sequence models?",
+      "expected": "citation-graph",
+      "cluster": "citation_graph",
+      "preds": [
+        "citation-graph",
+        "citation-graph"
+      ],
+      "prediction": "citation-graph",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "citation_graph_citation_graph_gen_6",
+      "task": "I want to see how this theory has evolved—start with the 2015 seminal paper and show me the most influential papers that cited it later.",
+      "expected": "citation-graph",
+      "cluster": "citation_graph",
+      "preds": [
+        "citation-graph",
+        "citation-graph"
+      ],
+      "prediction": "citation-graph",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "citation_graph_citation_graph_disambig_7",
+      "task": "I have a seed paper on Contrastive Learning; please find all the papers that have cited it so I can perform a forward snowball sample for my literature review.",
+      "expected": "citation-graph",
+      "cluster": "citation_graph",
+      "preds": [
+        "citation-graph",
+        "citation-graph"
+      ],
+      "prediction": "citation-graph",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "citation_graph_citation_graph_disambig_8",
+      "task": "I want to trace the intellectual lineage of the BERT paper by retrieving a list of all the papers it references in its bibliography.",
+      "expected": "citation-graph",
+      "cluster": "citation_graph",
+      "preds": [
+        "citation-graph",
+        "citation-graph"
+      ],
+      "prediction": "citation-graph",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "citation_graph_citation_graph_disambig_9",
+      "task": "Search for papers that are semantically similar to the original Transformer paper to find alternative architectures for my research.",
+      "expected": "citation-graph",
+      "cluster": "citation_graph",
+      "preds": [
+        "citation-graph",
+        "citation-graph"
+      ],
+      "prediction": "citation-graph",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "citation_graph_citation_graph_disambig_10",
+      "task": "I have a list of citations for my thesis; please check if these BibTeX entries actually exist on Semantic Scholar or if they are hallucinations.",
+      "expected": "citation-check",
+      "cluster": "citation_graph",
+      "preds": [
+        "citation-check",
+        "citation-check"
+      ],
+      "prediction": "citation-check",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "citation_graph_citation_graph_disambig_11",
+      "task": "Based on the set of PDFs I've uploaded, can you find the specific section and page where the author discusses the hyperparameters used for the baseline?",
+      "expected": "paper-rag",
+      "cluster": "citation_graph",
+      "preds": [
+        "paper-rag",
+        "paper-rag"
+      ],
+      "prediction": "paper-rag",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "code_sandbox_code_sandbox_gen_1",
+      "task": "I've written a Python script to scrape some data, but I want to make sure the logic is sound. Can you run it and tell me the output?",
+      "expected": "code-sandbox",
+      "cluster": "code_sandbox",
+      "preds": [
+        "code-sandbox",
+        "code-sandbox"
+      ],
+      "prediction": "code-sandbox",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "code_sandbox_code_sandbox_gen_2",
+      "task": "Can you execute these Pytest unit tests to see if my recent changes broke the API?",
+      "expected": "code-sandbox",
+      "cluster": "code_sandbox",
+      "preds": [
+        "code-sandbox",
+        "code-sandbox"
+      ],
+      "prediction": "code-sandbox",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "code_sandbox_code_sandbox_gen_3",
+      "task": "I'm not sure if this regex is capturing the right groups. Could you try running it against these three sample strings in a Python environment?",
+      "expected": "code-sandbox",
+      "cluster": "code_sandbox",
+      "preds": [
+        "code-sandbox",
+        "code-sandbox"
+      ],
+      "prediction": "code-sandbox",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "code_sandbox_code_sandbox_gen_4",
+      "task": "Run this code snippet to calculate the Fibonacci sequence up to the 100th term.",
+      "expected": "code-sandbox",
+      "cluster": "code_sandbox",
+      "preds": [
+        "code-sandbox",
+        "code-sandbox"
+      ],
+      "prediction": "code-sandbox",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "code_sandbox_code_sandbox_gen_5",
+      "task": "I need to verify if this shell command correctly parses the log file I provided. Can you test it for me?",
+      "expected": "code-sandbox",
+      "cluster": "code_sandbox",
+      "preds": [
+        "code-sandbox",
+        "code-sandbox"
+      ],
+      "prediction": "code-sandbox",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "code_sandbox_code_sandbox_gen_6",
+      "task": "Could you use pandas to process this list of dictionaries and give me the sum of the 'total_amount' field?",
+      "expected": "code-sandbox",
+      "cluster": "code_sandbox",
+      "preds": [
+        "code-sandbox",
+        "code-sandbox"
+      ],
+      "prediction": "code-sandbox",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "code_sandbox_code_sandbox_disambig_7",
+      "task": "Run this provided Python script to calculate the Fibonacci sequence up to the 100th term and print the result.",
+      "expected": "code-sandbox",
+      "cluster": "code_sandbox",
+      "preds": [
+        "code-sandbox",
+        "code-sandbox"
+      ],
+      "prediction": "code-sandbox",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "code_sandbox_code_sandbox_disambig_8",
+      "task": "Execute the existing pytest suite in the /tests folder to verify the current build is stable.",
+      "expected": "code-sandbox",
+      "cluster": "code_sandbox",
+      "preds": [
+        "code-sandbox",
+        "code-sandbox"
+      ],
+      "prediction": "code-sandbox",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "code_sandbox_code_sandbox_disambig_9",
+      "task": "Run a shell command to list all files in the current directory and check their permissions.",
+      "expected": "code-sandbox",
+      "cluster": "code_sandbox",
+      "preds": [
+        "code-sandbox",
+        "code-sandbox"
+      ],
+      "prediction": "code-sandbox",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "code_sandbox_code_sandbox_disambig_10",
+      "task": "Analyze the evaluation metrics in 'experiment_a.csv' and 'experiment_b.csv' to determine if the performance increase is statistically significant.",
+      "expected": "results-analysis",
+      "cluster": "code_sandbox",
+      "preds": [
+        "results-analysis",
+        "results-analysis"
+      ],
+      "prediction": "results-analysis",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "code_sandbox_code_sandbox_disambig_11",
+      "task": "Generate a suite of unit tests for 'utils.py' and use mutation testing to ensure no edge cases are missed.",
+      "expected": "test-gen",
+      "cluster": "code_sandbox",
+      "preds": [
+        "test-gen",
+        "test-gen"
+      ],
+      "prediction": "test-gen",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "commit_pr_commit_pr_gen_1",
+      "task": "Can you write a commit message for the changes I just made to the auth logic?",
+      "expected": "commit-pr",
+      "cluster": "commit_pr",
+      "preds": [
+        "commit-pr",
+        "commit-pr"
+      ],
+      "prediction": "commit-pr",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "commit_pr_commit_pr_gen_2",
+      "task": "I'm ready to open a PR for the bug fix in the payment gateway. Please draft the description including the rationale and test plan.",
+      "expected": "commit-pr",
+      "cluster": "commit_pr",
+      "preds": [
+        "commit-pr",
+        "commit-pr"
+      ],
+      "prediction": "commit-pr",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "commit_pr_commit_pr_gen_3",
+      "task": "I've been coding for a few hours and lost track of everything I touched. Can you summarize the current diff for me by intent?",
+      "expected": "commit-pr",
+      "cluster": "commit_pr",
+      "preds": [
+        "commit-pr",
+        "commit-pr"
+      ],
+      "prediction": "commit-pr",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "commit_pr_commit_pr_gen_4",
+      "task": "I need a Conventional Commits style message for these updates to the API endpoints.",
+      "expected": "commit-pr",
+      "cluster": "commit_pr",
+      "preds": [
+        "commit-pr",
+        "commit-pr"
+      ],
+      "prediction": "commit-pr",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "commit_pr_commit_pr_gen_5",
+      "task": "I just finished the refactor of the database schema. Please generate a full PR body with the risk notes and a summary of the changes.",
+      "expected": "commit-pr",
+      "cluster": "commit_pr",
+      "preds": [
+        "commit-pr",
+        "commit-pr"
+      ],
+      "prediction": "commit-pr",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "commit_pr_commit_pr_gen_6",
+      "task": "Draft a quick commit message for my current diff.",
+      "expected": "commit-pr",
+      "cluster": "commit_pr",
+      "preds": [
+        "commit-pr",
+        "commit-pr"
+      ],
+      "prediction": "commit-pr",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "commit_pr_commit_pr_disambig_7",
+      "task": "I've updated the props for the Button component to support a new 'variant' type; can you write a PR description explaining these changes based on the diff?",
+      "expected": "commit-pr",
+      "cluster": "commit_pr",
+      "preds": [
+        "commit-pr",
+        "commit-pr"
+      ],
+      "prediction": "commit-pr",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "commit_pr_commit_pr_disambig_8",
+      "task": "I just finished the refactor of the auth module. Please look at the diff and generate a Conventional Commit message for me.",
+      "expected": "commit-pr",
+      "cluster": "commit_pr",
+      "preds": [
+        "commit-pr",
+        "commit-pr"
+      ],
+      "prediction": "commit-pr",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "commit_pr_commit_pr_disambig_9",
+      "task": "Now that I've fixed the null pointer exception in the user service, please generate a PR body including the rationale and test plan based on my changes.",
+      "expected": "commit-pr",
+      "cluster": "commit_pr",
+      "preds": [
+        "commit-pr",
+        "commit-pr"
+      ],
+      "prediction": "commit-pr",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "commit_pr_commit_pr_disambig_10",
+      "task": "I've added new props to the UserProfile component. Please generate the updated TypeScript prop table and Storybook stories for it.",
+      "expected": "component-doc-gen",
+      "cluster": "commit_pr",
+      "preds": [
+        "component-doc-gen",
+        "component-doc-gen"
+      ],
+      "prediction": "component-doc-gen",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "commit_pr_commit_pr_disambig_11",
+      "task": "I have a draft of my PR description and some test results; please review the description against the test output and suggest improvements to the rationale.",
+      "expected": "critique",
+      "cluster": "commit_pr",
+      "preds": [
+        "critique",
+        "critique"
+      ],
+      "prediction": "critique",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "component_doc_gen_component_doc_gen_gen_1",
+      "task": "Generate the prop table for the Button component.",
+      "expected": "component-doc-gen",
+      "cluster": "component_doc_gen",
+      "preds": [
+        "component-doc-gen",
+        "component-doc-gen"
+      ],
+      "prediction": "component-doc-gen",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "component_doc_gen_component_doc_gen_gen_2",
+      "task": "I need markdown documentation for all the components in the /src/components folder.",
+      "expected": "component-doc-gen",
+      "cluster": "component_doc_gen",
+      "preds": [
+        "component-doc-gen",
+        "component-doc-gen"
+      ],
+      "prediction": "component-doc-gen",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "component_doc_gen_component_doc_gen_gen_3",
+      "task": "Can you create CSF3 stories for my Header and Footer components based on their TypeScript types?",
+      "expected": "component-doc-gen",
+      "cluster": "component_doc_gen",
+      "preds": [
+        "component-doc-gen",
+        "component-doc-gen"
+      ],
+      "prediction": "component-doc-gen",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "component_doc_gen_component_doc_gen_gen_4",
+      "task": "I've updated the types in the Modal component; please refresh the documentation and prop list.",
+      "expected": "component-doc-gen",
+      "cluster": "component_doc_gen",
+      "preds": [
+        "component-doc-gen",
+        "component-doc-gen"
+      ],
+      "prediction": "component-doc-gen",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "component_doc_gen_component_doc_gen_gen_5",
+      "task": "Extract the JSDoc comments and props from the UserProfile.tsx file and turn them into a markdown table.",
+      "expected": "component-doc-gen",
+      "cluster": "component_doc_gen",
+      "preds": [
+        "component-doc-gen",
+        "component-doc-gen"
+      ],
+      "prediction": "component-doc-gen",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "component_doc_gen_component_doc_gen_gen_6",
+      "task": "Make me some Storybook stories for this new Input component I just finished.",
+      "expected": "component-doc-gen",
+      "cluster": "component_doc_gen",
+      "preds": [
+        "component-doc-gen",
+        "component-doc-gen"
+      ],
+      "prediction": "component-doc-gen",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "component_doc_gen_component_doc_gen_disambig_7",
+      "task": "Analyze the TypeScript source of the `DataTable` component and generate a markdown table of its props and their descriptions from the JSDoc.",
+      "expected": "component-doc-gen",
+      "cluster": "component_doc_gen",
+      "preds": [
+        "component-doc-gen",
+        "component-doc-gen"
+      ],
+      "prediction": "component-doc-gen",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "component_doc_gen_component_doc_gen_disambig_8",
+      "task": "Create Storybook CSF3 stories for the `AuthForm` component based on its prop types using AST analysis.",
+      "expected": "component-doc-gen",
+      "cluster": "component_doc_gen",
+      "preds": [
+        "component-doc-gen",
+        "component-doc-gen"
+      ],
+      "prediction": "component-doc-gen",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "component_doc_gen_component_doc_gen_disambig_9",
+      "task": "I have a set of existing React components; please extract their prop definitions and required status to build a documentation site.",
+      "expected": "component-doc-gen",
+      "cluster": "component_doc_gen",
+      "preds": [
+        "component-doc-gen",
+        "component-doc-gen"
+      ],
+      "prediction": "component-doc-gen",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "component_doc_gen_component_doc_gen_disambig_10",
+      "task": "Use ts-morph to find all references to the `UserProps` interface and rename it to `AccountProps` across the entire project.",
+      "expected": "ast-ts-refactor",
+      "cluster": "component_doc_gen",
+      "preds": [
+        "ast-ts-refactor",
+        "ast-ts-refactor"
+      ],
+      "prediction": "ast-ts-refactor",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "component_doc_gen_component_doc_gen_disambig_11",
+      "task": "Convert this Figma frame containing the new dashboard design into a React component using Tailwind CSS.",
+      "expected": "figma-to-component",
+      "cluster": "component_doc_gen",
+      "preds": [
+        "figma-to-component",
+        "figma-to-component"
+      ],
+      "prediction": "figma-to-component",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "critique_critique_gen_1",
+      "task": "I just finished this Python function. Can you run the tests and the linter on it, then tell me how to make it better?",
+      "expected": "critique",
+      "cluster": "critique",
+      "preds": [
+        "code-sandbox",
+        "code-sandbox"
+      ],
+      "prediction": "code-sandbox",
+      "correct": false,
+      "stability": 1.0
+    },
+    {
+      "id": "critique_critique_gen_2",
+      "task": "I've written this blog post about quantum physics. Please check that all my citations are accurate and then suggest some improvements to the writing.",
+      "expected": "critique",
+      "cluster": "critique",
+      "preds": [
+        "citation-check",
+        "citation-check"
+      ],
+      "prediction": "citation-check",
+      "correct": false,
+      "stability": 1.0
+    },
+    {
+      "id": "critique_critique_gen_3",
+      "task": "Can you double-check this script? Run the test suite first to see if it's actually working before you suggest any changes.",
+      "expected": "critique",
+      "cluster": "critique",
+      "preds": [
+        "code-sandbox",
+        "code-sandbox"
+      ],
+      "prediction": "code-sandbox",
+      "correct": false,
+      "stability": 1.0
+    },
+    {
+      "id": "critique_critique_gen_4",
+      "task": "I'm submitting this PR tomorrow. Could you run a full lint check and verification on the logic, then give me a scored review of the code quality?",
+      "expected": "critique",
+      "cluster": "critique",
+      "preds": [
+        "critique",
+        "critique"
+      ],
+      "prediction": "critique",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "critique_critique_gen_5",
+      "task": "Please verify the facts in this research summary against the provided sources and then refine the prose for a professional tone.",
+      "expected": "critique",
+      "cluster": "critique",
+      "preds": [
+        "citation-check",
+        "citation-check"
+      ],
+      "prediction": "citation-check",
+      "correct": false,
+      "stability": 1.0
+    },
+    {
+      "id": "critique_critique_gen_6",
+      "task": "My code is passing most tests but failing one edge case. Help me figure out why it's failing and rewrite it to be more robust.",
+      "expected": "critique",
+      "cluster": "critique",
+      "preds": [
+        "repo-fault-localize",
+        "repo-fault-localize"
+      ],
+      "prediction": "repo-fault-localize",
+      "correct": false,
+      "stability": 1.0
+    },
+    {
+      "id": "critique_critique_disambig_7",
+      "task": "I've written a Python data processing script. Please run the test suite and the linter, then use those results to iteratively improve the code until all tests pass and warnings are gone.",
+      "expected": "critique",
+      "cluster": "critique",
+      "preds": [
+        "code-sandbox",
+        "code-sandbox"
+      ],
+      "prediction": "code-sandbox",
+      "correct": false,
+      "stability": 1.0
+    },
+    {
+      "id": "critique_critique_disambig_8",
+      "task": "Review this academic essay. Use the citation verification tools to find hallucinated references, and then rewrite the affected paragraphs to ensure they are grounded in the provided sources.",
+      "expected": "critique",
+      "cluster": "critique",
+      "preds": [
+        "citation-check",
+        "citation-check"
+      ],
+      "prediction": "citation-check",
+      "correct": false,
+      "stability": 1.0
+    },
+    {
+      "id": "critique_critique_disambig_9",
+      "task": "Analyze this C++ implementation. Check it against the project's style guide and unit tests, then provide a revised version that fixes the identified issues.",
+      "expected": "critique",
+      "cluster": "critique",
+      "preds": [
+        "critique",
+        "critique"
+      ],
+      "prediction": "critique",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "critique_critique_disambig_10",
+      "task": "Look at this screenshot of the new dashboard. Check the visual hierarchy, contrast, and spacing against the accessibility guidelines and tell me what fails.",
+      "expected": "design-critique",
+      "cluster": "critique",
+      "preds": [
+        "design-critique",
+        "design-critique"
+      ],
+      "prediction": "design-critique",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "critique_critique_disambig_11",
+      "task": "Run a static analysis on this React component to identify specific anti-patterns regarding useEffect dependencies and state management rules.",
+      "expected": "react-doctor",
+      "cluster": "critique",
+      "preds": [
+        "react-doctor",
+        "react-doctor"
+      ],
+      "prediction": "react-doctor",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "dataset_generation_dataset_generation_gen_1",
+      "task": "I have about 20 examples of how I want my customer support bot to handle refunds. Can you use those as seeds to generate 500 more similar instruction-response pairs?",
+      "expected": "dataset-generation",
+      "cluster": "dataset_generation",
+      "preds": [
+        "dataset-generation",
+        "dataset-generation"
+      ],
+      "prediction": "dataset-generation",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "dataset_generation_dataset_generation_gen_2",
+      "task": "I need a JSONL dataset for fine-tuning a model on legal document summarization. I'll provide the format template and some initial examples.",
+      "expected": "dataset-generation",
+      "cluster": "dataset_generation",
+      "preds": [
+        "dataset-generation",
+        "dataset-generation"
+      ],
+      "prediction": "dataset-generation",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "dataset_generation_dataset_generation_gen_3",
+      "task": "Can you help me build a preference dataset? I need pairs of 'chosen' and 'rejected' responses for complex Python coding queries based on these few samples.",
+      "expected": "dataset-generation",
+      "cluster": "dataset_generation",
+      "preds": [
+        "dataset-generation",
+        "dataset-generation"
+      ],
+      "prediction": "dataset-generation",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "dataset_generation_dataset_generation_gen_4",
+      "task": "I'm trying to distill a larger LLM into a smaller one. I need you to generate a large silver dataset of chat conversations following these specific guidelines.",
+      "expected": "dataset-generation",
+      "cluster": "dataset_generation",
+      "preds": [
+        "dataset-generation",
+        "dataset-generation"
+      ],
+      "prediction": "dataset-generation",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "dataset_generation_dataset_generation_gen_5",
+      "task": "I need a synthetic evaluation set to test my model's reasoning capabilities. I have a list of requirements; can you generate the examples and make sure all the edge cases are covered?",
+      "expected": "dataset-generation",
+      "cluster": "dataset_generation",
+      "preds": [
+        "dataset-generation",
+        "dataset-generation"
+      ],
+      "prediction": "dataset-generation",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "dataset_generation_dataset_generation_gen_6",
+      "task": "I've got a few seed prompts for a creative writing assistant. Could you expand these into a full training set of high-quality examples?",
+      "expected": "dataset-generation",
+      "cluster": "dataset_generation",
+      "preds": [
+        "dataset-generation",
+        "dataset-generation"
+      ],
+      "prediction": "dataset-generation",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "dataset_generation_dataset_generation_disambig_7",
+      "task": "I have 10 high-quality examples of medical diagnosis reasoning; please expand this seed set into a 500-example synthetic dataset in JSONL format for fine-tuning.",
+      "expected": "dataset-generation",
+      "cluster": "dataset_generation",
+      "preds": [
+        "dataset-generation",
+        "dataset-generation"
+      ],
+      "prediction": "dataset-generation",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "dataset_generation_dataset_generation_disambig_8",
+      "task": "Create a silver dataset for knowledge distillation by generating a large number of instruction-response pairs based on these provided template prompts.",
+      "expected": "dataset-generation",
+      "cluster": "dataset_generation",
+      "preds": [
+        "dataset-generation",
+        "dataset-generation"
+      ],
+      "prediction": "dataset-generation",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "dataset_generation_dataset_generation_disambig_9",
+      "task": "I need a custom evaluation set for a niche domain where no public data exists, so please use these few-shot seeds to generate a diverse set of test cases.",
+      "expected": "dataset-generation",
+      "cluster": "dataset_generation",
+      "preds": [
+        "dataset-generation",
+        "dataset-generation"
+      ],
+      "prediction": "dataset-generation",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "dataset_generation_dataset_generation_disambig_10",
+      "task": "Find a publicly available dataset on the Hugging Face Hub that contains labeled sentiment analysis data for financial reports.",
+      "expected": "dataset-search",
+      "cluster": "dataset_generation",
+      "preds": [
+        "dataset-search",
+        "dataset-search"
+      ],
+      "prediction": "dataset-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "dataset_generation_dataset_generation_disambig_11",
+      "task": "Search for any existing open-source corpora on PapersWithCode that match the requirements for a multi-modal image-text retrieval task.",
+      "expected": "dataset-search",
+      "cluster": "dataset_generation",
+      "preds": [
+        "dataset-search",
+        "dataset-search"
+      ],
+      "prediction": "dataset-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "dataset_search_dataset_search_gen_1",
+      "task": "Find a labeled dataset for English-to-Spanish translation.",
+      "expected": "dataset-search",
+      "cluster": "dataset_search",
+      "preds": [
+        "dataset-search",
+        "dataset-search"
+      ],
+      "prediction": "dataset-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "dataset_search_dataset_search_gen_2",
+      "task": "I'm building a toxicity classifier for social media posts and need a public corpus of toxic comments to use as a training set.",
+      "expected": "dataset-search",
+      "cluster": "dataset_search",
+      "preds": [
+        "dataset-search",
+        "dataset-search"
+      ],
+      "prediction": "dataset-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "dataset_search_dataset_search_gen_3",
+      "task": "Are there any open datasets available for gesture recognition using 3D skeleton data?",
+      "expected": "dataset-search",
+      "cluster": "dataset_search",
+      "preds": [
+        "dataset-search",
+        "dataset-search"
+      ],
+      "prediction": "dataset-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "dataset_search_dataset_search_gen_4",
+      "task": "I need a gold-standard evaluation set for testing a model's ability to summarize legal documents.",
+      "expected": "dataset-search",
+      "cluster": "dataset_search",
+      "preds": [
+        "dataset-search",
+        "dataset-search"
+      ],
+      "prediction": "dataset-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "dataset_search_dataset_search_gen_5",
+      "task": "Can you search for a Hugging Face dataset that contains medical dialogue between doctors and patients?",
+      "expected": "dataset-search",
+      "cluster": "dataset_search",
+      "preds": [
+        "dataset-search",
+        "dataset-search"
+      ],
+      "prediction": "dataset-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "dataset_search_dataset_search_gen_6",
+      "task": "What are the most commonly used benchmarks for image segmentation in autonomous driving?",
+      "expected": "dataset-search",
+      "cluster": "dataset_search",
+      "preds": [
+        "web-search",
+        "web-search"
+      ],
+      "prediction": "web-search",
+      "correct": false,
+      "stability": 1.0
+    },
+    {
+      "id": "dataset_search_dataset_search_disambig_7",
+      "task": "I need a labeled dataset for sentiment analysis on financial news for fine-tuning; check Hugging Face and PapersWithCode for existing options.",
+      "expected": "dataset-search",
+      "cluster": "dataset_search",
+      "preds": [
+        "dataset-search",
+        "dataset-search"
+      ],
+      "prediction": "dataset-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "dataset_search_dataset_search_disambig_8",
+      "task": "Search for a public corpus of medical imaging data that matches the modality of MRI and is already labeled for tumor detection.",
+      "expected": "dataset-search",
+      "cluster": "dataset_search",
+      "preds": [
+        "dataset-search",
+        "dataset-search"
+      ],
+      "prediction": "dataset-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "dataset_search_dataset_search_disambig_9",
+      "task": "Find the actual dataset used in the original BERT paper to evaluate its performance on GLUE.",
+      "expected": "dataset-search",
+      "cluster": "dataset_search",
+      "preds": [
+        "dataset-search",
+        "dataset-search"
+      ],
+      "prediction": "dataset-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "dataset_search_dataset_search_disambig_10",
+      "task": "I have 10 examples of specialized legal queries; please expand these into a full training set of 1,000 examples for a chat model.",
+      "expected": "dataset-generation",
+      "cluster": "dataset_search",
+      "preds": [
+        "dataset-generation",
+        "dataset-generation"
+      ],
+      "prediction": "dataset-generation",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "dataset_search_dataset_search_disambig_11",
+      "task": "Search the web for the latest blog posts and announcements from OpenAI regarding the release of new evaluation benchmarks.",
+      "expected": "web-search",
+      "cluster": "dataset_search",
+      "preds": [
+        "web-search",
+        "web-search"
+      ],
+      "prediction": "web-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "design_critique_design_critique_gen_1",
+      "task": "Can you look at this screenshot of my checkout page and tell me if the layout and spacing are correct?",
+      "expected": "design-critique",
+      "cluster": "design_critique",
+      "preds": [
+        "design-critique",
+        "design-critique"
+      ],
+      "prediction": "design-critique",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "design_critique_design_critique_gen_2",
+      "task": "I just finished the onboarding flow. Could you do a quick UX critique to see if I missed anything regarding accessibility or hierarchy?",
+      "expected": "design-critique",
+      "cluster": "design_critique",
+      "preds": [
+        "design-critique",
+        "design-critique"
+      ],
+      "prediction": "design-critique",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "design_critique_design_critique_gen_3",
+      "task": "Does this mobile app design look professional? Please audit the visual elements.",
+      "expected": "design-critique",
+      "cluster": "design_critique",
+      "preds": [
+        "design-critique",
+        "design-critique"
+      ],
+      "prediction": "design-critique",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "design_critique_design_critique_gen_4",
+      "task": "Run a design review on this image. I'm worried about the contrast and typography.",
+      "expected": "design-critique",
+      "cluster": "design_critique",
+      "preds": [
+        "design-critique",
+        "design-critique"
+      ],
+      "prediction": "design-critique",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "design_critique_design_critique_gen_5",
+      "task": "Check this UI for any red flags before I send it to the developers.",
+      "expected": "design-critique",
+      "cluster": "design_critique",
+      "preds": [
+        "design-critique",
+        "design-critique"
+      ],
+      "prediction": "design-critique",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "design_critique_design_critique_gen_6",
+      "task": "Here's a mockup of my new dashboard. Can you give me a structured breakdown of what's working and what isn't visually?",
+      "expected": "design-critique",
+      "cluster": "design_critique",
+      "preds": [
+        "design-critique",
+        "design-critique"
+      ],
+      "prediction": "design-critique",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "design_critique_design_critique_disambig_7",
+      "task": "Analyze this screenshot of the onboarding flow and provide a structured checklist on whether the visual hierarchy and spacing are consistent.",
+      "expected": "design-critique",
+      "cluster": "design_critique",
+      "preds": [
+        "design-critique",
+        "design-critique"
+      ],
+      "prediction": "design-critique",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "design_critique_design_critique_disambig_8",
+      "task": "I have a mockup image of a dashboard; can you perform a visual surface audit to see if the contrast and typography are accessible?",
+      "expected": "design-critique",
+      "cluster": "design_critique",
+      "preds": [
+        "design-critique",
+        "design-critique"
+      ],
+      "prediction": "design-critique",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "design_critique_design_critique_disambig_9",
+      "task": "Review the layout of this UI screenshot and give me a pass/fail status on the spacing and alignment of the components.",
+      "expected": "design-critique",
+      "cluster": "design_critique",
+      "preds": [
+        "design-critique",
+        "design-critique"
+      ],
+      "prediction": "design-critique",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "design_critique_design_critique_disambig_10",
+      "task": "Take this screenshot of the login page and generate a matching React component using Tailwind CSS and shadcn/ui.",
+      "expected": "screenshot-to-component",
+      "cluster": "design_critique",
+      "preds": [
+        "screenshot-to-component",
+        "screenshot-to-component"
+      ],
+      "prediction": "screenshot-to-component",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "design_critique_design_critique_disambig_11",
+      "task": "Run a WCAG accessibility check on the rendered HTML of this page to find all deterministic violations and their rule IDs.",
+      "expected": "a11y-audit",
+      "cluster": "design_critique",
+      "preds": [
+        "a11y-audit",
+        "a11y-audit"
+      ],
+      "prediction": "a11y-audit",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "design_token_transform_design_token_transform_gen_1",
+      "task": "Can you pull the color palette and spacing values from my Figma file and add them to my tailwind.config.js?",
+      "expected": "design-token-transform",
+      "cluster": "design_token_transform",
+      "preds": [
+        "design-token-transform",
+        "design-token-transform"
+      ],
+      "prediction": "design-token-transform",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "design_token_transform_design_token_transform_gen_2",
+      "task": "I need to sync the latest typography and border-radius tokens from Figma into my global CSS variables.",
+      "expected": "design-token-transform",
+      "cluster": "design_token_transform",
+      "preds": [
+        "design-token-transform",
+        "design-token-transform"
+      ],
+      "prediction": "design-token-transform",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "design_token_transform_design_token_transform_gen_3",
+      "task": "Build this hero section from the screenshot, but use the actual design tokens from my Figma project instead of hardcoding the hex values.",
+      "expected": "design-token-transform",
+      "cluster": "design_token_transform",
+      "preds": [
+        "screenshot-to-component",
+        "screenshot-to-component"
+      ],
+      "prediction": "screenshot-to-component",
+      "correct": false,
+      "stability": 1.0
+    },
+    {
+      "id": "design_token_transform_design_token_transform_gen_4",
+      "task": "Convert the design system styles in my Figma board into shadcn/ui globals for me.",
+      "expected": "design-token-transform",
+      "cluster": "design_token_transform",
+      "preds": [
+        "design-token-transform",
+        "design-token-transform"
+      ],
+      "prediction": "design-token-transform",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "design_token_transform_design_token_transform_gen_5",
+      "task": "The design team just updated the brand colors in Figma—can you update my project's theme to match?",
+      "expected": "design-token-transform",
+      "cluster": "design_token_transform",
+      "preds": [
+        "design-token-transform",
+        "design-token-transform"
+      ],
+      "prediction": "design-token-transform",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "design_token_transform_design_token_transform_gen_6",
+      "task": "Extract all the style tokens from my Figma design and set them up as CSS variables.",
+      "expected": "design-token-transform",
+      "cluster": "design_token_transform",
+      "preds": [
+        "design-token-transform",
+        "design-token-transform"
+      ],
+      "prediction": "design-token-transform",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "design_token_transform_design_token_transform_disambig_7",
+      "task": "I have a Figma file with a defined design system; please extract the color palette and spacing values and update my tailwind.config.js to match.",
+      "expected": "design-token-transform",
+      "cluster": "design_token_transform",
+      "preds": [
+        "design-token-transform",
+        "design-token-transform"
+      ],
+      "prediction": "design-token-transform",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "design_token_transform_design_token_transform_disambig_8",
+      "task": "Convert the typography and border-radius variables from my Figma project into shadcn/ui CSS globals.",
+      "expected": "design-token-transform",
+      "cluster": "design_token_transform",
+      "preds": [
+        "design-token-transform",
+        "design-token-transform"
+      ],
+      "prediction": "design-token-transform",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "design_token_transform_design_token_transform_disambig_9",
+      "task": "I'm using a screenshot to build this page, but I need you to pull the exact hex codes and font sizes from the Figma API so the output isn't hardcoded.",
+      "expected": "design-token-transform",
+      "cluster": "design_token_transform",
+      "preds": [
+        "design-token-transform",
+        "design-token-transform"
+      ],
+      "prediction": "design-token-transform",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "design_token_transform_design_token_transform_disambig_10",
+      "task": "Use the Figma REST API to turn the 'Navigation Bar' frame into a responsive React component using Tailwind.",
+      "expected": "figma-to-component",
+      "cluster": "design_token_transform",
+      "preds": [
+        "figma-to-component",
+        "figma-to-component"
+      ],
+      "prediction": "figma-to-component",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "design_token_transform_design_token_transform_disambig_11",
+      "task": "Here is a screenshot of a mobile app login screen; please generate the React code using shadcn/ui components.",
+      "expected": "screenshot-to-component",
+      "cluster": "design_token_transform",
+      "preds": [
+        "screenshot-to-component",
+        "screenshot-to-component"
+      ],
+      "prediction": "screenshot-to-component",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "figma_to_component_figma_to_component_gen_1",
+      "task": "Can you turn this Figma frame into a React component using Tailwind CSS?",
+      "expected": "figma-to-component",
+      "cluster": "figma_to_component",
+      "preds": [
+        "figma-to-component",
+        "figma-to-component"
+      ],
+      "prediction": "figma-to-component",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "figma_to_component_figma_to_component_gen_2",
+      "task": "I need the code for this specific Figma component. Please pull the structured data and give me the React implementation.",
+      "expected": "figma-to-component",
+      "cluster": "figma_to_component",
+      "preds": [
+        "figma-to-component",
+        "figma-to-component"
+      ],
+      "prediction": "figma-to-component",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "figma_to_component_figma_to_component_gen_3",
+      "task": "Convert my Figma design to a Tailwind component. It's already set up with auto-layout, so make sure the spacing is exact.",
+      "expected": "figma-to-component",
+      "cluster": "figma_to_component",
+      "preds": [
+        "figma-to-component",
+        "figma-to-component"
+      ],
+      "prediction": "figma-to-component",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "figma_to_component_figma_to_component_gen_4",
+      "task": "Here is a link to my Figma file; can you generate the React and Tailwind code for the header component?",
+      "expected": "figma-to-component",
+      "cluster": "figma_to_component",
+      "preds": [
+        "figma-to-component",
+        "figma-to-component"
+      ],
+      "prediction": "figma-to-component",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "figma_to_component_figma_to_component_gen_5",
+      "task": "I've got a design in Figma with variables. Can you translate that into a clean React component?",
+      "expected": "figma-to-component",
+      "cluster": "figma_to_component",
+      "preds": [
+        "figma-to-component",
+        "figma-to-component"
+      ],
+      "prediction": "figma-to-component",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "figma_to_component_figma_to_component_gen_6",
+      "task": "Figma to React + Tailwind for this frame: [URL]",
+      "expected": "figma-to-component",
+      "cluster": "figma_to_component",
+      "preds": [
+        "figma-to-component",
+        "figma-to-component"
+      ],
+      "prediction": "figma-to-component",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "figma_to_component_figma_to_component_disambig_7",
+      "task": "I have a Figma file with a complex header using auto-layout; please convert this specific frame into a React and Tailwind component.",
+      "expected": "figma-to-component",
+      "cluster": "figma_to_component",
+      "preds": [
+        "figma-to-component",
+        "figma-to-component"
+      ],
+      "prediction": "figma-to-component",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "figma_to_component_figma_to_component_disambig_8",
+      "task": "Use the Figma REST API to turn the component at this URL into a functional React + Tailwind UI element.",
+      "expected": "figma-to-component",
+      "cluster": "figma_to_component",
+      "preds": [
+        "figma-to-component",
+        "figma-to-component"
+      ],
+      "prediction": "figma-to-component",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "figma_to_component_figma_to_component_disambig_9",
+      "task": "Convert this Figma design into a React component, making sure to preserve the structured layout data rather than just guessing from a picture.",
+      "expected": "figma-to-component",
+      "cluster": "figma_to_component",
+      "preds": [
+        "figma-to-component",
+        "figma-to-component"
+      ],
+      "prediction": "figma-to-component",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "figma_to_component_figma_to_component_disambig_10",
+      "task": "Here is a screenshot of a landing page I like; can you build a similar React component using Tailwind and shadcn/ui?",
+      "expected": "screenshot-to-component",
+      "cluster": "figma_to_component",
+      "preds": [
+        "screenshot-to-component",
+        "screenshot-to-component"
+      ],
+      "prediction": "screenshot-to-component",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "figma_to_component_figma_to_component_disambig_11",
+      "task": "I need to extract the color palette and spacing variables from my Figma design system to update my tailwind.config.js.",
+      "expected": "design-token-transform",
+      "cluster": "figma_to_component",
+      "preds": [
+        "design-token-transform",
+        "design-token-transform"
+      ],
+      "prediction": "design-token-transform",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "paper_rag_paper_rag_gen_1",
+      "task": "What's the consensus in my uploaded papers regarding the impact of microplastics on soil microbiome?",
+      "expected": "paper-rag",
+      "cluster": "paper_rag",
+      "preds": [
+        "paper-rag",
+        "paper-rag"
+      ],
+      "prediction": "paper-rag",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "paper_rag_paper_rag_gen_2",
+      "task": "I'm writing a lit review—can you find the specific passage in my library that discusses the limitations of the Transformer architecture?",
+      "expected": "paper-rag",
+      "cluster": "paper_rag",
+      "preds": [
+        "paper-rag",
+        "paper-rag"
+      ],
+      "prediction": "paper-rag",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "paper_rag_paper_rag_gen_3",
+      "task": "Which paper in my collection provides evidence that the current inflation model is outdated?",
+      "expected": "paper-rag",
+      "cluster": "paper_rag",
+      "preds": [
+        "paper-rag",
+        "paper-rag"
+      ],
+      "prediction": "paper-rag",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "paper_rag_paper_rag_gen_4",
+      "task": "Can you summarize how the different authors in my PDFs define 'neural plasticity' and give me the page numbers?",
+      "expected": "paper-rag",
+      "cluster": "paper_rag",
+      "preds": [
+        "paper-rag",
+        "paper-rag"
+      ],
+      "prediction": "paper-rag",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "paper_rag_paper_rag_gen_5",
+      "task": "I need to verify a claim about CRISPR off-target effects; search my library and tell me exactly where it's mentioned.",
+      "expected": "paper-rag",
+      "cluster": "paper_rag",
+      "preds": [
+        "paper-rag",
+        "paper-rag"
+      ],
+      "prediction": "paper-rag",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "paper_rag_paper_rag_gen_6",
+      "task": "Based on the documents I've ingested, what are the primary arguments against the use of synthetic catalysts in this reaction?",
+      "expected": "paper-rag",
+      "cluster": "paper_rag",
+      "preds": [
+        "paper-rag",
+        "paper-rag"
+      ],
+      "prediction": "paper-rag",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "paper_rag_paper_rag_disambig_7",
+      "task": "Based on the PDFs in my library, what are the main findings regarding CRISPR efficiency and which pages mention them?",
+      "expected": "paper-rag",
+      "cluster": "paper_rag",
+      "preds": [
+        "paper-rag",
+        "paper-rag"
+      ],
+      "prediction": "paper-rag",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "paper_rag_paper_rag_disambig_8",
+      "task": "Search through my uploaded papers to find specific evidence that supports the claim that Graphene increases conductivity in this specific setup.",
+      "expected": "paper-rag",
+      "cluster": "paper_rag",
+      "preds": [
+        "paper-rag",
+        "paper-rag"
+      ],
+      "prediction": "paper-rag",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "paper_rag_paper_rag_disambig_9",
+      "task": "I have the paper 'Attention is All You Need' in my library; can you explain the specific mechanism of multi-head attention as described in the text?",
+      "expected": "paper-rag",
+      "cluster": "paper_rag",
+      "preds": [
+        "paper-rag",
+        "paper-rag"
+      ],
+      "prediction": "paper-rag",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "paper_rag_paper_rag_disambig_10",
+      "task": "I've written a draft; please verify if the claims in the second paragraph are actually supported by the cited references in my library.",
+      "expected": "citation-check",
+      "cluster": "paper_rag",
+      "preds": [
+        "citation-check",
+        "citation-check"
+      ],
+      "prediction": "citation-check",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "paper_rag_paper_rag_disambig_11",
+      "task": "I need the table on page 4 of this PDF converted into a structured markdown format for my report.",
+      "expected": "pdf-parse",
+      "cluster": "paper_rag",
+      "preds": [
+        "pdf-parse",
+        "pdf-parse"
+      ],
+      "prediction": "pdf-parse",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "paper_to_slides_paper_to_slides_gen_1",
+      "task": "I just got my paper accepted for a conference. Can you help me turn the PDF into a slide deck for the presentation?",
+      "expected": "paper-to-slides",
+      "cluster": "paper_to_slides",
+      "preds": [
+        "paper-to-slides",
+        "paper-to-slides"
+      ],
+      "prediction": "paper-to-slides",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "paper_to_slides_paper_to_slides_gen_2",
+      "task": "Make a Beamer presentation based on this paper.",
+      "expected": "paper-to-slides",
+      "cluster": "paper_to_slides",
+      "preds": [
+        "paper-to-slides",
+        "paper-to-slides"
+      ],
+      "prediction": "paper-to-slides",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "paper_to_slides_paper_to_slides_gen_3",
+      "task": "I need a professional conference presentation from my research paper. Please include speaker notes for each slide.",
+      "expected": "paper-to-slides",
+      "cluster": "paper_to_slides",
+      "preds": [
+        "paper-to-slides",
+        "paper-to-slides"
+      ],
+      "prediction": "paper-to-slides",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "paper_to_slides_paper_to_slides_gen_4",
+      "task": "Can you convert this PDF into a Marp Markdown slide deck?",
+      "expected": "paper-to-slides",
+      "cluster": "paper_to_slides",
+      "preds": [
+        "paper-to-slides",
+        "paper-to-slides"
+      ],
+      "prediction": "paper-to-slides",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "paper_to_slides_paper_to_slides_gen_5",
+      "task": "I have a 15-minute talk coming up. Please take the attached paper and generate the LaTeX code for a set of slides.",
+      "expected": "paper-to-slides",
+      "cluster": "paper_to_slides",
+      "preds": [
+        "paper-to-slides",
+        "paper-to-slides"
+      ],
+      "prediction": "paper-to-slides",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "paper_to_slides_paper_to_slides_gen_6",
+      "task": "Turn this scientific paper into a presentation outline and a PDF slide deck.",
+      "expected": "paper-to-slides",
+      "cluster": "paper_to_slides",
+      "preds": [
+        "paper-to-slides",
+        "paper-to-slides"
+      ],
+      "prediction": "paper-to-slides",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "paper_to_slides_paper_to_slides_disambig_7",
+      "task": "I have the PDF of my accepted paper; please convert it into a Beamer presentation with an IMRaD structure for my conference talk.",
+      "expected": "paper-to-slides",
+      "cluster": "paper_to_slides",
+      "preds": [
+        "paper-to-slides",
+        "paper-to-slides"
+      ],
+      "prediction": "paper-to-slides",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "paper_to_slides_paper_to_slides_disambig_8",
+      "task": "Use the output from pdf-parse to generate a set of conference slides with speaker notes and a compiled PDF via tectonic.",
+      "expected": "paper-to-slides",
+      "cluster": "paper_to_slides",
+      "preds": [
+        "paper-to-slides",
+        "paper-to-slides"
+      ],
+      "prediction": "paper-to-slides",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "paper_to_slides_paper_to_slides_disambig_9",
+      "task": "Can you take this research PDF and create a professional slide deck, including figure triage and a Marp Markdown version?",
+      "expected": "paper-to-slides",
+      "cluster": "paper_to_slides",
+      "preds": [
+        "paper-to-slides",
+        "paper-to-slides"
+      ],
+      "prediction": "paper-to-slides",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "paper_to_slides_paper_to_slides_disambig_10",
+      "task": "Parse this scientific PDF into structured Markdown and extract all the tables and formulas for my records.",
+      "expected": "pdf-parse",
+      "cluster": "paper_to_slides",
+      "preds": [
+        "pdf-parse",
+        "pdf-parse"
+      ],
+      "prediction": "pdf-parse",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "paper_to_slides_paper_to_slides_disambig_11",
+      "task": "I have a finished LaTeX project for my paper; please flatten the files, strip the comments, and create a clean tarball for arXiv submission.",
+      "expected": "arxiv-prep",
+      "cluster": "paper_to_slides",
+      "preds": [
+        "arxiv-prep",
+        "arxiv-prep"
+      ],
+      "prediction": "arxiv-prep",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "pdf_parse_pdf_parse_gen_1",
+      "task": "Can you turn this research paper PDF into a markdown file?",
+      "expected": "pdf-parse",
+      "cluster": "pdf_parse",
+      "preds": [
+        "pdf-parse",
+        "pdf-parse"
+      ],
+      "prediction": "pdf-parse",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "pdf_parse_pdf_parse_gen_2",
+      "task": "I need to get the tables and formulas out of this PDF and into a structured format.",
+      "expected": "pdf-parse",
+      "cluster": "pdf_parse",
+      "preds": [
+        "pdf-parse",
+        "pdf-parse"
+      ],
+      "prediction": "pdf-parse",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "pdf_parse_pdf_parse_gen_3",
+      "task": "Convert the attached scientific paper to markdown so I can use it for my RAG pipeline.",
+      "expected": "pdf-parse",
+      "cluster": "pdf_parse",
+      "preds": [
+        "pdf-parse",
+        "pdf-parse"
+      ],
+      "prediction": "pdf-parse",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "pdf_parse_pdf_parse_gen_4",
+      "task": "Please extract the content from this PDF; make sure the figures and tables are preserved.",
+      "expected": "pdf-parse",
+      "cluster": "pdf_parse",
+      "preds": [
+        "pdf-parse",
+        "pdf-parse"
+      ],
+      "prediction": "pdf-parse",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "pdf_parse_pdf_parse_gen_5",
+      "task": "I have a PDF with a lot of complex math. Use the high-fidelity mode to parse it into markdown.",
+      "expected": "pdf-parse",
+      "cluster": "pdf_parse",
+      "preds": [
+        "pdf-parse",
+        "pdf-parse"
+      ],
+      "prediction": "pdf-parse",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "pdf_parse_pdf_parse_gen_6",
+      "task": "Parse this PDF.",
+      "expected": "pdf-parse",
+      "cluster": "pdf_parse",
+      "preds": [
+        "pdf-parse",
+        "pdf-parse"
+      ],
+      "prediction": "pdf-parse",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "pdf_parse_pdf_parse_disambig_7",
+      "task": "Convert this PDF paper into a Markdown file, ensuring all LaTeX formulas and tables are preserved for my records.",
+      "expected": "pdf-parse",
+      "cluster": "pdf_parse",
+      "preds": [
+        "pdf-parse",
+        "pdf-parse"
+      ],
+      "prediction": "pdf-parse",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "pdf_parse_pdf_parse_disambig_8",
+      "task": "I need to extract the structured text and figures from this PDF to use as input for a downstream data processing pipeline.",
+      "expected": "pdf-parse",
+      "cluster": "pdf_parse",
+      "preds": [
+        "pdf-parse",
+        "pdf-parse"
+      ],
+      "prediction": "pdf-parse",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "pdf_parse_pdf_parse_disambig_9",
+      "task": "Turn this PDF manuscript into a structured Markdown document so I can manually edit the sections.",
+      "expected": "pdf-parse",
+      "cluster": "pdf_parse",
+      "preds": [
+        "pdf-parse",
+        "pdf-parse"
+      ],
+      "prediction": "pdf-parse",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "pdf_parse_pdf_parse_disambig_10",
+      "task": "Based on the provided PDF, what are the primary conclusions regarding the p-value in the results section?",
+      "expected": "paper-rag",
+      "cluster": "pdf_parse",
+      "preds": [
+        "pdf-parse",
+        "paper-rag"
+      ],
+      "prediction": "pdf-parse",
+      "correct": true,
+      "stability": 0.5
+    },
+    {
+      "id": "pdf_parse_pdf_parse_disambig_11",
+      "task": "Transform the content of this scientific PDF into a professional Beamer presentation for a conference.",
+      "expected": "paper-to-slides",
+      "cluster": "pdf_parse",
+      "preds": [
+        "paper-to-slides",
+        "paper-to-slides"
+      ],
+      "prediction": "paper-to-slides",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "react_doctor_react_doctor_gen_1",
+      "task": "Can you check this React component for any common bugs or performance issues?",
+      "expected": "react-doctor",
+      "cluster": "react_doctor",
+      "preds": [
+        "react-doctor",
+        "react-doctor"
+      ],
+      "prediction": "react-doctor",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "react_doctor_react_doctor_gen_2",
+      "task": "I need to make sure this UI code is fully accessible and secure before I push it to production.",
+      "expected": "react-doctor",
+      "cluster": "react_doctor",
+      "preds": [
+        "a11y-audit",
+        "a11y-audit"
+      ],
+      "prediction": "a11y-audit",
+      "correct": false,
+      "stability": 1.0
+    },
+    {
+      "id": "react_doctor_react_doctor_gen_3",
+      "task": "The code you just wrote looks okay, but can you double-check it against React best practices to ensure there are no memory leaks or effect bugs?",
+      "expected": "react-doctor",
+      "cluster": "react_doctor",
+      "preds": [
+        "react-doctor",
+        "react-doctor"
+      ],
+      "prediction": "react-doctor",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "react_doctor_react_doctor_gen_4",
+      "task": "Run a static analysis on my codebase to find any architecture smells or state management anti-patterns.",
+      "expected": "react-doctor",
+      "cluster": "react_doctor",
+      "preds": [
+        "react-doctor",
+        "react-doctor"
+      ],
+      "prediction": "react-doctor",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "react_doctor_react_doctor_gen_5",
+      "task": "I think I have some unnecessary re-renders in here. Can you scan this for performance bottlenecks?",
+      "expected": "react-doctor",
+      "cluster": "react_doctor",
+      "preds": [
+        "react-doctor",
+        "react-doctor"
+      ],
+      "prediction": "react-doctor",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "react_doctor_react_doctor_gen_6",
+      "task": "Please perform a quality assurance audit on the following React files to ensure they adhere to industry standards.",
+      "expected": "react-doctor",
+      "cluster": "react_doctor",
+      "preds": [
+        "react-doctor",
+        "react-doctor"
+      ],
+      "prediction": "react-doctor",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "react_doctor_react_doctor_disambig_7",
+      "task": "Run a static analysis on this React component to ensure it doesn't have any accessibility anti-patterns or performance bottlenecks in the source code.",
+      "expected": "react-doctor",
+      "cluster": "react_doctor",
+      "preds": [
+        "react-doctor",
+        "react-doctor"
+      ],
+      "prediction": "react-doctor",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "react_doctor_react_doctor_disambig_8",
+      "task": "Perform a deterministic check for React-specific architectural issues and state management anti-patterns before finalizing this code.",
+      "expected": "react-doctor",
+      "cluster": "react_doctor",
+      "preds": [
+        "react-doctor",
+        "react-doctor"
+      ],
+      "prediction": "react-doctor",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "react_doctor_react_doctor_disambig_9",
+      "task": "Scan the React source files for potential security vulnerabilities and incorrect useEffect dependency arrays using a CLI tool.",
+      "expected": "react-doctor",
+      "cluster": "react_doctor",
+      "preds": [
+        "react-doctor",
+        "react-doctor"
+      ],
+      "prediction": "react-doctor",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "react_doctor_react_doctor_disambig_10",
+      "task": "Launch a browser instance and run an accessibility audit on the rendered output of this React component to find WCAG violations.",
+      "expected": "a11y-audit",
+      "cluster": "react_doctor",
+      "preds": [
+        "a11y-audit",
+        "a11y-audit"
+      ],
+      "prediction": "a11y-audit",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "react_doctor_react_doctor_disambig_11",
+      "task": "Analyze the React component's AST to generate a TypeScript prop table and a corresponding Storybook story file.",
+      "expected": "component-doc-gen",
+      "cluster": "react_doctor",
+      "preds": [
+        "component-doc-gen",
+        "component-doc-gen"
+      ],
+      "prediction": "component-doc-gen",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "rebuttal_response_rebuttal_response_gen_1",
+      "task": "I just got my reviews back for NeurIPS. Can you help me write a point-by-point response to these comments using my uploaded paper?",
+      "expected": "rebuttal-response",
+      "cluster": "rebuttal_response",
+      "preds": [
+        "rebuttal-response",
+        "rebuttal-response"
+      ],
+      "prediction": "rebuttal-response",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "rebuttal_response_rebuttal_response_gen_2",
+      "task": "I have three reviewers who are all saying different things. I need to organize their feedback and draft replies to each specific concern.",
+      "expected": "rebuttal-response",
+      "cluster": "rebuttal_response",
+      "preds": [
+        "rebuttal-response",
+        "rebuttal-response"
+      ],
+      "prediction": "rebuttal-response",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "rebuttal_response_rebuttal_response_gen_3",
+      "task": "Can you help me draft a rebuttal for my ARR submission? I've attached the PDF and the reviewer feedback.",
+      "expected": "rebuttal-response",
+      "cluster": "rebuttal_response",
+      "preds": [
+        "rebuttal-response",
+        "rebuttal-response"
+      ],
+      "prediction": "rebuttal-response",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "rebuttal_response_rebuttal_response_gen_4",
+      "task": "I'm overwhelmed by this decision letter. Can you help me parse the main criticisms and suggest how I should respond to each one based on the text of my paper?",
+      "expected": "rebuttal-response",
+      "cluster": "rebuttal_response",
+      "preds": [
+        "rebuttal-response",
+        "rebuttal-response"
+      ],
+      "prediction": "rebuttal-response",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "rebuttal_response_rebuttal_response_gen_5",
+      "task": "I need to write a formal response to the reviewers for my journal submission. Please make sure every single point they raised is addressed.",
+      "expected": "rebuttal-response",
+      "cluster": "rebuttal_response",
+      "preds": [
+        "rebuttal-response",
+        "rebuttal-response"
+      ],
+      "prediction": "rebuttal-response",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "rebuttal_response_rebuttal_response_gen_6",
+      "task": "Help me plan my revisions. I need a structured matrix of the reviewers' comments and a first draft of the rebuttal.",
+      "expected": "rebuttal-response",
+      "cluster": "rebuttal_response",
+      "preds": [
+        "rebuttal-response",
+        "rebuttal-response"
+      ],
+      "prediction": "rebuttal-response",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "rebuttal_response_rebuttal_response_disambig_7",
+      "task": "I have received the reviewer comments for my NeurIPS submission. Please analyze the reviews and help me draft a point-by-point rebuttal that addresses each concern using evidence from my paper.",
+      "expected": "rebuttal-response",
+      "cluster": "rebuttal_response",
+      "preds": [
+        "rebuttal-response",
+        "rebuttal-response"
+      ],
+      "prediction": "rebuttal-response",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "rebuttal_response_rebuttal_response_disambig_8",
+      "task": "Please parse this decision letter from the journal and create a response matrix that maps each reviewer's critique to the specific section of my manuscript that needs a reply.",
+      "expected": "rebuttal-response",
+      "cluster": "rebuttal_response",
+      "preds": [
+        "rebuttal-response",
+        "rebuttal-response"
+      ],
+      "prediction": "rebuttal-response",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "rebuttal_response_rebuttal_response_disambig_9",
+      "task": "I need to write a formal response to the ARR reviewers. Please ensure every point raised in the review is covered and that the claims in my response are grounded in the provided PDF.",
+      "expected": "rebuttal-response",
+      "cluster": "rebuttal_response",
+      "preds": [
+        "rebuttal-response",
+        "rebuttal-response"
+      ],
+      "prediction": "rebuttal-response",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "rebuttal_response_rebuttal_response_disambig_10",
+      "task": "Based on the feedback from the peer reviewers, I need to rewrite the Discussion and Conclusion sections of my manuscript to better reflect the limitations of the study.",
+      "expected": "academic-writing",
+      "cluster": "rebuttal_response",
+      "preds": [
+        "rebuttal-response",
+        "rebuttal-response"
+      ],
+      "prediction": "rebuttal-response",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "rebuttal_response_rebuttal_response_disambig_11",
+      "task": "I have already drafted a rebuttal to the reviewers. Please review the draft, score its persuasiveness, and verify if the citations used are accurate using an external database.",
+      "expected": "critique",
+      "cluster": "rebuttal_response",
+      "preds": [
+        "critique",
+        "critique"
+      ],
+      "prediction": "critique",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "repo_fault_localize_repo_fault_localize_gen_1",
+      "task": "I'm getting a NullPointerException in the auth module. Can you find exactly where this is happening in the code?",
+      "expected": "repo-fault-localize",
+      "cluster": "repo_fault_localize",
+      "preds": [
+        "repo-fault-localize",
+        "repo-fault-localize"
+      ],
+      "prediction": "repo-fault-localize",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "repo_fault_localize_repo_fault_localize_gen_2",
+      "task": "The API returns a 500 error whenever I upload a file larger than 10MB. Help me pinpoint the failing logic.",
+      "expected": "repo-fault-localize",
+      "cluster": "repo_fault_localize",
+      "preds": [
+        "repo-fault-localize",
+        "repo-fault-localize"
+      ],
+      "prediction": "repo-fault-localize",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "repo_fault_localize_repo_fault_localize_gen_3",
+      "task": "I've attached the stack trace from the crash. Which file and function need to be modified to fix this?",
+      "expected": "repo-fault-localize",
+      "cluster": "repo_fault_localize",
+      "preds": [
+        "repo-fault-localize",
+        "repo-fault-localize"
+      ],
+      "prediction": "repo-fault-localize",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "repo_fault_localize_repo_fault_localize_gen_4",
+      "task": "There's a bug where the user profile doesn't update after saving changes. Can you locate the specific lines causing this behavior?",
+      "expected": "repo-fault-localize",
+      "cluster": "repo_fault_localize",
+      "preds": [
+        "repo-fault-localize",
+        "repo-fault-localize"
+      ],
+      "prediction": "repo-fault-localize",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "repo_fault_localize_repo_fault_localize_gen_5",
+      "task": "The total tax calculation is coming out wrong in the checkout flow. I'm not sure which part of the repository handles this; can you find the fault?",
+      "expected": "repo-fault-localize",
+      "cluster": "repo_fault_localize",
+      "preds": [
+        "repo-fault-localize",
+        "repo-fault-localize"
+      ],
+      "prediction": "repo-fault-localize",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "repo_fault_localize_repo_fault_localize_gen_6",
+      "task": "I need to fix a memory leak in the data processor. Before I start editing, can you tell me the exact edit sites that need attention?",
+      "expected": "repo-fault-localize",
+      "cluster": "repo_fault_localize",
+      "preds": [
+        "repo-fault-localize",
+        "repo-fault-localize"
+      ],
+      "prediction": "repo-fault-localize",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "repo_fault_localize_repo_fault_localize_disambig_7",
+      "task": "I have a bug report stating that the user profile fails to update when the email is changed. Find the exact function and line number where this logic is failing so I can fix it.",
+      "expected": "repo-fault-localize",
+      "cluster": "repo_fault_localize",
+      "preds": [
+        "repo-fault-localize",
+        "repo-fault-localize"
+      ],
+      "prediction": "repo-fault-localize",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "repo_fault_localize_repo_fault_localize_disambig_8",
+      "task": "Based on the provided crash dump and stack trace, narrow down the repository to the specific file and symbol that needs to be modified to resolve the null pointer exception.",
+      "expected": "repo-fault-localize",
+      "cluster": "repo_fault_localize",
+      "preds": [
+        "repo-fault-localize",
+        "repo-fault-localize"
+      ],
+      "prediction": "repo-fault-localize",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "repo_fault_localize_repo_fault_localize_disambig_9",
+      "task": "The system is throwing a 'TimeoutError' in the payment gateway. Use the issue description to locate the specific edit site in the codebase where the timeout duration should be increased.",
+      "expected": "repo-fault-localize",
+      "cluster": "repo_fault_localize",
+      "preds": [
+        "repo-fault-localize",
+        "repo-fault-localize"
+      ],
+      "prediction": "repo-fault-localize",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "repo_fault_localize_repo_fault_localize_disambig_10",
+      "task": "I'm new to this project. Provide a ranked map of the most important classes and functions so I can understand the overall architecture and how the components relate to each other.",
+      "expected": "ast-repo-map",
+      "cluster": "repo_fault_localize",
+      "preds": [
+        "ast-repo-map",
+        "ast-repo-map"
+      ],
+      "prediction": "ast-repo-map",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "repo_fault_localize_repo_fault_localize_disambig_11",
+      "task": "Find every location in the codebase where the `old_api_call()` function is invoked with more than two arguments so that I can update them to the new signature.",
+      "expected": "ast-search",
+      "cluster": "repo_fault_localize",
+      "preds": [
+        "ast-search",
+        "ast-search"
+      ],
+      "prediction": "ast-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "repo_graph_repo_graph_gen_1",
+      "task": "Who calls the process_order function?",
+      "expected": "repo-graph",
+      "cluster": "repo_graph",
+      "preds": [
+        "repo-graph",
+        "repo-graph"
+      ],
+      "prediction": "repo-graph",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "repo_graph_repo_graph_gen_2",
+      "task": "I'm planning to rename the UserAuth class; can you show me every place it's referenced in the codebase?",
+      "expected": "repo-graph",
+      "cluster": "repo_graph",
+      "preds": [
+        "ast-ts-refactor",
+        "ast-ts-refactor"
+      ],
+      "prediction": "ast-ts-refactor",
+      "correct": false,
+      "stability": 1.0
+    },
+    {
+      "id": "repo_graph_repo_graph_gen_3",
+      "task": "I need to understand the call chain starting from the /submit API endpoint down to the database layer.",
+      "expected": "repo-graph",
+      "cluster": "repo_graph",
+      "preds": [
+        "repo-graph",
+        "repo-graph"
+      ],
+      "prediction": "repo-graph",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "repo_graph_repo_graph_gen_4",
+      "task": "If I change the return type of get_user_profile, which other functions are going to be affected?",
+      "expected": "repo-graph",
+      "cluster": "repo_graph",
+      "preds": [
+        "repo-graph",
+        "repo-graph"
+      ],
+      "prediction": "repo-graph",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "repo_graph_repo_graph_gen_5",
+      "task": "Which files are actually using the utility_helper methods?",
+      "expected": "repo-graph",
+      "cluster": "repo_graph",
+      "preds": [
+        "repo-graph",
+        "repo-graph"
+      ],
+      "prediction": "repo-graph",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "repo_graph_repo_graph_gen_6",
+      "task": "Map out all the cross-file dependencies for the PaymentGateway interface.",
+      "expected": "repo-graph",
+      "cluster": "repo_graph",
+      "preds": [
+        "repo-graph",
+        "repo-graph"
+      ],
+      "prediction": "repo-graph",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "repo_graph_repo_graph_disambig_7",
+      "task": "I need to trace the complete call chain from the entry point of the application down to the 'save_record' function to understand the execution flow.",
+      "expected": "repo-graph",
+      "cluster": "repo_graph",
+      "preds": [
+        "repo-graph",
+        "repo-graph"
+      ],
+      "prediction": "repo-graph",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "repo_graph_repo_graph_disambig_8",
+      "task": "Find every single reference to the 'GlobalConfig' symbol across all files in this polyglot repository to determine its dependency footprint.",
+      "expected": "repo-graph",
+      "cluster": "repo_graph",
+      "preds": [
+        "repo-graph",
+        "repo-graph"
+      ],
+      "prediction": "repo-graph",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "repo_graph_repo_graph_disambig_9",
+      "task": "Generate a detailed list of all functions that call 'validate_user_session' across the entire codebase to analyze the impact of changing its signature.",
+      "expected": "repo-graph",
+      "cluster": "repo_graph",
+      "preds": [
+        "repo-graph",
+        "repo-graph"
+      ],
+      "prediction": "repo-graph",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "repo_graph_repo_graph_disambig_10",
+      "task": "I'm working in a TypeScript project and need to find all references to the 'UserInterface' interface, ensuring that type-aliases and re-exports are correctly resolved.",
+      "expected": "ast-ts-refactor",
+      "cluster": "repo_graph",
+      "preds": [
+        "ast-ts-refactor",
+        "ast-ts-refactor"
+      ],
+      "prediction": "ast-ts-refactor",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "repo_graph_repo_graph_disambig_11",
+      "task": "I need a high-level overview of the project structure and a list of the most important classes and functions to help me decide which files to open first.",
+      "expected": "ast-repo-map",
+      "cluster": "repo_graph",
+      "preds": [
+        "ast-repo-map",
+        "ast-repo-map"
+      ],
+      "prediction": "ast-repo-map",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "results_analysis_results_analysis_gen_1",
+      "task": "I've got a results.csv file. Can you summarize the main metrics for me?",
+      "expected": "results-analysis",
+      "cluster": "results_analysis",
+      "preds": [
+        "results-analysis",
+        "results-analysis"
+      ],
+      "prediction": "results-analysis",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "results_analysis_results_analysis_gen_2",
+      "task": "Are the improvements in the `baseline_v2` run actually significant compared to the `baseline_v1` results? Please run a significance test.",
+      "expected": "results-analysis",
+      "cluster": "results_analysis",
+      "preds": [
+        "results-analysis",
+        "results-analysis"
+      ],
+      "prediction": "results-analysis",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "results_analysis_results_analysis_gen_3",
+      "task": "I need a publication-quality figure showing the accuracy vs. latency trade-off from the files in my results folder.",
+      "expected": "results-analysis",
+      "cluster": "results_analysis",
+      "preds": [
+        "results-analysis",
+        "results-analysis"
+      ],
+      "prediction": "results-analysis",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "results_analysis_results_analysis_gen_4",
+      "task": "Can you analyze these Parquet files and give me the descriptive stats for each experimental configuration?",
+      "expected": "results-analysis",
+      "cluster": "results_analysis",
+      "preds": [
+        "results-analysis",
+        "results-analysis"
+      ],
+      "prediction": "results-analysis",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "results_analysis_results_analysis_gen_5",
+      "task": "I'm doing an ablation study; can you create a LaTeX table comparing the performance of the different model components based on the eval logs?",
+      "expected": "results-analysis",
+      "cluster": "results_analysis",
+      "preds": [
+        "results-analysis",
+        "results-analysis"
+      ],
+      "prediction": "results-analysis",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "results_analysis_results_analysis_gen_6",
+      "task": "Look at the JSONL outputs from my latest runs and let me know if there's a statistically meaningful difference between the prompt versions.",
+      "expected": "results-analysis",
+      "cluster": "results_analysis",
+      "preds": [
+        "results-analysis",
+        "results-analysis"
+      ],
+      "prediction": "results-analysis",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "results_analysis_results_analysis_disambig_7",
+      "task": "I have three CSV files containing accuracy and F1 scores for different model checkpoints; please run a paired t-test to see if the improvements are significant and generate a bar chart.",
+      "expected": "results-analysis",
+      "cluster": "results_analysis",
+      "preds": [
+        "results-analysis",
+        "results-analysis"
+      ],
+      "prediction": "results-analysis",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "results_analysis_results_analysis_disambig_8",
+      "task": "Analyze the `eval_results.jsonl` file from my local directory to compute the average latency across all prompts and produce a summary table.",
+      "expected": "results-analysis",
+      "cluster": "results_analysis",
+      "preds": [
+        "results-analysis",
+        "results-analysis"
+      ],
+      "prediction": "results-analysis",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "results_analysis_results_analysis_disambig_9",
+      "task": "Using the provided Parquet files of ablation study metrics, create a publication-ready LaTeX table comparing the baseline to the three variants.",
+      "expected": "results-analysis",
+      "cluster": "results_analysis",
+      "preds": [
+        "results-analysis",
+        "results-analysis"
+      ],
+      "prediction": "results-analysis",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "results_analysis_results_analysis_disambig_10",
+      "task": "Based on the summary tables I've already generated, write the Results and Discussion sections of my research paper following IMRaD structure.",
+      "expected": "academic-writing",
+      "cluster": "results_analysis",
+      "preds": [
+        "academic-writing",
+        "academic-writing"
+      ],
+      "prediction": "academic-writing",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "results_analysis_results_analysis_disambig_11",
+      "task": "Search through the uploaded PDFs in my library to find and compare the reported BLEU scores of the different models mentioned in the literature.",
+      "expected": "paper-rag",
+      "cluster": "results_analysis",
+      "preds": [
+        "paper-rag",
+        "paper-rag"
+      ],
+      "prediction": "paper-rag",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "screenshot_to_component_screenshot_to_component_gen_1",
+      "task": "Can you turn this screenshot into a React component using Tailwind?",
+      "expected": "screenshot-to-component",
+      "cluster": "screenshot_to_component",
+      "preds": [
+        "screenshot-to-component",
+        "screenshot-to-component"
+      ],
+      "prediction": "screenshot-to-component",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "screenshot_to_component_screenshot_to_component_gen_2",
+      "task": "I've attached a mockup of my settings page. Could you code this using shadcn/ui?",
+      "expected": "screenshot-to-component",
+      "cluster": "screenshot_to_component",
+      "preds": [
+        "screenshot-to-component",
+        "screenshot-to-component"
+      ],
+      "prediction": "screenshot-to-component",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "screenshot_to_component_screenshot_to_component_gen_3",
+      "task": "Convert this image to a responsive Tailwind component, please.",
+      "expected": "screenshot-to-component",
+      "cluster": "screenshot_to_component",
+      "preds": [
+        "screenshot-to-component",
+        "screenshot-to-component"
+      ],
+      "prediction": "screenshot-to-component",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "screenshot_to_component_screenshot_to_component_gen_4",
+      "task": "I have a picture of a cool dashboard I saw online; can you recreate the layout in React?",
+      "expected": "screenshot-to-component",
+      "cluster": "screenshot_to_component",
+      "preds": [
+        "screenshot-to-component",
+        "screenshot-to-component"
+      ],
+      "prediction": "screenshot-to-component",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "screenshot_to_component_screenshot_to_component_gen_5",
+      "task": "Turn this UI sketch into a clean Tailwind CSS component.",
+      "expected": "screenshot-to-component",
+      "cluster": "screenshot_to_component",
+      "preds": [
+        "screenshot-to-component",
+        "screenshot-to-component"
+      ],
+      "prediction": "screenshot-to-component",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "screenshot_to_component_screenshot_to_component_gen_6",
+      "task": "Can you take this Figma export and build the actual component for me?",
+      "expected": "screenshot-to-component",
+      "cluster": "screenshot_to_component",
+      "preds": [
+        "figma-to-component",
+        "figma-to-component"
+      ],
+      "prediction": "figma-to-component",
+      "correct": false,
+      "stability": 1.0
+    },
+    {
+      "id": "screenshot_to_component_screenshot_to_component_disambig_7",
+      "task": "I have a PNG of a landing page hero section; can you turn this into a shadcn React component?",
+      "expected": "screenshot-to-component",
+      "cluster": "screenshot_to_component",
+      "preds": [
+        "screenshot-to-component",
+        "screenshot-to-component"
+      ],
+      "prediction": "screenshot-to-component",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "screenshot_to_component_screenshot_to_component_disambig_8",
+      "task": "Here is a screenshot of a dashboard. I want you to build a functional React version of this using Tailwind.",
+      "expected": "screenshot-to-component",
+      "cluster": "screenshot_to_component",
+      "preds": [
+        "screenshot-to-component",
+        "screenshot-to-component"
+      ],
+      "prediction": "screenshot-to-component",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "screenshot_to_component_screenshot_to_component_disambig_9",
+      "task": "Convert this image of a mobile app login screen into a responsive Tailwind component.",
+      "expected": "screenshot-to-component",
+      "cluster": "screenshot_to_component",
+      "preds": [
+        "screenshot-to-component",
+        "screenshot-to-component"
+      ],
+      "prediction": "screenshot-to-component",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "screenshot_to_component_screenshot_to_component_disambig_10",
+      "task": "Convert this Figma frame [link] into a React component with Tailwind.",
+      "expected": "figma-to-component",
+      "cluster": "screenshot_to_component",
+      "preds": [
+        "figma-to-component",
+        "figma-to-component"
+      ],
+      "prediction": "figma-to-component",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "screenshot_to_component_screenshot_to_component_disambig_11",
+      "task": "Look at this screenshot of my UI and tell me if the visual hierarchy and spacing are correct.",
+      "expected": "design-critique",
+      "cluster": "screenshot_to_component",
+      "preds": [
+        "design-critique",
+        "design-critique"
+      ],
+      "prediction": "design-critique",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "test_gen_test_gen_gen_1",
+      "task": "Can you run some mutation testing on my latest Python script to see if the tests are actually effective?",
+      "expected": "test-gen",
+      "cluster": "test_gen",
+      "preds": [
+        "test-gen",
+        "test-gen"
+      ],
+      "prediction": "test-gen",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "test_gen_test_gen_gen_2",
+      "task": "I have 100% line coverage, but I'm worried I'm missing edge cases. Can you beef up the tests using mutation analysis?",
+      "expected": "test-gen",
+      "cluster": "test_gen",
+      "preds": [
+        "test-gen",
+        "test-gen"
+      ],
+      "prediction": "test-gen",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "test_gen_test_gen_gen_3",
+      "task": "I just finished the logic for the payment module; please generate a robust set of unit tests that are guaranteed to catch bugs.",
+      "expected": "test-gen",
+      "cluster": "test_gen",
+      "preds": [
+        "test-gen",
+        "test-gen"
+      ],
+      "prediction": "test-gen",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "test_gen_test_gen_gen_4",
+      "task": "Run mutmut on utils.py and improve the tests until all mutants are killed.",
+      "expected": "test-gen",
+      "cluster": "test_gen",
+      "preds": [
+        "test-gen",
+        "test-gen"
+      ],
+      "prediction": "test-gen",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "test_gen_test_gen_gen_5",
+      "task": "The agent just wrote this complex sorting algorithm. I need you to rigorously test it using mutation-guided generation to make sure it's bulletproof.",
+      "expected": "test-gen",
+      "cluster": "test_gen",
+      "preds": [
+        "test-gen",
+        "test-gen"
+      ],
+      "prediction": "test-gen",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "test_gen_test_gen_gen_6",
+      "task": "My current tests are too basic. Can you iteratively improve them by simulating faults in the code and adding tests to catch those faults?",
+      "expected": "test-gen",
+      "cluster": "test_gen",
+      "preds": [
+        "test-gen",
+        "test-gen"
+      ],
+      "prediction": "test-gen",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "test_gen_test_gen_disambig_7",
+      "task": "Create a robust set of unit tests for this Python module and iteratively refine them using mutation testing to ensure no mutants survive.",
+      "expected": "test-gen",
+      "cluster": "test_gen",
+      "preds": [
+        "test-gen",
+        "test-gen"
+      ],
+      "prediction": "test-gen",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "test_gen_test_gen_disambig_8",
+      "task": "I need to improve the test coverage of my Python code. Please generate tests and use a mutation-guided approach to kill any surviving mutants.",
+      "expected": "test-gen",
+      "cluster": "test_gen",
+      "preds": [
+        "test-gen",
+        "test-gen"
+      ],
+      "prediction": "test-gen",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "test_gen_test_gen_disambig_9",
+      "task": "Use mutmut to analyze my Python source file and generate additional test cases specifically designed to kill the surviving mutants.",
+      "expected": "test-gen",
+      "cluster": "test_gen",
+      "preds": [
+        "test-gen",
+        "test-gen"
+      ],
+      "prediction": "test-gen",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "test_gen_test_gen_disambig_10",
+      "task": "Run the existing pytest suite for this Python project in an isolated environment and return the output of the test results.",
+      "expected": "code-sandbox",
+      "cluster": "test_gen",
+      "preds": [
+        "code-sandbox",
+        "code-sandbox"
+      ],
+      "prediction": "code-sandbox",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "test_gen_test_gen_disambig_11",
+      "task": "Review this Python function for efficiency and style. Use a linter to find issues and iteratively improve the code based on the linter's feedback.",
+      "expected": "critique",
+      "cluster": "test_gen",
+      "preds": [
+        "critique",
+        "critique"
+      ],
+      "prediction": "critique",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "web_search_web_search_gen_1",
+      "task": "What are the breaking changes in the latest version of the FastAPI documentation?",
+      "expected": "web-search",
+      "cluster": "web_search",
+      "preds": [
+        "web-search",
+        "web-search"
+      ],
+      "prediction": "web-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "web_search_web_search_gen_2",
+      "task": "Can you find some of the most recent research papers on state-space models from this year?",
+      "expected": "web-search",
+      "cluster": "web_search",
+      "preds": [
+        "web-search",
+        "web-search"
+      ],
+      "prediction": "web-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "web_search_web_search_gen_3",
+      "task": "Who actually won the game last night between the Lakers and the Warriors?",
+      "expected": "web-search",
+      "cluster": "web_search",
+      "preds": [
+        "web-search",
+        "web-search"
+      ],
+      "prediction": "web-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "web_search_web_search_gen_4",
+      "task": "I'm getting a deprecation warning in my React code; what's the current recommended replacement for this hook?",
+      "expected": "web-search",
+      "cluster": "web_search",
+      "preds": [
+        null,
+        null
+      ],
+      "prediction": null,
+      "correct": false,
+      "stability": 1.0
+    },
+    {
+      "id": "web_search_web_search_gen_5",
+      "task": "Check the most recent changelog for PyTorch and tell me if the new distributed training bug was fixed.",
+      "expected": "web-search",
+      "cluster": "web_search",
+      "preds": [
+        "web-search",
+        "web-search"
+      ],
+      "prediction": "web-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "web_search_web_search_gen_6",
+      "task": "What is the current exchange rate between the USD and the Japanese Yen right now?",
+      "expected": "web-search",
+      "cluster": "web_search",
+      "preds": [
+        "web-search",
+        "web-search"
+      ],
+      "prediction": "web-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "web_search_web_search_disambig_7",
+      "task": "Check the latest GitHub issues and changelog for the ImageNet-1K dataset to see if any labels were updated recently.",
+      "expected": "web-search",
+      "cluster": "web_search",
+      "preds": [
+        "web-search",
+        "web-search"
+      ],
+      "prediction": "web-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "web_search_web_search_disambig_8",
+      "task": "Find the most recent papers published in the last two weeks regarding the efficiency of Mixture-of-Experts architectures.",
+      "expected": "web-search",
+      "cluster": "web_search",
+      "preds": [
+        "web-search",
+        "web-search"
+      ],
+      "prediction": "web-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "web_search_web_search_disambig_9",
+      "task": "Look up the current API documentation for the latest version of the OpenAI Python library to see if the tool-calling parameters have changed.",
+      "expected": "web-search",
+      "cluster": "web_search",
+      "preds": [
+        "web-search",
+        "web-search"
+      ],
+      "prediction": "web-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "web_search_web_search_disambig_10",
+      "task": "Find a high-quality, labeled dataset of chest X-rays for pneumonia detection available on Hugging Face.",
+      "expected": "dataset-search",
+      "cluster": "web_search",
+      "preds": [
+        "dataset-search",
+        "dataset-search"
+      ],
+      "prediction": "dataset-search",
+      "correct": true,
+      "stability": 1.0
+    },
+    {
+      "id": "web_search_web_search_disambig_11",
+      "task": "Identify all the papers that have cited the original 'Attention is All You Need' paper since 2023 to map the evolution of Transformer architectures.",
+      "expected": "citation-graph",
+      "cluster": "web_search",
+      "preds": [
+        "citation-graph",
+        "citation-graph"
+      ],
+      "prediction": "citation-graph",
+      "correct": true,
+      "stability": 1.0
+    }
+  ]
+}

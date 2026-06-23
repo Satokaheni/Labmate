@@ -1,0 +1,206 @@
+topic: Multi-intent task decomposition for LLM tool and skill routing
+
+categories:
+
+  - name: A — Decomposition approach
+    description: How a compound/multi-intent prompt is broken into routable sub-tasks
+    fields:
+      - name: decomposition_method
+        description: >
+          How the compound prompt is split into sub-tasks.
+          Values: LLM-prompted (zero-shot/CoT), fine-tuned splitter, parser/grammar,
+          embedding clustering, skill-tree traversal, hybrid.
+        detail_level: moderate
+
+      - name: decomposition_granularity
+        description: >
+          Unit of a sub-task after splitting.
+          Values: full sentence, clause, semantic unit, tool call, milestone+steps.
+        detail_level: brief
+
+      - name: ordering_strategy
+        description: >
+          How the execution order of sub-tasks is determined.
+          Values: topological (DAG), fixed sequential, parallel fan-out, dynamic (mid-chain re-plan).
+        detail_level: moderate
+
+      - name: decomposition_validation
+        description: >
+          Whether the system explicitly checks decomposition quality before dispatching.
+          Key dimension: does it verify solvability (each sub-task answerable by some agent/tool),
+          completeness (all intents covered), and non-redundancy (no duplicate sub-tasks)?
+          Reference: AOP's detector + reward model. Absence = blind trust in LLM split.
+        detail_level: detailed
+
+      - name: hierarchy_depth
+        description: >
+          Whether decomposition is flat (list of sub-tasks) or hierarchical
+          (milestones → steps, skill trees, nested sub-agents).
+          Values: flat, two-level (milestone+step), multi-level tree.
+        detail_level: brief
+
+  - name: B — Routing mechanism
+    description: How each sub-task (or the whole prompt) is mapped to a skill/tool/agent
+    fields:
+      - name: router_type
+        description: >
+          Classification approach for routing.
+          Values: single-label classifier, multi-label classifier, chain (sequential elimination),
+          graph planner (plans full DAG upfront), retrieve-then-rerank, tree traversal.
+        detail_level: moderate
+
+      - name: routing_model
+        description: >
+          What model performs routing.
+          Values: prompted LLM (same as main), separate fine-tuned classifier, embedding similarity,
+          RL-trained router, rule-based, hybrid.
+        detail_level: moderate
+
+      - name: handles_ambiguity
+        description: >
+          How the system resolves genuinely ambiguous sub-tasks (where no single skill is clearly correct).
+          Values: best-effort pick, clarification request (ask user), abstain, multiple parallel,
+          POMDP-based (SAGE), overconfident-allow (default, bad).
+        detail_level: detailed
+
+      - name: fallback_behavior
+        description: >
+          What happens when no skill covers the sub-intent.
+          Values: error/abort, escalate to human, route to general LLM, retry with re-decomposition.
+        detail_level: moderate
+
+      - name: skill_pool_scale_and_retrieval
+        description: >
+          How routing scales with a large skill/tool pool (hundreds to thousands of skills).
+          Values: full-context (all skills in prompt), embedding retrieval (top-k), retrieve-then-rerank,
+          skill-tree traversal, two-stage (coarse filter + fine re-rank).
+          Key tension: router_agent_asymmetry — router may see full skill text while agent
+          sees only name+description (SkillRouter insight).
+        detail_level: detailed
+
+      - name: router_agent_asymmetry
+        description: >
+          Whether the routing model has access to more skill information than the executing agent.
+          SkillRouter (2026) identified this as a key practical constraint: routers with full
+          skill text outperform name-only routers even when the agent only receives name+description.
+        detail_level: brief
+
+  - name: C — Execution model
+    description: How sub-tasks are executed and results combined
+    fields:
+      - name: execution_pattern
+        description: >
+          How sub-tasks are dispatched and run.
+          Values: sequential chain, parallel fan-out, concurrent (simultaneous), DAG (mixed),
+          ReAct loop (implicit, one tool at a time).
+        detail_level: moderate
+
+      - name: parallel_vs_concurrent
+        description: >
+          Distinction between parallel (multiple tool calls in one API turn, fewer round-trips)
+          and concurrent (truly simultaneous execution). LLM-Tool Compiler makes this distinction
+          explicit. Affects latency and consistency guarantees.
+        detail_level: brief
+
+      - name: dependency_detection
+        description: >
+          How the system determines which sub-tasks are independent (safe to parallelize)
+          vs. dependent (must be sequential).
+          Values: explicit DAG from planner, LLM-prompted dependency check, learned classifier,
+          assumed-sequential (default, conservative).
+        detail_level: moderate
+
+      - name: result_aggregation
+        description: >
+          How results from sub-tasks are merged into a final response.
+          Values: concatenation, LLM joiner (re-reads all sub-results), structured merge (typed),
+          iterative (each result feeds next sub-task prompt).
+        detail_level: moderate
+
+      - name: mid_chain_feedback
+        description: >
+          Whether later sub-tasks can use earlier results to re-route or re-plan.
+          Values: none (plan locked upfront), soft (later prompts include prior results),
+          hard (explicit re-planning node if sub-task fails or changes intent).
+        detail_level: moderate
+
+  - name: D — Evaluation
+    description: How decomposition and routing quality are measured
+    fields:
+      - name: benchmark_name
+        description: Primary benchmark(s) used for evaluation.
+        detail_level: brief
+
+      - name: multi_intent_coverage
+        description: >
+          Whether the benchmark includes compound / multi-intent prompts explicitly.
+          Distinguish: parallel (independent sub-tasks), sequential (dependent), mixed.
+          BFCL v3 has explicit parallel/multiple/parallel_multiple categories.
+        detail_level: moderate
+
+      - name: accuracy_metric
+        description: >
+          How routing/decomposition quality is measured.
+          Values: exact-match (tool name), AST-based (argument structure), state-based
+          (world-state after execution), process supervision (intermediate steps scored),
+          outcome-only (final answer).
+        detail_level: moderate
+
+      - name: clarification_capability
+        description: >
+          Does the benchmark/system measure when-to-ask vs. when-to-answer behavior,
+          and clarification efficiency (questions per task, coverage improvement)?
+          ClarifyBench, InteractComp, ClarEval, LHAW are the key 2025 references.
+          SOTA models score <14% on InteractComp — systematic overconfidence gap.
+        detail_level: detailed
+
+      - name: process_vs_outcome_eval
+        description: >
+          Whether decomposition is scored on intermediate steps (process supervision)
+          or only on final answer (outcome). ToolComp (2025) shows process-reward models
+          beat outcome-only for multi-step tool use.
+        detail_level: brief
+
+      - name: eval_stability
+        description: >
+          Whether the benchmark resists API drift and produces reproducible numbers.
+          StableToolBench virtual/cached API server vs. live-API benchmarks. Affects
+          whether reported accuracy numbers are comparable across papers.
+        detail_level: brief
+
+  - name: E — Implementation
+    description: Practical deployment characteristics
+    fields:
+      - name: integration_pattern
+        description: >
+          How the decomposer/router integrates into an agent harness.
+          Values: LangGraph node (pre-execute), middleware (between user and graph),
+          inference-engine-layer (vLLM ext_proc), standalone service, in-context (prompted).
+        detail_level: moderate
+
+      - name: routing_layer
+        description: >
+          Application-layer vs. inference-engine-layer routing.
+          vLLM Semantic Router pushes classification below the app into Envoy/ext_proc —
+          a new architectural axis that affects latency, caching, and isolation.
+        detail_level: brief
+
+      - name: latency_overhead
+        description: >
+          Cost of the decomposition step in tokens and round-trips before execution begins.
+          Key tension: thorough decomposition validation (AOP) vs. latency budget.
+        detail_level: moderate
+
+      - name: online_adaptation
+        description: >
+          Whether routing improves from production feedback.
+          Values: static (fixed at deploy), bandit/RL (Router-R1, MasRouter), supervised
+          fine-tuning from logs, none.
+        detail_level: brief
+
+      - name: adoption
+        description: >
+          Usage status: paper-only, open-source (with code), production deployment, commercial API.
+        detail_level: brief
+
+uncertain: []

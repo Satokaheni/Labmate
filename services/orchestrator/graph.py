@@ -1,6 +1,8 @@
 # services/orchestrator/graph.py
 from __future__ import annotations
 
+import json
+import logging
 import os
 
 from langgraph.graph import StateGraph, START, END
@@ -8,6 +10,9 @@ from langgraph.types import interrupt
 
 from .types import State, Status, Goal, get_ready_goals, update_status, now_iso, create_goal
 from .coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+from . import events
+
+_log = logging.getLogger("graph")
 
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
 # llama.cpp serves Gemma 4 31B on port 8000 (CUDA on RunPod, Metal on Mac Mini, Vulkan on AMD).
@@ -18,6 +23,88 @@ GEMMA_BASE = os.getenv("GEMMA_BASE", "http://localhost:8000/v1")
 # On dual-GPU, set QWEN_BASE=http://localhost:8001/v1 to enable the specialist Qwen worker.
 QWEN_BASE  = os.getenv("QWEN_BASE",  GEMMA_BASE)
 
+# A1: tasks at or above this ambiguity score route to the approval gate before planning.
+AMBIGUITY_THRESHOLD = float(os.getenv("AMBIGUITY_THRESHOLD", "0.6"))
+
+# A2: artifacts scoring below this route back through reflect for revision.
+CRITIQUE_THRESHOLD = float(os.getenv("CRITIQUE_THRESHOLD", "0.90"))
+
+# FIX 10 (A3): thinking budget for the assess_ambiguity node's architect() call
+#   (was hardcoded 1024; a lower default is faster on the local Q4 model).
+ASSESS_THINKING_BUDGET = int(os.getenv("ASSESS_THINKING_BUDGET", "768"))
+
+# FIX 10 (B2): direct-answer fast-path. When route() reports a skill-less SINGLE intent
+# (e.g. "What is 2+2?"), the plan node answers directly via architect() and HALTS the
+# graph instead of architect-decomposing + re-routing through execute/ReAct (which would
+# re-run select() and even dispatch a skill to compute a trivial answer). This collapses
+# ~10 model calls / ~65 s down to a single architect() call.
+ENABLE_DIRECT_ANSWER_FASTPATH = os.getenv("ENABLE_DIRECT_ANSWER_FASTPATH", "1") not in (
+    "0",
+    "false",
+    "False",
+    "",
+)
+DIRECT_ANSWER_THINKING_BUDGET = int(os.getenv("DIRECT_ANSWER_THINKING_BUDGET", "1024"))
+
+# FIX 9: latency knobs for the reflect/verify gate.
+# MAX_VERIFY_RETRIES: how many times a low critique_score may drive a verify->reflect pass
+#   before the artifact is ACCEPTED and we proceed to check. 1 -> at most one reflect pass;
+#   0 -> verify is advisory and never loops.
+MAX_VERIFY_RETRIES = int(os.getenv("MAX_VERIFY_RETRIES", "1"))
+# MAX_GOAL_ATTEMPTS: how many times a FAILED goal may be reflect-retried (replaces the old
+#   hardcoded cap of 3). A goal with attempts >= MAX_GOAL_ATTEMPTS is considered exhausted.
+MAX_GOAL_ATTEMPTS = int(os.getenv("MAX_GOAL_ATTEMPTS", "2"))
+# REFLECT_THINKING_BUDGET: thinking budget for the reflect node's architect() call
+#   (was hardcoded 3000; lower is faster on the local Q4 model).
+REFLECT_THINKING_BUDGET = int(os.getenv("REFLECT_THINKING_BUDGET", "1500"))
+
+# FIX 9: substrings (case-insensitive) that mark a failure as deterministic / environmental,
+# so reflect-retrying it can never help. Conservative on purpose — these are unambiguous
+# "this will fail identically every time" signals (missing tool/dep, no network, no creds).
+_NONRETRYABLE_ERROR_MARKERS = (
+    "skillunavailable",
+    "not available",
+    "unavailable",
+    "no such",
+    "not found",
+    "missing",
+    "docker",
+    "permission denied",
+    "eperm",
+    "enoent",
+    "connection refused",
+    "network",
+    "timed out",
+    "timeout",
+    "api key",
+    "apikey",
+    "credential",
+    "rate limit",
+    "429",
+)
+
+
+def _is_nonretryable_error(err: str) -> bool:
+    """FIX 9: True when an error string clearly describes a deterministic/environmental
+    failure that a reflect-retry cannot fix (missing tool/dep, no network/creds, etc.).
+    Case-insensitive conservative substring match."""
+    if not err:
+        return False
+    low = err.lower()
+    return any(marker in low for marker in _NONRETRYABLE_ERROR_MARKERS)
+
+
+def classify_artifact(text: str) -> str:
+    """Cheap heuristic artifact classifier for the A2 verify gate."""
+    if not text:
+        return "other"
+    code_markers = ("```", "def ", "class ", "import ", "function ", "=>", "};", "public ")
+    if any(m in text for m in code_markers):
+        return "code"
+    if len(text.strip()) > 200:
+        return "writing"
+    return "other"
+
 
 def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
     """
@@ -27,31 +114,88 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
 
     async def plan(state: State) -> dict:
         """
-        Decompose the current root goal into child Goals via a Gemma 4 architect call.
-        Includes the skill catalog in the prompt when available.
-        Writes new Goal entries into goal_tree. Pure return-delta — no in-place mutation.
+        Route the current root goal as ONE intent (single-intent routing).
+        If a skill confidently matches, create ONE child Goal and proceed to execute.
+        Otherwise, take the direct-answer fast-path (answer directly and HALT).
         """
         import copy
+        import uuid
 
         root_id = state["current_goal_id"]
-        root_desc = state["goal_tree"][root_id]["description"]
+        goal_desc = state["goal_tree"][root_id]["description"]
 
         # Include skill catalog in the prompt if available
         catalog = ""
-        if getattr(orch, "skill_router", None) is not None:
-            catalog = orch.skill_router.runner.catalog_prompt()
+        skill_router = getattr(orch, "skill_router", None)
+        if skill_router is not None:
+            catalog = skill_router.runner.catalog_prompt()
 
-        prompt = f"Decompose this task into concrete subtasks (one per line):\n{root_desc}"
+        # Call route() to handle single-intent routing (only if skill_router has the
+        # route method; the architect fallback below preserves backward compatibility
+        # for old tests / when route() raises because live services are unavailable).
+        route_result = None
+        try:
+            if skill_router is not None and hasattr(skill_router, "route"):
+                route_result = await skill_router.route(goal_desc)
+        except Exception as e:
+            # Fallback on any route() error (LLM unavailable, network error, TypeError, etc.)
+            _log.debug("route() failed, falling back to architect: %s", e)
+            route_result = None
+
+        if route_result is not None:
+            # Single-intent routing: at most ONE child goal.
+            #   - a skill confidently matched -> create ONE child Goal and proceed to
+            #     execute (ReAct/one-shot handles any sub-steps in a single pass).
+            #   - no skill matched -> direct-answer fast-path below.
+            if route_result.skills:
+                tree = copy.deepcopy(state["goal_tree"])
+                child_id = uuid.uuid4().hex[:12]
+                create_goal(tree, child_id, root_id, route_result.sub_intents[0])
+                return {"goal_tree": tree, "awaiting_clarification": False}
+
+            # FIX 10 (B3): direct-answer fast-path for a skill-less intent.
+            # route() returns (skills=[], needs_clarification=False, sub_intents=[the_intent])
+            # for a trivial / no-skill-needed task (e.g. "What is 2+2?"). Answer directly with
+            # ONE architect() call, mark root COMPLETED, and HALT (clarification_router sees
+            # final_answer/direct_answer and returns END).
+            if ENABLE_DIRECT_ANSWER_FASTPATH:
+                answer = await orch.architect(
+                    goal_desc, thinking_budget=DIRECT_ANSWER_THINKING_BUDGET
+                )
+                tree = copy.deepcopy(state["goal_tree"])
+                update_status(tree, root_id, Status.COMPLETED, result=answer)
+                await events.emit(
+                    "reasoning",
+                    node="plan",
+                    summary="answering directly (no skill needed)",
+                    text=answer[:500],
+                )
+                return {
+                    "goal_tree": tree,
+                    "final_answer": answer,
+                    "direct_answer": True,
+                }
+
+        # Fallback when no skill_router or no route() method (for old tests and backward compat)
+        prompt = f"Decompose this task into concrete subtasks (one per line):\n{goal_desc}"
         if catalog:
             prompt += f"\n\nAvailable skills:\n{catalog}\nIf the whole task is accomplishable by a single available skill, emit ONE subtask describing that work. Otherwise produce a small number of coherent subtasks, each a self-contained unit that may map to a skill."
 
         raw_plan = await orch.architect(prompt)
         # Deep copy to avoid mutating the checkpoint's prior goal_tree.
         tree = copy.deepcopy(state["goal_tree"])
+        children_created = 0
         for i, line in enumerate(raw_plan.strip().splitlines()):
             if line.strip():
                 gid = f"{root_id}_sub{i}"
                 create_goal(tree, gid, root_id, line.strip())
+                children_created += 1
+        await events.emit(
+            "reasoning",
+            node="plan",
+            summary=f"decomposed into {children_created} subtask(s)",
+            text=raw_plan[:500],
+        )
         return {"goal_tree": tree}
 
     async def execute_node(state: State) -> dict:
@@ -73,6 +217,7 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         markers = dict(state["step_markers"])
 
         results = await async_orch.plan_and_dispatch(ready)
+        last_artifact = {"type": "other", "payload": ""}
         for r in results:
             gid = r.id
             # Idempotency guard (FIX #4): mark per-GOAL-ID only when COMPLETED.
@@ -83,7 +228,15 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             new_status = Status.COMPLETED if r.ok else Status.FAILED
             # Increment attempts on FAILED (needed for router's reflect branch to trigger)
             if not r.ok:
-                tree[gid]["attempts"] = tree[gid].get("attempts", 0) + 1
+                # FIX 9: a deterministic/environmental failure (no Docker / no network /
+                # missing API key, etc.) will fail IDENTICALLY on every retry, so mark it
+                # EXHAUSTED immediately (attempts = MAX_GOAL_ATTEMPTS) instead of paying a
+                # reflect(budget)+re-execute for each of MAX_GOAL_ATTEMPTS identical failures.
+                # check()/router() then finalize with the error rather than reflect-retrying.
+                if _is_nonretryable_error(r.summary or ""):
+                    tree[gid]["attempts"] = MAX_GOAL_ATTEMPTS
+                else:
+                    tree[gid]["attempts"] = tree[gid].get("attempts", 0) + 1
             # Set both result and error on failure so reflect/check can surface the error
             if r.ok:
                 update_status(tree, gid, new_status, result=r.summary)
@@ -92,8 +245,14 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             # Mark as completed only if succeeded; FAILED goals stay retryable
             if r.ok:
                 markers[gid] = "completed"
+            # Track last artifact for A2 verify gate
+            if r.ok and r.summary:
+                last_artifact = {
+                    "type": classify_artifact(r.summary),
+                    "payload": r.summary,
+                }
 
-        return {"goal_tree": tree, "step_markers": markers}
+        return {"goal_tree": tree, "step_markers": markers, "last_artifact": last_artifact}
 
     async def check(state: State) -> dict:
         """
@@ -106,29 +265,79 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         root_id = "root"
         root = tree.get(root_id, {})
 
-        children = root.get("children", [])
+        # FIX (regression): after FIX 3 the sub-intents form a nested CHAIN under root
+        # (root -> subN -> ... -> sub1), so root["children"] holds ONLY the last
+        # sub-intent. Iterating root["children"] therefore (a) drops every nested
+        # sub-intent's result from the final answer and (b) risks finalizing as soon
+        # as the single direct child is terminal while deeper descendants are still
+        # PENDING. Walk the FULL subtree (all transitive descendants of root) instead.
+        descendants: list[tuple[int, str]] = []
+        seen: set[str] = set()
+        stack: list[tuple[int, str]] = [(1, c) for c in root.get("children", [])]
+        while stack:
+            depth, cid = stack.pop()
+            if cid in tree and cid not in seen:
+                seen.add(cid)
+                descendants.append((depth, cid))
+                stack.extend((depth + 1, gc) for gc in tree[cid].get("children", []))
+        # Order DEEPEST-first so the final answer lists sub-intents in SUBMISSION
+        # order (FIX 3 makes the first sub-intent the deepest leaf). Tie-break on id
+        # for determinism within a depth.
+        descendants.sort(key=lambda dc: (-dc[0], dc[1]))
+        children = [cid for _depth, cid in descendants]
         if not children:
             return {}
 
-        # Only check finalization when every child has reached a terminal status
+        # FIX (regression from FIX 3): a FAILED descendant PERMANENTLY blocks all of
+        # its ancestors in the nested chain — every goal upstream of it stays PENDING
+        # forever because its child never COMPLETED, so get_ready_goals() never
+        # releases them and all_terminal is never reached. If we only handled the
+        # failed_retryable branch inside the all_terminal block, a mid-chain failure
+        # would fall through to `return {}` and the router would END the task with no
+        # final_answer and no error (the failed sub-intent never reaching reflect).
+        # So detect retryable FAILED descendants FIRST, regardless of all_terminal,
+        # and route to reflect for the deepest-first one so it can be retried.
+        failed_retryable = [
+            c for c in children
+            if tree.get(c, {}).get("status") == Status.FAILED.value
+            and tree.get(c, {}).get("attempts", 0) < MAX_GOAL_ATTEMPTS  # FIX 9: was hardcoded 3
+        ]
+        if failed_retryable:
+            # Don't finalize; defer to reflect by routing to first failed child.
+            # (children is ordered deepest-first / submission order, so this retries
+            # the earliest-submitted failed sub-intent first.)
+            await events.emit(
+                "reasoning",
+                node="check",
+                summary="deferring to reflect for failed child retry",
+                text=f"Child {failed_retryable[0]} failed but retryable (attempts < {MAX_GOAL_ATTEMPTS})",
+            )
+            return {"goal_tree": tree, "current_goal_id": failed_retryable[0]}
+
+        # Only finalize when every descendant has reached a terminal status.
+        # (No retryable failures remain at this point — a FAILED-and-exhausted
+        # descendant still blocks its ancestors at PENDING, so guard finalization
+        # below on whether finalization is actually possible.)
         all_terminal = all(
             tree.get(c, {}).get("status") in (Status.COMPLETED.value, Status.FAILED.value)
             for c in children
         )
         if not all_terminal:
-            return {}
+            # Non-terminal descendants remain but NONE are retryable-failed (the
+            # branch above handled those). The only way a descendant stays
+            # non-terminal here is being PENDING behind a FAILED-and-exhausted
+            # (attempts >= 3) descendant that permanently blocks it. Finalize as a
+            # failure rather than silently ending with no answer.
+            exhausted_failed = [
+                c for c in children
+                if tree.get(c, {}).get("status") == Status.FAILED.value
+            ]
+            if not exhausted_failed:
+                # Genuinely still in progress (no failures): keep waiting.
+                return {}
+            # Fall through to finalization below, surfacing the exhausted failure(s).
 
-        # Check for failed children that can still be retried (attempts < 3)
-        failed_retryable = [
-            c for c in children
-            if tree.get(c, {}).get("status") == Status.FAILED.value
-            and tree.get(c, {}).get("attempts", 0) < 3
-        ]
-        if failed_retryable:
-            # Don't finalize; defer to reflect by routing to first failed child
-            return {"goal_tree": tree, "current_goal_id": failed_retryable[0]}
-
-        # All children are terminal and no retryables remain: FINALIZE
+        # All retryable failures handled above; no retryables remain: FINALIZE
         # Build answer from all children, noting failures
         completed_results = [
             f"**{tree[c]['description'][:80]}**\n{tree[c]['result']}"
@@ -151,6 +360,13 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         failed_any = bool(failed_children)
         final_status = Status.FAILED if failed_any else Status.COMPLETED
         update_status(tree, root_id, final_status, result=answer)
+
+        await events.emit(
+            "reasoning",
+            node="check",
+            summary="finalizing" if not failed_any else f"{len(failed_children)} child(ren) failed",
+            text=answer[:500],
+        )
 
         result = {
             "goal_tree": tree,
@@ -178,7 +394,13 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             f"Goal: {goal['description']}\n"
             f"Error: {goal['error']}\n"
             "Write a concise diagnosis and what to do differently on the next attempt.",
-            thinking_budget=3000,
+            thinking_budget=REFLECT_THINKING_BUDGET,  # FIX 9: was 3000
+        )
+        await events.emit(
+            "reasoning",
+            node="reflect",
+            summary="diagnosing failed subtask",
+            text=reflection[:500],
         )
         # Deep copy to avoid mutating the checkpoint's prior goal_tree.
         tree = copy.deepcopy(state["goal_tree"])
@@ -195,6 +417,10 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         """
         import copy
         gid = state["current_goal_id"]
+        # NOTE: the "awaiting approval" reasoning event is emitted by the upstream
+        # assess_ambiguity node (which completes and is checkpointed before this node),
+        # NOT here. interrupt() re-runs this whole node on resume, so emitting here would
+        # duplicate the event on every resume. assess_ambiguity fires it exactly once.
         decision = interrupt({"action": "irreversible", "goal": gid})
         # Deep copy to avoid mutating the checkpoint's prior goal_tree.
         tree = copy.deepcopy(state["goal_tree"])
@@ -202,7 +428,181 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         update_status(tree, gid, new_status)
         return {"goal_tree": tree}
 
-    return plan, execute_node, check, reflect, approval
+    async def assess_ambiguity(state: State) -> dict:
+        goal = state.get("root_goal") or state["goal_tree"][state["current_goal_id"]]["description"]
+        prompt = (
+            "You are triaging a task before an autonomous agent executes it.\n"
+            f"TASK: {goal}\n\n"
+            "List the assumptions an agent must make to act on this as written. "
+            "Then rate overall ambiguity from 0.0 (fully specified) to 1.0 (critically "
+            "underspecified).\n\n"
+            "The score measures ONE thing only: is the CORE objective underspecified? "
+            "Score it on whether the agent can tell WHAT to do, not on whether every "
+            "execution detail is pinned down.\n\n"
+            "Score HIGH (>= 0.6, typically 0.7-0.9) ONLY when the CORE task is "
+            "underspecified, i.e. it has any of:\n"
+            "  - an undefined referent (e.g. \"it\", \"the thing\", \"this\") with no "
+            "antecedent naming the actual object,\n"
+            "  - no concrete deliverable (you cannot tell what artifact to produce),\n"
+            "  - undefined success criteria (you'd have to guess what 'done' means, or "
+            "no target/metric is given for a 'make it better'-style request),\n"
+            "  - essential information missing without which you cannot meaningfully "
+            "begin.\n\n"
+            "Score LOW (~0.0-0.3) when the core objective is clear and actionable, EVEN "
+            "IF minor execution parameters are unstated. Unstated MINOR parameters are "
+            "NOT ambiguity — the agent should assume reasonable defaults and proceed. "
+            "These do NOT raise the score:\n"
+            "  - output format (list vs table vs JSON),\n"
+            "  - count or quantity (how many results/items),\n"
+            "  - which specific library, method, or algorithm to use,\n"
+            "  - styling, naming, or other cosmetic choices.\n\n"
+            "Examples:\n"
+            "  \"make it better\" -> 0.85  (undefined referent, no deliverable)\n"
+            "  \"fix the thing\" -> 0.9  (undefined referent, no deliverable)\n"
+            "  \"improve performance\" (no system/target/metric) -> 0.75  (undefined "
+            "success criteria)\n"
+            "  \"search the Hugging Face Hub for emotion classification datasets\" -> 0.1 "
+            " (clear objective; format and count are defaults, not ambiguity)\n"
+            "  \"write a python function that reverses a string\" -> 0.1  (the "
+            "implementation method is just a default to pick)\n"
+            "  \"what is 2+2?\" -> 0.0\n"
+            "  \"add a docstring to the reverse_string function in utils.py\" -> 0.1\n\n"
+            "When ambiguity is high, set \"blocking_question\" to the single most useful "
+            "question to ask the user; otherwise leave it empty.\n"
+            "Respond as JSON: "
+            '{"assumptions": ["..."], "ambiguity": 0.0, "blocking_question": "" }'
+        )
+        raw = await orch.architect(prompt, thinking_budget=ASSESS_THINKING_BUDGET)  # FIX 10 (A3): was 1024
+        text = (raw or "").strip()
+        if text.startswith("```json"):
+            text = text[7:]
+        elif text.startswith("```"):
+            text = text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+        try:
+            out = json.loads(text.strip())
+            if not isinstance(out, dict):
+                raise ValueError("not an object")
+        except (json.JSONDecodeError, ValueError):
+            out = {}
+        try:
+            ambiguity = float(out.get("ambiguity", 0.0))
+        except (TypeError, ValueError):
+            ambiguity = 0.0
+
+        assumptions = out.get("assumptions", []) or []
+        blocking_question = out.get("blocking_question", "") or ""
+        # Human-readable reasoning text for connectors (the CLI renders this verbatim):
+        # the blocking question when ambiguous, else a short assumptions line — never raw JSON.
+        if blocking_question:
+            reasoning_text = blocking_question
+        elif assumptions:
+            reasoning_text = "Assuming: " + "; ".join(str(a) for a in assumptions[:3])
+        else:
+            reasoning_text = ""
+        await events.emit(
+            "reasoning",
+            node="assess_ambiguity",
+            summary=f"ambiguity={ambiguity:.2f}; {len(assumptions)} assumption(s)",
+            text=reasoning_text,
+        )
+
+        result = {
+            "root_goal": goal,
+            "assumptions": assumptions,
+            "ambiguity": ambiguity,
+            "blocking_question": blocking_question,
+        }
+
+        # On high ambiguity, HALT and ask the user a clarifying question rather than
+        # guessing. ambiguity_router sends this node's output to END; main._handle /
+        # coding_orchestrator.stream surface clarification_question as the answer and
+        # suppress any guess. Reuse the same clarification_request event the plan node
+        # emits so downstream consumers see one consistent shape.
+        if ambiguity >= AMBIGUITY_THRESHOLD:
+            question = blocking_question or "Could you clarify what you'd like me to do?"
+            await events.emit(
+                "clarification_request",
+                question=question,
+                task=goal,
+                session_id=state.get("session_id", ""),
+            )
+            result["awaiting_clarification"] = True
+            result["clarification_question"] = question
+
+        return result
+
+    async def verify(state: State) -> dict:
+        """
+        A2: critique code/writing artifacts. Dispatches the critique skill via
+        the orchestrator's skill_router. Defaults score to 1.0 (pass) on any
+        failure so a critique outage never blocks the pipeline.
+        """
+        artifact = state.get("last_artifact") or {"type": "other", "payload": ""}
+        atype = artifact.get("type")
+        router_obj = getattr(orch, "skill_router", None)
+        if atype not in ("code", "writing") or router_obj is None:
+            await events.emit(
+                "reasoning",
+                node="verify",
+                summary="skipped (no code/writing artifact)",
+                text="",
+            )
+            # FIX 9: nothing to critique -> never reflect.
+            return {
+                "verified": True,
+                "critique_score": 1.0,
+                "critique_notes": "",
+                "_verify_reflect": False,
+            }
+
+        score = 1.0
+        notes = ""
+        try:
+            res = await router_obj.execute(
+                "critique",
+                "critique",
+                {
+                    "output": artifact.get("payload", ""),
+                    "task": state.get("root_goal", ""),
+                    "critique_type": atype,
+                },
+            )
+            if isinstance(res, dict) and res.get("ok"):
+                payload = res.get("result")
+                if isinstance(payload, dict):
+                    score = float(payload.get("score", 1.0))
+                    notes = str(payload.get("notes", ""))
+        except Exception:
+            score = 1.0
+            notes = ""
+
+        # FIX 9: bound verify-driven reflection. A below-threshold artifact reflects at most
+        # MAX_VERIFY_RETRIES times; after that we ACCEPT it and proceed to check. This stops
+        # the local Q4 critique (which routinely scores a CORRECT artifact < 0.90) from
+        # re-critiquing/re-generating a completed answer indefinitely.
+        prior_retries = state.get("verify_retries", 0)
+        should_reflect = (score < CRITIQUE_THRESHOLD) and (prior_retries < MAX_VERIFY_RETRIES)
+
+        await events.emit(
+            "reasoning",
+            node="verify",
+            summary=f"critique_score={score:.2f}",
+            text=notes,
+        )
+        result: dict = {
+            "verified": True,
+            "critique_score": score,
+            "critique_notes": notes,
+            "_verify_reflect": should_reflect,
+        }
+        if should_reflect:
+            # Increment the committed counter so the next verify pass eventually accepts.
+            result["verify_retries"] = prior_retries + 1
+        return result
+
+    return plan, execute_node, check, reflect, approval, assess_ambiguity, verify
 
 
 def router(state: State) -> str:
@@ -224,13 +624,51 @@ def router(state: State) -> str:
     if goal is None:
         return END
 
-    if goal["status"] == Status.FAILED.value and goal["attempts"] < 3:
+    if goal["status"] == Status.FAILED.value and goal["attempts"] < MAX_GOAL_ATTEMPTS:  # FIX 9: was < 3
         return "reflect"
     if goal["status"] == Status.AWAITING_APPROVAL.value:
         return "approval"
     if get_ready_goals(state["goal_tree"]):
         return "execute"
     return END
+
+
+def ambiguity_router(state: State) -> str:
+    """A1: route after assess_ambiguity. On high ambiguity, HALT (END) so the agent
+    asks the user a clarifying question instead of guessing; otherwise plan."""
+    if float(state.get("ambiguity", 0.0)) >= AMBIGUITY_THRESHOLD:
+        return END
+    return "plan"
+
+
+def verify_router(state: State) -> str:
+    """A2 / FIX 9: route after verify. The verify node decides (and commits) whether a
+    reflect pass is warranted via `_verify_reflect`, which is True only when the artifact
+    scored below CRITIQUE_THRESHOLD AND fewer than MAX_VERIFY_RETRIES verify->reflect passes
+    have been taken. This router is a pure function of that committed flag, so the
+    verify<->reflect loop is bounded (it cannot loop forever).
+
+    Backward-compat: if `_verify_reflect` was never set by the verify node (e.g. a hand-built
+    state in older tests), fall back to the original threshold comparison."""
+    if "_verify_reflect" in state:
+        return "reflect" if state.get("_verify_reflect") else "check"
+    if float(state.get("critique_score", 1.0)) < CRITIQUE_THRESHOLD:
+        return "reflect"
+    return "check"
+
+
+def clarification_router(state: State) -> str:
+    """Route after the 'plan' node. Halt the graph (END) when the plan node has
+    already produced a terminal outcome, so the agent does NOT proceed to execute
+    and guess / redo work. This is END when the plan node:
+      - requested clarification (awaiting_clarification), so we don't guess at an
+        ambiguous task; OR
+      - FIX 10: took the direct-answer fast-path (direct_answer / final_answer set),
+        so we don't re-decompose and re-route a question the plan already answered.
+    Otherwise continue to execute."""
+    if state.get("awaiting_clarification") or state.get("direct_answer") or state.get("final_answer"):
+        return END
+    return "execute"
 
 
 # ---------------------------------------------------------------------------
@@ -252,20 +690,24 @@ def build_graph(
     """
     from langgraph.checkpoint.mongodb import MongoDBSaver
 
-    plan_node, execute_node, check_node, reflect_node, approval_node = make_nodes(
+    plan_node, execute_node, check_node, reflect_node, approval_node, assess_node, verify_node = make_nodes(
         orch, async_orch
     )
 
     b = StateGraph(State)
     b.add_node("plan", plan_node)
     b.add_node("execute", execute_node)
+    b.add_node("verify", verify_node)
     b.add_node("check", check_node)
     b.add_node("reflect", reflect_node)
     b.add_node("approval", approval_node)
+    b.add_node("assess_ambiguity", assess_node)
 
-    b.add_edge(START, "plan")
-    b.add_edge("plan", "execute")
-    b.add_edge("execute", "check")
+    b.add_edge(START, "assess_ambiguity")
+    b.add_conditional_edges("assess_ambiguity", ambiguity_router, ["plan", END])
+    b.add_conditional_edges("plan", clarification_router, ["execute", END])
+    b.add_edge("execute", "verify")
+    b.add_conditional_edges("verify", verify_router, ["reflect", "check"])
     b.add_conditional_edges("check", router, ["execute", "reflect", "approval", END])
     b.add_edge("reflect", "execute")
     b.add_edge("approval", "execute")

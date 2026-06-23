@@ -1,0 +1,73 @@
+{
+  "name": "StableToolBench / UltraTool",
+  "category": "Benchmark",
+  "description": "Two ToolBench-successor benchmarks (both ACL 2024 Findings). StableToolBench (THUNLP-MT, evolved from ToolBench/ToolLLM) solves real-API instability by introducing a virtual API server: a caching system (responses keyed by category/tool/API/arguments) backed by a GPT-4-turbo API simulator for cache misses, plus a stable GPT-4-judged solvable pass-rate / win-rate evaluation. UltraTool (Planning, Creation, Usage) evaluates the full real-world tool-utilization pipeline across six dimensions, adding independent natural-language planning before tool selection, dynamic tool creation when existing tools are insufficient, and complex parameter filling; 5,824 samples, 22 domains, 2,032 tools.",
+
+  "decomposition_method": "LLM-prompted for both. StableToolBench inherits ToolBench's setting: a prompted LLM agent (e.g., ToolLLaMA, GPT-3.5/4) decomposes the query and invokes APIs inside a reasoning loop (CoT or DFSDT tree search). UltraTool explicitly elicits LLM-prompted natural-language planning: the model decomposes a complex real-world goal into a logical sequence of sub-tasks before any tools are considered, and this plan is evaluated independently.",
+
+  "decomposition_granularity": "StableToolBench: tool call (each step is an API invocation within the agent's search/reasoning loop). UltraTool: milestone+steps — an explicit natural-language plan of sub-task steps, which are then mapped to tool selection and parameter filling (clause/semantic-unit level steps).",
+
+  "ordering_strategy": "StableToolBench: dynamic — the agent explores via CoT or DFSDT (depth-first search over a reasoning tree), choosing/backtracking API calls at each node rather than a fixed upfront order. UltraTool: fixed sequential plan produced upfront (an ordered NL sub-task sequence), evaluated as a logical step ordering; not a formal DAG. [uncertain]",
+
+  "decomposition_validation": "StableToolBench: validation is outcome-side via the 'solvable pass rate' — GPT-4 judges whether a query is solvable and whether the trajectory solved it, plus pairwise win-rate; the virtual server stabilizes these judgments. UltraTool: explicit multi-dimensional validation of the plan itself — 'Planning' (quality of decomposition), 'Planning Awareness' (whether existing tools suffice), and 'Tool Usage Awareness' (which sub-tasks actually need tools) are scored by an LLM-as-judge (1-10 scale), directly assessing completeness and solvability of the decomposition before execution.",
+
+  "hierarchy_depth": "StableToolBench: flat-to-tree at execution time (DFSDT builds a search tree of API-call states, but the task representation is a flat multi-API query). UltraTool: two-level (milestone+step) — an NL plan of steps, each mapping to tool-usage/creation decisions.",
+
+  "router_type": "StableToolBench: chain / tree-search agent (sequential API selection with DFSDT backtracking; retrieve-then-call over a large API pool). UltraTool: multi-stage — independent planner, then tool-selection (single/multi-label selection from a candidate set including distractors), then parameter filling; also a tool-creation branch when no tool fits.",
+
+  "routing_model": "prompted LLM for both (model under evaluation). StableToolBench benchmarks GPT-3.5/GPT-4 variants and ToolLLaMA; UltraTool benchmarks GPT-4, GPT-3.5, and open-source LLMs, each acting as planner/selector via prompting. Neither prescribes a separate fine-tuned router (though StableToolBench's lineage includes the trained ToolLLaMA model and an API retriever).",
+
+  "handles_ambiguity": "StableToolBench: best-effort — the agent must pick/explore tools; ambiguity is not explicitly scored, though DFSDT allows backtracking from poor branches. UltraTool: partially modeled via 'Planning Awareness' and 'Tool Usage Awareness' (recognizing when existing tools are insufficient or when a sub-task needs no tool) and via distractor tools in selection, but it does not implement user-clarification dialogue. [uncertain]",
+
+  "fallback_behavior": "StableToolBench: 'give up'/retry within the agent loop (DFSDT can abandon a branch and try another; queries judged unsolvable count against pass rate). UltraTool: route to tool creation — when no existing tool satisfies a sub-task, the model is expected to specify and create a new tool in a prescribed schema format (dynamic tool creation as the fallback path).",
+
+  "skill_pool_scale_and_retrieval": "StableToolBench: large-scale retrieval over ToolBench's ~16k+ real RapidAPI APIs (thousands of tools across categories); uses an API retriever to fetch relevant candidate APIs, then the agent calls them — i.e., retrieve-then-call rather than full-context. UltraTool: 2,032 tools across 22 domains; tool selection is from a candidate set that includes distractor tools, testing precision under a moderately large pool.",
+
+  "router_agent_asymmetry": "Not a focus for either. The same evaluated model performs selection and execution from the provided tool documentation; neither benchmark studies a deliberate router-vs-agent information-access split. [uncertain]",
+
+  "execution_pattern": "StableToolBench: ReAct-style loop with DFSDT tree search — sequential tool calls, one (or a small set) at a time, against the virtual API server which returns cached or GPT-4-simulated responses. UltraTool: largely static/offline evaluation of the planned and selected tool usage (plan + selection + parameters compared to references); it does not run a live multi-turn execution environment in the way StableToolBench does. [uncertain]",
+
+  "parallel_vs_concurrent": "Neither benchmark emphasizes parallel/concurrent tool execution; StableToolBench's DFSDT is inherently sequential (explores one branch at a time), and UltraTool evaluates an ordered plan. [uncertain]",
+
+  "dependency_detection": "StableToolBench: implicit/dynamic — inter-call dependencies emerge from the agent's reasoning loop (later calls use earlier outputs) rather than an explicit predicted DAG. UltraTool: the NL plan expresses logical step ordering / dependencies, scored as plan quality by the LLM judge, but it is not a formal edge-prediction DAG metric like TaskBench. [uncertain]",
+
+  "result_aggregation": "StableToolBench: LLM joiner — the agent composes a final answer from accumulated API observations, and a GPT-4 evaluator judges whether the final answer solves the query (solvable pass rate). UltraTool: per-dimension scoring rather than a single executed final answer; tool-usage outputs (selected tools + filled parameters) are matched to reference answers. [uncertain]",
+
+  "mid_chain_feedback": "StableToolBench: hard/soft — DFSDT explicitly re-plans by backtracking and exploring alternative API-call branches based on intermediate results; the agent loop feeds prior observations into subsequent steps. UltraTool: soft at most — planning is done upfront; the benchmark does not center mid-execution re-planning. [uncertain]",
+
+  "benchmark_name": "StableToolBench (virtual-API successor to ToolBench/ToolLLM); UltraTool ('Planning, Creation, Usage' benchmark).",
+
+  "multi_intent_coverage": "Both cover compound multi-step queries. StableToolBench inherits ToolBench's multi-tool, multi-API instructions (sequential, dependent tool chains across single/multi-tool, intra-/inter-category categories). UltraTool targets complex real-world queries requiring multi-step planning across many sub-tasks — predominantly sequential/dependent, with explicit decomposition.",
+
+  "accuracy_metric": "StableToolBench: outcome-based, LLM-judged — Solvable Pass Rate (GPT-4 judges whether the trajectory solves a solvable query) and Solvable Win Rate (GPT-4 pairwise preference), stabilized by the virtual server. UltraTool: multi-dimensional point-wise LLM-as-judge (1-10 scores per dimension and overall) for planning and tool creation, plus structural metrics — Tool selection Precision/Recall/F1 and Parameter (key/value) Precision/Recall/F1 for usage, and schema-level F1 for created tools.",
+
+  "clarification_capability": "Not measured by either. Neither StableToolBench nor UltraTool evaluates when-to-ask vs. when-to-answer or user-clarification efficiency; UltraTool's 'awareness' dimensions assess tool-sufficiency recognition, not interactive clarification.",
+
+  "process_vs_outcome_eval": "StableToolBench: primarily outcome (final-answer pass/win rate), with the trajectory implicitly considered by the judge. UltraTool: process-oriented — intermediate planning, tool-selection, parameter-filling, and tool-creation are each scored separately, giving step-level (process) supervision rather than outcome-only.",
+
+  "eval_stability": "StableToolBench: this is its headline contribution — the virtual API server (cache keyed by category/tool/API/arguments, ~76-97% cache hit rates, with GPT-4-turbo simulating uncached/expired APIs) plus a stable GPT-4 solvable pass/win-rate eliminates ToolBench's real-RapidAPI drift; reported performance stays within variance even with 50% of real APIs made unavailable. UltraTool: stable by construction — a static offline dataset with reference answers (no live APIs), though it depends on LLM-as-judge consistency. [uncertain]",
+
+  "integration_pattern": "Both are evaluation harnesses, not production routers. StableToolBench ships a runnable virtual-API server plus the ToolBench-style agent/evaluation pipeline (in-context prompted agent against the cached/simulated server). UltraTool ships a static dataset and LLM-as-judge scoring scripts (in-context prompted evaluation).",
+
+  "routing_layer": "application-layer for both (prompted-LLM evaluation); neither operates at the inference-engine layer. StableToolBench adds an external virtual-API service layer for tool responses, but routing/decisioning remains at the app/agent level.",
+
+  "latency_overhead": "Not a reported focus. StableToolBench's virtual server actually reduces evaluation latency/cost versus live RapidAPI by serving cached responses; UltraTool, being offline, has planning-pass cost only. Decomposition token/round-trip overhead is not a headline metric for either. [uncertain]",
+
+  "online_adaptation": "StableToolBench: static evaluation, but its cache grows over runs (storing new API responses), which is a data-side accumulation rather than router learning. UltraTool: static, none. Neither performs bandit/RL online routing adaptation. [uncertain]",
+
+  "adoption": "open-source (with code) for both, both published at ACL 2024 Findings. StableToolBench: THUNLP-MT/StableToolBench (virtual API server + cache + eval). UltraTool: JoeYing1019/UltraTool (dataset, originally Chinese, translated to English; 5,824 samples / 22 domains / 2,032 tools). Both are widely used as ToolBench successors for reproducible tool-learning evaluation."
+  ,
+  "uncertain": [
+    "ordering_strategy",
+    "handles_ambiguity",
+    "router_agent_asymmetry",
+    "execution_pattern",
+    "parallel_vs_concurrent",
+    "dependency_detection",
+    "result_aggregation",
+    "mid_chain_feedback",
+    "eval_stability",
+    "latency_overhead",
+    "online_adaptation"
+  ]
+}

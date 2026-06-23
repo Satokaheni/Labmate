@@ -26,7 +26,7 @@ const server = new McpServer({
 });
 
 server.tool(
-  "web_search.search",
+  "search",
   "Search the web via self-hosted SearXNG. Returns JSONL of results.",
   {
     query: z.string(),
@@ -38,7 +38,7 @@ server.tool(
       const results = await searxng.search(query, limit, categories);
       return { content: [{ type: "text", text: toJsonl(results) }] };
     } catch (err) {
-      console.error("[web_search.search] failed:", err);
+      console.error("[search] failed:", err);
       return {
         content: [{ type: "text", text: errorPayload("search_failed", err) }],
         isError: true,
@@ -48,7 +48,7 @@ server.tool(
 );
 
 server.tool(
-  "web_search.fetch_page",
+  "fetch_page",
   "Fetch a URL and extract its main text content. Returns JSON.",
   {
     url: z.string().url(),
@@ -59,7 +59,7 @@ server.tool(
       const result = await fetcher.fetch(url, max_length);
       return { content: [{ type: "text", text: JSON.stringify(result) }] };
     } catch (err) {
-      console.error("[web_search.fetch_page] failed:", err);
+      console.error("[fetch_page] failed:", err);
       return {
         content: [{ type: "text", text: errorPayload("fetch_failed", err) }],
         isError: true,
@@ -69,7 +69,7 @@ server.tool(
 );
 
 server.tool(
-  "web_search.search_code",
+  "search_code",
   "Search for code (GitHub/StackOverflow) via SearXNG code category. Returns JSONL.",
   {
     query: z.string(),
@@ -80,7 +80,7 @@ server.tool(
       const results = await searxng.searchCode(query, limit);
       return { content: [{ type: "text", text: toJsonl(results) }] };
     } catch (err) {
-      console.error("[web_search.search_code] failed:", err);
+      console.error("[search_code] failed:", err);
       return {
         content: [{ type: "text", text: errorPayload("search_failed", err) }],
         isError: true,

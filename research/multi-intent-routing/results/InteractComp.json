@@ -1,0 +1,60 @@
+{
+  "name": "InteractComp",
+  "category": "Ambiguity handling",
+  "description": "arXiv:2510.24668 'InteractComp: Evaluating Search Agents With Ambiguous Queries'. A benchmark (210 expert-curated questions across 9 domains, English + Chinese) testing whether search agents recognize query ambiguity and choose to search vs. ask vs. answer. Built via a target-distractor methodology that creates genuine ambiguity resolvable only through interaction. SOTA models score <14% (best 13.73%) vs. 71.50% with complete context, exposing a ~5x systematic-overconfidence ambiguity gap.",
+
+  "decomposition_method": "Not applicable / not a decomposition system — InteractComp is an evaluation benchmark, not a decomposition pipeline. The agent under test uses a ReAct framework (reasoning + acting) and does not decompose compound prompts; the benchmark probes whether the agent decides to search, ask, or answer on a single ambiguous query. [uncertain]",
+  "decomposition_granularity": "Not applicable — no sub-task splitting; the unit of evaluation is a single ambiguous question and the agent's per-round action (one tool/search/ask/answer action per round). [uncertain]",
+  "ordering_strategy": "dynamic (mid-chain re-plan) — the evaluated ReAct agent chooses one action per round over up to 10 rounds, dynamically deciding each step whether to search, ask, or answer based on accumulated observations. [uncertain]",
+  "decomposition_validation": "Not applicable to the agent. However, the benchmark itself enforces construction validation: each question is verified so that interaction is genuinely necessary (cannot be solved by search alone) and the answer is uniquely verifiable once distinctive/hidden context is supplied. Target-distractor design uses only shared attributes to guarantee genuine ambiguity. [uncertain]",
+  "hierarchy_depth": "flat — single-query evaluation; no hierarchical decomposition [uncertain]",
+
+  "router_type": "single-label classifier (per-round action selection) — the ReAct agent picks exactly one action per round from {answer, search, ask}; not a tool-pool router. [uncertain]",
+  "routing_model": "prompted LLM (the model under evaluation) — 17 models benchmarked; the same LLM drives ReAct reasoning and action selection. [uncertain]",
+  "handles_ambiguity": "overconfident-allow (default, bad) — this is precisely what InteractComp measures and exposes. Models systematically fail to recognize ambiguity and answer overconfidently instead of asking; the full Answer+Search+Ask agent can ask yes/no clarification questions but rarely does. Best model only 13.73% in full interaction mode vs 71.50% with complete context. Forced-interaction mode (enforce_ask_min, e.g. 5 asks) produces dramatic gains, showing the capability is latent but not engaged.",
+  "fallback_behavior": "escalate to human / ask user — in full mode the agent can pose yes/no clarification questions to a simulated user (Responder returns yes / no / I don't know). Otherwise it falls back to answering from internal knowledge or search results. [uncertain]",
+  "skill_pool_scale_and_retrieval": "Not applicable — fixed small action set (answer, search, ask) plus a web-search tool; no large skill/tool pool or retrieval. [uncertain]",
+  "router_agent_asymmetry": "Not addressed [uncertain]",
+
+  "execution_pattern": "ReAct loop — agent alternates reasoning and acting, one action per round, up to a maximum of 10 rounds; modes: answer-only, search-only, full (answer+search+ask), full-with-context, and forced-ask.",
+  "parallel_vs_concurrent": "Not applicable at the agent level (one action per round, sequential). Note: the evaluation harness uses asyncio-based concurrency to benchmark multiple candidate models simultaneously (max_concurrency 10), but this is infrastructure, not agent-level parallel tool calling. [uncertain]",
+  "dependency_detection": "assumed-sequential — actions across rounds are inherently sequential and dependent on prior observations; no independence/parallelization analysis. [uncertain]",
+  "result_aggregation": "iterative — each round's observation (search result or user yes/no answer) is appended to context and feeds the next reasoning step until the agent emits answer(response, confidence). [uncertain]",
+  "mid_chain_feedback": "soft — later rounds include prior search results and user clarification answers in context, allowing the agent to revise its plan, though there is no formal explicit re-planning node. [uncertain]",
+
+  "benchmark_name": "InteractComp (the benchmark introduced by this paper). Dataset: InteractComp210 (210 questions, 9 domains, English + Chinese), stored at data/dataset/InteractComp210.jsonl.",
+  "multi_intent_coverage": "No — InteractComp is not about compound/multi-intent prompts; it isolates single-query ambiguity (one target entity ambiguous against a popular distractor). The 'multi' dimension is multi-turn interaction (clarification rounds), not multiple independent intents. [uncertain]",
+  "accuracy_metric": "outcome-only — final answer accuracy (does the agent identify the unique target entity), verifiable because each question has a uniquely identifying answer once distinctive context is obtained. Also tracks token usage and action counts. Key comparisons: full interaction (best 13.73%), full-with-context upper bound (best 71.50%), and forced-ask gains.",
+  "clarification_capability": "Yes — this is the entire purpose of the benchmark. It directly measures when-to-ask vs. when-to-answer (and vs. when-to-search), quantifying the ambiguity/overconfidence gap: a ~5x gap between full-interaction accuracy (13.73%) and full-with-context accuracy (71.50%) across 17 models, with most models in single digits. Forced-ask mode (enforce_ask_min=5) reveals latent clarification ability that default strategies fail to engage. Longitudinal analysis: interaction capability stagnated over 15 months while search performance improved ~7x — interaction is a critical blind spot. InteractComp is a key reference for the overconfidence gap.",
+  "process_vs_outcome_eval": "outcome — scored on final answer correctness, supplemented by action-count statistics (e.g. how often the agent asks) but the success metric is the final answer. [uncertain]",
+  "eval_stability": "Mixed — answers are deterministically verifiable (target-distractor design), but the full interaction setting depends on live web search and an LLM-based Responder/user simulator, so end-to-end numbers can drift with search backend and simulator. Extensible engine abstracts model backends, search providers, and logging. [uncertain]",
+
+  "integration_pattern": "standalone service / benchmark harness — an extensible async (asyncio) evaluation engine with YAML config (models, max_rounds=10, max_concurrency=10, modes, enforce_ask_min). The agent is built on the ReAct framework with pluggable model backends and search providers. [uncertain]",
+  "routing_layer": "application-layer (in-context ReAct agent); no inference-engine-layer routing [uncertain]",
+  "latency_overhead": "Not a metric — the benchmark tracks token usage and action counts per task rather than decomposition latency; interaction adds clarification rounds (up to 10) but cost is reported as tokens/actions. [uncertain]",
+  "online_adaptation": "none / static — InteractComp is an evaluation benchmark; it does not adapt or learn from production feedback (it diagnoses the gap rather than fixing it). [uncertain]",
+  "adoption": "open-source (with code) — code and dataset available at https://github.com/FoundationAgents/InteractComp; paper on arXiv:2510.24668 and Hugging Face Papers (2510.24668). Paper-only research artifact (no production deployment).",
+
+  "uncertain": [
+    "decomposition_method",
+    "decomposition_granularity",
+    "ordering_strategy",
+    "decomposition_validation",
+    "hierarchy_depth",
+    "router_type",
+    "routing_model",
+    "fallback_behavior",
+    "skill_pool_scale_and_retrieval",
+    "router_agent_asymmetry",
+    "parallel_vs_concurrent",
+    "dependency_detection",
+    "result_aggregation",
+    "mid_chain_feedback",
+    "multi_intent_coverage",
+    "process_vs_outcome_eval",
+    "eval_stability",
+    "integration_pattern",
+    "routing_layer",
+    "latency_overhead"
+  ]
+}

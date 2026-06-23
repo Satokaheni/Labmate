@@ -7,11 +7,11 @@ description: >
   Complements ast-repo-map (file-level ranking) with precise cross-file edges.
 trigger: "Use when tracing function calls, finding all usages, or understanding cross-file dependencies"
 tools:
-  - repo_graph.build
-  - repo_graph.search
-  - repo_graph.get_references
-  - repo_graph.get_callers
-  - repo_graph.get_callees
+  - build
+  - search
+  - get_references
+  - get_callers
+  - get_callees
 version: "0.1.0"
 license: MIT
 requires: []
@@ -35,25 +35,25 @@ skill answers *how symbols connect* at function granularity.
 
 ## Available Tools
 
-### `repo_graph.build(repo_path)`
+### `build(repo_path)`
 Build or update the graph for a repo. Run this once before querying. Returns
 summary stats (files parsed, definitions, edges by kind).
 
-### `repo_graph.search(query, top_k=10)`
+### `search(query, top_k=10)`
 Find symbols matching `query` by name. Returns JSONL of matches with
 `file:line` locations.
 
-### `repo_graph.get_references(file, symbol)`
+### `get_references(file, symbol)`
 Every site that references `symbol` defined in `file`. Returns JSONL.
 
-### `repo_graph.get_callers(file, symbol)`
+### `get_callers(file, symbol)`
 Functions/methods that call `symbol`. Returns JSONL.
 
-### `repo_graph.get_callees(file, symbol)`
+### `get_callees(file, symbol)`
 Functions/methods that `symbol` calls. Returns JSONL.
 
 ## Workflow
 
-1. Call `repo_graph.build` once at the start.
+1. Call `build` once at the start.
 2. Use `search` to locate a symbol, then `get_callers` / `get_callees` /
    `get_references` to traverse the graph.

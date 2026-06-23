@@ -22,7 +22,7 @@ critic = UICritic()
 async def list_tools() -> list[Tool]:
     return [
         Tool(
-            name="design_critique.critique",
+            name="critique",
             description=(
                 "Critique a UI screenshot. Returns a per-area checklist with "
                 "pass/fail/warning status per item and an overall verdict."
@@ -40,7 +40,7 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="design_critique.compare",
+            name="compare",
             description=(
                 "Compare two UI screenshots (before/after) and return a "
                 "diff-focused critique as JSON."
@@ -59,12 +59,12 @@ async def list_tools() -> list[Tool]:
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-    if name == "design_critique.critique":
+    if name == "critique":
         result = critic.critique(
             arguments["image_path"], arguments.get("focus_areas")
         )
         return [TextContent(type="text", text=result.model_dump_json())]
-    if name == "design_critique.compare":
+    if name == "compare":
         result = critic.compare(arguments["before_path"], arguments["after_path"])
         return [TextContent(type="text", text=json.dumps(result))]
     raise ValueError(f"unknown tool: {name}")
