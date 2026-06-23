@@ -134,53 +134,24 @@ def _build_compiled_graph(monkeypatch, *, route_result, dispatch_recorder=None):
 
 
 # ---------------------------------------------------------------------------
-# Regression 1 — clarification halts AND no guessed final_answer.
-# The deleted in-place rewrites never asserted final_answer content; this does.
+# Regression — a confident SINGLE-intent route executes its one child goal and
+# the final_answer CONTAINS that result.
+#
+# NOTE: the previous multi-intent regressions (clarification-via-route() halt,
+# and sequential-chain submission-order) were removed with the multi-intent
+# decompose machinery. route() never clarifies now (assess_ambiguity owns that —
+# see test_graph_clarification_halt.py) and there is at most ONE child goal.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.mocked
 @pytest.mark.asyncio
-async def test_clarification_halts_with_no_guessed_final_answer(monkeypatch):
+async def test_single_intent_route_executes_and_finalizes(monkeypatch):
     from services.orchestrator.skill_router import RouteResult
 
     route_result = RouteResult(
-        skills=[],
-        needs_clarification=True,
-        clarification_question="Did you want to search or generate?",
-        sub_intents=["search", "generate"],
-    )
-    graph, mock_async_orch = _build_compiled_graph(monkeypatch, route_result=route_result)
-
-    final_state = await graph.ainvoke(
-        _root_state("search a dataset and generate examples"),
-        {"configurable": {"thread_id": "t-regress-clarify"}},
-    )
-
-    # Halted on clarification.
-    assert final_state.get("awaiting_clarification") is True
-    assert final_state.get("clarification_question") == "Did you want to search or generate?"
-    # execute_node was never reached: no dispatch, no children, and crucially NO
-    # guessed final_answer (the core promise: ask, don't guess).
-    mock_async_orch.plan_and_dispatch.assert_not_called()
-    assert not final_state.get("final_answer")
-    assert final_state["goal_tree"]["root"]["children"] == []
-
-
-# ---------------------------------------------------------------------------
-# Regression 2 — a confident multi-intent route executes sub-intents in
-# SUBMISSION ORDER and the final_answer CONTAINS every sub-intent's result, in
-# that order. The deleted struct-only assertions checked neither.
-# ---------------------------------------------------------------------------
-
-@pytest.mark.mocked
-@pytest.mark.asyncio
-async def test_sequential_route_execution_order_and_final_answer_content(monkeypatch):
-    from services.orchestrator.skill_router import RouteResult
-
-    route_result = RouteResult(
-        skills=["dataset-search", "dataset-generation", "results-analysis"],
+        skills=["dataset-search"],
         needs_clarification=False,
-        sub_intents=["search a dataset", "generate examples", "analyze results"],
+        sub_intents=["search a dataset"],
     )
     dispatched: list[list[str]] = []
     graph, mock_async_orch = _build_compiled_graph(
@@ -188,28 +159,18 @@ async def test_sequential_route_execution_order_and_final_answer_content(monkeyp
     )
 
     final_state = await graph.ainvoke(
-        _root_state("search a dataset, generate examples, then analyze results"),
-        {"configurable": {"thread_id": "t-regress-seq"}},
+        _root_state("search a dataset"),
+        {"configurable": {"thread_id": "t-regress-single"}},
     )
 
     # No clarification was requested.
     assert not final_state.get("awaiting_clarification")
 
-    # Execution order across super-steps == submission order, one goal per step.
+    # Exactly one goal dispatched (single-intent => one child goal).
     exec_order = [desc for batch in dispatched for desc in batch]
-    assert exec_order == [
-        "search a dataset",
-        "generate examples",
-        "analyze results",
-    ], f"sub-intents must execute in submission order, got {exec_order}"
+    assert exec_order == ["search a dataset"], exec_order
     assert all(len(batch) == 1 for batch in dispatched), dispatched
 
-    # final_answer content: every sub-intent's result appears, and in submission order.
+    # final_answer contains the one sub-intent's result.
     final_answer = final_state.get("final_answer") or ""
-    assert final_answer, "expected a finalized answer for a confident multi-intent route"
-    positions = [final_answer.index(f"done: {d}") for d in exec_order if f"done: {d}" in final_answer]
-    for d in exec_order:
-        assert f"done: {d}" in final_answer, f"missing result for sub-intent {d!r} in final_answer"
-    assert positions == sorted(positions), (
-        f"final_answer must list sub-intent results in submission order; got order {positions}"
-    )
+    assert "done: search a dataset" in final_answer

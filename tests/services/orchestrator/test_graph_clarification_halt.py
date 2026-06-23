@@ -49,8 +49,12 @@ class TestClarificationRouter:
 class TestGraphHaltsOnClarification:
     @pytest.mark.asyncio
     async def test_graph_does_not_reach_execute_node_on_clarification(self, monkeypatch):
+        # Clarification is now owned exclusively by the assess_ambiguity gate (route()
+        # never clarifies after the multi-intent removal). This drives a HIGH-ambiguity
+        # task so assess_ambiguity sets awaiting_clarification; ambiguity_router then
+        # halts at END BEFORE plan/execute. The graph must ask the question without
+        # guessing an answer or running any skill.
         from services.orchestrator import graph as graph_mod
-        from services.orchestrator.skill_router import RouteResult
         from services.orchestrator.coding_orchestrator import (
             CodingOrchestrator,
             AsyncOrchestrator,
@@ -63,27 +67,20 @@ class TestGraphHaltsOnClarification:
 
         monkeypatch.setattr(graph_mod.events, "emit", fake_emit)
 
-        # route() asks for clarification (genuine multi-intent ambiguity).
-        route_result = RouteResult(
-            skills=[],
-            needs_clarification=True,
-            clarification_question="Did you want to search or generate?",
-            sub_intents=["search", "generate"],
-        )
         fake_router = MagicMock()
-        fake_router.route = AsyncMock(return_value=route_result)
+        fake_router.route = AsyncMock()  # should never be reached on high ambiguity
         fake_router.runner.catalog_prompt.return_value = "CATALOG"
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
-        # assess_ambiguity calls architect; return a low-ambiguity JSON so the
-        # graph routes assess_ambiguity -> plan (not -> approval).
+        # assess_ambiguity calls architect; return a HIGH-ambiguity JSON with a
+        # blocking question so ambiguity_router halts at END.
         mock_orch.architect = AsyncMock(
-            return_value='{"assumptions": [], "ambiguity": 0.0, "blocking_question": ""}'
+            return_value='{"assumptions": [], "ambiguity": 0.95, '
+            '"blocking_question": "Did you want to search or generate?"}'
         )
         mock_orch.skill_router = fake_router
 
         # If execute_node is ever reached, plan_and_dispatch would be invoked.
-        # Use an AsyncMock so we can assert it is NEVER called.
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
         mock_async_orch.plan_and_dispatch = AsyncMock(return_value=[])
 
@@ -98,13 +95,13 @@ class TestGraphHaltsOnClarification:
 
         initial_state = {
             "session_id": "s1",
-            "root_goal": "search a dataset and generate examples",
+            "root_goal": "make it better",
             "goal_tree": {
                 "root": {
                     "id": "root",
                     "parent_id": None,
                     "children": [],
-                    "description": "search a dataset and generate examples",
+                    "description": "make it better",
                     "status": "PENDING",
                     "result": None,
                     "error": None,
@@ -127,13 +124,14 @@ class TestGraphHaltsOnClarification:
             == "Did you want to search or generate?"
         )
 
-        # It must NOT have reached execute_node — no skill execution.
+        # It must NOT have reached plan (route) or execute_node.
+        fake_router.route.assert_not_called()
         mock_async_orch.plan_and_dispatch.assert_not_called()
 
         # And it must NOT have guessed a final answer to the ambiguous task.
         assert not final_state.get("final_answer")
 
-        # No child goals were created (plan returned without expanding skills).
+        # No child goals were created.
         assert final_state["goal_tree"]["root"]["children"] == []
 
     @pytest.mark.asyncio

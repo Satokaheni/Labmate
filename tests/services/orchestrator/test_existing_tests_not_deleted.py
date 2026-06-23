@@ -59,15 +59,21 @@ def test_real_skill_router_property_test_was_restored():
     )
 
 
-def test_sequential_child_goals_test_was_restored():
-    """The deleted sequential-child-goals test must still exist in the EXISTING file."""
+def test_child_goal_plan_test_still_exists():
+    """The plan-node child-goal test must still exist in the EXISTING file.
+
+    NOTE: the multi-intent decompose machinery was removed (single-intent routing is
+    now the only mode), so the old sequential-CHAIN test
+    (``test_plan_expands_skills_into_sequential_child_goals``) was replaced in place by
+    its single-child equivalent (``test_plan_creates_single_child_goal_for_skill_route``).
+    This guard now pins the replacement so the plan-node coverage is not lost."""
     path = _THIS_DIR / "test_graph_multi_intent.py"
     assert path.exists()
     assert _module_defines(
-        path, "test_plan_expands_skills_into_sequential_child_goals"
+        path, "test_plan_creates_single_child_goal_for_skill_route"
     ), (
-        "test_plan_expands_skills_into_sequential_child_goals was deleted from "
-        "test_graph_multi_intent.py — existing test files must not have tests removed."
+        "test_plan_creates_single_child_goal_for_skill_route was deleted from "
+        "test_graph_multi_intent.py — plan-node child-goal coverage must not be removed."
     )
 
 
@@ -85,5 +91,5 @@ def test_restored_tests_are_collectable():
     fn1 = getattr(cls, "test_plan_node_with_real_skill_router_property_access")
     assert inspect.iscoroutinefunction(fn1)
 
-    fn2 = getattr(mi_mod, "test_plan_expands_skills_into_sequential_child_goals")
+    fn2 = getattr(mi_mod, "test_plan_creates_single_child_goal_for_skill_route")
     assert inspect.iscoroutinefunction(fn2)

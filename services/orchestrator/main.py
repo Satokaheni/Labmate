@@ -50,7 +50,7 @@ from services.orchestrator.graph import build_graph, GEMMA_BASE, QWEN_BASE
 from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 from services.orchestrator.storage_manager import StorageManager
 from services.orchestrator.mcp_client_manager import MCPClientManager
-from services.orchestrator.skill_router import SkillRouter, ROUTING_MODE
+from services.orchestrator.skill_router import SkillRouter
 from services.orchestrator import events
 from services.orchestrator import call_counter
 from services.skill_runner.skill_runner import SkillRunner
@@ -214,7 +214,6 @@ class OrchestratorProcess:
         _emitter: events.EventEmitter | None = None
         _token = None
         _counter_token = None
-        routing_mode = ROUTING_MODE
 
         try:
             payload    = json.loads(fields.get("payload", "{}"))
@@ -223,8 +222,6 @@ class OrchestratorProcess:
             session_id = payload.get("session_id") or task_id
             user_id    = payload.get("user_id", "")
             workspace_id = payload.get("workspace_id", "")
-            # A/B routing: per-request override; fall back to the env default.
-            routing_mode = payload.get("routing_mode") or ROUTING_MODE
 
             _emitter = events.EventEmitter(self._redis, task_id)
             _token = events.current_emitter.set(_emitter)
@@ -253,10 +250,9 @@ class OrchestratorProcess:
                 except Exception:
                     pass  # upsert failure never blocks task
 
-            _log.info("task %s: %.80s (routing_mode=%s)", task_id, task_text, routing_mode)
+            _log.info("task %s: %.80s", task_id, task_text)
             final_state = await orch.run_task(
                 task_text, session_id, user_id=user_id, workspace_id=workspace_id,
-                routing_mode=routing_mode,
             )
             task_succeeded = True
             # If the graph halted for clarification, surface the question — do NOT

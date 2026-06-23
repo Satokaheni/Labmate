@@ -23,12 +23,6 @@ GEMMA_BASE = os.getenv("GEMMA_BASE", "http://localhost:8000/v1")
 # On dual-GPU, set QWEN_BASE=http://localhost:8001/v1 to enable the specialist Qwen worker.
 QWEN_BASE  = os.getenv("QWEN_BASE",  GEMMA_BASE)
 
-# A/B routing mode default. Re-exported from skill_router so callers (plan node,
-# coding_orchestrator.run_task) share one source of truth. "single" = current default
-# (whole message as one intent); "multi" = fallback (decompose + per-sub-intent routing),
-# selectable via ROUTING_MODE=multi or a per-request override.
-from .skill_router import ROUTING_MODE
-
 # A1: tasks at or above this ambiguity score route to the approval gate before planning.
 AMBIGUITY_THRESHOLD = float(os.getenv("AMBIGUITY_THRESHOLD", "0.6"))
 
@@ -120,9 +114,9 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
 
     async def plan(state: State) -> dict:
         """
-        Decompose the current root goal into child Goals via multi-intent routing.
-        If route() needs clarification, emit clarification_request and pause.
-        Otherwise, expand matched skills into a sequential chain of child Goals.
+        Route the current root goal as ONE intent (single-intent routing).
+        If a skill confidently matches, create ONE child Goal and proceed to execute.
+        Otherwise, take the direct-answer fast-path (answer directly and HALT).
         """
         import copy
         import uuid
@@ -136,86 +130,35 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         if skill_router is not None:
             catalog = skill_router.runner.catalog_prompt()
 
-        # Call route() to handle multi-intent decomposition and routing
-        # (only if skill_router has the route method; fallback for old tests/code)
-        # A/B routing mode: per-request override (State["routing_mode"]) falls back to
-        # the ROUTING_MODE env default. When != "single", route() is byte-for-byte
-        # unchanged (it calls decompose()); "single" skips decompose (sub_intents=[task]).
-        mode = state.get("routing_mode") or ROUTING_MODE
+        # Call route() to handle single-intent routing (only if skill_router has the
+        # route method; the architect fallback below preserves backward compatibility
+        # for old tests / when route() raises because live services are unavailable).
         route_result = None
         try:
             if skill_router is not None and hasattr(skill_router, "route"):
-                route_result = await skill_router.route(goal_desc, mode=mode)
+                route_result = await skill_router.route(goal_desc)
         except Exception as e:
             # Fallback on any route() error (LLM unavailable, network error, TypeError, etc.)
-            # This preserves backward compatibility when route() would require live services.
             _log.debug("route() failed, falling back to architect: %s", e)
             route_result = None
 
         if route_result is not None:
-            # FIX 11: build the sequential chain for ANY non-clarifying MULTI-intent result
-            # (>=2 sub-intents), even when route_result.skills is empty/partial. route() no
-            # longer clarifies on skill-absence, so a clear compound task ("write a function
-            # AND a pytest test") arrives here with skills=[] but >=2 sub_intents; each
-            # sub-intent must still become a goal in the chain so ReAct delivers ALL parts.
-            # The single-intent skill-less case is excluded here so it still falls through to
-            # the direct-answer fast-path below. A route_result that still requests
-            # clarification (kept for backward compatibility — route() itself no longer sets
-            # this) is also excluded so the clarification branch below is reached first.
-            if not route_result.needs_clarification and (
-                route_result.skills or len(route_result.sub_intents) > 1
-            ):
-                # Confident multi-intent route: one sequential child Goal per skill.
-                # Build a real dependency CHAIN so get_ready_goals() (which releases a
-                # PENDING goal only once ALL its children are COMPLETED — i.e. the
-                # DEEPEST LEAF first) executes the sub-intents in SUBMISSION ORDER.
-                #
-                # FIX 3: nest the sub-intents in REVERSE so the FIRST sub-intent becomes
-                # the deepest leaf (runs first) and the LAST sub-intent is root's direct
-                # child (runs last):
-                #     root -> sub3 -> sub2 -> sub1(leaf, runs first)
-                # Iterating reversed() means each sub-intent is nested as the child of the
-                # NEXT sub-intent's goal. create_goal keeps parent_id and the parent's
-                # children[] mutually consistent. The previous (buggy) forward chaining made
-                # the LAST sub-intent the leaf, so the chain executed backwards.
+            # Single-intent routing: at most ONE child goal.
+            #   - a skill confidently matched -> create ONE child Goal and proceed to
+            #     execute (ReAct/one-shot handles any sub-steps in a single pass).
+            #   - no skill matched -> direct-answer fast-path below.
+            if route_result.skills:
                 tree = copy.deepcopy(state["goal_tree"])
-                prev_id = root_id
-                for sub_intent in reversed(route_result.sub_intents):
-                    child_id = uuid.uuid4().hex[:12]
-                    create_goal(tree, child_id, prev_id, sub_intent)
-                    prev_id = child_id
-
+                child_id = uuid.uuid4().hex[:12]
+                create_goal(tree, child_id, root_id, route_result.sub_intents[0])
                 return {"goal_tree": tree, "awaiting_clarification": False}
 
-            # If route() needs clarification, ALWAYS pause and ask — never guess.
-            # This applies even to a single ambiguous intent (sub_intents == [goal_desc]).
-            if route_result.needs_clarification:
-                # Clarification request: emit and pause.
-                await events.emit(
-                    "clarification_request",
-                    question=route_result.clarification_question,
-                    task=goal_desc,
-                    session_id=state.get("session_id", ""),
-                )
-                return {
-                    "awaiting_clarification": True,
-                    "clarification_question": route_result.clarification_question,
-                }
-
-            # FIX 10 (B3): direct-answer fast-path for a skill-less SINGLE intent.
+            # FIX 10 (B3): direct-answer fast-path for a skill-less intent.
             # route() returns (skills=[], needs_clarification=False, sub_intents=[the_intent])
-            # for a trivial / no-skill-needed single task (e.g. "What is 2+2?"). Previously
-            # this fell through to architect-decompose + execute/ReAct, which re-ran select()
-            # and could even dispatch code-sandbox to compute the answer (~40 s of wasted work
-            # the routing decision already said was unnecessary). Instead, answer directly with
+            # for a trivial / no-skill-needed task (e.g. "What is 2+2?"). Answer directly with
             # ONE architect() call, mark root COMPLETED, and HALT (clarification_router sees
             # final_answer/direct_answer and returns END).
-            if (
-                ENABLE_DIRECT_ANSWER_FASTPATH
-                and not route_result.skills
-                and not route_result.needs_clarification
-                and len(route_result.sub_intents) == 1
-            ):
+            if ENABLE_DIRECT_ANSWER_FASTPATH:
                 answer = await orch.architect(
                     goal_desc, thinking_budget=DIRECT_ANSWER_THINKING_BUDGET
                 )

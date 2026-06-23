@@ -34,14 +34,12 @@ _log = logging.getLogger("skill_router")
 SKILL_TASKS_STREAM = "labmate:skill-tasks"
 RESULT_PREFIX = "labmate:result:"
 
-# A/B routing mode default. "multi" = decompose into N sub-intents and
-# confidence-check each. "single" = treat the whole message as ONE intent
-# (decompose() is skipped, sub_intents=[task]); everything downstream is reused.
-# DEFAULT is "single" (A/B test: equal-or-better quality every category, ~36% fewer
-# llm_calls, ~39% faster). "multi" remains a fully-functional fallback, selectable via
-# ROUTING_MODE=multi, a per-request payload routing_mode="multi", or mode="multi".
-# Per-request override flows through State["routing_mode"] -> plan node -> route(mode=...).
-ROUTING_MODE = os.getenv("ROUTING_MODE", "single")
+# NOTE: routing is single-intent ONLY. A broadened A/B (3 batches + wall-clock,
+# high confidence) concluded the multi-intent DECOMPOSE path added cost + flakiness
+# with no quality benefit, so the decompose machinery and the ROUTING_MODE / routing_mode
+# A/B toggle were removed. route() now treats the WHOLE message as ONE intent. The
+# old eval tooling (call_counter.py, eval/ab_routing.*) may still mention a routing
+# "mode" but it is no longer honored — single is the only mode.
 
 # Retry budgets: the local Q4 model is non-deterministic, so a clearly-matching
 # skill is occasionally missed on a single sample. Independent retries compound
@@ -49,56 +47,20 @@ ROUTING_MODE = os.getenv("ROUTING_MODE", "single")
 SELECT_ATTEMPTS = 3
 PLAN_ATTEMPTS = 3
 
-# Confidence threshold for accepting a sub-intent's routing without clarification.
-# 2/3 (0.666...) == "at least 2 of 3 samples agreed". Below this (and not unanimous)
-# we treat the sub-intent as ambiguous and ask the user rather than guessing.
+# Confidence threshold for accepting a routing decision. 2/3 (0.666...) == "at least
+# 2 of 3 samples agreed". Below this (and not unanimous) the task has no confident skill
+# match and route() falls through to the direct-answer path.
 CONFIDENCE_THRESHOLD = 2.0 / 3.0
-
-# FIX 10 (A3): thinking budget for decompose()'s single LLM call (was hardcoded 512).
-# Decompose only needs to split a task into a small JSON array; a modest budget is
-# faster on the local Q4 model with no measurable accuracy cost.
-DECOMPOSE_THINKING_BUDGET = int(os.getenv("DECOMPOSE_THINKING_BUDGET", "384"))
-
-_DECOMPOSE_PROMPT = (
-    "You are a task decomposer for an AI agent. Split the following task into the "
-    "minimum number of independent sub-tasks, each of which can be handled by a "
-    "single specialized skill.\n\n"
-    "Rules:\n"
-    "- If the task needs only ONE skill, return a list with ONE element (the original "
-    "task, possibly rephrased).\n"
-    "- If the task needs multiple skills, return each as a separate, self-contained "
-    "sub-task with enough context to be routed independently.\n"
-    "- Maximum 4 sub-tasks. If you cannot decompose, return the original task as a "
-    "single-element list.\n"
-    "- Reply with ONLY a JSON array of strings. No markdown, no explanation.\n\n"
-    "Examples:\n"
-    'Task: "Summarize the key findings of this PDF."\n'
-    '["Summarize the key findings of this PDF"]\n\n'
-    'Task: "Write a function that reverses a string, and write a pytest unit test '
-    'for it"\n'
-    '["Write a Python function that reverses a string", "Write a pytest unit test '
-    'for the string-reversal function"]\n\n'
-    "Task: {task}"
-)
-
-_CLARIFY_PROMPT = (
-    "You are an AI agent that could not confidently choose a skill for part of a "
-    "user's request. Write a SINGLE, short clarifying question whose answer would "
-    "tell you which approach the user wants for the ambiguous parts.\n\n"
-    "Reply with ONLY the question text. No preamble, no markdown.\n\n"
-    "Original task: {task}\n\n"
-    "Ambiguous parts:\n{parts}"
-)
-_CLARIFY_FALLBACK = "Could you clarify what you'd like me to do here?"
 
 
 @dataclass
 class RouteResult:
-    """Outcome of multi-intent routing.
+    """Outcome of single-intent routing.
 
-    skills and sub_intents are positionally parallel: skills[i] is the skill
-    chosen for sub_intents[i]. When needs_clarification is True, skills is empty
-    and clarification_question holds the single question to ask the user.
+    skills holds the single chosen skill ([skill]) when a skill confidently matched,
+    or [] when no skill matched (direct-answer fall-through). sub_intents is always
+    [task]. needs_clarification is retained for backward compatibility but route()
+    always sets it False — the assess_ambiguity node owns clarification.
     """
     skills: list[str]
     needs_clarification: bool = False
@@ -217,136 +179,41 @@ class SkillRouter:
         )
         return chosen
 
-    async def route(self, task: str, *, mode: str = "single") -> RouteResult:
-        """Multi-intent routing: decompose, confidence-check each, clarify if unsure.
+    async def route(self, task: str) -> RouteResult:
+        """Single-intent routing: confidence-check the WHOLE task as ONE intent.
 
         Pipeline:
-          1. decompose(task) -> sub_intents
-          2. for each: _confidence_check(); flag if no skill OR confidence below
-             CONFIDENCE_THRESHOLD
-          3. if anything flagged: _generate_clarification() and return a clarification
-             RouteResult (no blind dispatch)
-          4. else: return ordered skills parallel to sub_intents
+          1. sub_intents = [task]  (no decompose — single-intent is the only mode)
+          2. _confidence_check(task)
+          3. if a skill matched with confidence >= CONFIDENCE_THRESHOLD:
+                 RouteResult(skills=[skill], sub_intents=[task])
+             else (no confident skill):
+                 RouteResult(skills=[], needs_clarification=False, sub_intents=[task])
+                 — the direct-answer fall-through (plan node answers directly).
 
-        select() (single-intent path) is intentionally left unchanged; route() is the
-        new entry point for the multi-intent flow.
-
-        A/B routing mode (additive, gated; DEFAULT is now "single"):
-          - mode == "single" (the DEFAULT): treat the WHOLE message as ONE intent — skip
-            the decompose() LLM call entirely and use sub_intents=[task]. Everything after
-            this assignment (confidence-check loop, flagged/clarification logic, the
-            skill-less direct-answer fall-through, the skills return) is REUSED UNCHANGED;
-            ReAct sequences any sub-steps within the single goal.
-          - any other value (incl. the fallback "multi"): UNCHANGED — call decompose().
-            "multi" stays byte-for-byte the same when explicitly selected.
+        route() NEVER clarifies: the dedicated assess_ambiguity node (which runs BEFORE
+        route) is the sole owner of clarification for genuine ambiguity. A clear-but-
+        skill-less task (e.g. "What is 2+2?") is unambiguous and PROCEEDS to direct answer.
         """
-        if mode == "single":
-            _log.info("route() mode=single -> 1 intent (decompose skipped)")
-            sub_intents = [task]
-        else:
-            _log.info("route() mode=%s -> decompose()", mode)
-            sub_intents = await self.decompose(task)
-
-        routed_skills: list[str] = []
-        flagged: list[str] = []
-        for sub in sub_intents:
-            skill, confidence = await self._confidence_check(sub)
-            if skill is None or confidence < CONFIDENCE_THRESHOLD:
-                flagged.append(sub)
-            else:
-                routed_skills.append(skill)
-
-        if flagged:
-            # FIX 11: skill-absence is NOT ambiguity. route() must NEVER clarify based on a
-            # sub-intent failing to map to a confident skill. The dedicated assess_ambiguity
-            # node (a calibrated ambiguity gate that runs BEFORE route) is the sole owner of
-            # clarification for GENUINE ambiguity; a clear-but-skill-less sub-intent (e.g.
-            # "write a Python function that reverses a string") is perfectly unambiguous and
-            # must PROCEED, not interrogate the user.
-            #
-            # Single skill-less intent (e.g. "What is 2+2?") -> direct answer fast-path
-            # (Fix 5/10), UNCHANGED.
-            if len(sub_intents) == 1:
-                _log.info(
-                    "route() single skill-less intent -> direct answer (no clarification)"
-                )
-                return RouteResult(
-                    skills=[],
-                    needs_clarification=False,
-                    sub_intents=sub_intents,
-                )
-            # Multi-intent with one or more flagged sub-intents: PROCEED. Return whatever
-            # skills resolved (may be empty or partial) with needs_clarification=False. Each
-            # sub-intent becomes a goal in a sequential chain (built by the plan node) and is
-            # handled at execute time by ReAct, which re-resolves a skill or answers directly.
-            _log.info(
-                "route() multi-intent: %d/%d sub-intent(s) skill-less -> PROCEED "
-                "(no clarification; ReAct resolves at execute time)",
-                len(flagged), len(sub_intents),
+        sub_intents = [task]
+        skill, confidence = await self._confidence_check(task)
+        if skill is not None and confidence >= CONFIDENCE_THRESHOLD:
+            _log.info("route() resolved task to skill: %s (confidence=%.2f)", skill, confidence)
+            await events.emit(
+                "reasoning",
+                node="route",
+                summary=events.reasoning_summary(self._last_reasoning),
+                text=self._last_reasoning,
             )
-            return RouteResult(
-                skills=routed_skills,
-                needs_clarification=False,
-                sub_intents=sub_intents,
-            )
+            return RouteResult(skills=[skill], sub_intents=sub_intents)
 
-        _log.info("route() resolved %d sub-intent(s) to skills: %s",
-                  len(routed_skills), routed_skills)
-        await events.emit(
-            "reasoning",
-            node="route",
-            summary=events.reasoning_summary(self._last_reasoning),
-            text=self._last_reasoning,
+        # No confident skill -> direct-answer fall-through (plan node answers directly).
+        _log.info("route() found no confident skill -> direct answer")
+        return RouteResult(
+            skills=[],
+            needs_clarification=False,
+            sub_intents=sub_intents,
         )
-        return RouteResult(skills=routed_skills, sub_intents=sub_intents)
-
-    async def decompose(self, task: str) -> list[str]:
-        """Split a compound task into sub-intents (fail-open to [task]).
-
-        One litellm call at thinking_budget=512 asking for a JSON array of sub-tasks.
-        Strips code fences, json.loads, validates it is a list of non-empty strings,
-        caps at 4. Any error returns [task] — routing a single intent is always
-        preferable to crashing the pipeline.
-        """
-        prompt = _DECOMPOSE_PROMPT.format(task=task)
-        try:
-            r = await litellm.acompletion(
-                model="openai/gemma-4-31b",
-                api_base=self._gemma_base,
-                api_key="not-needed",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0,
-                seed=0,
-                extra_body={"thinking_budget_tokens": DECOMPOSE_THINKING_BUDGET},  # FIX 10 (A3): was 512
-            )
-        except Exception as exc:
-            _log.warning("decompose() llm error: %s", exc)
-            return [task]
-        choices = getattr(r, "choices", None)
-        if not choices:
-            return [task]
-        raw = getattr(getattr(choices[0], "message", None), "content", None)
-        if not raw:
-            return [task]
-        raw = raw.strip()
-        if raw.startswith("```json"):
-            raw = raw[7:]
-        elif raw.startswith("```"):
-            raw = raw[3:]
-        if raw.endswith("```"):
-            raw = raw[:-3]
-        raw = raw.strip()
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
-            _log.warning("decompose() non-JSON response; routing single intent")
-            return [task]
-        if not isinstance(parsed, list):
-            return [task]
-        cleaned = [s.strip() for s in parsed if isinstance(s, str) and s.strip()]
-        if not cleaned:
-            return [task]
-        return cleaned[:4]
 
     async def _validate_solvable(self, sub_intent: str) -> bool:
         """Solvability gate: True iff a single zero-budget sample picks a known skill.
@@ -379,32 +246,6 @@ class SkillRouter:
         winner, votes = Counter(hits).most_common(1)[0]
         confidence = votes / SELECT_ATTEMPTS
         return winner, confidence
-
-    async def _generate_clarification(self, task: str, ambiguous_sub_intents: list[str]) -> str:
-        """Ask Gemma for one clarifying question for the ambiguous sub-intents.
-
-        One litellm call at thinking_budget=256. Returns a generic fallback question
-        on any error (we still need *a* question to pause on).
-        """
-        parts = "\n".join(f"- {s}" for s in ambiguous_sub_intents)
-        prompt = _CLARIFY_PROMPT.format(task=task, parts=parts)
-        try:
-            r = await litellm.acompletion(
-                model="openai/gemma-4-31b",
-                api_base=self._gemma_base,
-                api_key="not-needed",
-                messages=[{"role": "user", "content": prompt}],
-                extra_body={"thinking_budget_tokens": 256},
-            )
-            choices = getattr(r, "choices", None)
-            if not choices:
-                return _CLARIFY_FALLBACK
-            text = getattr(getattr(choices[0], "message", None), "content", None)
-            text = (text or "").strip()
-            return text or _CLARIFY_FALLBACK
-        except Exception as exc:
-            _log.warning("_generate_clarification() error: %s", exc)
-            return _CLARIFY_FALLBACK
 
     async def plan_tool_call(self, task: str, skill_name: str) -> dict | None:
         """

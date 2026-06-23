@@ -86,109 +86,9 @@ def test_route_result_sub_intents_independent():
     assert b.sub_intents == []
 
 
-@pytest.mark.asyncio
-async def test_decompose_multi_intent():
-    from services.orchestrator.skill_router import SkillRouter
-
-    router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
-    with patch("services.orchestrator.skill_router.litellm.acompletion") as m:
-        m.return_value = content_response('["search for a dataset", "generate examples"]')
-        out = await router.decompose("search for a dataset and generate examples")
-    assert out == ["search for a dataset", "generate examples"]
-
-
-@pytest.mark.asyncio
-async def test_decompose_single_intent():
-    from services.orchestrator.skill_router import SkillRouter
-
-    router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
-    with patch("services.orchestrator.skill_router.litellm.acompletion") as m:
-        m.return_value = content_response('["just one thing"]')
-        out = await router.decompose("just one thing")
-    assert out == ["just one thing"]
-
-
-@pytest.mark.asyncio
-async def test_decompose_strips_code_fences():
-    from services.orchestrator.skill_router import SkillRouter
-
-    router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
-    with patch("services.orchestrator.skill_router.litellm.acompletion") as m:
-        m.return_value = content_response('```json\n["a", "b"]\n```')
-        out = await router.decompose("a and b")
-    assert out == ["a", "b"]
-
-
-@pytest.mark.asyncio
-async def test_decompose_uses_configured_budget():
-    # FIX 10 (A3): decompose()'s thinking budget is now DECOMPOSE_THINKING_BUDGET
-    # (configurable, default 384 — was the hardcoded 512 this test originally pinned).
-    from services.orchestrator.skill_router import SkillRouter, DECOMPOSE_THINKING_BUDGET
-
-    router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
-    with patch("services.orchestrator.skill_router.litellm.acompletion") as m:
-        m.return_value = content_response('["x"]')
-        await router.decompose("x")
-    kwargs = m.call_args.kwargs
-    assert kwargs["extra_body"] == {"thinking_budget_tokens": DECOMPOSE_THINKING_BUDGET}
-    assert kwargs["model"] == "openai/gemma-4-31b"
-    assert kwargs["api_key"] == "not-needed"
-    assert kwargs["api_base"] == "http://test/v1"
-
-
-@pytest.mark.asyncio
-async def test_decompose_fails_open_on_llm_error():
-    from services.orchestrator.skill_router import SkillRouter
-
-    router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
-    with patch("services.orchestrator.skill_router.litellm.acompletion") as m:
-        m.side_effect = RuntimeError("boom")
-        out = await router.decompose("original task")
-    assert out == ["original task"]
-
-
-@pytest.mark.asyncio
-async def test_decompose_fails_open_on_bad_json():
-    from services.orchestrator.skill_router import SkillRouter
-
-    router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
-    with patch("services.orchestrator.skill_router.litellm.acompletion") as m:
-        m.return_value = content_response("not json at all")
-        out = await router.decompose("original task")
-    assert out == ["original task"]
-
-
-@pytest.mark.asyncio
-async def test_decompose_fails_open_on_non_list_json():
-    from services.orchestrator.skill_router import SkillRouter
-
-    router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
-    with patch("services.orchestrator.skill_router.litellm.acompletion") as m:
-        m.return_value = content_response('{"not": "a list"}')
-        out = await router.decompose("original task")
-    assert out == ["original task"]
-
-
-@pytest.mark.asyncio
-async def test_decompose_caps_at_four():
-    from services.orchestrator.skill_router import SkillRouter
-
-    router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
-    with patch("services.orchestrator.skill_router.litellm.acompletion") as m:
-        m.return_value = content_response('["a", "b", "c", "d", "e", "f"]')
-        out = await router.decompose("a b c d e f")
-    assert out == ["a", "b", "c", "d"]
-
-
-@pytest.mark.asyncio
-async def test_decompose_drops_non_strings_and_empty():
-    from services.orchestrator.skill_router import SkillRouter
-
-    router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
-    with patch("services.orchestrator.skill_router.litellm.acompletion") as m:
-        m.return_value = content_response('["good", 5, "", "  ", "also good"]')
-        out = await router.decompose("task")
-    assert out == ["good", "also good"]
+# NOTE: decompose() was removed (single-intent routing is now the only mode; the
+# multi-intent decompose path + routing_mode A/B toggle were deleted after an A/B
+# showed no quality benefit at higher cost). Its tests were removed with it.
 
 
 @pytest.mark.asyncio
@@ -313,75 +213,17 @@ async def test_confidence_check_all_zero_budget():
         assert call.kwargs["extra_body"] == {"thinking_budget_tokens": 0}
 
 
-@pytest.mark.asyncio
-async def test_generate_clarification_returns_question():
-    from services.orchestrator.skill_router import SkillRouter
-
-    router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
-    with patch("services.orchestrator.skill_router.litellm.acompletion") as m:
-        m.return_value = content_response("Should I search an existing dataset or generate one?")
-        q = await router._generate_clarification(
-            "find or make a dataset", ["find or make a dataset"]
-        )
-    assert q == "Should I search an existing dataset or generate one?"
-
-
-@pytest.mark.asyncio
-async def test_generate_clarification_uses_budget_256():
-    from services.orchestrator.skill_router import SkillRouter
-
-    router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
-    with patch("services.orchestrator.skill_router.litellm.acompletion") as m:
-        m.return_value = content_response("a question?")
-        await router._generate_clarification("task", ["ambiguous"])
-    assert m.call_args.kwargs["extra_body"] == {"thinking_budget_tokens": 256}
-
-
-@pytest.mark.asyncio
-async def test_generate_clarification_strips_whitespace():
-    from services.orchestrator.skill_router import SkillRouter
-
-    router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
-    with patch("services.orchestrator.skill_router.litellm.acompletion") as m:
-        m.return_value = content_response("  trimmed?  \n")
-        q = await router._generate_clarification("task", ["x"])
-    assert q == "trimmed?"
-
-
-@pytest.mark.asyncio
-async def test_generate_clarification_fallback_on_error():
-    from services.orchestrator.skill_router import SkillRouter
-
-    router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
-    with patch("services.orchestrator.skill_router.litellm.acompletion") as m:
-        m.side_effect = RuntimeError("boom")
-        q = await router._generate_clarification("task", ["x", "y"])
-    assert q  # non-empty fallback question
-    assert isinstance(q, str)
-
-
-@pytest.mark.asyncio
-async def test_generate_clarification_includes_ambiguous_intents_in_prompt():
-    from services.orchestrator.skill_router import SkillRouter
-
-    router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
-    with patch("services.orchestrator.skill_router.litellm.acompletion") as m:
-        m.return_value = content_response("q?")
-        await router._generate_clarification("big task", ["sub one", "sub two"])
-    sent = m.call_args.kwargs["messages"][0]["content"]
-    assert "sub one" in sent
-    assert "sub two" in sent
-    assert "big task" in sent
+# NOTE: _generate_clarification() was removed — route() no longer clarifies
+# (the assess_ambiguity node owns all clarification). Its tests were removed with it.
 
 
 @pytest.mark.asyncio
 async def test_route_single_intent_high_confidence():
-    """One sub-intent, unanimous skill → RouteResult with that skill, no clarification."""
+    """One intent, confident skill → RouteResult with that skill, no clarification."""
     from services.orchestrator.skill_router import SkillRouter
 
     router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
-    with patch.object(router, "decompose", AsyncMock(return_value=["find a dataset"])), \
-         patch.object(router, "_confidence_check",
+    with patch.object(router, "_confidence_check",
                       AsyncMock(return_value=("dataset-search", 1.0))):
         result = await router.route("find a dataset")
     assert result.needs_clarification is False
@@ -391,101 +233,48 @@ async def test_route_single_intent_high_confidence():
 
 
 @pytest.mark.asyncio
-async def test_route_multi_intent_all_confident():
+async def test_route_no_skill_falls_through_to_direct_answer():
+    """No confident skill → skills=[], needs_clarification False (direct-answer path).
+    route() NEVER clarifies — the assess_ambiguity gate owns ambiguity."""
     from services.orchestrator.skill_router import SkillRouter
 
     router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
-    with patch.object(router, "decompose",
-                      AsyncMock(return_value=["search dataset", "generate examples"])), \
-         patch.object(router, "_confidence_check",
-                      AsyncMock(side_effect=[
-                          ("dataset-search", 1.0),
-                          ("synthetic-gen", 1.0),
-                      ])):
-        # mode="multi" explicit: default flipped to "single"; this covers the multi
-        # decompose path (the fallback) with two confident sub-intents.
-        result = await router.route("search a dataset and generate examples", mode="multi")
+    with patch.object(router, "_confidence_check",
+                      AsyncMock(return_value=(None, 0.0))):
+        result = await router.route("explain something")
     assert result.needs_clarification is False
-    assert result.skills == ["dataset-search", "synthetic-gen"]
-    assert result.sub_intents == ["search dataset", "generate examples"]
+    assert result.skills == []
+    assert result.sub_intents == ["explain something"]
 
 
 @pytest.mark.asyncio
-async def test_route_low_confidence_triggers_clarification():
-    # Trigger refinement (FIX 5): a SINGLE skill-less/low-confidence intent is NOT
-    # ambiguous — it is a trivial direct-answer task. route() now falls through
-    # (skills=[], needs_clarification=False) instead of clarifying. Clarification is
-    # reserved for genuine MULTI-intent ambiguity (see the multi-intent tests below).
+async def test_route_low_confidence_falls_through_to_direct_answer():
+    """A below-threshold confidence is NOT a confident skill → direct-answer path
+    (skills=[], needs_clarification False)."""
     from services.orchestrator.skill_router import SkillRouter
 
     router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
-    with patch.object(router, "decompose", AsyncMock(return_value=["ambiguous thing"])), \
-         patch.object(router, "_confidence_check",
-                      AsyncMock(return_value=("dataset-search", 1 / 3))), \
-         patch.object(router, "_generate_clarification",
-                      AsyncMock(return_value="Which one?")) as gc:
+    with patch.object(router, "_confidence_check",
+                      AsyncMock(return_value=("dataset-search", 1 / 3))):
         result = await router.route("ambiguous thing")
     assert result.needs_clarification is False
     assert result.skills == []
-    # No clarification is generated for a single skill-less intent.
-    gc.assert_not_awaited()
+    assert result.sub_intents == ["ambiguous thing"]
 
 
 @pytest.mark.asyncio
-async def test_route_unsolvable_subintent_triggers_clarification():
-    # FIX 11: route() no longer clarifies on skill-absence. A MULTI-intent task with a
-    # skill-less sub-intent is NOT ambiguous (genuine ambiguity is owned by the
-    # assess_ambiguity gate that runs before route). It now PROCEEDS: needs_clarification
-    # is False, the resolved skills (partial) are returned, all sub_intents are kept, and
-    # _generate_clarification is never awaited. (Was: asserted needs_clarification=True.)
+async def test_route_is_single_intent_only():
+    """route() always treats the whole message as ONE intent: sub_intents == [task],
+    regardless of how many '+' or 'and' appear in the task text (no decompose)."""
     from services.orchestrator.skill_router import SkillRouter
 
     router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
-    with patch.object(router, "decompose",
-                      AsyncMock(return_value=["search dataset", "do undefined thing"])), \
-         patch.object(router, "_confidence_check",
-                      AsyncMock(side_effect=[
-                          ("dataset-search", 1.0),
-                          (None, 0.0),
-                      ])), \
-         patch.object(router, "_generate_clarification",
-                      AsyncMock(return_value="What does 'undefined thing' mean?")) as gc:
-        # mode="multi" explicit: default flipped to "single"; this covers the multi
-        # decompose path (the fallback) with a skill-less sub-intent.
-        result = await router.route("search dataset and do undefined thing", mode="multi")
-    assert result.needs_clarification is False
-    # Partial skills resolved; the skill-less sub-intent is re-resolved by ReAct at exec.
+    with patch.object(router, "_confidence_check",
+                      AsyncMock(return_value=("dataset-search", 1.0))):
+        result = await router.route("search a dataset and generate examples")
+    assert result.sub_intents == ["search a dataset and generate examples"]
     assert result.skills == ["dataset-search"]
-    assert result.sub_intents == ["search dataset", "do undefined thing"]
-    gc.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_route_clarifier_receives_all_flagged():
-    """FIX 11: a MULTI-intent task with multiple flagged sub-intents PROCEEDS (does not
-    clarify on skill-absence). needs_clarification is False, all sub_intents are kept, and
-    _generate_clarification is never awaited. (Was: asserted needs_clarification=True with
-    both flagged sub-intents passed to the clarifier.)"""
-    from services.orchestrator.skill_router import SkillRouter
-
-    router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
-    with patch.object(router, "decompose",
-                      AsyncMock(return_value=["sub a", "sub b", "sub c"])), \
-         patch.object(router, "_confidence_check",
-                      AsyncMock(side_effect=[
-                          ("dataset-search", 1.0),   # confident
-                          (None, 0.0),               # unsolvable
-                          ("synthetic-gen", 1 / 3),  # low confidence
-                      ])), \
-         patch.object(router, "_generate_clarification",
-                      AsyncMock(return_value="q?")) as gc:
-        # mode="multi" explicit: default flipped to "single"; this covers the multi
-        # decompose path (the fallback) with multiple flagged sub-intents.
-        result = await router.route("sub a sub b sub c", mode="multi")
     assert result.needs_clarification is False
-    assert result.skills == ["dataset-search"]
-    assert result.sub_intents == ["sub a", "sub b", "sub c"]
-    gc.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -494,8 +283,7 @@ async def test_route_threshold_boundary_passes_at_two_thirds():
     from services.orchestrator.skill_router import SkillRouter
 
     router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
-    with patch.object(router, "decompose", AsyncMock(return_value=["thing"])), \
-         patch.object(router, "_confidence_check",
+    with patch.object(router, "_confidence_check",
                       AsyncMock(return_value=("dataset-search", 2 / 3))):
         result = await router.route("thing")
     assert result.needs_clarification is False

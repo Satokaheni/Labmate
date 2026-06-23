@@ -67,9 +67,6 @@ class State(TypedDict, total=False):
     clarification_question: str       # the single question to surface to the user
     # FIX 10: direct-answer fast-path
     direct_answer: bool               # True when the plan node answered a skill-less single intent directly
-    # A/B routing mode: "multi" (default, decompose + per-sub-intent routing) or
-    # "single" (whole message = ONE intent; decompose() is skipped, sub_intents=[task]).
-    routing_mode: str
 
 
 def now_iso() -> str:

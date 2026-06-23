@@ -124,10 +124,9 @@ async def test_handle_calls_run_task_and_acks():
     payload = json.dumps({"task_id": "t1", "task": "do something", "session_id": "s1"})
     await proc._handle("100-0", {"payload": payload}, orch, storage)
 
-    # A/B routing: _handle forwards routing_mode (default flipped to "single";
-    # multi remains via ROUTING_MODE=multi or a payload routing_mode override).
+    # Routing is single-intent only (routing_mode removed); run_task takes no mode kwarg.
     orch.run_task.assert_awaited_once_with(
-        "do something", "s1", user_id="", workspace_id="", routing_mode="single"
+        "do something", "s1", user_id="", workspace_id=""
     )
     proc._redis.xack.assert_awaited_once_with(GOALS_STREAM, GOALS_GROUP, "100-0")
 
@@ -190,10 +189,9 @@ async def test_handle_uses_task_id_as_session_id_when_absent():
     payload = json.dumps({"task_id": "standalone-task", "task": "do it"})
     await proc._handle("400-0", {"payload": payload}, orch, storage)
 
-    # A/B routing: _handle forwards routing_mode (default flipped to "single";
-    # multi remains via ROUTING_MODE=multi or a payload routing_mode override).
+    # Routing is single-intent only (routing_mode removed); run_task takes no mode kwarg.
     orch.run_task.assert_awaited_once_with(
-        "do it", "standalone-task", user_id="", workspace_id="", routing_mode="single"
+        "do it", "standalone-task", user_id="", workspace_id=""
     )
 
 

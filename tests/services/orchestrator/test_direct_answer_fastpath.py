@@ -164,34 +164,10 @@ async def test_skills_path_unchanged():
     orch.architect.assert_not_called()
 
 
-# ── needs_clarification path unchanged ─────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_needs_clarification_path_unchanged():
-    from services.orchestrator import graph as graph_mod
-    from services.orchestrator.skill_router import RouteResult
-
-    route_result = RouteResult(
-        skills=[],
-        needs_clarification=True,
-        clarification_question="Which one?",
-        sub_intents=["a", "b"],
-    )
-    fake_router = MagicMock()
-    fake_router.route = AsyncMock(return_value=route_result)
-    fake_router.runner.catalog_prompt.return_value = "CATALOG"
-
-    orch = _make_orch()
-    orch.skill_router = fake_router
-
-    plan_node, *_ = graph_mod.make_nodes(orch, _make_async_orch())
-    out = await plan_node(_state())
-
-    assert out.get("awaiting_clarification") is True
-    assert out.get("clarification_question") == "Which one?"
-    assert out.get("direct_answer") in (None, False)
-    assert "final_answer" not in out
-    orch.architect.assert_not_called()
+# NOTE: the former test_needs_clarification_path_unchanged was removed — route() no
+# longer sets needs_clarification (the assess_ambiguity gate owns clarification), and
+# the plan node no longer has a needs_clarification branch. A skill-less route_result now
+# always takes the direct-answer fast-path (covered above).
 
 
 # ── backward-compat: route_result None still decomposes ────────────────────
