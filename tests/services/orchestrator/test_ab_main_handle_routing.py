@@ -114,4 +114,5 @@ async def test_run_task_routing_mode_defaults(monkeypatch):
 
     orch.graph = _Graph()
     out = await orch.run_task("t", "s1")
-    assert out["routing_mode"] == "multi"
+    # Default flipped to "single" (multi remains via ROUTING_MODE=multi / payload override).
+    assert out["routing_mode"] == "single"

@@ -402,7 +402,9 @@ async def test_route_multi_intent_all_confident():
                           ("dataset-search", 1.0),
                           ("synthetic-gen", 1.0),
                       ])):
-        result = await router.route("search a dataset and generate examples")
+        # mode="multi" explicit: default flipped to "single"; this covers the multi
+        # decompose path (the fallback) with two confident sub-intents.
+        result = await router.route("search a dataset and generate examples", mode="multi")
     assert result.needs_clarification is False
     assert result.skills == ["dataset-search", "synthetic-gen"]
     assert result.sub_intents == ["search dataset", "generate examples"]
@@ -448,7 +450,9 @@ async def test_route_unsolvable_subintent_triggers_clarification():
                       ])), \
          patch.object(router, "_generate_clarification",
                       AsyncMock(return_value="What does 'undefined thing' mean?")) as gc:
-        result = await router.route("search dataset and do undefined thing")
+        # mode="multi" explicit: default flipped to "single"; this covers the multi
+        # decompose path (the fallback) with a skill-less sub-intent.
+        result = await router.route("search dataset and do undefined thing", mode="multi")
     assert result.needs_clarification is False
     # Partial skills resolved; the skill-less sub-intent is re-resolved by ReAct at exec.
     assert result.skills == ["dataset-search"]
@@ -475,7 +479,9 @@ async def test_route_clarifier_receives_all_flagged():
                       ])), \
          patch.object(router, "_generate_clarification",
                       AsyncMock(return_value="q?")) as gc:
-        result = await router.route("sub a sub b sub c")
+        # mode="multi" explicit: default flipped to "single"; this covers the multi
+        # decompose path (the fallback) with multiple flagged sub-intents.
+        result = await router.route("sub a sub b sub c", mode="multi")
     assert result.needs_clarification is False
     assert result.skills == ["dataset-search"]
     assert result.sub_intents == ["sub a", "sub b", "sub c"]

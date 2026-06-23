@@ -24,8 +24,9 @@ GEMMA_BASE = os.getenv("GEMMA_BASE", "http://localhost:8000/v1")
 QWEN_BASE  = os.getenv("QWEN_BASE",  GEMMA_BASE)
 
 # A/B routing mode default. Re-exported from skill_router so callers (plan node,
-# coding_orchestrator.run_task) share one source of truth. "multi" = current default
-# (decompose + per-sub-intent routing); "single" = whole message as one intent.
+# coding_orchestrator.run_task) share one source of truth. "single" = current default
+# (whole message as one intent); "multi" = fallback (decompose + per-sub-intent routing),
+# selectable via ROUTING_MODE=multi or a per-request override.
 from .skill_router import ROUTING_MODE
 
 # A1: tasks at or above this ambiguity score route to the approval gate before planning.

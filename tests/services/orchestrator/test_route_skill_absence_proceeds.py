@@ -62,7 +62,10 @@ async def test_route_multi_intent_one_flagged_proceeds_no_clarification():
                       ])), \
          patch.object(router, "_generate_clarification",
                       AsyncMock(return_value="should never be called")) as gc:
-        result = await router.route("reverse a string and write a pytest test")
+        # mode="multi" explicit: default flipped to "single"; this exercises the multi
+        # decompose path (the fallback) producing 2 sub-intents.
+        result = await router.route("reverse a string and write a pytest test",
+                                    mode="multi")
 
     assert result.needs_clarification is False
     # Partial skills returned; the flagged sub-intent is re-resolved by ReAct at exec time.
@@ -90,7 +93,10 @@ async def test_route_multi_intent_all_flagged_proceeds_no_clarification():
                       AsyncMock(side_effect=[(None, 0.0), (None, 0.0)])), \
          patch.object(router, "_generate_clarification",
                       AsyncMock(return_value="should never be called")) as gc:
-        result = await router.route("reverse a string and write a pytest test")
+        # mode="multi" explicit: default flipped to "single"; this exercises the multi
+        # decompose path (the fallback) where ALL sub-intents are skill-less.
+        result = await router.route("reverse a string and write a pytest test",
+                                    mode="multi")
 
     assert result.needs_clarification is False
     assert result.skills == []

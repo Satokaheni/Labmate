@@ -1,7 +1,8 @@
 """A/B routing — plan node forwards State["routing_mode"] into route(mode=...).
 
 When routing_mode is set on the State, the plan node must pass it through as the
-mode kwarg to route(); when unset, it defaults to ROUTING_MODE ("multi"). NEW file.
+mode kwarg to route(); when unset, it defaults to ROUTING_MODE (now "single").
+NEW file.
 """
 from __future__ import annotations
 
@@ -70,5 +71,19 @@ async def test_plan_defaults_mode_when_unset(monkeypatch):
 
     await plan_node(_state(routing_mode=None))
 
-    # Unset routing_mode falls back to ROUTING_MODE (default "multi").
+    # Unset routing_mode falls back to ROUTING_MODE (default flipped to "single";
+    # multi remains via explicit override). Assert against the live constant.
     assert fake_router.route.await_args.kwargs.get("mode") == graph_mod.ROUTING_MODE
+    assert graph_mod.ROUTING_MODE == "single"
+
+
+@pytest.mark.asyncio
+async def test_plan_forwards_explicit_multi_mode(monkeypatch):
+    # multi fallback: explicit routing_mode="multi" on State still routes multi.
+    from services.orchestrator.skill_router import RouteResult
+    rr = RouteResult(skills=["dataset-search"], sub_intents=["do a thing"])
+    plan_node, fake_router = _make_plan_node(monkeypatch, rr)
+
+    await plan_node(_state(routing_mode="multi"))
+
+    assert fake_router.route.await_args.kwargs.get("mode") == "multi"

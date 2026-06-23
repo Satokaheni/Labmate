@@ -71,7 +71,10 @@ async def test_single_intent_confident_skill_routes():
     with patch.object(router, "decompose", AsyncMock(return_value=["find a dataset"])), \
          patch.object(router, "_confidence_check",
                       AsyncMock(return_value=("dataset-search", 1.0))):
-        result = await router.route("Search the Hugging Face Hub for emotion datasets")
+        # mode="multi" explicit: default flipped to "single", but this test covers
+        # the multi-intent decompose path (which remains the fallback).
+        result = await router.route("Search the Hugging Face Hub for emotion datasets",
+                                    mode="multi")
     assert result.needs_clarification is False
     assert result.skills == ["dataset-search"]
     assert result.sub_intents == ["find a dataset"]
@@ -95,7 +98,9 @@ async def test_multi_intent_one_unresolved_still_clarifies():
                       ])), \
          patch.object(router, "_generate_clarification",
                       AsyncMock(return_value="What does 'undefined thing' mean?")) as gc:
-        result = await router.route("search dataset and do undefined thing")
+        # mode="multi" explicit: default flipped to "single"; this covers the multi
+        # decompose path (the fallback) where >=2 sub-intents are produced.
+        result = await router.route("search dataset and do undefined thing", mode="multi")
     assert result.needs_clarification is False
     assert result.skills == ["dataset-search"]
     assert result.sub_intents == ["search dataset", "do undefined thing"]
