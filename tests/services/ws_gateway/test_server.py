@@ -1,6 +1,5 @@
 import json
 import pytest
-from argon2 import PasswordHasher
 from fastapi.testclient import TestClient
 
 from services.ws_gateway.config import Config
@@ -9,25 +8,25 @@ from services.ws_gateway.server import build_app
 
 @pytest.fixture
 def cfg():
-    ph = PasswordHasher()
     return Config(
         redis_url="redis://localhost:6379/0",
         jwt_secret="test-secret",
         admin_email="admin@labmate.local",
-        admin_password_hash=ph.hash("correct-horse"),
+        admin_password="correct-horse",
         jwt_expiry_seconds=3600,
         cors_origins=("http://localhost:5173",),
+        mongo_url="mongodb://localhost:27017",
     )
 
 
 @pytest.fixture
-def app(cfg, redis):
+async def app(cfg, redis, seeded_store):
     # Inject the fake redis and all-ready boot checks for deterministic tests.
     async def ready(**_):
         return ("ready", "ok", "")
 
     checks = {k: ready for k in ("brain", "nervous_system", "hands", "memory", "workspace")}
-    return build_app(cfg, redis=redis, boot_checks=checks)
+    return build_app(cfg, redis=redis, boot_checks=checks, user_store=seeded_store)
 
 
 @pytest.fixture
@@ -44,7 +43,7 @@ def test_unauthenticated_message_before_auth_closes(client):
 
 
 def test_valid_auth_then_boot_plan_and_ready(client, app):
-    token = app.state.auth.mint_token()
+    token = app.state.auth.mint_token({"id": "u-001", "email": "admin@labmate.local", "role": "admin"})
     with client.websocket_connect("/ws") as ws:
         ws.send_json({"type": "auth", "token": token})
         assert ws.receive_json()["type"] == "auth.ok"
@@ -68,7 +67,7 @@ def test_bad_token_returns_auth_error(client):
 
 
 def test_send_pushes_task_and_relays_events(client, app, redis):
-    token = app.state.auth.mint_token()
+    token = app.state.auth.mint_token({"id": "u-001", "email": "admin@labmate.local", "role": "admin"})
     with client.websocket_connect("/ws") as ws:
         ws.send_json({"type": "auth", "token": token})
         assert ws.receive_json()["type"] == "auth.ok"

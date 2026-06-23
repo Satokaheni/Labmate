@@ -14,6 +14,7 @@ from services.ws_gateway.boot import CheckFn, run_boot_sequence
 from services.ws_gateway.config import Config
 from services.ws_gateway.redis_bridge import push_task, tail_task_events, translate_event
 from services.ws_gateway.sessions import InMemorySessionStore, build_sessions_router
+from services.ws_gateway.user_store import MongoUserStore
 
 
 def _now_iso() -> str:
@@ -71,12 +72,13 @@ async def _ws_loop(
 ) -> None:
     # ── auth handshake: first frame MUST be {type:'auth',token} ────────────
     first = await ws.receive_json()
-    if first.get("type") != "auth" or auth.verify_token(first.get("token", "")) is None:
+    claims = auth.verify_token(first.get("token", ""))
+    if first.get("type") != "auth" or claims is None:
         await ws.send_json({"type": "auth.error", "reason": "invalid"})
         await ws.close()
         return
 
-    await ws.send_json({"type": "auth.ok", "user": auth.user_record()})
+    await ws.send_json({"type": "auth.ok", "user": {"id": claims["sub"], "email": claims["email"], "role": claims.get("role", "user")}})
 
     # ── boot sequence ──────────────────────────────────────────────────────
     async def emit(ev: dict) -> None:
@@ -104,6 +106,7 @@ def build_app(
     redis: aioredis.Redis | None = None,
     boot_checks: dict[str, CheckFn] | None = None,
     session_store: InMemorySessionStore | None = None,
+    user_store=None,
 ) -> FastAPI:
     app = FastAPI(title="labmate-ws-gateway")
 
@@ -115,7 +118,8 @@ def build_app(
         allow_headers=["*"],
     )
 
-    auth = AuthService(config)
+    user_store = user_store or MongoUserStore(config.mongo_url)
+    auth = AuthService(config, user_store)
     store = session_store or InMemorySessionStore()
     r = redis or aioredis.from_url(config.redis_url, decode_responses=True)
 
@@ -142,6 +146,16 @@ def build_app(
     app.state.auth = auth
     app.state.redis = r
     app.state.store = store
+
+    @app.on_event("startup")
+    async def _seed_admin() -> None:
+        if await user_store.count() == 0 and config.admin_password:
+            await auth.create_user(
+                config.admin_email,
+                config.admin_password,
+                display_name="Admin",
+                role="admin",
+            )
 
     app.include_router(build_auth_router(auth))
     app.include_router(build_sessions_router(store))
