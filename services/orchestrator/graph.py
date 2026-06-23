@@ -152,8 +152,18 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             route_result = None
 
         if route_result is not None:
-            # If route() successfully routed skills, use them.
-            if route_result.skills:
+            # FIX 11: build the sequential chain for ANY non-clarifying MULTI-intent result
+            # (>=2 sub-intents), even when route_result.skills is empty/partial. route() no
+            # longer clarifies on skill-absence, so a clear compound task ("write a function
+            # AND a pytest test") arrives here with skills=[] but >=2 sub_intents; each
+            # sub-intent must still become a goal in the chain so ReAct delivers ALL parts.
+            # The single-intent skill-less case is excluded here so it still falls through to
+            # the direct-answer fast-path below. A route_result that still requests
+            # clarification (kept for backward compatibility — route() itself no longer sets
+            # this) is also excluded so the clarification branch below is reached first.
+            if not route_result.needs_clarification and (
+                route_result.skills or len(route_result.sub_intents) > 1
+            ):
                 # Confident multi-intent route: one sequential child Goal per skill.
                 # Build a real dependency CHAIN so get_ready_goals() (which releases a
                 # PENDING goal only once ALL its children are COMPLETED — i.e. the

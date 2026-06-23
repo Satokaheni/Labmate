@@ -431,6 +431,11 @@ async def test_route_low_confidence_triggers_clarification():
 
 @pytest.mark.asyncio
 async def test_route_unsolvable_subintent_triggers_clarification():
+    # FIX 11: route() no longer clarifies on skill-absence. A MULTI-intent task with a
+    # skill-less sub-intent is NOT ambiguous (genuine ambiguity is owned by the
+    # assess_ambiguity gate that runs before route). It now PROCEEDS: needs_clarification
+    # is False, the resolved skills (partial) are returned, all sub_intents are kept, and
+    # _generate_clarification is never awaited. (Was: asserted needs_clarification=True.)
     from services.orchestrator.skill_router import SkillRouter
 
     router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
@@ -444,16 +449,19 @@ async def test_route_unsolvable_subintent_triggers_clarification():
          patch.object(router, "_generate_clarification",
                       AsyncMock(return_value="What does 'undefined thing' mean?")) as gc:
         result = await router.route("search dataset and do undefined thing")
-    assert result.needs_clarification is True
-    assert result.skills == []
-    # Only the unsolvable sub-intent is handed to the clarifier.
-    gc.assert_awaited_once()
-    assert gc.call_args.args[1] == ["do undefined thing"]
+    assert result.needs_clarification is False
+    # Partial skills resolved; the skill-less sub-intent is re-resolved by ReAct at exec.
+    assert result.skills == ["dataset-search"]
+    assert result.sub_intents == ["search dataset", "do undefined thing"]
+    gc.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_route_clarifier_receives_all_flagged():
-    """Both an unsolvable and a low-confidence sub-intent are passed to clarifier."""
+    """FIX 11: a MULTI-intent task with multiple flagged sub-intents PROCEEDS (does not
+    clarify on skill-absence). needs_clarification is False, all sub_intents are kept, and
+    _generate_clarification is never awaited. (Was: asserted needs_clarification=True with
+    both flagged sub-intents passed to the clarifier.)"""
     from services.orchestrator.skill_router import SkillRouter
 
     router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
@@ -468,8 +476,10 @@ async def test_route_clarifier_receives_all_flagged():
          patch.object(router, "_generate_clarification",
                       AsyncMock(return_value="q?")) as gc:
         result = await router.route("sub a sub b sub c")
-    assert result.needs_clarification is True
-    assert gc.call_args.args[1] == ["sub b", "sub c"]
+    assert result.needs_clarification is False
+    assert result.skills == ["dataset-search"]
+    assert result.sub_intents == ["sub a", "sub b", "sub c"]
+    gc.assert_not_awaited()
 
 
 @pytest.mark.asyncio

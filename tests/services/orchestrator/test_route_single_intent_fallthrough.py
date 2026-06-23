@@ -79,8 +79,10 @@ async def test_single_intent_confident_skill_routes():
 
 @pytest.mark.asyncio
 async def test_multi_intent_one_unresolved_still_clarifies():
-    """Regression guard: >=2 sub-intents with one unresolved -> clarify, and only the
-    flagged sub-intent(s) are handed to the clarifier."""
+    """FIX 11: route() no longer clarifies on skill-absence. >=2 sub-intents with one
+    unresolved now PROCEEDS (needs_clarification False, partial skills returned, all
+    sub_intents kept, _generate_clarification never awaited). Genuine ambiguity is owned by
+    the assess_ambiguity gate that runs before route. (Was: asserted clarification.)"""
     from services.orchestrator.skill_router import SkillRouter
 
     router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
@@ -94,7 +96,7 @@ async def test_multi_intent_one_unresolved_still_clarifies():
          patch.object(router, "_generate_clarification",
                       AsyncMock(return_value="What does 'undefined thing' mean?")) as gc:
         result = await router.route("search dataset and do undefined thing")
-    assert result.needs_clarification is True
-    assert result.skills == []
-    gc.assert_awaited_once()
-    assert gc.call_args.args[1] == ["do undefined thing"]
+    assert result.needs_clarification is False
+    assert result.skills == ["dataset-search"]
+    assert result.sub_intents == ["search dataset", "do undefined thing"]
+    gc.assert_not_awaited()

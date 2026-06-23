@@ -253,12 +253,15 @@ class SkillRouter:
                 routed_skills.append(skill)
 
         if flagged:
-            # Clarification is reserved for GENUINE multi-intent ambiguity. A skill-less
-            # SINGLE intent (e.g. "What is 2+2?") has no confident skill but is not
-            # ambiguous — clarifying it would wrongly interrogate a trivial direct-answer
-            # task. So only clarify when there are >=2 sub-intents and at least one is
-            # unresolved; otherwise fall through (skills=[], needs_clarification=False)
-            # so the plan node routes to the architect/direct-answer path.
+            # FIX 11: skill-absence is NOT ambiguity. route() must NEVER clarify based on a
+            # sub-intent failing to map to a confident skill. The dedicated assess_ambiguity
+            # node (a calibrated ambiguity gate that runs BEFORE route) is the sole owner of
+            # clarification for GENUINE ambiguity; a clear-but-skill-less sub-intent (e.g.
+            # "write a Python function that reverses a string") is perfectly unambiguous and
+            # must PROCEED, not interrogate the user.
+            #
+            # Single skill-less intent (e.g. "What is 2+2?") -> direct answer fast-path
+            # (Fix 5/10), UNCHANGED.
             if len(sub_intents) == 1:
                 _log.info(
                     "route() single skill-less intent -> direct answer (no clarification)"
@@ -268,12 +271,18 @@ class SkillRouter:
                     needs_clarification=False,
                     sub_intents=sub_intents,
                 )
-            question = await self._generate_clarification(task, flagged)
-            _log.info("route() needs clarification for %d sub-intent(s)", len(flagged))
+            # Multi-intent with one or more flagged sub-intents: PROCEED. Return whatever
+            # skills resolved (may be empty or partial) with needs_clarification=False. Each
+            # sub-intent becomes a goal in a sequential chain (built by the plan node) and is
+            # handled at execute time by ReAct, which re-resolves a skill or answers directly.
+            _log.info(
+                "route() multi-intent: %d/%d sub-intent(s) skill-less -> PROCEED "
+                "(no clarification; ReAct resolves at execute time)",
+                len(flagged), len(sub_intents),
+            )
             return RouteResult(
-                skills=[],
-                needs_clarification=True,
-                clarification_question=question,
+                skills=routed_skills,
+                needs_clarification=False,
                 sub_intents=sub_intents,
             )
 
