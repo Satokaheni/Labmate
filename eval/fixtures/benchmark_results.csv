@@ -1,0 +1,5 @@
+run,latency_ms,throughput_qps
+baseline,120.5,83
+optimized,45.2,221
+cached,12.8,780
+naive,310.0,32
