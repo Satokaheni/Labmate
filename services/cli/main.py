@@ -42,6 +42,21 @@ def _load_workspaces(user_id: str) -> list[dict]:
         return []
 
 
+def _default_workspace(user_id: str) -> dict:
+    """A zero-setup default workspace (rooted at the current dir), persisted so it
+    is reused across sessions. Lets the user start a session without manually
+    creating/picking a workspace each time."""
+    ws = {
+        "workspace_id": "default",
+        "name": "default",
+        "paths": [os.getcwd()],
+        "instructions": "",
+        "user_id": user_id,
+    }
+    _save_workspace(ws)
+    return ws
+
+
 def _save_workspace(ws: dict) -> None:
     existing = []
     if _WS_CACHE.exists():
@@ -107,11 +122,28 @@ async def _async_main(
 
     if workspace_id_flag:
         match = next((w for w in existing_ws if w["workspace_id"] == workspace_id_flag), None)
-        if not match:
-            _renderer.print_error(f"Workspace {workspace_id_flag} not found.")
-            raise SystemExit(1)
-        ws_choice_raw = match
+        if match:
+            ws_choice_raw = match
+        else:
+            # Frictionless: auto-create a seeded workspace with the requested id
+            # instead of erroring, so a new --workspace name just works.
+            ws_choice_raw = {
+                "workspace_id": workspace_id_flag,
+                "name": workspace_id_flag,
+                "paths": [os.getcwd()],
+                "instructions": "",
+                "user_id": identity.user_id,
+            }
+            _save_workspace(ws_choice_raw)
+            _renderer.print_info(
+                f"Workspace '{workspace_id_flag}' not found — created a seeded workspace."
+            )
+    elif one_shot or not existing_ws:
+        # No workspace specified: auto-seed a default so a session needs zero setup.
+        # (One-shot can't show the interactive picker; a first-run REPL has nothing to pick.)
+        ws_choice_raw = _default_workspace(identity.user_id)
     else:
+        # REPL with existing workspaces: let the user pick.
         from .workspace_picker import WorkspaceChoice
         ws_choice = pick_workspace(existing_ws)
         ws_choice_raw = {
@@ -148,7 +180,14 @@ async def _async_main(
         if not result.get("ok"):
             _renderer.print_error(result.get("error", "unknown"))
             raise SystemExit(1)
-        _renderer.print_answer(extract_answer(result.get("state", {})), session_id=session_id)
+        state = result.get("state", {})
+        if isinstance(state, dict) and state.get("awaiting_clarification"):
+            _renderer.print_clarification(
+                state.get("clarification_question") or extract_answer(state),
+                session_id=session_id,
+            )
+        else:
+            _renderer.print_answer(extract_answer(state), session_id=session_id)
         return
 
     ctx = REPLContext(

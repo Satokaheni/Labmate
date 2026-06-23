@@ -39,6 +39,22 @@ class Renderer:
                 highlight=False,
             )
 
+    def print_clarification(self, question: str, session_id: str = "") -> None:
+        """Render an agent clarification request distinctly from a final answer.
+
+        The agent halted to ask for more info (awaiting_clarification); surface it
+        as a question the user should reply to, not as a finished answer.
+        """
+        self._console.print()
+        self._console.print("[bold yellow]❓ I need a bit more to proceed:[/bold yellow]")
+        self._console.print(Markdown(question))
+        self._console.print(
+            "[dim]Reply with the details to continue"
+            + (f" (session: {session_id})" if session_id else "")
+            + ".[/dim]",
+            highlight=False,
+        )
+
     def print_error(self, message: str) -> None:
         self._console.print(f"[bold red]Error:[/bold red] {message}")
 

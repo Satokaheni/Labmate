@@ -25,6 +25,8 @@ class StreamRenderer:
         self._answer_md: Markdown | None = None  # cached; rebuilt only on answer.done
         self.done: bool = False
         self.status: str = ""
+        self.is_clarification: bool = False  # set when the agent asks for more info
+        self.clarification_question: str = ""
         self._tools: dict[str, _ToolRow] = {}
         self._tool_order: list[str] = []
 
@@ -57,6 +59,12 @@ class StreamRenderer:
         elif etype == "answer.done":
             self.answer_text = event.get("text", self.answer_text)
             self._answer_md = Markdown(self.answer_text)
+        elif etype == "clarification_request":
+            # Agent halted to ask for more info. Emitted before the answer.delta/done
+            # that carry the question text, so the live preview can style it as a
+            # clarification rather than flashing it as a plain answer.
+            self.is_clarification = True
+            self.clarification_question = event.get("question", "")
         elif etype == "turn.done":
             self._active = False
             self.done = True
@@ -83,7 +91,11 @@ class StreamRenderer:
         if self.reasoning_text:
             parts.append(Text(self.reasoning_text, style="dim italic"))
 
-        if self._answer_md is not None:
+        answer = self.answer_text or self.clarification_question
+        if self.is_clarification and answer:
+            parts.append(Text("❓ I need a bit more to proceed:", style="bold yellow"))
+            parts.append(Markdown(answer))
+        elif self._answer_md is not None:
             parts.append(self._answer_md)
         elif self.answer_text:
             parts.append(Text(self.answer_text))

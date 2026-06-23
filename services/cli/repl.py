@@ -140,5 +140,14 @@ class REPL:
             self._renderer.print_error(result.get("error", "Unknown error"))
             return
 
-        answer = extract_answer(result.get("state", {}))
-        self._renderer.print_answer(answer, session_id=turn_session_id)
+        state = result.get("state", {})
+        if isinstance(state, dict) and state.get("awaiting_clarification"):
+            # Agent halted to ask for more info — render distinctly. The same
+            # session continues, so the user's next message builds on this turn.
+            self._renderer.print_clarification(
+                state.get("clarification_question") or extract_answer(state),
+                session_id=turn_session_id,
+            )
+        else:
+            answer = extract_answer(result.get("state", {}))
+            self._renderer.print_answer(answer, session_id=turn_session_id)
