@@ -9,9 +9,10 @@ class Config:
     redis_url: str
     jwt_secret: str
     admin_email: str
-    admin_password_hash: str
+    admin_password: str
     jwt_expiry_seconds: int
     cors_origins: tuple[str, ...]
+    mongo_url: str
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -20,7 +21,8 @@ class Config:
             redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
             jwt_secret=os.getenv("JWT_SECRET", "dev-insecure-secret"),
             admin_email=os.getenv("ADMIN_EMAIL", "admin@labmate.local"),
-            admin_password_hash=os.getenv("ADMIN_PASSWORD_HASH", ""),
+            admin_password=os.getenv("ADMIN_PASSWORD", ""),
             jwt_expiry_seconds=int(os.getenv("JWT_EXPIRY_SECONDS", "86400")),
             cors_origins=tuple(o.strip() for o in origins.split(",") if o.strip()),
+            mongo_url=os.getenv("MONGO_URL", "mongodb://localhost:27017"),
         )
