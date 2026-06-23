@@ -1,0 +1,115 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Surfaces */
+  --surface-page: #0b0d11;
+  --surface-page-alt: #0f1115;
+  --surface-panel: #13161c;
+  --surface-rail: #0a0c10;
+
+  /* Borders */
+  --border-1: #20242c;
+  --border-2: #232831;
+  --border-3: #262b34;
+  --border-4: #2a2f39;
+
+  /* Text */
+  --text-primary: #f3f5f8;
+  --text-primary-alt: #e6e8ec;
+  --text-secondary: #939ba7;
+  --text-mono: #5e6671;
+  --text-muted: #6a7280;
+
+  /* Accents */
+  --accent-blue: #6aa6ff; /* Brain / primary */
+  --accent-purple: #a78bfa; /* Nervous system / reasoning */
+  --accent-green: #56c08d; /* Hands / success */
+  --accent-amber: #e0a458; /* warnings */
+
+  /* Brand */
+  --brand-grad: linear-gradient(140deg, #6aa6ff, #a78bfa);
+
+  /* Radius */
+  --radius-card: 16px;
+  --radius-pill: 10px;
+
+  /* Type */
+  --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  /* Shadows */
+  --shadow-card: 0 24px 60px -34px rgba(0, 0, 0, 0.8);
+  --shadow-tile: 0 8px 26px -8px rgba(106, 166, 255, 0.5);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--surface-page-alt);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Brand mark animations */
+@keyframes orbitspin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes breathe {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.05);
+  }
+}
+
+@keyframes fadeup {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* Spin speed utility classes (applied to a <g>) */
+.orbit-spin-fast {
+  animation: orbitspin 1.4s linear infinite;
+  transform-box: view-box;
+  transform-origin: 32px 32px;
+}
+.orbit-spin-slow {
+  animation: orbitspin 6s linear infinite;
+  transform-box: view-box;
+  transform-origin: 32px 32px;
+}
+.orbit-spin-none {
+  animation: none;
+}
+.orbit-breathe {
+  animation: breathe 4.5s ease-in-out infinite;
+}
