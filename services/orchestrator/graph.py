@@ -493,11 +493,19 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
 
         assumptions = out.get("assumptions", []) or []
         blocking_question = out.get("blocking_question", "") or ""
+        # Human-readable reasoning text for connectors (the CLI renders this verbatim):
+        # the blocking question when ambiguous, else a short assumptions line — never raw JSON.
+        if blocking_question:
+            reasoning_text = blocking_question
+        elif assumptions:
+            reasoning_text = "Assuming: " + "; ".join(str(a) for a in assumptions[:3])
+        else:
+            reasoning_text = ""
         await events.emit(
             "reasoning",
             node="assess_ambiguity",
             summary=f"ambiguity={ambiguity:.2f}; {len(assumptions)} assumption(s)",
-            text=blocking_question or json.dumps(out),
+            text=reasoning_text,
         )
 
         result = {
