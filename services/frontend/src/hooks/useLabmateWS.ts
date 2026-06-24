@@ -246,5 +246,9 @@ export function useLabmateWS(url: string, token: string | null, reconnectKey = 0
     wsRef.current?.send(JSON.stringify({ type: 'session.open', sessionId }));
   }, []);
 
-  return { state, send, newSession, openSession };
+  const setDebug = useCallback((sessionId: string, enabled: boolean) => {
+    wsRef.current?.send(JSON.stringify({ type: 'debug.set', sessionId, enabled }));
+  }, []);
+
+  return { state, send, newSession, openSession, setDebug };
 }

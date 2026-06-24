@@ -269,6 +269,15 @@ describe('useLabmateWS', () => {
     expect(updated?.artifacts).toHaveLength(2);
   });
 
+  it('setDebug sends a debug.set frame to the server', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    result.current.setDebug('s-abc', true);
+    expect(mockWs.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'debug.set', sessionId: 's-abc', enabled: true }),
+    );
+  });
+
   it('reconnects (new WebSocket) when reconnectKey increments and closes the old one', () => {
     const instances: typeof mockWs[] = [];
     vi.mocked(WebSocket).mockImplementation(() => {

@@ -52,3 +52,21 @@ def test_get_turns_returns_list(client, store):
 def test_patch_unknown_session_404(client):
     r = client.patch("/sessions/zzz", json={"title": "x"})
     assert r.status_code == 404
+
+
+def test_set_debug_toggles_flag():
+    from services.ws_gateway.sessions import InMemorySessionStore
+    store = InMemorySessionStore()
+    s = store.create(title="Debug session", mode="code")
+    sid = s["id"]
+
+    assert store.get_debug(sid) is False
+    store.set_debug(sid, True)
+    assert store.get_debug(sid) is True
+    store.set_debug(sid, False)
+    assert store.get_debug(sid) is False
+
+
+def test_get_debug_unknown_session_returns_false():
+    from services.ws_gateway.sessions import InMemorySessionStore
+    assert InMemorySessionStore().get_debug("nonexistent") is False

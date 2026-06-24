@@ -33,6 +33,8 @@ async def _relay_task(
     redis: aioredis.Redis,
     task_id: str,
     turn_id: str,
+    *,
+    debug: bool = False,
 ) -> None:
     """Tail the orchestrator event stream for one task and relay StreamEvents.
 
@@ -74,6 +76,27 @@ async def _relay_task(
             })
             reasoning_chunks = []
 
+        # Emit tool.frame when debug mode is active
+        if debug and etype in ("tool.start", "tool.done"):
+            tool_id = raw.get("tool_id", "")
+            if etype == "tool.start":
+                frame_payload = {"name": raw.get("name", ""), "args": raw.get("args", {})}
+                frame_dir = "out"
+            else:
+                frame_payload = {"result": raw.get("result"), "status": raw.get("status", "done")}
+                frame_dir = "in"
+            await ws.send_json({
+                "type": "tool.frame",
+                "turnId": turn_id,
+                "toolId": tool_id,
+                "frame": {
+                    "dir": frame_dir,
+                    "method": "tools/call",
+                    "payload": frame_payload,
+                    "ts": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+                },
+            })
+
         framed = translate_event(raw, turn_id=turn_id)
         if framed is not None:
             await ws.send_json(framed)
@@ -86,6 +109,7 @@ async def _handle_send(
     *,
     store: InMemorySessionStore,
     active_session_id: str | None = None,
+    debug: bool = False,
 ) -> tuple[str, asyncio.Task]:
     task_id = "task-" + uuid.uuid4().hex[:12]
     turn_id = "turn-" + uuid.uuid4().hex[:12]
@@ -109,7 +133,7 @@ async def _handle_send(
 
     await ws.send_json({"type": "turn.created", "turn": turn})
     await push_task(redis, task_id, task=text, session_id=session_id)
-    relay = asyncio.create_task(_relay_task(ws, redis, task_id, turn_id))
+    relay = asyncio.create_task(_relay_task(ws, redis, task_id, turn_id, debug=debug))
     return task_id, relay
 
 
@@ -140,6 +164,8 @@ async def _ws_loop(
     active_task_id: str | None = None
     active_session_id: str | None = None
     relay: asyncio.Task | None = None
+    # debug_mode tracks the last explicitly-set debug state for the active session
+    debug_mode: bool = False
     while True:
         msg = await ws.receive_json()
         mtype = msg.get("type")
@@ -147,8 +173,9 @@ async def _ws_loop(
             # Await the previous relay if one is still running (one turn at a time).
             if relay is not None and not relay.done():
                 await relay
+            debug_on = store.get_debug(active_session_id or "") if active_session_id else debug_mode
             active_task_id, relay = await _handle_send(
-                ws, redis, msg, store=store, active_session_id=active_session_id
+                ws, redis, msg, store=store, active_session_id=active_session_id, debug=debug_on
             )
         elif mtype == "tool.result":
             if active_task_id is not None:
@@ -179,7 +206,11 @@ async def _ws_loop(
             if session is not None:
                 await ws.send_json({"type": "session.updated", "session": session})
         elif mtype == "debug.set":
-            continue
+            sid = msg.get("sessionId", "") or active_session_id or ""
+            enabled = bool(msg.get("enabled", False))
+            debug_mode = enabled
+            if sid:
+                store.set_debug(sid, enabled)
         else:
             continue
 

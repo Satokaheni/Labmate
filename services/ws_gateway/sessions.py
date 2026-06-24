@@ -17,6 +17,7 @@ class InMemorySessionStore:
     def __init__(self) -> None:
         self._sessions: dict[str, dict] = {}
         self._turns: dict[str, list[dict]] = {}
+        self._debug: dict[str, bool] = {}
 
     def create(
         self,
@@ -64,6 +65,12 @@ class InMemorySessionStore:
         if s is not None:
             s["turnCount"] = len(self._turns[sid])
             s["updatedAt"] = _now_iso()
+
+    def set_debug(self, sid: str, enabled: bool) -> None:
+        self._debug[sid] = enabled
+
+    def get_debug(self, sid: str) -> bool:
+        return self._debug.get(sid, False)
 
 
 class CreateBody(BaseModel):

@@ -193,6 +193,33 @@ def test_session_open_emits_session_updated(client, app):
         assert opened["session"]["id"] == sid
 
 
+def test_debug_set_is_processed_without_crash(client, app):
+    """debug.set must be handled (not crash); server stays alive for the next message."""
+    with client.websocket_connect("/ws") as ws:
+        token = app.state.auth.mint_token({"id": "u-001", "email": "admin@labmate.local", "role": "admin"})
+        ws.send_json({"type": "auth", "token": token})
+        assert ws.receive_json()["type"] == "auth.ok"
+        ev = ws.receive_json()
+        while ev["type"] != "boot.ready":
+            ev = ws.receive_json()
+
+        # Create a session
+        ws.send_json({"type": "session.new", "mode": "code"})
+        created = ws.receive_json()
+        while created["type"] != "session.updated":
+            created = ws.receive_json()
+        sid = created["session"]["id"]
+
+        # Enable debug — server must NOT crash or disconnect
+        ws.send_json({"type": "debug.set", "sessionId": sid, "enabled": True})
+
+        # Prove server is still alive: open the session
+        ws.send_json({"type": "session.open", "sessionId": sid})
+        resp = ws.receive_json()
+        assert resp["type"] == "session.updated"
+        assert resp["session"]["id"] == sid
+
+
 def test_relay_emits_reasoning_done_before_turn_done(client, app, redis):
     """_relay_task must synthesize reasoning.done from accumulated reasoning events."""
     import asyncio
