@@ -29,13 +29,14 @@ export function OnboardingScreen({ onSaved }: OnboardingScreenProps) {
   const testTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
 
+  // eslint-disable-next-line react-doctor/exhaustive-deps -- cleanup-only effect; refs are stable by definition
   useEffect(() => {
     return () => {
       mountedRef.current = false;
       if (testTimerRef.current) clearTimeout(testTimerRef.current);
       if (testWsRef.current) testWsRef.current.close();
     };
-  }, [mountedRef, testTimerRef, testWsRef]);
+  }, []);
 
   const url = normaliseUrl(raw);
   const valid = url.startsWith('ws://') || url.startsWith('wss://');
