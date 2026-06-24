@@ -108,7 +108,10 @@ describe('useLabmateWS', () => {
   it('services tool.request via electronAPI and replies tool.result', async () => {
     const executeTool = vi.fn().mockResolvedValue({ result: { content: 'hi' } });
     // Set electronAPI directly to avoid replacing window (which breaks React DOM instanceof checks)
-    (window as Window & { electronAPI?: unknown }).electronAPI = { executeTool };
+    (window as Window & { electronAPI?: unknown }).electronAPI = {
+      config: { wsUrl: null, isDev: true }, token: null,
+      setConfig: vi.fn(), setToken: vi.fn(), clearToken: vi.fn(), executeTool,
+    };
 
     try {
       renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));

@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Root } from './Root';
 
 vi.mock('@/hooks/useLabmateWS', () => ({ useLabmateWS: vi.fn() }));
@@ -31,12 +31,26 @@ const CONTEXT = {
   segments: { systemPrompt: 0, skillInstructions: 0, conversation: 0, workingMemory: 0, reasoning: 0 },
 };
 
+function makeElectronAPI(token: string | null = null) {
+  return {
+    config: { wsUrl: 'ws://localhost:8787/ws', isDev: true },
+    token,
+    setToken: vi.fn().mockResolvedValue(undefined),
+    clearToken: vi.fn().mockResolvedValue(undefined),
+    setConfig: vi.fn().mockResolvedValue(undefined),
+    executeTool: vi.fn(),
+  };
+}
+
 beforeEach(() => {
   vi.mocked(useLabmateWS).mockReturnValue({
     state: IDLE_STATE, send: vi.fn(), newSession: vi.fn(), openSession: vi.fn(), setDebug: vi.fn(), compact: vi.fn(), cancel: vi.fn(), clearAuthError: vi.fn(),
   });
-  localStorage.clear();
-  sessionStorage.clear();
+  vi.stubGlobal('electronAPI', makeElectronAPI());
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe('Root', () => {
@@ -46,7 +60,7 @@ describe('Root', () => {
   });
 
   it('shows BootScreen when token exists but phase is booting', () => {
-    localStorage.setItem('labmate_token', 'tok');
+    vi.stubGlobal('electronAPI', makeElectronAPI('tok'));
     vi.mocked(useLabmateWS).mockReturnValue({
       state: { ...IDLE_STATE, phase: 'booting', subsystems: [] },
       send: vi.fn(), newSession: vi.fn(), openSession: vi.fn(), setDebug: vi.fn(), compact: vi.fn(), cancel: vi.fn(), clearAuthError: vi.fn(),
@@ -56,7 +70,7 @@ describe('Root', () => {
   });
 
   it('shows the chat layout when phase is ready', () => {
-    localStorage.setItem('labmate_token', 'tok');
+    vi.stubGlobal('electronAPI', makeElectronAPI('tok'));
     vi.mocked(useLabmateWS).mockReturnValue({
       state: { ...IDLE_STATE, phase: 'ready', agentStatus: AGENT_STATUS, context: CONTEXT },
       send: vi.fn(), newSession: vi.fn(), openSession: vi.fn(), setDebug: vi.fn(), compact: vi.fn(), cancel: vi.fn(), clearAuthError: vi.fn(),
@@ -65,7 +79,7 @@ describe('Root', () => {
     expect(screen.getByTestId('layout-topbar')).toBeInTheDocument();
   });
 
-  it('POSTs /auth/login and stores JWT in sessionStorage when remember is false', async () => {
+  it('POSTs /auth/login and stores JWT via safeStorage when remember is false', async () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ token: 'jwt123' }),
@@ -74,11 +88,10 @@ describe('Root', () => {
     await userEvent.type(screen.getByLabelText('Email'), 'a@b.com');
     await userEvent.type(screen.getByLabelText('Password'), 'secret');
     await userEvent.click(screen.getByRole('button', { name: /sign in/i }));
-    await waitFor(() => expect(sessionStorage.getItem('labmate_token')).toBe('jwt123'));
-    expect(localStorage.getItem('labmate_token')).toBeNull();
+    await waitFor(() => expect(window.electronAPI!.setToken).toHaveBeenCalledWith('jwt123', false));
   });
 
-  it('stores JWT in localStorage when "Keep me signed in" is checked', async () => {
+  it('stores JWT via safeStorage when "Keep me signed in" is checked', async () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ token: 'jwt456' }),
@@ -88,7 +101,7 @@ describe('Root', () => {
     await userEvent.type(screen.getByLabelText('Password'), 'secret');
     await userEvent.click(screen.getByLabelText(/keep me signed in/i));
     await userEvent.click(screen.getByRole('button', { name: /sign in/i }));
-    await waitFor(() => expect(localStorage.getItem('labmate_token')).toBe('jwt456'));
+    await waitFor(() => expect(window.electronAPI!.setToken).toHaveBeenCalledWith('jwt456', true));
   });
 
   it('shows a login error alert on 401', async () => {
@@ -104,13 +117,13 @@ describe('Root', () => {
   });
 
   it('clears the stored token and returns to LoginScreen when WS reports authError', async () => {
-    localStorage.setItem('labmate_token', 'stale-tok');
+    vi.stubGlobal('electronAPI', makeElectronAPI('stale-tok'));
     vi.mocked(useLabmateWS).mockReturnValue({
       state: { ...IDLE_STATE, phase: 'error', authError: 'expired' },
       send: vi.fn(), newSession: vi.fn(), openSession: vi.fn(), setDebug: vi.fn(), compact: vi.fn(), cancel: vi.fn(), clearAuthError: vi.fn(),
     });
     render(<Root />);
     await waitFor(() => expect(screen.getByLabelText('Email')).toBeInTheDocument());
-    expect(localStorage.getItem('labmate_token')).toBeNull();
+    expect(window.electronAPI!.clearToken).toHaveBeenCalled();
   });
 });

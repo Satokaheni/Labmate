@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ChatLayout } from '@/layouts/ChatLayout';
 import { LabmateMark } from '@/components/LabmateMark';
 import { SessionList } from '@/components/SessionList';
@@ -20,6 +20,9 @@ const EMPTY_CONTEXT: ContextWindow = {
   segments: { systemPrompt: 0, skillInstructions: 0, conversation: 0, workingMemory: 0, reasoning: 0 },
 };
 
+const EMPTY_SESSIONS: Session[] = [];
+const EMPTY_TURNS: TurnT[] = [];
+
 export interface AppProps {
   sessions?: Session[];
   turns?: TurnT[];
@@ -37,8 +40,8 @@ export interface AppProps {
 const MODES: Mode[] = ['chat', 'paper', 'code'];
 
 export function App({
-  sessions = [],
-  turns = [],
+  sessions = EMPTY_SESSIONS,
+  turns = EMPTY_TURNS,
   activeSessionId = null,
   agentStatus = EMPTY_STATUS,
   context = EMPTY_CONTEXT,
@@ -53,7 +56,7 @@ export function App({
   const [mode, setMode] = useState<Mode>('chat');
   const [previewed, setPreviewed] = useState<Artifact | null>(null);
 
-  const topBar = (
+  const topBar = useMemo(() => (
     <div className="flex w-full items-center gap-3">
       <LabmateMark size={18} variant="tile" spin="none" />
       <span className="text-sm font-semibold tracking-[-0.03em]">Labmate</span>
@@ -73,9 +76,9 @@ export function App({
         </button>
       </div>
     </div>
-  );
+  ), [debug, mode]);
 
-  const left = (
+  const left = useMemo(() => (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex gap-1 p-3">
         {MODES.map((m) => (
@@ -106,9 +109,9 @@ export function App({
       </div>
       <SystemFooter status={agentStatus} />
     </div>
-  );
+  ), [mode, onNewSession, sessions, activeSessionId, onOpenSession, agentStatus]);
 
-  const center = (
+  const center = useMemo(() => (
     <>
       <div aria-live="polite" aria-label="Conversation" className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
         {turns.map((t) => (
@@ -127,16 +130,18 @@ export function App({
         contextPct={context.max > 0 ? Math.round((context.used / context.max) * 100) : 0}
       />
     </>
-  );
+  ), [turns, context, onCompact, compacting, onSend, onStop, agentStatus]);
 
-  const right = debug ? (
-    <div className="p-4 font-mono text-xs text-mono">
-      <div className="mb-2 uppercase tracking-wide">Live trace</div>
-      <div className="text-secondary">Debug mode on — node + tool events stream here.</div>
-    </div>
-  ) : (
-    <FilePreview artifact={previewed} />
-  );
+  const right = useMemo(() => (
+    debug ? (
+      <div className="p-4 font-mono text-xs text-mono">
+        <div className="mb-2 uppercase tracking-wide">Live trace</div>
+        <div className="text-secondary">Debug mode on — node + tool events stream here.</div>
+      </div>
+    ) : (
+      <FilePreview artifact={previewed} />
+    )
+  ), [debug, previewed]);
 
   return <ChatLayout topBar={topBar} left={left} center={center} right={right} />;
 }

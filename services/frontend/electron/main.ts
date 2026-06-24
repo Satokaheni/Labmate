@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage, safeStorage } from 'electron';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -11,6 +11,12 @@ const WORKSPACE = process.env.LABMATE_WORKSPACE
 
 const DEV_URL = 'http://localhost:8080';
 const IS_DEV = process.env.ELECTRON_DEV === '1';
+
+// ── Auth token (encrypted via OS keychain; session-only when remember=false) ──
+
+let _sessionToken: string | null = null;
+
+function tokenFile() { return path.join(app.getPath('userData'), 'token.enc'); }
 
 // ── App config (runtime WS URL) ───────────────────────────────────────────────
 
@@ -193,6 +199,34 @@ function createWindow(): BrowserWindow {
 }
 
 ipcMain.on('labmate:get-config', (event) => { event.returnValue = loadConfig(); });
+
+ipcMain.on('labmate:get-token', (event) => {
+  if (_sessionToken !== null) { event.returnValue = _sessionToken; return; }
+  try {
+    if (safeStorage.isEncryptionAvailable()) {
+      event.returnValue = safeStorage.decryptString(fs.readFileSync(tokenFile()));
+    } else {
+      event.returnValue = null;
+    }
+  } catch { event.returnValue = null; }
+});
+
+ipcMain.handle('labmate:set-token', (_evt, { token, remember }: { token: string; remember: boolean }) => {
+  if (remember) {
+    if (safeStorage.isEncryptionAvailable()) {
+      fs.writeFileSync(tokenFile(), safeStorage.encryptString(token));
+    }
+    _sessionToken = null;
+  } else {
+    _sessionToken = token;
+    try { fs.unlinkSync(tokenFile()); } catch { /* no persisted token to remove */ }
+  }
+});
+
+ipcMain.handle('labmate:clear-token', () => {
+  _sessionToken = null;
+  try { fs.unlinkSync(tokenFile()); } catch { /* ignore */ }
+});
 
 ipcMain.handle('labmate:set-config', (_evt, wsUrl: string) => { saveConfig(wsUrl); });
 

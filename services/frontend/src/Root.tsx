@@ -8,22 +8,15 @@ import { API_URL, WS_URL } from '@/config';
 import type { SubsystemId } from '@/types/events';
 
 function loadToken(): string | null {
-  return localStorage.getItem('labmate_token') ?? sessionStorage.getItem('labmate_token');
+  return window.electronAPI?.token ?? null;
 }
 
 function storeToken(token: string, remember: boolean): void {
-  if (remember) {
-    localStorage.setItem('labmate_token', token);
-    sessionStorage.removeItem('labmate_token');
-  } else {
-    sessionStorage.setItem('labmate_token', token);
-    localStorage.removeItem('labmate_token');
-  }
+  void window.electronAPI?.setToken(token, remember);
 }
 
 function clearToken(): void {
-  localStorage.removeItem('labmate_token');
-  sessionStorage.removeItem('labmate_token');
+  void window.electronAPI?.clearToken();
 }
 
 export function Root() {
