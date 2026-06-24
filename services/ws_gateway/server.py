@@ -113,28 +113,40 @@ async def _handle_send(
     debug: bool = False,
 ) -> tuple[str, asyncio.Task]:
     task_id = "task-" + uuid.uuid4().hex[:12]
-    turn_id = "turn-" + uuid.uuid4().hex[:12]
+    user_turn_id = "turn-" + uuid.uuid4().hex[:12]
+    assistant_turn_id = "turn-" + uuid.uuid4().hex[:12]
     session_id = msg.get("sessionId", "") or active_session_id or ""
     text = msg.get("text", "")
 
-    turn = {
-        "id": turn_id,
+    user_turn = {
+        "id": user_turn_id,
         "sessionId": session_id,
         "role": "user",
         "text": text,
         "createdAt": _now_iso(),
-        "status": "streaming",
+        "status": "complete",
     }
 
     if session_id:
-        store.add_turn(session_id, turn)
+        store.add_turn(session_id, user_turn)
         session = store.get(session_id)
         if session:
             await ws.send_json({"type": "session.updated", "session": session})
 
-    await ws.send_json({"type": "turn.created", "turn": turn})
+    await ws.send_json({"type": "turn.created", "turn": user_turn})
+
+    assistant_turn = {
+        "id": assistant_turn_id,
+        "sessionId": session_id,
+        "role": "assistant",
+        "text": "",
+        "createdAt": _now_iso(),
+        "status": "streaming",
+    }
+    await ws.send_json({"type": "turn.created", "turn": assistant_turn})
+
     await push_task(redis, task_id, task=text, session_id=session_id)
-    relay = asyncio.create_task(_relay_task(ws, redis, task_id, turn_id, debug=debug))
+    relay = asyncio.create_task(_relay_task(ws, redis, task_id, assistant_turn_id, debug=debug))
     return task_id, relay
 
 

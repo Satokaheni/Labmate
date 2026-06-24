@@ -11,10 +11,13 @@ export interface AssistantTurnProps {
 }
 
 export function AssistantTurn({ turn, onPreviewArtifact }: AssistantTurnProps) {
+  const isStreaming = turn.status === 'streaming';
+  const isEmpty = !turn.text && !turn.reasoning && (!turn.toolCalls || turn.toolCalls.length === 0);
+
   return (
     <div data-testid="assistant-turn" className="flex gap-3 py-3">
       <div className="mt-0.5 shrink-0">
-        <LabmateMark size={18} variant="tile" spin="none" />
+        <LabmateMark size={18} variant="tile" spin={isStreaming && isEmpty ? 'fast' : 'none'} />
       </div>
       <div className="min-w-0 flex-1">
         {turn.reasoning && <ReasoningBlock reasoning={turn.reasoning} />}

@@ -16,7 +16,7 @@ const EMPTY_STATUS: AgentStatus = {
 };
 
 const EMPTY_CONTEXT: ContextWindow = {
-  max: 8000, used: 0, free: 8000,
+  max: 16384, used: 0, free: 16384,
   segments: { systemPrompt: 0, skillInstructions: 0, conversation: 0, workingMemory: 0, reasoning: 0 },
 };
 

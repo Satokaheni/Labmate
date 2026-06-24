@@ -365,12 +365,13 @@ class OrchestratorProcess:
                         "hands": {"skills": []},
                     },
                 )
+                ctx_max = int(os.getenv("CTX", "16384"))
                 await events.emit(
                     "context",
                     window={
-                        "max": 16384,
+                        "max": ctx_max,
                         "used": 0,
-                        "free": 16384,
+                        "free": ctx_max,
                         "segments": {
                             "systemPrompt": 0,
                             "skillInstructions": 0,

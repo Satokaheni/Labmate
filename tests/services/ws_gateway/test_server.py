@@ -77,10 +77,14 @@ def test_send_pushes_task_and_relays_events(client, app, redis):
             ev = ws.receive_json()
 
         ws.send_json({"type": "send", "sessionId": "s1", "mode": "chat", "text": "do it"})
-        # server replies with turn.created carrying the new turnId
-        created = ws.receive_json()
-        assert created["type"] == "turn.created"
-        turn_id = created["turn"]["id"]
+        # server emits user turn then assistant turn (separate IDs)
+        created_user = ws.receive_json()
+        assert created_user["type"] == "turn.created"
+        assert created_user["turn"]["role"] == "user"
+        created_asst = ws.receive_json()
+        assert created_asst["type"] == "turn.created"
+        assert created_asst["turn"]["role"] == "assistant"
+        assistant_turn_id = created_asst["turn"]["id"]
 
         # a task must have been pushed to labmate:goals
         import asyncio
@@ -97,9 +101,9 @@ def test_send_pushes_task_and_relays_events(client, app, redis):
         asyncio.get_event_loop().run_until_complete(seed())
 
         delta = ws.receive_json()
-        assert delta == {"type": "answer.delta", "turnId": turn_id, "text": "ok"}
+        assert delta == {"type": "answer.delta", "turnId": assistant_turn_id, "text": "ok"}
         done = ws.receive_json()
-        assert done == {"type": "turn.done", "turnId": turn_id, "status": "complete"}
+        assert done == {"type": "turn.done", "turnId": assistant_turn_id, "status": "complete"}
 
 
 def test_tool_result_message_writes_to_redis(client, app, redis):
@@ -166,18 +170,22 @@ def test_cancel_writes_redis_flag_and_emits_turn_done_error(client, app, redis):
         ev = ws.receive_json()
         while ev["type"] != "turn.created":
             ev = ws.receive_json()
-        turn_id = ev["turn"]["id"]
+        # ev is the user turn; the next turn.created is the assistant turn
+        ev_asst = ws.receive_json()
+        assert ev_asst["type"] == "turn.created"
+        assert ev_asst["turn"]["role"] == "assistant"
+        assistant_turn_id = ev_asst["turn"]["id"]
 
         # Get the task_id from goals stream
         entries = asyncio.get_event_loop().run_until_complete(redis.xrange("labmate:goals"))
         task_id = _json.loads(entries[-1][1]["payload"])["task_id"]
 
-        # Cancel the turn
-        ws.send_json({"type": "cancel", "sessionId": "s1", "turnId": turn_id})
+        # Cancel the assistant turn
+        ws.send_json({"type": "cancel", "sessionId": "s1", "turnId": assistant_turn_id})
         resp = ws.receive_json()
         assert resp["type"] == "turn.done"
         assert resp["status"] == "error"
-        assert resp["turnId"] == turn_id
+        assert resp["turnId"] == assistant_turn_id
 
     # After the WS context closes, check the Redis cancel flag.
     # We use a synchronous FakeRedis sharing the same FakeServer (located by pool host key)
