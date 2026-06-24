@@ -131,10 +131,12 @@ class OrchestratorProcess:
                 async_orch.skill_router = skill_router
                 async_orch.mcp = self._mcp
                 async_orch.workspace = workspace
-                async_orch.redis = self._redis
                 _log.info("skill router ready (%d skills)", len(runner.catalog))
             except Exception:
                 _log.warning("failed to initialize skill router — continuing without skills", exc_info=True)
+
+            # Wire redis outside the try/except so file tools work even if skill router fails
+            async_orch.redis = self._redis
 
             # CodingOrchestrator and build_graph have a circular dependency:
             # build_graph(orch, ...) closes node functions over the orch object;
