@@ -24,7 +24,7 @@ describe('BootScreen', () => {
   it('computes progress as ready/total', () => {
     const subs = plan.map((s, i) => (i === 0 ? { ...s, state: 'ready' as const } : s));
     render(<BootScreen subsystems={subs} onRetry={vi.fn()} />);
-    expect(screen.getByTestId('boot-progress')).toHaveAttribute('aria-valuenow', '33');
+    expect(screen.getByTestId('boot-progress')).toHaveAttribute('value', '33');
   });
 
   it('shows a spinner for a starting subsystem', () => {

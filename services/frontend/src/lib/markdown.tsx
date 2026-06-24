@@ -1,6 +1,6 @@
 import { Fragment, memo, type ReactNode } from 'react';
 
-function renderInline(text: string, keyPrefix: string): ReactNode[] {
+function InlineProse({ text, keyPrefix }: { text: string; keyPrefix: string }) {
   const out: ReactNode[] = [];
   const codeParts = text.split(/(`[^`]+`)/g);
   codeParts.forEach((part, ci) => {
@@ -21,7 +21,7 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
       }
     });
   });
-  return out;
+  return <>{out}</>;
 }
 
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
@@ -33,7 +33,7 @@ export const Markdown = memo(function Markdown({ text }: { text: string }) {
           const body = block.replace(/^[a-zA-Z]*\n/, '');
           return (
             <pre
-              key={`code-${i}`}
+              key={`code:${block.slice(0, 64)}`}
               className="my-2 overflow-x-auto rounded-pill border border-border-2 bg-page p-3 font-mono text-xs"
             >
               <code>{body.replace(/\n$/, '')}</code>
@@ -41,11 +41,11 @@ export const Markdown = memo(function Markdown({ text }: { text: string }) {
           );
         }
         return (
-          <Fragment key={`prose-${i}`}>
+          <Fragment key={`prose:${i}:${block.slice(0, 32)}`}>
             {block.split('\n').map((line, li) => (
-              <Fragment key={`prose-${i}-${li}`}>
+              <Fragment key={`${i}:${li}:${line.slice(0, 24)}`}>
                 {li > 0 && <br />}
-                {renderInline(line, `p${i}l${li}`)}
+                <InlineProse text={line} keyPrefix={`p${i}l${li}`} />
               </Fragment>
             ))}
           </Fragment>

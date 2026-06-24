@@ -35,7 +35,7 @@ export function OnboardingScreen({ onSaved }: OnboardingScreenProps) {
       if (testTimerRef.current) clearTimeout(testTimerRef.current);
       if (testWsRef.current) testWsRef.current.close();
     };
-  }, []);
+  }, [mountedRef, testTimerRef, testWsRef]);
 
   const url = normaliseUrl(raw);
   const valid = url.startsWith('ws://') || url.startsWith('wss://');
@@ -100,12 +100,12 @@ export function OnboardingScreen({ onSaved }: OnboardingScreenProps) {
         <div className="flex flex-col gap-2">
           <input
             type="text"
+            aria-label="Backend WebSocket URL"
             value={raw}
             onChange={(e) => { setRaw(e.target.value); setTestState('idle'); setErrorMsg(''); }}
             placeholder="wss://…  or  https://…"
             className="w-full rounded-card border border-border-2 bg-panel px-3 py-2 text-sm text-primary outline-none placeholder:text-mono focus:border-[var(--accent-blue)]"
             onKeyDown={(e) => e.key === 'Enter' && void save()}
-            autoFocus
           />
           {valid && raw !== url && (
             <p className="font-mono text-[11px] text-mono">→ {url}</p>

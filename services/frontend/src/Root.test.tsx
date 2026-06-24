@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Root } from './Root';
@@ -118,11 +118,16 @@ describe('Root', () => {
 
   it('clears the stored token and returns to LoginScreen when WS reports authError', async () => {
     vi.stubGlobal('electronAPI', makeElectronAPI('stale-tok'));
-    vi.mocked(useLabmateWS).mockReturnValue({
-      state: { ...IDLE_STATE, phase: 'error', authError: 'expired' },
-      send: vi.fn(), newSession: vi.fn(), openSession: vi.fn(), setDebug: vi.fn(), compact: vi.fn(), cancel: vi.fn(), clearAuthError: vi.fn(),
+    let capturedOnAuthError: ((reason: string) => void) | undefined;
+    vi.mocked(useLabmateWS).mockImplementation((_url, _token, _key, options) => {
+      capturedOnAuthError = options?.onAuthError;
+      return {
+        state: { ...IDLE_STATE, phase: 'error', authError: 'expired' },
+        send: vi.fn(), newSession: vi.fn(), openSession: vi.fn(), setDebug: vi.fn(), compact: vi.fn(), cancel: vi.fn(), clearAuthError: vi.fn(),
+      };
     });
     render(<Root />);
+    act(() => { capturedOnAuthError?.('expired'); });
     await waitFor(() => expect(screen.getByLabelText('Email')).toBeInTheDocument());
     expect(window.electronAPI!.clearToken).toHaveBeenCalled();
   });

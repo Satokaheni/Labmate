@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useReducer, useRef, useState } from 'react';
 import { App } from '@/App';
 import { BootScreen } from '@/screens/BootScreen';
 import { LoginScreen, type LoginCredentials } from '@/screens/LoginScreen';
@@ -19,28 +19,60 @@ function clearToken(): void {
   void window.electronAPI?.clearToken();
 }
 
+interface AuthState {
+  token: string | null;
+  loginError: string | undefined;
+  submitting: boolean;
+  reconnectKey: number;
+}
+
+type AuthAction =
+  | { type: 'LOGIN_START' }
+  | { type: 'LOGIN_SUCCESS'; token: string }
+  | { type: 'LOGIN_FAILURE'; error: string }
+  | { type: 'LOGOUT' }
+  | { type: 'RECONNECT' };
+
+function authReducer(state: AuthState, action: AuthAction): AuthState {
+  switch (action.type) {
+    case 'LOGIN_START':
+      return { ...state, submitting: true, loginError: undefined };
+    case 'LOGIN_SUCCESS':
+      return { ...state, submitting: false, token: action.token, loginError: undefined };
+    case 'LOGIN_FAILURE':
+      return { ...state, submitting: false, loginError: action.error };
+    case 'LOGOUT':
+      return { ...state, token: null };
+    case 'RECONNECT':
+      return { ...state, reconnectKey: state.reconnectKey + 1 };
+  }
+}
+
 export function Root() {
-  // In a packaged build with no saved URL, show the onboarding screen.
   const [wsUrl, setWsUrl] = useState(WS_URL);
-  const [token, setToken] = useState<string | null>(loadToken);
-  const [loginError, setLoginError] = useState<string | undefined>();
-  const [submitting, setSubmitting] = useState(false);
-  const [reconnectKey, setReconnectKey] = useState(0);
+  const [auth, dispatch] = useReducer(authReducer, {
+    token: loadToken(),
+    loginError: undefined,
+    submitting: false,
+    reconnectKey: 0,
+  });
 
-  const { state, send, newSession, openSession, compact, cancel, clearAuthError } = useLabmateWS(wsUrl, token, reconnectKey);
+  const clearAuthErrorRef = useRef<() => void>(() => {});
 
-  useEffect(() => {
-    if (state.authError) {
-      clearToken();
-      setToken(null);
-      setLoginError(state.authError);
-      clearAuthError();
-    }
-  }, [state.authError, clearAuthError]);
+  const handleAuthError = useCallback((reason: string) => {
+    void reason;
+    clearToken();
+    dispatch({ type: 'LOGOUT' });
+    clearAuthErrorRef.current();
+  }, []);
+
+  const { state, send, newSession, openSession, compact, cancel, clearAuthError } = useLabmateWS(
+    wsUrl, auth.token, auth.reconnectKey, { onAuthError: handleAuthError },
+  );
+  clearAuthErrorRef.current = clearAuthError;
 
   const handleLogin = useCallback(async (creds: LoginCredentials) => {
-    setSubmitting(true);
-    setLoginError(undefined);
+    dispatch({ type: 'LOGIN_START' });
     try {
       const res = await fetch(`${API_URL}/auth/login`, {
         method: 'POST',
@@ -49,29 +81,32 @@ export function Root() {
       });
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { detail?: string };
-        setLoginError(body.detail ?? 'invalid_credentials');
+        dispatch({ type: 'LOGIN_FAILURE', error: body.detail ?? 'invalid_credentials' });
         return;
       }
       const { token: tok } = (await res.json()) as { token: string };
       storeToken(tok, creds.remember);
-      setToken(tok);
+      dispatch({ type: 'LOGIN_SUCCESS', token: tok });
     } catch {
-      setLoginError('Cannot reach the server. Check your connection.');
-    } finally {
-      setSubmitting(false);
+      dispatch({ type: 'LOGIN_FAILURE', error: 'Cannot reach the server. Check your connection.' });
     }
   }, []);
 
   const handleRetry = useCallback((_id: SubsystemId) => {
-    setReconnectKey((k) => k + 1);
+    dispatch({ type: 'RECONNECT' });
   }, []);
 
+  const handleSaved = useCallback((url: string) => setWsUrl(url), []);
+
+  // Derive display error from WS auth error or form submission error (no state copy needed).
+  const displayError = state.authError ?? auth.loginError;
+
   if (!wsUrl) {
-    return <OnboardingScreen onSaved={(url) => setWsUrl(url)} />;
+    return <OnboardingScreen onSaved={handleSaved} />;
   }
 
-  if (!token) {
-    return <LoginScreen onSubmit={handleLogin} submitting={submitting} error={loginError} />;
+  if (!auth.token) {
+    return <LoginScreen onSubmit={handleLogin} submitting={auth.submitting} error={displayError} />;
   }
 
   if (state.phase !== 'ready') {

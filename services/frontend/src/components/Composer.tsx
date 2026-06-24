@@ -32,6 +32,7 @@ export function Composer({ onSend, onStop, streaming, node, thinkingBudget, cont
       <div className="flex items-end gap-2 rounded-card border border-border-2 bg-panel p-2">
         <textarea
           rows={1}
+          aria-label="Message input"
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}

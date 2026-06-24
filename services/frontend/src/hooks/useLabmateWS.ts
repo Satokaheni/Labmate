@@ -144,9 +144,15 @@ function reducer(state: WsState, action: Action): WsState {
   }
 }
 
-export function useLabmateWS(url: string, token: string | null, reconnectKey = 0) {
+export interface UseLabmateWSOptions {
+  onAuthError?: (reason: string) => void;
+}
+
+export function useLabmateWS(url: string, token: string | null, reconnectKey = 0, options?: UseLabmateWSOptions) {
   const [state, dispatch] = useReducer(reducer, INITIAL);
   const wsRef = useRef<WebSocket | null>(null);
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
 
   useEffect(() => {
     if (!token) return;
@@ -172,6 +178,7 @@ export function useLabmateWS(url: string, token: string | null, reconnectKey = 0
           break;
         case 'auth.error':
           dispatch({ type: 'AUTH_ERROR', reason: event.reason });
+          queueMicrotask(() => optionsRef.current?.onAuthError?.(event.reason));
           break;
         case 'boot.plan':
           dispatch({ type: 'BOOT_PLAN', subsystems: event.subsystems });

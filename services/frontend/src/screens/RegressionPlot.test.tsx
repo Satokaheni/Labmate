@@ -1,6 +1,7 @@
 import { render } from '@testing-library/react';
 import { describe, it, expect } from 'vitest';
-import { RegressionPlot, seededScatter } from './RegressionPlot';
+import { RegressionPlot } from './RegressionPlot';
+import { seededScatter } from '@/lib/scatter';
 
 describe('seededScatter', () => {
   it('is deterministic for seed 1337', () => {

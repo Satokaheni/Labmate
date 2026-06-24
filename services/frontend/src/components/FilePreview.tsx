@@ -33,7 +33,7 @@ export function FilePreview({ artifact }: { artifact: Artifact | null }) {
         ) : (
           <pre className="p-3 font-mono text-xs leading-relaxed">
             {artifact.content.split('\n').map((line, i) => (
-              <div key={i} className="flex">
+              <div key={`${i + 1}:${line.slice(0, 16)}`} className="flex">
                 <span
                   data-testid="line-number"
                   className="mr-3 inline-block w-8 shrink-0 select-none text-right text-mono"

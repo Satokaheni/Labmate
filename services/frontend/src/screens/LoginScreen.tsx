@@ -158,8 +158,8 @@ export function LoginScreen({ onSubmit, submitting = false, error }: LoginScreen
       <div className="absolute bottom-5 left-1/2 flex -translate-x-1/2 items-center gap-2 font-mono text-[11px] text-mono">
         <span
           data-testid="health-dot"
-          className="h-2 w-2 rounded-full"
-          style={{ background: 'var(--accent-green)', animation: 'pulse-dot 2s ease-in-out infinite' }}
+          className="h-2 w-2 rounded-full [animation:pulse-dot_2s_ease-in-out_infinite] motion-reduce:!animate-none"
+          style={{ background: 'var(--accent-green)' }}
         />
         local instance reachable · llama.cpp :8000
       </div>

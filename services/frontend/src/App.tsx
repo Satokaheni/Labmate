@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { ChatLayout } from '@/layouts/ChatLayout';
 import { LabmateMark } from '@/components/LabmateMark';
 import { SessionList } from '@/components/SessionList';
@@ -56,6 +56,21 @@ export function App({
   const [mode, setMode] = useState<Mode>('chat');
   const [previewed, setPreviewed] = useState<Artifact | null>(null);
 
+  // Refs keep callbacks stable so useMemos don't re-run when parent re-creates functions.
+  const onSendRef = useRef(onSend);
+  onSendRef.current = onSend;
+  const onStopRef = useRef(onStop);
+  onStopRef.current = onStop;
+  const onOpenSessionRef = useRef(onOpenSession);
+  onOpenSessionRef.current = onOpenSession;
+  const onNewSessionRef = useRef(onNewSession);
+  onNewSessionRef.current = onNewSession;
+  const onCompactRef = useRef(onCompact);
+  onCompactRef.current = onCompact;
+
+  // Boolean dep: only re-run center when compact goes from undefined ↔ defined.
+  const compactEnabled = onCompact !== undefined;
+
   const topBar = useMemo(() => (
     <div className="flex w-full items-center gap-3">
       <LabmateMark size={18} variant="tile" spin="none" />
@@ -98,18 +113,18 @@ export function App({
       <div className="px-3">
         <button
           type="button"
-          onClick={() => onNewSession(mode)}
+          onClick={() => onNewSessionRef.current(mode)}
           className="mb-2 w-full rounded-pill border border-border-2 px-2 py-1.5 text-xs text-secondary hover:text-primary"
         >
           + New session
         </button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-2">
-        <SessionList sessions={sessions} activeId={activeSessionId} onOpen={onOpenSession} />
+        <SessionList sessions={sessions} activeId={activeSessionId} onOpen={(id) => onOpenSessionRef.current(id)} />
       </div>
       <SystemFooter status={agentStatus} />
     </div>
-  ), [mode, onNewSession, sessions, activeSessionId, onOpenSession, agentStatus]);
+  ), [mode, sessions, activeSessionId, agentStatus]);
 
   const center = useMemo(() => (
     <>
@@ -119,18 +134,18 @@ export function App({
         ))}
       </div>
       <div className="px-6">
-        <ContextBar window={context} onCompact={onCompact} compacting={compacting} />
+        <ContextBar window={context} onCompact={compactEnabled ? () => { onCompactRef.current?.(); } : undefined} compacting={compacting} />
       </div>
       <Composer
-        onSend={onSend}
-        onStop={onStop ?? (() => {})}
+        onSend={(t) => { onSendRef.current(t); }}
+        onStop={() => { onStopRef.current?.(); }}
         streaming={agentStatus.brain.state === 'active'}
         node={agentStatus.brain.node}
         thinkingBudget={agentStatus.brain.thinkingBudget}
         contextPct={context.max > 0 ? Math.round((context.used / context.max) * 100) : 0}
       />
     </>
-  ), [turns, context, onCompact, compacting, onSend, onStop, agentStatus]);
+  ), [turns, context, compactEnabled, compacting, agentStatus]);
 
   const right = useMemo(() => (
     debug ? (

@@ -87,7 +87,7 @@ export function ThinkingIndicator({ events, startedAt, now = Date.now() }: Think
           <div className="flex flex-col gap-1">
             {steps.map((s, i) => (
               <span
-                key={i}
+                key={`${s.node}-${i}`}
                 data-testid="completed-step"
                 className="inline-flex w-fit items-center gap-2 rounded-pill px-2 py-1 text-[11px]"
                 style={{ background: '#6aa6ff22', color: '#7fb0ff' }}
@@ -123,7 +123,7 @@ export function ThinkingIndicator({ events, startedAt, now = Date.now() }: Think
           <div className="flex flex-col gap-1">
             {steps.map((s, i) => (
               <span
-                key={i}
+                key={`${s.node}-${i}`}
                 data-testid="completed-step"
                 className="inline-flex w-fit items-center gap-2 rounded-pill px-2 py-1 text-[11px]"
                 style={{ background: '#6aa6ff22', color: '#7fb0ff' }}

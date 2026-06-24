@@ -104,19 +104,13 @@ export function BootScreen({ subsystems, onRetry }: BootScreenProps) {
             ))}
           </div>
 
-          <div
-            role="progressbar"
+          <progress
             data-testid="boot-progress"
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={pct}
-            className="mt-4 h-1.5 w-full overflow-hidden rounded-full bg-border-1"
-          >
-            <div
-              className="h-full rounded-full transition-all duration-500"
-              style={{ width: `${pct}%`, background: 'var(--brand-grad)' }}
-            />
-          </div>
+            value={pct}
+            max={100}
+            aria-label={statusLine}
+            className="mt-4 block h-1.5 w-full appearance-none overflow-hidden rounded-full [&::-moz-progress-bar]:[background:var(--brand-grad)] [&::-webkit-progress-bar]:rounded-full [&::-webkit-progress-bar]:bg-border-1 [&::-webkit-progress-value]:rounded-full [&::-webkit-progress-value]:transition-all [&::-webkit-progress-value]:duration-500 [&::-webkit-progress-value]:[background:var(--brand-grad)]"
+          />
           <div className="mt-3 font-mono text-[11px] text-mono">{statusLine}</div>
         </div>
       </div>
