@@ -25,8 +25,14 @@ def boot_plan() -> list[dict]:
 
 async def check_brain(*, http_get: Callable[[str], Awaitable], base_url: str | None = None) -> CheckResult:
     url = (base_url or os.getenv("GEMMA_BASE", "http://localhost:8000")).rstrip("/")
+    # GEMMA_BASE is the OpenAI-compatible base (".../v1"); llama.cpp's health
+    # endpoint is "/health" at the SERVER ROOT, not "/v1/healthz". Strip the /v1
+    # suffix so we probe the right URL — otherwise the probe 404s and urllib
+    # raises HTTPError, surfacing as "Brain: HTTP Error 404" on the boot screen.
+    if url.endswith("/v1"):
+        url = url[: -len("/v1")]
     try:
-        resp = await http_get(f"{url}/healthz")
+        resp = await http_get(f"{url}/health")
         if getattr(resp, "status", 500) == 200:
             return ("ready", "llama.cpp reachable", "")
         return ("degraded", "llama.cpp non-200", f"status {getattr(resp, 'status', '?')}")
