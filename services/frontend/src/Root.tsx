@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { App } from '@/App';
 import { BootScreen } from '@/screens/BootScreen';
 import { LoginScreen, type LoginCredentials } from '@/screens/LoginScreen';
+import { OnboardingScreen } from '@/screens/OnboardingScreen';
 import { useLabmateWS } from '@/hooks/useLabmateWS';
 import { API_URL, WS_URL } from '@/config';
 import type { SubsystemId } from '@/types/events';
@@ -26,12 +27,18 @@ function clearToken(): void {
 }
 
 export function Root() {
+  // In a packaged build with no saved URL, show the onboarding screen.
+  const [wsUrl, setWsUrl] = useState(WS_URL);
   const [token, setToken] = useState<string | null>(loadToken);
   const [loginError, setLoginError] = useState<string | undefined>();
   const [submitting, setSubmitting] = useState(false);
   const [reconnectKey, setReconnectKey] = useState(0);
 
-  const { state, send, newSession, openSession } = useLabmateWS(WS_URL, token, reconnectKey);
+  const { state, send, newSession, openSession } = useLabmateWS(wsUrl, token, reconnectKey);
+
+  if (!wsUrl) {
+    return <OnboardingScreen onSaved={(url) => setWsUrl(url)} />;
+  }
 
   useEffect(() => {
     if (state.authError) {

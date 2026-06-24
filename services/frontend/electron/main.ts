@@ -10,6 +10,23 @@ const WORKSPACE = process.env.LABMATE_WORKSPACE
   : os.homedir();
 
 const DEV_URL = 'http://localhost:8080';
+const IS_DEV = process.env.ELECTRON_DEV === '1';
+
+// ── App config (runtime WS URL) ───────────────────────────────────────────────
+
+interface AppConfig { wsUrl: string | null; isDev: boolean; }
+
+function configFile() { return path.join(app.getPath('userData'), 'config.json'); }
+
+function loadConfig(): AppConfig {
+  if (IS_DEV) return { wsUrl: null, isDev: true };
+  try { return { wsUrl: (JSON.parse(fs.readFileSync(configFile(), 'utf8')) as { wsUrl: string }).wsUrl, isDev: false }; }
+  catch { return { wsUrl: null, isDev: false }; }
+}
+
+function saveConfig(wsUrl: string): void {
+  fs.writeFileSync(configFile(), JSON.stringify({ wsUrl }), 'utf8');
+}
 
 // ── Window state persistence ──────────────────────────────────────────────────
 
@@ -174,6 +191,10 @@ function createWindow(): BrowserWindow {
 
   return win;
 }
+
+ipcMain.on('labmate:get-config', (event) => { event.returnValue = loadConfig(); });
+
+ipcMain.handle('labmate:set-config', (_evt, wsUrl: string) => { saveConfig(wsUrl); });
 
 ipcMain.handle(
   'labmate:tool-execute',
