@@ -12,6 +12,7 @@ from aiolimiter import AsyncLimiter
 
 from .types import Goal, State, Status, get_ready_goals, update_status, now_iso
 from . import events
+from .local_tools import LOCAL_TOOL_NAMES, request_local_tool
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +94,7 @@ class AsyncOrchestrator:
         mcp=None,
         workspace: str = ".",
         max_steps: int = 6,
+        redis=None,
     ) -> None:
         self.sem = asyncio.Semaphore(max_inflight)
         self.rpm_limiter = AsyncLimiter(rpm, 60)
@@ -105,6 +107,7 @@ class AsyncOrchestrator:
         self.mcp = mcp
         self.workspace = workspace
         self.max_steps = max_steps
+        self.redis = redis
 
     async def plan_and_dispatch(self, ready_goals: list[dict]) -> list[Result]:
         """
@@ -264,6 +267,49 @@ class AsyncOrchestrator:
             {
                 "type": "function",
                 "function": {
+                    "name": "read_file",
+                    "description": "Read a UTF-8 text file from the user's local workspace.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "Workspace-relative file path"},
+                        },
+                        "required": ["path"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "write_file",
+                    "description": "Write (create or overwrite) a UTF-8 text file in the user's local workspace.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "Workspace-relative file path"},
+                            "content": {"type": "string", "description": "Full file contents to write"},
+                        },
+                        "required": ["path", "content"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_dir",
+                    "description": "List entries of a directory in the user's local workspace.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "Workspace-relative directory path"},
+                        },
+                        "required": ["path"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "run_bash",
                     "description": "Run a bash command in the workspace.",
                     "parameters": {
@@ -418,6 +464,20 @@ class AsyncOrchestrator:
                             args.get("arguments", {}),
                         )
                         content = json.dumps(res)[:4000]
+
+                    elif name in LOCAL_TOOL_NAMES:
+                        if self.redis is not None:
+                            try:
+                                result = await request_local_tool(
+                                    self.redis, name, args
+                                )
+                                content = json.dumps({"result": result}, default=str)
+                            except Exception as exc:
+                                content = json.dumps({"error": str(exc)})
+                        else:
+                            content = json.dumps(
+                                {"error": "no local tool client connected"}
+                            )
 
                     elif name == "run_bash":
                         if self.mcp is not None:
