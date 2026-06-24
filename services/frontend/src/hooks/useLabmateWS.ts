@@ -226,7 +226,7 @@ export function useLabmateWS(url: string, token: string | null, reconnectKey = 0
           break;
         case 'compact.auto':
         case 'compact.micro':
-          // Silent auto-compact — no UI state change needed
+          dispatch({ type: 'COMPACT_START' });
           break;
         case 'tool.request': {
           const reqId = event.toolRequestId;

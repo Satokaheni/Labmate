@@ -30,4 +30,12 @@ describe('ContextBar', () => {
     expect(screen.getByText(/systemPrompt/)).toBeInTheDocument();
     expect(screen.getAllByText('1.0k', { exact: false })[0]).toBeInTheDocument();
   });
+
+  it('shows amber fill bar and Compacting label when compacting', () => {
+    render(<ContextBar window={win} compacting />);
+    expect(screen.getByTestId('context-compacting')).toHaveTextContent('Compacting… 50%');
+    expect(screen.getByTestId('compact-fill')).toHaveAttribute('value', '50');
+    expect(screen.queryByTestId('context-usage')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('context-segment')).not.toBeInTheDocument();
+  });
 });

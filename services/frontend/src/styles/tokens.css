@@ -96,6 +96,11 @@ body {
   }
 }
 
+@keyframes compact-scan {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(500%); }
+}
+
 /* Spin speed utility classes (applied to a <g>) */
 .orbit-spin-fast {
   animation: orbitspin 1.4s linear infinite;
