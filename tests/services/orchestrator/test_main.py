@@ -442,7 +442,9 @@ async def test_handle_emits_turn_start_and_done():
     streams = [c.args[0] for c in proc._redis.xadd.await_args_list]
     assert "labmate:events:t-1" in streams
     types = [json.loads(c.args[1]["event"])["type"] for c in proc._redis.xadd.await_args_list]
-    assert types[0] == "turn.start"
+    # agent_status (active) is emitted first, then turn.start
+    assert types[0] == "agent_status"
+    assert "turn.start" in types
     assert "turn.done" in types
 
 

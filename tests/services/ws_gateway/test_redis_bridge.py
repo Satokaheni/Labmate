@@ -107,3 +107,29 @@ async def test_write_tool_result_xadds_to_results_stream(redis):
     _id, fields = entries[0]
     frame = json.loads(fields["result"])
     assert frame == {"tool_request_id": "req-9", "result": {"content": "hi"}, "error": None}
+
+
+def test_translate_context_to_context_update():
+    raw = {
+        "type": "context",
+        "window": {
+            "max": 16384, "used": 4200, "free": 12184,
+            "segments": {"systemPrompt": 800, "skillInstructions": 0,
+                         "conversation": 3400, "workingMemory": 0, "reasoning": 0},
+        },
+    }
+    out = translate_event(raw, turn_id="t1")
+    assert out == {"type": "context.update", "window": raw["window"]}
+
+
+def test_translate_agent_status_to_agent_status():
+    status = {
+        "brain": {"model": "gemma-31b", "endpoint": ":8000", "state": "active",
+                  "node": "plan_node", "thinkingBudget": 3000},
+        "nervousSystem": {"name": "MCP bridge", "transport": "stdio",
+                          "state": "connected", "toolsRegistered": 4},
+        "hands": {"skills": []},
+    }
+    raw = {"type": "agent_status", "status": status}
+    out = translate_event(raw, turn_id="t1")
+    assert out == {"type": "agent.status", "status": status}

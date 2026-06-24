@@ -231,6 +231,27 @@ class OrchestratorProcess:
             # Per-task LLM call counter (A/B instrumentation): set a fresh counter for
             # this task's context; the litellm success callback increments it.
             _counter_token = call_counter.start()
+
+            # Emit active status so the frontend agent indicator lights up
+            await _emitter.emit(
+                "agent_status",
+                status={
+                    "brain": {
+                        "model": os.getenv("BRAIN_MODEL", "gemma-31b"),
+                        "endpoint": os.getenv("GEMMA_BASE", "http://localhost:8000/v1"),
+                        "state": "active",
+                        "node": "plan_node",
+                        "thinkingBudget": 3000,
+                    },
+                    "nervousSystem": {
+                        "name": "MCP bridge",
+                        "transport": "stdio",
+                        "state": "connected",
+                        "toolsRegistered": 0,
+                    },
+                    "hands": {"skills": []},
+                },
+            )
             await _emitter.emit("turn.start", task=task_text)
 
             # Fix 2: Record session if user_id and workspace_id are present
@@ -323,6 +344,42 @@ class OrchestratorProcess:
                     not isinstance(final_state, dict) or final_state.get("error") is None
                 ) else "error"
                 _answer = final_state.get("final_answer", "") if isinstance(final_state, dict) else ""
+                # Emit idle status and stub context before turn.done so the frontend
+                # can update the agent indicator before the turn completes
+                await events.emit(
+                    "agent_status",
+                    status={
+                        "brain": {
+                            "model": os.getenv("BRAIN_MODEL", "gemma-31b"),
+                            "endpoint": os.getenv("GEMMA_BASE", "http://localhost:8000/v1"),
+                            "state": "idle",
+                            "node": "chat_node",
+                            "thinkingBudget": 0,
+                        },
+                        "nervousSystem": {
+                            "name": "MCP bridge",
+                            "transport": "stdio",
+                            "state": "connected",
+                            "toolsRegistered": 0,
+                        },
+                        "hands": {"skills": []},
+                    },
+                )
+                await events.emit(
+                    "context",
+                    window={
+                        "max": 16384,
+                        "used": 0,
+                        "free": 16384,
+                        "segments": {
+                            "systemPrompt": 0,
+                            "skillInstructions": 0,
+                            "conversation": 0,
+                            "workingMemory": 0,
+                            "reasoning": 0,
+                        },
+                    },
+                )
                 await events.emit("turn.done", status=_status, final_answer=_answer)
             except Exception:
                 pass

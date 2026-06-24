@@ -120,6 +120,12 @@ def translate_event(raw: dict, *, turn_id: str) -> Optional[dict]:
     if etype == "turn.done":
         return {"type": "turn.done", "turnId": turn_id, "status": raw.get("status", "complete")}
 
+    if etype == "context":
+        return {"type": "context.update", "window": raw.get("window", {})}
+
+    if etype == "agent_status":
+        return {"type": "agent.status", "status": raw.get("status", {})}
+
     return None
 
 
