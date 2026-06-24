@@ -97,11 +97,36 @@ class EventStream:
         await self._gen.aclose()
 
 
+class _ToolInterceptingStream:
+    """Wraps an EventStream to execute tool.request events against local disk."""
+
+    def __init__(self, stream: EventStream, redis, workspace: str) -> None:
+        self._stream = stream
+        self._redis = redis
+        self._workspace = workspace
+
+    async def events(self):
+        from services.cli.local_tool_executor import handle_tool_request
+        async for ev in self._stream.events():
+            if ev.get("type") == "tool.request":
+                await handle_tool_request(self._redis, ev, workspace=self._workspace)
+            yield ev
+
+    async def aclose(self) -> None:
+        await self._stream.aclose()
+
+
 FIRST_EVENT_TIMEOUT = 2.0  # seconds to wait before falling back to spinner
 
 
 async def run_task_with_streaming(
-    client, renderer, task_id: str, result_timeout: float = 300.0
+    client,
+    renderer,
+    task_id: str,
+    result_timeout: float = 300.0,
+    *,
+    redis=None,
+    workspace: str | None = None,
 ) -> dict:
     """Race live stream vs fallback spinner; always return get_result() dict.
 
@@ -109,12 +134,19 @@ async def run_task_with_streaming(
     FIRST_EVENT_TIMEOUT, renders live then reads the canonical result. Otherwise
     renders the spinner and reads the result (original behavior). Caller owns
     push_task() and printing; this helper owns the stream lifecycle.
+
+    When redis and workspace are provided, tool.request events are intercepted
+    and executed against local disk before being yielded to the renderer.
     """
     stream = client.subscribe_events(task_id)
     try:
         first = await stream.first(timeout=FIRST_EVENT_TIMEOUT)
         if first is not None:
-            await renderer.stream_live(stream)
+            if redis is not None and workspace is not None:
+                active_stream = _ToolInterceptingStream(stream, redis, workspace)
+            else:
+                active_stream = stream
+            await renderer.stream_live(active_stream)
             return await client.get_result(task_id, timeout=result_timeout)
         with renderer.thinking("Working…"):
             return await client.get_result(task_id, timeout=result_timeout)
