@@ -171,6 +171,31 @@ describe('useLabmateWS', () => {
     });
   });
 
+  it('SESSION_UPDATED with unknown id adds session to list; second update renames in place', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    emit({ type: 'boot.plan', subsystems: SUBSYSTEMS });
+    emit({ type: 'boot.ready', sessionBootstrap: BOOTSTRAP });
+
+    const newSession: import('@/types/events').Session = {
+      id: 's-new',
+      title: 'New session',
+      mode: 'code' as const,
+      turnCount: 0,
+      contextTokens: 0,
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    };
+    emit({ type: 'session.updated', session: newSession });
+    expect(result.current.state.sessions).toHaveLength(1);
+    expect(result.current.state.sessions[0].id).toBe('s-new');
+
+    // emit again with rename — must not duplicate, must update in place
+    emit({ type: 'session.updated', session: { ...newSession, title: 'Renamed' } });
+    expect(result.current.state.sessions).toHaveLength(1);
+    expect(result.current.state.sessions[0].title).toBe('Renamed');
+  });
+
   it('reconnects (new WebSocket) when reconnectKey increments and closes the old one', () => {
     const instances: typeof mockWs[] = [];
     vi.mocked(WebSocket).mockImplementation(() => {

@@ -44,26 +44,31 @@ async def _handle_send(
     ws: WebSocket,
     redis: aioredis.Redis,
     msg: dict,
+    *,
+    store: InMemorySessionStore,
+    active_session_id: str | None = None,
 ) -> tuple[str, asyncio.Task]:
     task_id = "task-" + uuid.uuid4().hex[:12]
     turn_id = "turn-" + uuid.uuid4().hex[:12]
-    session_id = msg.get("sessionId", "")
+    session_id = msg.get("sessionId", "") or active_session_id or ""
     text = msg.get("text", "")
 
-    await ws.send_json(
-        {
-            "type": "turn.created",
-            "turn": {
-                "id": turn_id,
-                "sessionId": session_id,
-                "role": "user",
-                "text": text,
-                "createdAt": _now_iso(),
-                "status": "streaming",
-            },
-        }
-    )
+    turn = {
+        "id": turn_id,
+        "sessionId": session_id,
+        "role": "user",
+        "text": text,
+        "createdAt": _now_iso(),
+        "status": "streaming",
+    }
 
+    if session_id:
+        store.add_turn(session_id, turn)
+        session = store.get(session_id)
+        if session:
+            await ws.send_json({"type": "session.updated", "session": session})
+
+    await ws.send_json({"type": "turn.created", "turn": turn})
     await push_task(redis, task_id, task=text, session_id=session_id)
     relay = asyncio.create_task(_relay_task(ws, redis, task_id, turn_id))
     return task_id, relay
@@ -94,6 +99,7 @@ async def _ws_loop(
 
     # ── client message loop ────────────────────────────────────────────────
     active_task_id: str | None = None
+    active_session_id: str | None = None
     relay: asyncio.Task | None = None
     while True:
         msg = await ws.receive_json()
@@ -102,7 +108,9 @@ async def _ws_loop(
             # Await the previous relay if one is still running (one turn at a time).
             if relay is not None and not relay.done():
                 await relay
-            active_task_id, relay = await _handle_send(ws, redis, msg)
+            active_task_id, relay = await _handle_send(
+                ws, redis, msg, store=store, active_session_id=active_session_id
+            )
         elif mtype == "tool.result":
             if active_task_id is not None:
                 await write_tool_result(
@@ -114,7 +122,24 @@ async def _ws_loop(
                 )
         elif mtype == "cancel":
             await ws.send_json({"type": "turn.done", "turnId": msg.get("turnId", ""), "status": "error"})
-        elif mtype in ("session.new", "session.open", "session.rename", "debug.set"):
+        elif mtype == "session.new":
+            mode = msg.get("mode", "chat")
+            session = store.create(title="New session", mode=mode)
+            active_session_id = session["id"]
+            await ws.send_json({"type": "session.updated", "session": session})
+        elif mtype == "session.open":
+            sid = msg.get("sessionId", "")
+            session = store.get(sid)
+            if session is not None:
+                active_session_id = sid
+                await ws.send_json({"type": "session.updated", "session": session})
+        elif mtype == "session.rename":
+            sid = msg.get("sessionId", "")
+            title = msg.get("title", "")
+            session = store.rename(sid, title)
+            if session is not None:
+                await ws.send_json({"type": "session.updated", "session": session})
+        elif mtype == "debug.set":
             continue
         else:
             continue

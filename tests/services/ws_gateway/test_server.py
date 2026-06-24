@@ -144,3 +144,50 @@ def test_tool_result_message_writes_to_redis(client, app, redis):
         assert frame["tool_request_id"] == "req-42"
         assert frame["result"] == {"content": "file contents"}
         assert frame["error"] is None
+
+
+def _boot_to_ready(ws, app):
+    """Authenticate and drain all boot frames. Returns the boot.ready event."""
+    token = app.state.auth.mint_token({"id": "u-001", "email": "admin@labmate.local", "role": "admin"})
+    ws.send_json({"type": "auth", "token": token})
+    assert ws.receive_json()["type"] == "auth.ok"
+    ev = ws.receive_json()
+    while ev["type"] != "boot.ready":
+        ev = ws.receive_json()
+    return ev
+
+
+def test_session_new_creates_session_and_emits_session_updated(client, app):
+    with client.websocket_connect("/ws") as ws:
+        _boot_to_ready(ws, app)
+        ws.send_json({"type": "session.new", "mode": "code"})
+        msg = ws.receive_json()
+        assert msg["type"] == "session.updated"
+        assert msg["session"]["mode"] == "code"
+        assert "id" in msg["session"]
+
+
+def test_session_rename_emits_session_updated(client, app):
+    with client.websocket_connect("/ws") as ws:
+        _boot_to_ready(ws, app)
+        ws.send_json({"type": "session.new", "mode": "chat"})
+        created = ws.receive_json()
+        sid = created["session"]["id"]
+
+        ws.send_json({"type": "session.rename", "sessionId": sid, "title": "My Chat"})
+        renamed = ws.receive_json()
+        assert renamed["type"] == "session.updated"
+        assert renamed["session"]["title"] == "My Chat"
+
+
+def test_session_open_emits_session_updated(client, app):
+    with client.websocket_connect("/ws") as ws:
+        _boot_to_ready(ws, app)
+        ws.send_json({"type": "session.new", "mode": "paper"})
+        created = ws.receive_json()
+        sid = created["session"]["id"]
+
+        ws.send_json({"type": "session.open", "sessionId": sid})
+        opened = ws.receive_json()
+        assert opened["type"] == "session.updated"
+        assert opened["session"]["id"] == sid

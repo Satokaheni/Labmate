@@ -97,11 +97,15 @@ function reducer(state: WsState, action: Action): WsState {
       return { ...state, context: action.window };
     case 'AGENT_STATUS':
       return { ...state, agentStatus: action.status };
-    case 'SESSION_UPDATED':
+    case 'SESSION_UPDATED': {
+      const exists = state.sessions.some((s) => s.id === action.session.id);
       return {
         ...state,
-        sessions: state.sessions.map((s) => (s.id === action.session.id ? action.session : s)),
+        sessions: exists
+          ? state.sessions.map((s) => (s.id === action.session.id ? action.session : s))
+          : [action.session, ...state.sessions],
       };
+    }
     case 'CLOSED':
       return { ...state, phase: state.phase === 'ready' ? 'error' : 'idle' };
     default:
