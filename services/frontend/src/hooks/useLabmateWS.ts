@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useReducer, useRef } from 'react';
 import type {
   AgentStatus,
+  Artifact,
   ContextWindow,
   Mode,
+  Reasoning,
   Session,
   StreamEvent,
   Subsystem,
@@ -37,6 +39,8 @@ type Action =
   | { type: 'CONTEXT_UPDATE'; window: ContextWindow }
   | { type: 'AGENT_STATUS'; status: AgentStatus }
   | { type: 'SESSION_UPDATED'; session: Session }
+  | { type: 'REASONING_DONE'; turnId: string; reasoning: Reasoning }
+  | { type: 'ARTIFACT_CREATED'; turnId: string; artifact: Artifact }
   | { type: 'CLOSED' };
 
 const INITIAL: WsState = {
@@ -106,6 +110,22 @@ function reducer(state: WsState, action: Action): WsState {
           : [action.session, ...state.sessions],
       };
     }
+    case 'REASONING_DONE':
+      return {
+        ...state,
+        turns: state.turns.map((t) =>
+          t.id === action.turnId ? { ...t, reasoning: action.reasoning } : t,
+        ),
+      };
+    case 'ARTIFACT_CREATED':
+      return {
+        ...state,
+        turns: state.turns.map((t) =>
+          t.id === action.turnId
+            ? { ...t, artifacts: [...(t.artifacts ?? []), action.artifact] }
+            : t,
+        ),
+      };
     case 'CLOSED':
       return { ...state, phase: state.phase === 'ready' ? 'error' : 'idle' };
     default:
@@ -171,6 +191,12 @@ export function useLabmateWS(url: string, token: string | null, reconnectKey = 0
           break;
         case 'session.updated':
           dispatch({ type: 'SESSION_UPDATED', session: event.session });
+          break;
+        case 'reasoning.done':
+          dispatch({ type: 'REASONING_DONE', turnId: event.turnId, reasoning: event.reasoning });
+          break;
+        case 'artifact.created':
+          dispatch({ type: 'ARTIFACT_CREATED', turnId: event.turnId, artifact: event.artifact });
           break;
         case 'tool.request': {
           const reqId = event.toolRequestId;

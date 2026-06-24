@@ -16,6 +16,28 @@ from .local_tools import LOCAL_TOOL_NAMES, request_local_tool
 
 
 # ---------------------------------------------------------------------------
+# Artifact helpers
+# ---------------------------------------------------------------------------
+
+def _infer_language(path: str) -> str:
+    ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    return {
+        "py": "Python", "ts": "TypeScript", "js": "JavaScript",
+        "rs": "Rust", "go": "Go", "md": "Markdown", "txt": "Text",
+        "json": "JSON", "yaml": "YAML", "yml": "YAML", "sh": "Shell",
+    }.get(ext, "Text")
+
+
+def _infer_mime(path: str) -> str:
+    ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    return {
+        "py": "text/x-python", "ts": "application/typescript",
+        "js": "application/javascript", "md": "text/markdown",
+        "json": "application/json", "sh": "text/x-sh",
+    }.get(ext, "text/plain")
+
+
+# ---------------------------------------------------------------------------
 # Sub-agent result container
 # ---------------------------------------------------------------------------
 
@@ -464,6 +486,30 @@ class AsyncOrchestrator:
                             args.get("arguments", {}),
                         )
                         content = json.dumps(res)[:4000]
+                        # Emit artifact.created if the skill produced a file
+                        if isinstance(res, dict):
+                            _result = res.get("result") if isinstance(res.get("result"), dict) else {}
+                            _path = _result.get("path") or _result.get("file") or ""
+                            _content_str = _result.get("content") or _result.get("output") or ""
+                            if _path and _content_str and isinstance(_content_str, str):
+                                try:
+                                    await events.emit(
+                                        "artifact_created",
+                                        artifact={
+                                            "id": "art-" + uuid.uuid4().hex[:8],
+                                            "name": _path.split("/")[-1] or _path,
+                                            "path": _path,
+                                            "language": _infer_language(_path),
+                                            "mime": _infer_mime(_path),
+                                            "sizeBytes": len(_content_str.encode()),
+                                            "lineCount": _content_str.count("\n") + 1,
+                                            "preview": "code" if _path.endswith((".py", ".ts", ".js", ".rs", ".go")) else "doc",
+                                            "content": _content_str,
+                                            "downloadUrl": f"/artifacts/{_path}",
+                                        },
+                                    )
+                                except Exception:
+                                    pass  # artifact emission is best-effort
 
                     elif name in LOCAL_TOOL_NAMES:
                         if self.redis is not None:

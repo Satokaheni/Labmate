@@ -196,6 +196,79 @@ describe('useLabmateWS', () => {
     expect(result.current.state.sessions[0].title).toBe('Renamed');
   });
 
+  it('reasoning.done attaches reasoning to the matching turn', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    emit({ type: 'boot.plan', subsystems: SUBSYSTEMS });
+    emit({ type: 'boot.ready', sessionBootstrap: BOOTSTRAP });
+
+    const turn: import('@/types/events').Turn = {
+      id: 't-reason', sessionId: 's1', role: 'assistant', text: '',
+      createdAt: '2026-01-01T00:00:00Z', status: 'streaming',
+    };
+    emit({ type: 'turn.created', turn });
+
+    const reasoning: import('@/types/events').Reasoning = {
+      summary: 'I think',
+      text: 'I think carefully',
+      node: 'plan_node',
+      tokens: 5,
+      budget: 0,
+      durationMs: 100,
+    };
+    emit({ type: 'reasoning.done', turnId: 't-reason', reasoning });
+
+    const updated = result.current.state.turns.find((t) => t.id === 't-reason');
+    expect(updated?.reasoning).toEqual(reasoning);
+  });
+
+  it('artifact.created appends artifact to the matching turn', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    emit({ type: 'boot.plan', subsystems: SUBSYSTEMS });
+    emit({ type: 'boot.ready', sessionBootstrap: BOOTSTRAP });
+
+    const turn: import('@/types/events').Turn = {
+      id: 't-artifact', sessionId: 's1', role: 'assistant', text: '',
+      createdAt: '2026-01-01T00:00:00Z', status: 'streaming',
+    };
+    emit({ type: 'turn.created', turn });
+
+    const artifact: import('@/types/events').Artifact = {
+      id: 'art-1', name: 'server.py', path: 'services/ws_gateway/server.py',
+      language: 'Python', mime: 'text/x-python', sizeBytes: 512, lineCount: 20,
+      preview: 'code', content: '# code', downloadUrl: '/artifacts/art-1',
+    };
+    emit({ type: 'artifact.created', turnId: 't-artifact', artifact });
+
+    const updated = result.current.state.turns.find((t) => t.id === 't-artifact');
+    expect(updated?.artifacts).toHaveLength(1);
+    expect(updated?.artifacts?.[0]).toEqual(artifact);
+  });
+
+  it('second artifact.created appends without removing the first', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    emit({ type: 'boot.plan', subsystems: SUBSYSTEMS });
+    emit({ type: 'boot.ready', sessionBootstrap: BOOTSTRAP });
+
+    const turn: import('@/types/events').Turn = {
+      id: 't-multi', sessionId: 's1', role: 'assistant', text: '',
+      createdAt: '2026-01-01T00:00:00Z', status: 'streaming',
+    };
+    emit({ type: 'turn.created', turn });
+
+    const mkArtifact = (id: string): import('@/types/events').Artifact => ({
+      id, name: `${id}.py`, path: `${id}.py`, language: 'Python', mime: 'text/x-python',
+      sizeBytes: 100, lineCount: 5, preview: 'code', content: '#', downloadUrl: `/artifacts/${id}`,
+    });
+    emit({ type: 'artifact.created', turnId: 't-multi', artifact: mkArtifact('a1') });
+    emit({ type: 'artifact.created', turnId: 't-multi', artifact: mkArtifact('a2') });
+
+    const updated = result.current.state.turns.find((t) => t.id === 't-multi');
+    expect(updated?.artifacts).toHaveLength(2);
+  });
+
   it('reconnects (new WebSocket) when reconnectKey increments and closes the old one', () => {
     const instances: typeof mockWs[] = [];
     vi.mocked(WebSocket).mockImplementation(() => {

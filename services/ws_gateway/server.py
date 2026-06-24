@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time as _time
 import uuid
 from typing import Awaitable, Callable
 
@@ -33,8 +34,46 @@ async def _relay_task(
     task_id: str,
     turn_id: str,
 ) -> None:
-    """Tail the orchestrator event stream for one task and relay StreamEvents."""
+    """Tail the orchestrator event stream for one task and relay StreamEvents.
+
+    Synthesizes reasoning.done from accumulated reasoning events before turn.done.
+    """
+    reasoning_chunks: list[str] = []
+    reasoning_node: str = "chat_node"
+    reasoning_start: float | None = None
+
     async for raw in tail_task_events(redis, task_id, block_ms=200):
+        etype = raw.get("type")
+
+        # Accumulate reasoning text for synthesis
+        if etype == "reasoning":
+            reasoning_chunks.append(raw.get("text", ""))
+            reasoning_node = raw.get("node", reasoning_node)
+            if reasoning_start is None:
+                reasoning_start = _time.time()
+
+        # Synthesize reasoning.done before relaying turn.done
+        if etype == "turn.done" and reasoning_chunks:
+            full_text = "".join(reasoning_chunks)
+            duration_ms = int((_time.time() - (reasoning_start or _time.time())) * 1000)
+            first_line = next(
+                (ln.strip() for ln in full_text.splitlines() if ln.strip()),
+                full_text[:120],
+            )
+            await ws.send_json({
+                "type": "reasoning.done",
+                "turnId": turn_id,
+                "reasoning": {
+                    "summary": first_line[:120],
+                    "text": full_text,
+                    "node": reasoning_node,
+                    "tokens": len(full_text) // 4,
+                    "budget": 0,
+                    "durationMs": duration_ms,
+                },
+            })
+            reasoning_chunks = []
+
         framed = translate_event(raw, turn_id=turn_id)
         if framed is not None:
             await ws.send_json(framed)

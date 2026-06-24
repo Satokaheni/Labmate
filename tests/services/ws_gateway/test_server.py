@@ -191,3 +191,61 @@ def test_session_open_emits_session_updated(client, app):
         opened = ws.receive_json()
         assert opened["type"] == "session.updated"
         assert opened["session"]["id"] == sid
+
+
+def test_relay_emits_reasoning_done_before_turn_done(client, app, redis):
+    """_relay_task must synthesize reasoning.done from accumulated reasoning events."""
+    import asyncio
+    import json as _json
+
+    token = app.state.auth.mint_token({"id": "u-001", "email": "admin@labmate.local", "role": "admin"})
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "auth", "token": token})
+        assert ws.receive_json()["type"] == "auth.ok"
+        ev = ws.receive_json()
+        while ev["type"] != "boot.ready":
+            ev = ws.receive_json()
+
+        ws.send_json({"type": "send", "sessionId": "s1", "mode": "chat", "text": "think hard"})
+        ev = ws.receive_json()
+        while ev["type"] != "turn.created":
+            ev = ws.receive_json()
+
+        # Find task_id from goals stream
+        entries = asyncio.get_event_loop().run_until_complete(redis.xrange("labmate:goals"))
+        task_id = _json.loads(entries[-1][1]["payload"])["task_id"]
+
+        # Inject reasoning events + turn.done into the events stream
+        stream = f"labmate:events:{task_id}"
+        asyncio.get_event_loop().run_until_complete(redis.xadd(stream, {"event": _json.dumps(
+            {"type": "reasoning", "task_id": task_id, "seq": 1, "node": "plan_node", "text": "I think"}
+        )}))
+        asyncio.get_event_loop().run_until_complete(redis.xadd(stream, {"event": _json.dumps(
+            {"type": "reasoning", "task_id": task_id, "seq": 2, "node": "plan_node", "text": " carefully"}
+        )}))
+        asyncio.get_event_loop().run_until_complete(redis.xadd(stream, {"event": _json.dumps(
+            {"type": "turn.done", "task_id": task_id, "seq": 3, "status": "complete"}
+        )}))
+
+        # Collect events until turn.done
+        received = []
+        ev = ws.receive_json()
+        while True:
+            received.append(ev)
+            if ev["type"] == "turn.done":
+                break
+            ev = ws.receive_json()
+
+        types = [e["type"] for e in received]
+        assert "reasoning.delta" in types
+        assert "reasoning.done" in types
+
+        # reasoning.done must appear before turn.done
+        rdone_idx = next(i for i, e in enumerate(received) if e["type"] == "reasoning.done")
+        tdone_idx = next(i for i, e in enumerate(received) if e["type"] == "turn.done")
+        assert rdone_idx < tdone_idx
+
+        rdone = next(e for e in received if e["type"] == "reasoning.done")
+        assert rdone["reasoning"]["text"] == "I think carefully"
+        assert rdone["reasoning"]["summary"] == "I think carefully"
+        assert rdone["reasoning"]["node"] == "plan_node"

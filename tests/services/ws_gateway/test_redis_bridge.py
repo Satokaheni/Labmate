@@ -133,3 +133,15 @@ def test_translate_agent_status_to_agent_status():
     raw = {"type": "agent_status", "status": status}
     out = translate_event(raw, turn_id="t1")
     assert out == {"type": "agent.status", "status": status}
+
+
+def test_translate_artifact_created_passthrough():
+    artifact = {
+        "id": "art-1", "name": "server.py", "path": "services/ws_gateway/server.py",
+        "language": "Python", "mime": "text/x-python",
+        "sizeBytes": 1024, "lineCount": 40,
+        "preview": "code", "content": "# ...", "downloadUrl": "/artifacts/art-1",
+    }
+    raw = {"type": "artifact_created", "artifact": artifact}
+    out = translate_event(raw, turn_id="t1")
+    assert out == {"type": "artifact.created", "turnId": "t1", "artifact": artifact}

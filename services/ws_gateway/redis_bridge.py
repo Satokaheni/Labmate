@@ -126,6 +126,13 @@ def translate_event(raw: dict, *, turn_id: str) -> Optional[dict]:
     if etype == "agent_status":
         return {"type": "agent.status", "status": raw.get("status", {})}
 
+    if etype == "artifact_created":
+        return {
+            "type": "artifact.created",
+            "turnId": turn_id,
+            "artifact": raw.get("artifact", {}),
+        }
+
     return None
 
 
