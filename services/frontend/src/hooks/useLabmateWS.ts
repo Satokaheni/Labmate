@@ -176,6 +176,9 @@ export function useLabmateWS(url: string, token: string | null, reconnectKey = 0
     };
 
     return () => {
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onclose = null;
       ws.close();
       wsRef.current = null;
     };

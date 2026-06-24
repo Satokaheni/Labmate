@@ -105,13 +105,22 @@ describe('useLabmateWS', () => {
     );
   });
 
-  it('reconnects (new WebSocket) when reconnectKey increments', () => {
+  it('reconnects (new WebSocket) when reconnectKey increments and closes the old one', () => {
+    const instances: typeof mockWs[] = [];
+    vi.mocked(WebSocket).mockImplementation(() => {
+      const inst = { send: vi.fn(), close: vi.fn(), onopen: null as (() => void) | null, onmessage: null as ((ev: { data: string }) => void) | null, onclose: null as (() => void) | null };
+      instances.push(inst);
+      return inst as unknown as WebSocket;
+    });
+
     const { rerender } = renderHook(
       ({ k }: { k: number }) => useLabmateWS('ws://localhost:8787/ws', 'tok', k),
       { initialProps: { k: 0 } },
     );
-    act(() => mockWs.onopen?.());
+    act(() => instances[0]?.onopen?.());
     rerender({ k: 1 });
-    expect(vi.mocked(WebSocket)).toHaveBeenCalledTimes(2);
+
+    expect(instances).toHaveLength(2);
+    expect(instances[0].close).toHaveBeenCalledTimes(1);
   });
 });
