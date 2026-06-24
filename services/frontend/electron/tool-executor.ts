@@ -1,53 +1,40 @@
-import path from 'path';
-import fs from 'fs';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 
-interface ToolRequest {
-  tool: string;
-  params: Record<string, any>;
-}
+export type LocalToolName = 'read_file' | 'write_file' | 'list_dir';
+export const LOCAL_TOOL_NAMES: readonly LocalToolName[] = ['read_file', 'write_file', 'list_dir'];
 
-interface ToolResult {
-  success: boolean;
-  data?: any;
-  error?: string;
-}
-
-export function validateToolPath(toolPath: string): boolean {
-  // Ensure the path is within allowed directories
-  const realPath = path.resolve(toolPath);
-  const allowedDirs = [
-    path.resolve(process.cwd()),
-  ];
-
-  return allowedDirs.some(dir => realPath.startsWith(dir));
-}
-
-export async function executeTool(request: ToolRequest): Promise<ToolResult> {
-  try {
-    if (request.tool === 'readFile') {
-      const filePath = request.params.path as string;
-      if (!validateToolPath(filePath)) {
-        return {
-          success: false,
-          error: 'Path not allowed',
-        };
-      }
-
-      const content = fs.readFileSync(filePath, 'utf-8');
-      return {
-        success: true,
-        data: content,
-      };
-    }
-
-    return {
-      success: false,
-      error: 'Unknown tool',
-    };
-  } catch (error) {
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
-    };
+function safePath(rel: string, workspace: string): string {
+  const root = path.resolve(workspace);
+  const candidate = path.resolve(root, rel);
+  const relToRoot = path.relative(root, candidate);
+  const escapes = relToRoot.startsWith('..') || path.isAbsolute(relToRoot);
+  if (candidate !== root && escapes) {
+    throw new Error(`path "${rel}" resolves outside workspace`);
   }
+  return candidate;
+}
+
+export async function executeTool(
+  name: LocalToolName,
+  args: Record<string, unknown>,
+  workspace: string,
+): Promise<unknown> {
+  if (name === 'read_file') {
+    const p = safePath(String(args.path ?? ''), workspace);
+    return { content: await fs.readFile(p, 'utf-8') };
+  }
+  if (name === 'write_file') {
+    const p = safePath(String(args.path ?? ''), workspace);
+    const content = String(args.content ?? '');
+    await fs.mkdir(path.dirname(p), { recursive: true });
+    await fs.writeFile(p, content, 'utf-8');
+    return { ok: true, bytes: Buffer.byteLength(content, 'utf-8') };
+  }
+  if (name === 'list_dir') {
+    const p = safePath(String(args.path ?? '.'), workspace);
+    const entries = await fs.readdir(p);
+    return { entries };
+  }
+  throw new Error(`unknown local tool: ${String(name)}`);
 }
