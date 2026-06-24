@@ -616,6 +616,102 @@ Expected: the `file_read` / `list_dir` local tools execute on the Mac and their 
 
 ---
 
+## Live E2E Testing: Electron App
+
+Test the **packaged Electron app** (not the dev server) against a live ws_gateway. Do this after any change to `services/ws_gateway/`, `services/frontend/`, or `electron/`.
+
+### Prerequisites
+
+Backend must be fully running (see "Live E2E Testing: WebSocket Path" above):
+```bash
+infrastructure/local/serve-model.sh
+infrastructure/local/start.sh
+infrastructure/local/status.sh   # all green, including ws_gateway :8787
+```
+
+### Build the Electron app
+
+```bash
+cd /Users/zachstallbohm/Work/Labmate/services/frontend
+
+# Set gateway URL for the build
+export VITE_WS_URL="ws://localhost:8787/ws"
+export VITE_API_URL="http://localhost:8787"
+
+# Build renderer + package Electron binary
+npm run build:electron
+```
+
+The packaged app appears in `dist-electron/` or `release/` depending on `electron-builder.config.ts`.
+
+### Launch the packaged app
+
+```bash
+# macOS — open the built .app bundle
+open "dist-electron/mac/Labmate.app"
+# OR run the binary directly for console output:
+"dist-electron/mac/Labmate.app/Contents/MacOS/Labmate"
+```
+
+### Electron E2E Test 1: Login flow
+
+1. App opens to the login screen
+2. Enter `ADMIN_EMAIL` and `ADMIN_PASSWORD` (same as ws_gateway seed credentials)
+3. Click "Sign in"
+4. Expected: boot screen appears showing 5 subsystems ticking to green
+5. Expected: chat screen mounts after all required subsystems are `ready`
+
+**Failure — "Could not connect to server":** `VITE_WS_URL` was baked into the build incorrectly; rebuild with the correct env var.
+**Failure — login 401:** ws_gateway credentials mismatch; check `ADMIN_EMAIL`/`ADMIN_PASSWORD`.
+
+### Electron E2E Test 2: Send a message (streaming)
+
+1. After login, type a message: `"What is 2+2? Reply in one sentence."`
+2. Press Enter
+3. Expected:
+   - `◆ working…` node indicator appears
+   - Tool rows appear if skills were dispatched
+   - Answer text streams progressively
+   - Turn status shows complete after `turn.done`
+
+**Failure — spinner never resolves:** ws_gateway is not relaying events; check `.data/logs/ws-gateway.log`.
+
+### Electron E2E Test 3: Local tool execution (filesystem)
+
+1. Type: `"List all Python files in the services/cli directory."`
+2. Expected:
+   - `tool.request` arrives for `list_dir` or `read_file`
+   - Electron's `window.electronAPI.executeTool` is invoked (check DevTools console)
+   - Result flows back as `tool.result`
+   - Orchestrator continues and returns a file list
+
+**Failure — "no local filesystem available":** app is running in browser (not Electron); verify it's the `.app` binary.
+
+### Electron E2E Test 4: New session + session list
+
+1. Click "New session" (chat mode)
+2. Expected: new session appears in the sidebar, becomes active
+3. Send a message; verify it appears in the new session (not the old one)
+4. Click the old session: verify its turn history is preserved
+
+### Electron E2E Test 5: Debug mode
+
+1. Find the debug toggle in the top bar and enable it
+2. Send a message that triggers a tool call
+3. Expected: right panel switches to trace view; `tool.frame` events appear in the inspector
+
+### Diagnosing Electron failures
+
+| Symptom | Likely cause | Fix |
+|---------|-------------|-----|
+| White screen on launch | Build failed or `dist-electron/` missing | Re-run `npm run build:electron` and check for TS errors |
+| "net::ERR_CONNECTION_REFUSED" | ws_gateway not running | `start.sh` |
+| Login works but boot hangs | Required subsystem check failing | `.data/logs/ws-gateway.log` — look for `failed` boot.update |
+| No `tool.request` for file ops | preload `contextBridge` missing from packaged build | Check `electron/preload.ts` is included in `electron-builder.config.ts` |
+| DevTools not available | Production build disables devtools | Run with `ELECTRON_DEV=1` or add `win.webContents.openDevTools()` in `main.ts` |
+
+---
+
 ## Next Steps: E2E Testing
 
 **Immediate priority.** The unit tests all pass. The next job is running the full stack on RunPod and verifying the Redis round-trip, session persistence, and workspace tracking work end-to-end. The full runbook is in `docs/e2e-testing.md`.
