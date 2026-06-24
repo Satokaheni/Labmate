@@ -222,6 +222,41 @@ for i in $(seq 1 30); do
 done
 pass "Orchestrator running (pid $(cat "$PIDS/orchestrator.pid"))"
 
+# ─── ws_gateway ───────────────────────────────────────────────────────────────
+_gateway_alive() {
+  [[ -f "$PIDS/ws-gateway.pid" ]] && kill -0 "$(cat "$PIDS/ws-gateway.pid")" 2>/dev/null
+}
+_gateway_ready() {
+  curl -fsS "http://localhost:8787/healthz" 2>/dev/null | grep -q "ok"
+}
+if _gateway_alive && _gateway_ready; then
+  info "ws-gateway already running (pid $(cat "$PIDS/ws-gateway.pid"))"
+else
+  if _gateway_alive && ! _gateway_ready; then
+    info "ws-gateway pid exists but /health not responding — restarting ..."
+    kill "$(cat "$PIDS/ws-gateway.pid")" 2>/dev/null || true
+    sleep 1
+  fi
+  if [[ -z "${ADMIN_EMAIL:-}" || -z "${ADMIN_PASSWORD:-}" ]]; then
+    fail "ADMIN_EMAIL and ADMIN_PASSWORD must be set before starting ws-gateway (first-boot account seed). Export them or add them to local.env."
+  fi
+  info "starting ws-gateway on :8787 ..."
+  (
+    source "${SCRIPT_DIR}/local.env"
+    export PYTHONPATH="${REPO_ROOT}"
+    nohup python -m services.ws_gateway.server \
+      >"$LOGS/ws-gateway.log" 2>&1 &
+    echo $! >"$PIDS/ws-gateway.pid"
+  )
+  for i in $(seq 1 30); do
+    _gateway_alive || { fail "ws-gateway exited — see $LOGS/ws-gateway.log"; }
+    _gateway_ready && break
+    sleep 1
+    [[ $i -eq 30 ]] && fail "ws-gateway /health never responded — see $LOGS/ws-gateway.log"
+  done
+  pass "ws-gateway ready :8787 (pid $(cat "$PIDS/ws-gateway.pid"))"
+fi
+
 # ─── Discord connector (optional — only if DISCORD_BOT_TOKEN is set) ──────────
 if [[ -n "${DISCORD_BOT_TOKEN:-}" ]]; then
   _connector_alive() {
@@ -256,5 +291,6 @@ echo "    REDIS_URL=redis://localhost:6379/0"
 echo "    CHROMA_URL=http://localhost:8765  (CHROMA_HOST=localhost CHROMA_PORT=8765)"
 echo "    SEARXNG_URL=http://localhost:${SEARXNG_PORT:-8080}  (web-search skill)"
 echo "    GEMMA_BASE=http://localhost:8000/v1"
+echo "    LABMATE_GATEWAY_URL=ws://localhost:8787/ws  (CLI + Electron connect here)"
 echo "    -> source infrastructure/local/local.env to export these."
 echo "    -> Logs: $LOGS/  PIDs: $PIDS/"

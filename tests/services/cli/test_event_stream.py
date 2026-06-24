@@ -2,6 +2,7 @@ import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from services.cli import event_stream
+from services.cli import redis_event_stream
 
 
 @pytest.mark.asyncio
@@ -10,7 +11,7 @@ async def test_tail_events_decodes_and_advances(monkeypatch):
     calls = [batch, []]
     fake = MagicMock()
     fake.xread = AsyncMock(side_effect=lambda *a, **k: calls.pop(0) if calls else [])
-    monkeypatch.setattr(event_stream.aioredis, "from_url", lambda *a, **k: fake)
+    monkeypatch.setattr(redis_event_stream.aioredis, "from_url", lambda *a, **k: fake)
 
     got = []
     async for evt in event_stream.tail_events("redis://x", "t1"):
@@ -38,7 +39,7 @@ async def _fake_gen(events):
 @pytest.mark.asyncio
 async def test_first_returns_parsed_event():
     evs = [{"type": "turn.start", "task": "hi", "seq": 1}]
-    with patch("services.cli.event_stream.tail_events", return_value=_fake_gen(evs)):
+    with patch("services.cli.redis_event_stream.tail_events", return_value=_fake_gen(evs)):
         from services.cli.event_stream import EventStream
         stream = EventStream("redis://localhost:6379/0", "t-1")
         ev = await stream.first(timeout=1.0)
@@ -48,7 +49,7 @@ async def test_first_returns_parsed_event():
 
 @pytest.mark.asyncio
 async def test_first_returns_none_when_generator_empty():
-    with patch("services.cli.event_stream.tail_events", return_value=_fake_gen([])):
+    with patch("services.cli.redis_event_stream.tail_events", return_value=_fake_gen([])):
         from services.cli.event_stream import EventStream
         stream = EventStream("redis://localhost:6379/0", "t-1")
         ev = await stream.first(timeout=0.2)
@@ -61,7 +62,7 @@ async def test_first_returns_none_on_timeout():
         await asyncio.Event().wait()  # blocks forever
         yield {}  # never reached
 
-    with patch("services.cli.event_stream.tail_events", return_value=_blocking_gen()):
+    with patch("services.cli.redis_event_stream.tail_events", return_value=_blocking_gen()):
         from services.cli.event_stream import EventStream
         stream = EventStream("redis://localhost:6379/0", "t-1")
         ev = await stream.first(timeout=0.05)
@@ -77,7 +78,7 @@ async def test_events_replays_first_then_continues_until_turn_done():
         {"type": "turn.done", "status": "complete", "seq": 2},
         {"type": "answer.delta", "text": "AFTER", "seq": 3},  # must NOT appear
     ]
-    with patch("services.cli.event_stream.tail_events", return_value=_fake_gen(evs)):
+    with patch("services.cli.redis_event_stream.tail_events", return_value=_fake_gen(evs)):
         from services.cli.event_stream import EventStream
         stream = EventStream("redis://localhost:6379/0", "t-1")
         first = await stream.first(timeout=1.0)
@@ -98,7 +99,7 @@ async def test_aclose_closes_generator():
         except GeneratorExit:
             closed.append(True)
 
-    with patch("services.cli.event_stream.tail_events", return_value=_closeable_gen()):
+    with patch("services.cli.redis_event_stream.tail_events", return_value=_closeable_gen()):
         from services.cli.event_stream import EventStream
         stream = EventStream("redis://localhost:6379/0", "t-1")
         await stream.first(timeout=1.0)

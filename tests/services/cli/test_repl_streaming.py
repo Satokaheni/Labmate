@@ -11,9 +11,10 @@ from services.cli.identity import Identity
 def _ctx():
     return REPLContext(
         identity=Identity(user_id="u-1", display_name="Tester"),
-        workspace_id="ws-1", workspace_name="WS", workspace_paths=[],
+        workspace_id="ws-1", workspace_name="WS", workspace_paths=["/tmp/ws"],
         workspace_instructions=None, session_id="s-1",
-        redis_url="redis://localhost:6379/0",
+        ws_url="ws://localhost:8787/ws",
+        token="tok",
     )
 
 
@@ -28,28 +29,29 @@ def _repl_with_mocks(first_event, result):
     r._sessions = MagicMock()
     r._sessions.append = MagicMock()
 
-    redis = MagicMock()
-    redis.push_task = AsyncMock()
-    redis.get_result = AsyncMock(return_value=result)
+    client = MagicMock()
+    client.push_task = AsyncMock()
+    client.get_result = AsyncMock(return_value=result)
+    client.send_tool_result = AsyncMock()
 
     stream = MagicMock()
     stream.first = AsyncMock(return_value=first_event)
     stream.aclose = AsyncMock()
-    redis.subscribe_events = MagicMock(return_value=stream)
-    r._redis = redis
-    return r, redis, stream
+    client.subscribe_events = MagicMock(return_value=stream)
+    r._client = client
+    return r, client, stream
 
 
 @pytest.mark.asyncio
 async def test_send_task_streams_when_first_event_arrives():
     first = {"type": "turn.start", "task": "what is the answer?"}
     result = {"ok": True, "state": {"final_answer": "42"}}
-    r, redis, stream = _repl_with_mocks(first, result)
+    r, client, stream = _repl_with_mocks(first, result)
 
     await r._send_task("what is the answer?")
 
-    redis.push_task.assert_awaited_once()
-    r._renderer.stream_live.assert_awaited_once_with(stream)
+    client.push_task.assert_awaited_once()
+    r._renderer.stream_live.assert_awaited_once()
     stream.aclose.assert_awaited_once()
     r._renderer.print_answer.assert_called_once()
     assert r._renderer.print_answer.call_args.args[0] == "42"
@@ -58,7 +60,7 @@ async def test_send_task_streams_when_first_event_arrives():
 @pytest.mark.asyncio
 async def test_send_task_falls_back_when_no_event():
     result = {"ok": True, "state": {"final_answer": "fallback-answer"}}
-    r, redis, stream = _repl_with_mocks(None, result)
+    r, client, stream = _repl_with_mocks(None, result)
 
     cm = MagicMock()
     cm.__enter__ = MagicMock(return_value=None)
@@ -69,7 +71,7 @@ async def test_send_task_falls_back_when_no_event():
 
     r._renderer.stream_live.assert_not_called()
     stream.aclose.assert_awaited_once()
-    redis.get_result.assert_awaited()
+    client.get_result.assert_awaited()
     r._renderer.print_answer.assert_called_once()
     assert r._renderer.print_answer.call_args.args[0] == "fallback-answer"
 
@@ -77,7 +79,7 @@ async def test_send_task_falls_back_when_no_event():
 @pytest.mark.asyncio
 async def test_send_task_reports_error_result():
     result = {"ok": False, "error": "task_failed"}
-    r, redis, stream = _repl_with_mocks(None, result)
+    r, client, stream = _repl_with_mocks(None, result)
     cm = MagicMock()
     cm.__enter__ = MagicMock(return_value=None)
     cm.__exit__ = MagicMock(return_value=False)

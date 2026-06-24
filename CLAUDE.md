@@ -63,6 +63,52 @@ Each message is now treated as ONE intent; the ReAct executor sequences any sub-
 - The skill-routing eval (`eval/run_routing_eval.py`, `eval/routing_eval*.jsonl`) is unrelated to the removed A/B and still valid — re-run on RunPod after adding skills.
 - CLI nicety (deferred): thread a REPL reply back to the clarified goal (today a clarification renders distinctly but the next message starts a fresh task).
 
+### CLI WebSocket Refactor: DONE — CLI routes all traffic via ws_gateway (no direct Redis)
+
+The CLI's direct Redis dependency was replaced with a WebSocket connection to ws_gateway, matching how the Electron frontend works. All backend services (model, orchestrator, MongoDB, Redis, Chroma, SearXNG, ws_gateway) run on RunPod/server; the CLI and Electron frontend run on the user's Mac and connect via `LABMATE_GATEWAY_URL`.
+
+**New files:**
+- `services/cli/token_store.py` — JWT cache at `~/.labmate/token.json`; 0700 dir / 0600 file perms; exp-based validation. Padding fix: `-len(parts[1]) % 4` (not `4 - len % 4`)
+- `services/cli/ws_client.py` — `_normalize_ws_event()` (camelCase→snake_case), `WSEventStream`, `LabmateWSClient` (drop-in for `LabmateRedisClient`)
+- `services/cli/redis_event_stream.py` — `EventStream`, `tail_events`, `EVENTS_PREFIX`, `event_channel` extracted here so `event_stream.py` has zero aioredis imports; re-exported for backward compat
+
+**Modified files:**
+- `services/cli/event_stream.py` — re-exports from `redis_event_stream.py`; `_ToolInterceptingStream` now callback-based `(tool_request_id, result, error) -> None`; `run_task_with_streaming` drops `redis` param, uses `hasattr(client, "send_tool_result")`
+- `services/cli/local_tool_executor.py` — removed `handle_tool_request` + Redis imports; kept `execute_local_tool` + `LOCAL_TOOL_NAMES`
+- `services/cli/repl.py` — `REPLContext` has `ws_url`+`token` (not `redis_url`); uses `LabmateWSClient`; `PermissionError` handler calls `clear_token()` and prints friendly message
+- `services/cli/main.py` — `_gateway_url()`, `_get_token()`, login prompt with `getpass`; JWT save/load; `PermissionError` → `clear_token()` + `SystemExit(1)`
+- `infrastructure/local/local.env` — added `LABMATE_GATEWAY_URL`, `JWT_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `MONGO_URL`, `CORS_ORIGINS`
+- `infrastructure/local/start.sh` — ws_gateway section added after orchestrator; polls `/healthz`; fails fast if `ADMIN_EMAIL`/`ADMIN_PASSWORD` unset on first boot
+- `infrastructure/local/start-cli.sh` — replaced Redis pre-flight with ws-gateway pidfile + `/healthz` check
+
+**Key patterns:**
+- `_normalize_ws_event()`: converts ws_gateway camelCase events to CLI snake_case — `StreamRenderer` needs no changes
+- `WSEventStream.result()`: synthesises result from accumulated `answer.delta` + `turn.done` status (no Redis read)
+- `_ToolInterceptingStream(stream, send_result, workspace)`: callback pattern — `send_result` is `LabmateWSClient.send_tool_result`
+- `asyncio.timeout` (Python 3.11+) used in `LabmateWSClient.get_result()`
+- ws_gateway health route: `GET /healthz` (not `/health`) returns `{"ok": true}` on port 8787
+
+**Deployment architecture:**
+- **Server (RunPod):** model, orchestrator, MongoDB, Redis, Chroma, SearXNG, ws_gateway — all backend services
+- **Client (Mac):** CLI + Electron connect via `LABMATE_GATEWAY_URL=ws://<server>:8787/ws`
+
+**Auth model:**
+- First boot: `ADMIN_EMAIL` + `ADMIN_PASSWORD` env vars seed one account via ws_gateway startup hook
+- Subsequent runs: CLI prompts for email/password, caches JWT at `~/.labmate/token.json`
+- Token reuse: `load_token()` decodes `exp` claim locally; skips login if valid
+- Token expiry/rejection: `clear_token()` called automatically; prompts for login again
+- ws_gateway admin role: `POST /auth/users` requires admin JWT — zero control over orchestrator
+
+**CRITICAL SECURITY CONSTRAINT:** Discord connector is deferred — do NOT wire, import, or reference it in any active code path until explicitly instructed. Lives in `services/connectors/deferred/`.
+
+**Signup page (deferred):** `frontend/Labmate Signup.dc.html` design comp exists. Implementation deferred until an account verification mechanism is designed. For now: single-user env-var seed is sufficient.
+
+**Before first `start.sh` run, export credentials (add to `local.env` or shell profile):**
+```bash
+export ADMIN_EMAIL="your@email.com"
+export ADMIN_PASSWORD="your-password"
+```
+
 ---
 
 ## Session Log — 2026-06-22 (earlier)
@@ -213,25 +259,44 @@ Restart the orchestrator after: `infrastructure/local/start.sh`.
 ## Architecture Map
 
 ```
-Host process: llama-server (port 8000)
-     │
-     │  OpenAI-compatible HTTP  (INFERENCE_URL=http://host.docker.internal:8000)
-     ▼
-services/orchestrator/          ← Python, asyncio, LangGraph
-     │
-     │  stdin/stdout JSON-RPC 2.0
-     ▼
-services/mcp-bridge/            ← TypeScript, @modelcontextprotocol/sdk
-     │
-     │  child process spawn per skill
-     ▼
-services/skills/<name>/         ← TypeScript / Rust / Python
-     │
-     ▼
-Memory:
-  MongoDB  :27017  (sessions, messages, outbox)
-  Chroma   :8000   (vector embeddings)
-  Redis    :6379   (task queues via Streams, working cache)
+                ┌──── SERVER (RunPod / your host) ────────────────────────────────┐
+                │                                                                  │
+                │  llama-server  :8000  (llama.cpp, OpenAI-compatible HTTP)        │
+                │       │                                                          │
+                │       │ OpenAI HTTP                                              │
+                │       ▼                                                          │
+                │  services/orchestrator/     ← Python, asyncio, LangGraph        │
+                │       │                    ← reads/writes Redis Streams          │
+                │       │ stdin/stdout JSON-RPC 2.0                               │
+                │       ▼                                                          │
+                │  services/mcp-bridge/       ← TypeScript MCP server             │
+                │       │                                                          │
+                │       │ child process                                            │
+                │       ▼                                                          │
+                │  services/skills/<name>/    ← TypeScript / Rust / Python        │
+                │                                                                  │
+                │  Memory / queues:                                                │
+                │    MongoDB  :27017  (sessions, messages, outbox)                 │
+                │    Chroma   :8765   (vector embeddings)                          │
+                │    Redis    :6379   (task queues via Streams, event cache)       │
+                │                                                                  │
+                │  services/ws_gateway/  :8787  ← FastAPI + WebSocket gateway     │
+                │    • authenticates clients (JWT)                                 │
+                │    • proxies tasks → Redis Streams → orchestrator                │
+                │    • streams events back from Redis → WebSocket                  │
+                │    • GET /healthz → {"ok": true}                                 │
+                │    • POST /auth/users (admin JWT required)                       │
+                │                                                                  │
+                └──────────────────────┬───────────────────────────────────────────┘
+                                       │
+                                       │  WebSocket  ws://<host>:8787/ws
+                                       │  (LABMATE_GATEWAY_URL env var)
+                              ┌────────┴────────────┐
+                              │   CLIENT (Mac)       │
+                              │                      │
+                              │  services/cli/       │
+                              │  services/frontend/  │
+                              └─────────────────────┘
 ```
 
 ---
@@ -421,6 +486,136 @@ When starting a component, read its spec first, then look at the existing M2 cod
 
 ---
 
+## Live E2E Testing: WebSocket Path (CLI Refactor)
+
+These tests verify the full stack after the CLI WebSocket refactor. Run them on RunPod in order; each layer depends on the one before.
+
+### Prerequisites
+
+**1. Set credentials before first run** (add to shell profile or `local.env`):
+```bash
+export ADMIN_EMAIL="your@email.com"
+export ADMIN_PASSWORD="your-password"
+export JWT_SECRET="$(openssl rand -hex 32)"   # or any long string
+```
+
+**2. Start the full stack:**
+```bash
+infrastructure/local/serve-model.sh    # wait until model healthy (~10 min first run)
+infrastructure/local/start.sh          # MongoDB, Redis, Chroma, SearXNG, MCP bridge, orchestrator, ws_gateway
+infrastructure/local/status.sh         # verify all services green including ws_gateway :8787
+```
+
+`start.sh` will fail fast with a clear error if `ADMIN_EMAIL`/`ADMIN_PASSWORD` are not exported and the ws_gateway has not been started before.
+
+### WS E2E Test 1: ws_gateway health + auth
+
+```bash
+# Health check
+curl -fsS http://localhost:8787/healthz
+# Expected: {"ok":true}
+
+# Login (get JWT)
+curl -s -X POST http://localhost:8787/auth/login \
+  -H 'Content-Type: application/json' \
+  -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" | python3 -m json.tool
+# Expected: {"token": "<jwt>", ...}
+```
+
+**Failure modes:**
+- `Connection refused` → ws_gateway not started; check `start.sh` output and `.data/logs/ws-gateway.log`
+- `403` or `auth_failed` → `ADMIN_EMAIL`/`ADMIN_PASSWORD` mismatch with what was seeded; delete MongoDB `labmate.users` collection and restart ws_gateway to re-seed
+
+### WS E2E Test 2: JWT token caching
+
+```bash
+# Clear any cached token
+rm -f ~/.labmate/token.json
+
+# First run — should prompt for email/password
+source infrastructure/local/local.env
+export PYTHONPATH="$(pwd)"
+python -m services.cli "What is 2+2? Reply in one sentence." 2>&1 | head -5
+# Expected: prompts for Email: and Password: (if LABMATE_EMAIL/LABMATE_PASSWORD not set)
+
+# Second run — should NOT prompt (cached JWT)
+python -m services.cli "What is 3+3? Reply in one sentence."
+# Expected: no prompt; uses cached token from ~/.labmate/token.json
+```
+
+### WS E2E Test 3: Full WS task round-trip (one-shot CLI)
+
+```bash
+source infrastructure/local/local.env
+export PYTHONPATH="$(pwd)"
+python -m services.cli "Write a Python function that returns the square of a number."
+```
+
+**What to watch for:**
+- `◆ working…` appears within ≤2 s (means first WS event received)
+- Tool rows stream live: `⚙ exec_run  <why>` → `✓ exec_run  exit 0  (1.2s)`
+- Reasoning lines in dim italic
+- Answer text streaming progressively
+- Clean exit, code 0
+
+**If spinner appears instead of live frame:** ws_gateway is not forwarding events back over the WebSocket. Check `.data/logs/ws-gateway.log` for `tool.start`/`answer.delta` emit errors.
+
+### WS E2E Test 4: REPL session
+
+```bash
+source infrastructure/local/local.env
+export PYTHONPATH="$(pwd)"
+infrastructure/local/start-cli.sh
+```
+
+Type a task in the REPL prompt. Expected: same live streaming behavior as one-shot. Type `exit` to quit.
+
+**Failure — start-cli.sh exits with "ws-gateway not started":** pidfile missing; run `start.sh`.
+**Failure — start-cli.sh exits with "/health not responding":** gateway process dead; check `.data/logs/ws-gateway.log`.
+
+### WS E2E Test 5: Token expiry handling
+
+```bash
+# Manually expire the token
+python3 -c "
+import json, time
+from pathlib import Path
+p = Path.home() / '.labmate' / 'token.json'
+# Write a token with exp=now-1 (already expired)
+# (easiest: just delete the file to force re-login)
+p.unlink(missing_ok=True)
+print('Token cleared')
+"
+
+source infrastructure/local/local.env
+export PYTHONPATH="$(pwd)"
+python -m services.cli "What is 4+4?"
+# Expected: prompts for login again (token missing → re-authenticate)
+```
+
+### WS E2E Test 6: Local tool interception (workspace tools)
+
+```bash
+source infrastructure/local/local.env
+export PYTHONPATH="$(pwd)"
+python -m services.cli --workspace default "List the Python files in the current directory."
+```
+
+Expected: the `file_read` / `list_dir` local tools execute on the Mac and their results are sent back via WS (`send_tool_result`). The orchestrator sees the tool results and continues.
+
+### Diagnosing WS failures
+
+| Symptom | Likely cause | Where to look |
+|---------|-------------|---------------|
+| `PermissionError: ws_gateway auth rejected` | Bad/expired JWT or wrong credentials | `~/.labmate/token.json` — delete and re-login |
+| `ConnectionRefusedError` on WS connect | ws_gateway not running | `.data/logs/ws-gateway.log`, `start.sh` |
+| CLI stuck on `◆ working…` spinner | WS events not arriving within 2 s | `ws-gateway.log` — look for event forward errors |
+| `turn.done` received but `result()` returns None | `answer.delta` events missing | ws_gateway event relay; check orchestrator event emission |
+| Local tool results not reaching orchestrator | `send_tool_result` not sending | `ws_client.py:LabmateWSClient.send_tool_result` |
+| `ADMIN_EMAIL`/`ADMIN_PASSWORD` not set error | First-boot env vars missing | Export them and rerun `start.sh` |
+
+---
+
 ## Next Steps: E2E Testing
 
 **Immediate priority.** The unit tests all pass. The next job is running the full stack on RunPod and verifying the Redis round-trip, session persistence, and workspace tracking work end-to-end. The full runbook is in `docs/e2e-testing.md`.
@@ -433,7 +628,7 @@ Start in this order — each step must complete before the next:
 # 1. Model server (blocks until healthy — takes ~10 min on first VRAM load)
 infrastructure/local/serve-model.sh
 
-# 2. Support services + orchestrator (MongoDB, Redis, Chroma, MCP bridge, orchestrator)
+# 2. Support services + orchestrator + ws_gateway (MongoDB, Redis, Chroma, MCP bridge, orchestrator, ws_gateway)
 infrastructure/local/start.sh
 
 # Verify all services are up:
@@ -474,18 +669,19 @@ done
 ```
 Success: result JSON with `"ok": true`. Failure: timeout or `"ok": false`.
 
-**4. One-shot CLI task (exercises the full CLI → Redis → orchestrator path):**
+**4. One-shot CLI task (exercises the full CLI → ws_gateway → Redis → orchestrator path):**
 ```bash
 # Use python -m directly — start-cli.sh forces REPL mode
 source infrastructure/local/local.env
 PYTHONPATH=. python -m services.cli "Write a Python function that returns the square of a number."
 ```
-Success: prints code output and exits with code 0.
+Success: prints code output and exits with code 0. On first run, prompts for email/password; set `LABMATE_EMAIL` and `LABMATE_PASSWORD` env vars to skip the prompt.
 
 **5. Log inspection (run alongside any test):**
 ```bash
 tail -f .data/logs/orchestrator.log &
 tail -f .data/logs/llama-server.log &
+tail -f .data/logs/ws-gateway.log &
 ```
 Look for: `task complete` (success), `task failed` (exception with traceback), `WARN` / `ERROR` lines.
 
@@ -507,6 +703,8 @@ For those, follow `docs/e2e-testing.md` scenarios 1–5 with the user present.
 | `MCP bridge did not become ready` | Bridge crash or missing `dist/index.js` | `.data/logs/orchestrator.log`, run `npm run build` in `services/mcp-bridge/` |
 | `llama-server` 5xx or timeout | Model not loaded, VRAM OOM | `.data/logs/llama-server.log` |
 | `MongoServerError` | MongoDB not in replica set or not running | `.data/logs/mongod.log`, `rs.status()` |
+| ws_gateway `auth_failed` / 403 | JWT credentials wrong or not seeded | `.data/logs/ws-gateway.log`; check `ADMIN_EMAIL`/`ADMIN_PASSWORD` match |
+| CLI `ConnectionRefusedError` on WS | ws_gateway not started | `start.sh` — look for FAIL on ws_gateway section |
 
 ---
 
