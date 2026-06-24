@@ -1,43 +1,56 @@
-import { app, BrowserWindow } from 'electron';
-import path from 'path';
+import { app, BrowserWindow, ipcMain } from 'electron';
+import path from 'node:path';
+import os from 'node:os';
+import { executeTool, LOCAL_TOOL_NAMES, type LocalToolName } from './tool-executor';
 
-let mainWindow: BrowserWindow | null = null;
+const WORKSPACE = process.env.LABMATE_WORKSPACE
+  ? path.resolve(process.env.LABMATE_WORKSPACE)
+  : os.homedir();
 
-function createWindow() {
-  mainWindow = new BrowserWindow({
-    width: 1200,
+const DEV_URL = 'http://localhost:8080';
+
+function createWindow(): void {
+  const win = new BrowserWindow({
+    width: 1280,
     height: 800,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.cjs'),
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
     },
   });
 
-  const isDev = process.env.ELECTRON_DEV === '1';
-  const url = isDev
-    ? 'http://localhost:8080'
-    : `file://${path.join(__dirname, '../dist/index.html')}`;
-
-  mainWindow.loadURL(url);
-
-  if (isDev) {
-    mainWindow.webContents.openDevTools();
+  if (process.env.ELECTRON_DEV === '1') {
+    void win.loadURL(DEV_URL);
+    win.webContents.openDevTools({ mode: 'detach' });
+  } else {
+    void win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
   }
-
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
 }
 
-app.on('ready', createWindow);
+ipcMain.handle(
+  'labmate:tool-execute',
+  async (_evt, payload: { name: string; args: Record<string, unknown> }) => {
+    const { name, args } = payload;
+    if (!LOCAL_TOOL_NAMES.includes(name as LocalToolName)) {
+      return { error: `unknown local tool: ${name}` };
+    }
+    try {
+      const result = await executeTool(name as LocalToolName, args ?? {}, WORKSPACE);
+      return { result };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  },
+);
+
+app.whenReady().then(createWindow);
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
+  if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('activate', () => {
-  if (mainWindow === null) {
-    createWindow();
-  }
+  if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });
