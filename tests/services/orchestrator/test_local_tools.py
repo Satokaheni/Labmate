@@ -129,3 +129,60 @@ async def test_request_local_tool_matches_only_its_own_request_id(redis):
         assert out == 2
     finally:
         events.current_emitter.reset(token)
+
+
+async def test_request_local_tool_raises_on_error_frame(redis):
+    task_id = "task-err"
+    emitter = events.EventEmitter(redis, task_id)
+    token = events.current_emitter.set(emitter)
+    try:
+        async def fake_client_with_error() -> None:
+            ev_stream = f"{events.EVENTS_STREAM_PREFIX}{task_id}"
+            for _ in range(50):
+                resp = await redis.xread({ev_stream: "0"}, count=10, block=100)
+                if not resp:
+                    continue
+                for _s, entries in resp:
+                    for _eid, fields in entries:
+                        ev = json.loads(fields["event"])
+                        if ev.get("type") == "tool.request":
+                            await redis.xadd(
+                                f"{TOOL_RESULTS_PREFIX}{task_id}",
+                                {
+                                    "result": json.dumps(
+                                        {
+                                            "tool_request_id": ev["tool_request_id"],
+                                            "result": None,
+                                            "error": "permission denied",
+                                        }
+                                    )
+                                },
+                            )
+                            return
+
+        client_task = asyncio.create_task(fake_client_with_error())
+        with pytest.raises(RuntimeError, match="permission denied"):
+            await request_local_tool(redis, "read_file", {"path": "x"}, timeout=5.0)
+        await client_task
+    finally:
+        events.current_emitter.reset(token)
+
+
+async def test_write_tool_result_xadds_frame_to_results_stream(redis):
+    from services.orchestrator.local_tools import write_tool_result
+    await write_tool_result(redis, "task-w1", "req-42", {"ok": True})
+    entries = await redis.xrange(f"{TOOL_RESULTS_PREFIX}task-w1")
+    assert len(entries) == 1
+    _id, fields = entries[0]
+    frame = json.loads(fields["result"])
+    assert frame == {"tool_request_id": "req-42", "result": {"ok": True}, "error": None}
+
+
+async def test_write_tool_result_with_error(redis):
+    from services.orchestrator.local_tools import write_tool_result
+    await write_tool_result(redis, "task-w2", "req-99", None, error="path escape")
+    entries = await redis.xrange(f"{TOOL_RESULTS_PREFIX}task-w2")
+    _id, fields = entries[0]
+    frame = json.loads(fields["result"])
+    assert frame["error"] == "path escape"
+    assert frame["result"] is None
