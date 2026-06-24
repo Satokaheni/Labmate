@@ -67,3 +67,67 @@ async def test_module_emit_uses_contextvar_emitter():
     finally:
         events.current_emitter.reset(token)
     assert r.xadd.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_handle_emits_agent_status_active_and_idle():
+    """_handle must emit agent_status active before run_task and idle in finally."""
+    import json
+    import fakeredis.aioredis
+    from unittest.mock import AsyncMock, MagicMock
+    from services.orchestrator.main import OrchestratorProcess
+
+    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+    fields = {"payload": json.dumps({
+        "task_id": "t-agent-status",
+        "task": "hello",
+        "session_id": "s-1",
+        "user_id": "",
+        "workspace_id": "",
+    })}
+
+    mock_orch = MagicMock()
+    mock_orch.run_task = AsyncMock(return_value={"final_answer": "hi", "error": None})
+    mock_orch.stream_final_answer = AsyncMock(return_value="hi")
+
+    mock_storage = MagicMock()
+    mock_storage.workspaces = MagicMock()
+    mock_storage.workspaces.record_session = AsyncMock()
+    mock_storage.workspaces.upsert_workspace = AsyncMock()
+    mock_storage.workspaces.complete_session = AsyncMock()
+
+    proc = OrchestratorProcess()
+    proc._redis = r
+
+    await proc._handle("msg-1", fields, mock_orch, mock_storage)
+
+    entries = await r.xrange("labmate:events:t-agent-status")
+    event_types = [json.loads(f["event"])["type"] for _, f in entries]
+    assert "agent_status" in event_types
+
+    agent_status_events = [
+        json.loads(f["event"])
+        for _, f in entries
+        if json.loads(f["event"]).get("type") == "agent_status"
+    ]
+    states = [e["status"]["brain"]["state"] for e in agent_status_events]
+    assert "active" in states
+    assert "idle" in states
+
+
+@pytest.mark.asyncio
+async def test_is_cancelled_returns_true_when_flag_set():
+    import fakeredis.aioredis
+    from services.orchestrator.events import is_cancelled
+    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    await r.set("labmate:cancel:task-x", "1", ex=60)
+    assert await is_cancelled(r, "task-x") is True
+
+
+@pytest.mark.asyncio
+async def test_is_cancelled_returns_false_when_no_flag():
+    import fakeredis.aioredis
+    from services.orchestrator.events import is_cancelled
+    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    assert await is_cancelled(r, "task-y") is False

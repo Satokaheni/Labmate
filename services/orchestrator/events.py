@@ -90,3 +90,14 @@ async def emit(type: str, **fields: Any) -> None:
     if em is None:
         return
     await em.emit(type, **fields)
+
+
+CANCEL_PREFIX = "labmate:cancel:"
+
+
+async def is_cancelled(redis: aioredis.Redis, task_id: str) -> bool:
+    """Check if a cancel signal has been written for this task (best-effort)."""
+    try:
+        return bool(await redis.exists(f"{CANCEL_PREFIX}{task_id}"))
+    except Exception:
+        return False

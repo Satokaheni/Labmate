@@ -3,7 +3,10 @@ import json
 import logging
 import sys
 
+from dotenv import load_dotenv
 from mcp.server import Server
+
+load_dotenv()
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 

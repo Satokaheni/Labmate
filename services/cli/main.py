@@ -5,9 +5,15 @@ Usage:
     python -m services.cli                   # start REPL with workspace picker
     python -m services.cli --resume s-abc    # resume a previous session
     python -m services.cli "do this task"    # one-shot (no REPL)
+
+Environment variables:
+    LABMATE_GATEWAY_URL   ws_gateway WebSocket URL (default ws://localhost:8787/ws)
+    LABMATE_EMAIL         Login email (prompted if absent and no cached token)
+    LABMATE_PASSWORD      Login password (prompted if absent and no cached token)
 """
 from __future__ import annotations
 import asyncio
+import getpass
 import json
 import os
 import uuid
@@ -17,10 +23,11 @@ from typing import Optional
 import typer
 
 from .identity import load_or_create_identity, Identity
-from .redis_client import LabmateRedisClient
 from .renderer import Renderer, extract_answer
 from .repl import REPL, REPLContext
+from .token_store import clear_token, load_token, save_token
 from .workspace_picker import pick_workspace
+from .ws_client import LabmateWSClient
 
 app = typer.Typer(add_completion=False, help="Labmate — autonomous agent CLI")
 _renderer = Renderer()
@@ -28,8 +35,8 @@ _renderer = Renderer()
 _WS_CACHE = Path.home() / ".labmate" / "workspaces.json"
 
 
-def _redis_url() -> str:
-    return os.getenv("REDIS_URL", "redis://localhost:6379/0")
+def _gateway_url() -> str:
+    return os.getenv("LABMATE_GATEWAY_URL", "ws://localhost:8787/ws")
 
 
 def _load_workspaces(user_id: str) -> list[dict]:
@@ -43,9 +50,6 @@ def _load_workspaces(user_id: str) -> list[dict]:
 
 
 def _default_workspace(user_id: str) -> dict:
-    """A zero-setup default workspace (rooted at the current dir), persisted so it
-    is reused across sessions. Lets the user start a session without manually
-    creating/picking a workspace each time."""
     ws = {
         "workspace_id": "default",
         "name": "default",
@@ -64,8 +68,6 @@ def _save_workspace(ws: dict) -> None:
             existing = json.loads(_WS_CACHE.read_text())
         except Exception:
             pass
-    # Dedup by (workspace_id, user_id): the same literal id (e.g. "default") can
-    # legitimately exist for different users on a shared host.
     if not any(
         w.get("workspace_id") == ws["workspace_id"]
         and w.get("user_id") == ws.get("user_id")
@@ -74,6 +76,25 @@ def _save_workspace(ws: dict) -> None:
         existing.append(ws)
     _WS_CACHE.parent.mkdir(parents=True, exist_ok=True)
     _WS_CACHE.write_text(json.dumps(existing, indent=2))
+
+
+async def _get_token(ws_url: str) -> str:
+    """Return a valid JWT: from cache, from env vars, or by interactive prompt."""
+    token = load_token()
+    if token:
+        return token
+
+    email = os.getenv("LABMATE_EMAIL", "")
+    password = os.getenv("LABMATE_PASSWORD", "")
+
+    if not email:
+        email = input("Email: ").strip()
+    if not password:
+        password = getpass.getpass("Password: ")
+
+    token = await LabmateWSClient.login(ws_url, email, password)
+    save_token(token)
+    return token
 
 
 @app.command()
@@ -90,38 +111,38 @@ async def _async_main(
     resume_id: str | None,
     workspace_id_flag: str | None,
 ) -> None:
+    ws_url = _gateway_url()
     identity = load_or_create_identity()
     existing_ws = _load_workspaces(identity.user_id)
 
-    # Fix 5: --resume restores original workspace
+    try:
+        token = await _get_token(ws_url)
+    except Exception as exc:
+        _renderer.print_error(f"Login failed: {exc}")
+        raise SystemExit(1)
+
     if resume_id:
         from .session_store import SessionStore
         prior_sessions = SessionStore().list()
         prior = next((s for s in prior_sessions if s.session_id == resume_id), None)
         if prior is None:
-            _renderer.print_info(f"Session {resume_id[:8]}… not found in local history — pick a workspace to continue.")
+            _renderer.print_info(f"Session {resume_id[:8]}… not found — pick a workspace.")
         if prior:
-            # Try to load the workspace from cache
             prior_ws = next((w for w in existing_ws
                             if w.get("workspace_id") == prior.workspace_id), None)
             if prior_ws is None:
-                _renderer.print_info(f"Session {resume_id[:8]}… found but workspace not in local cache — pick a workspace to continue.")
+                _renderer.print_info(f"Session {resume_id[:8]}… found but workspace not in local cache.")
             if prior_ws:
-                ws_choice_raw = prior_ws
-                # Skip workspace picker entirely
                 _renderer.print_info(f"Resuming session {resume_id[:8]}… (workspace: {prior_ws['name']})")
-                # Jump straight to REPL with the restored workspace
                 ctx = REPLContext(
-                    identity=Identity(
-                        user_id=identity.user_id,
-                        display_name=identity.display_name,
-                    ),
+                    identity=Identity(user_id=identity.user_id, display_name=identity.display_name),
                     workspace_id=prior_ws["workspace_id"],
                     workspace_name=prior_ws["name"],
                     workspace_paths=prior_ws.get("paths", []),
                     workspace_instructions=prior_ws.get("instructions"),
                     session_id=resume_id,
-                    redis_url=_redis_url(),
+                    ws_url=ws_url,
+                    token=token,
                 )
                 await REPL(ctx).run()
                 return
@@ -131,8 +152,6 @@ async def _async_main(
         if match:
             ws_choice_raw = match
         else:
-            # Frictionless: auto-create a seeded workspace with the requested id
-            # instead of erroring, so a new --workspace name just works.
             ws_choice_raw = {
                 "workspace_id": workspace_id_flag,
                 "name": workspace_id_flag,
@@ -141,15 +160,10 @@ async def _async_main(
                 "user_id": identity.user_id,
             }
             _save_workspace(ws_choice_raw)
-            _renderer.print_info(
-                f"Workspace '{workspace_id_flag}' not found — created a seeded workspace."
-            )
+            _renderer.print_info(f"Workspace '{workspace_id_flag}' not found — created a seeded workspace.")
     elif one_shot or not existing_ws:
-        # No workspace specified: auto-seed a default so a session needs zero setup.
-        # (One-shot can't show the interactive picker; a first-run REPL has nothing to pick.)
         ws_choice_raw = _default_workspace(identity.user_id)
     else:
-        # REPL with existing workspaces: let the user pick.
         from .workspace_picker import WorkspaceChoice
         ws_choice = pick_workspace(existing_ws)
         ws_choice_raw = {
@@ -164,13 +178,20 @@ async def _async_main(
     session_id = resume_id or str(uuid.uuid4())
     if not resume_id:
         _renderer.print_header(f"Session: {session_id}  (resume with --resume {session_id})")
-    redis_url = _redis_url()
 
     if one_shot:
         from .event_stream import run_task_with_streaming
-        client = LabmateRedisClient(redis_url)
+        client = LabmateWSClient(ws_url, token)
+        try:
+            await client.connect()
+        except PermissionError as exc:
+            clear_token()
+            _renderer.print_error(f"Auth failed: {exc}")
+            raise SystemExit(1)
+
         task_id = str(uuid.uuid4())
         _renderer.print_workspace(ws_choice_raw["name"], ws_choice_raw["workspace_id"])
+        workspace = ws_choice_raw.get("paths", [None])[0]
         try:
             await client.push_task(
                 task_id=task_id,
@@ -179,7 +200,9 @@ async def _async_main(
                 user_id=identity.user_id,
                 workspace_id=ws_choice_raw["workspace_id"],
             )
-            result = await run_task_with_streaming(client, _renderer, task_id)
+            result = await run_task_with_streaming(
+                client, _renderer, task_id, workspace=workspace
+            )
         except Exception as exc:
             _renderer.print_error(f"Connection error: {exc}")
             await client.aclose()
@@ -199,16 +222,14 @@ async def _async_main(
         return
 
     ctx = REPLContext(
-        identity=Identity(
-            user_id=identity.user_id,
-            display_name=identity.display_name,
-        ),
+        identity=Identity(user_id=identity.user_id, display_name=identity.display_name),
         workspace_id=ws_choice_raw["workspace_id"],
         workspace_name=ws_choice_raw["name"],
         workspace_paths=ws_choice_raw.get("paths", []),
         workspace_instructions=ws_choice_raw.get("instructions"),
         session_id=session_id,
-        redis_url=redis_url,
+        ws_url=ws_url,
+        token=token,
     )
     await REPL(ctx).run()
 

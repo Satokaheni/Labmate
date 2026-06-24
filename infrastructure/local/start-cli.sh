@@ -23,12 +23,19 @@ fail() { echo "[cli] FAIL: $*" >&2; exit 1; }
 # ─── Pre-flight: check that the stack is up ────────────────────────────────────
 info "Checking infrastructure..."
 
-# Redis
-redis-cli -p 6379 ping 2>/dev/null | grep -q PONG \
-  || fail "Redis not responding. Run: ./start.sh"
-
-# Orchestrator (it writes its log; checking the pidfile is the lightest check)
 PIDS="${REPO_ROOT}/.data/pids"
+
+# ws-gateway (the CLI connects here — replaces direct Redis access)
+if [[ -f "${PIDS}/ws-gateway.pid" ]]; then
+  kill -0 "$(cat "${PIDS}/ws-gateway.pid")" 2>/dev/null \
+    || fail "ws-gateway pidfile exists but process is dead. Run: ./start.sh"
+else
+  fail "ws-gateway not started. Run: ./start.sh"
+fi
+curl -fsS "http://localhost:8787/healthz" >/dev/null 2>&1 \
+  || fail "ws-gateway /health not responding. Run: ./start.sh"
+
+# Orchestrator
 if [[ -f "${PIDS}/orchestrator.pid" ]]; then
   kill -0 "$(cat "${PIDS}/orchestrator.pid")" 2>/dev/null \
     || fail "Orchestrator pidfile exists but process is dead. Run: ./start.sh"

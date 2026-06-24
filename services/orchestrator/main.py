@@ -63,6 +63,10 @@ RESULT_PREFIX = "labmate:result:"
 RESULT_TTL    = 86_400    # 24 h
 BLOCK_MS      = 5_000
 
+CTX_TOKENS   = int(os.getenv("CTX", "131072"))
+MICRO_THRESH = int(CTX_TOKENS * 0.70)
+FULL_THRESH  = int(CTX_TOKENS * 0.85)
+
 
 def _worker_id() -> str:
     return f"{socket.gethostname()}-{os.getpid()}"
@@ -77,14 +81,23 @@ def _build_mcp_params() -> StdioServerParameters:
     return StdioServerParameters(command=cmd, args=[args_str])
 
 
+def _build_codegraph_params() -> StdioServerParameters:
+    return StdioServerParameters(
+        command="python",
+        args=["-m", "services.codegraph_embedder.server"],
+        env={**os.environ},
+    )
+
+
 class OrchestratorProcess:
     """Owns the full lifecycle of all services and the goal-processing loop."""
 
     def __init__(self) -> None:
-        self._worker_id = _worker_id()
-        self._shutdown  = asyncio.Event()
+        self._worker_id    = _worker_id()
+        self._shutdown     = asyncio.Event()
         self._redis: aioredis.Redis | None = None
         self._mcp:   MCPClientManager | None = None
+        self._codegraph_mcp: MCPClientManager | None = None
 
     # ── top-level run ──────────────────────────────────────────────────────
 
@@ -102,6 +115,14 @@ class OrchestratorProcess:
                 _log.info("MCP bridge ready (%d tools)", len(self._mcp.tools))
             except asyncio.TimeoutError:
                 _log.warning("MCP bridge did not become ready within 30 s — continuing")
+
+            self._codegraph_mcp = MCPClientManager(_build_codegraph_params())
+            await self._codegraph_mcp.start()
+            try:
+                await self._codegraph_mcp.wait_ready(timeout=120.0)
+                _log.info("codegraph semantic search ready (%d tools)", len(self._codegraph_mcp.tools))
+            except asyncio.TimeoutError:
+                _log.warning("codegraph MCP did not become ready within 120 s (index still building?) — continuing")
 
             # Note: skill_router is built below, so we'll update async_orch later
             async_orch = AsyncOrchestrator(
@@ -135,6 +156,10 @@ class OrchestratorProcess:
             except Exception:
                 _log.warning("failed to initialize skill router — continuing without skills", exc_info=True)
 
+            # Wire redis and codegraph_mcp outside the try/except (always available)
+            async_orch.redis = self._redis
+            async_orch.codegraph_mcp = self._codegraph_mcp
+
             # CodingOrchestrator and build_graph have a circular dependency:
             # build_graph(orch, ...) closes node functions over the orch object;
             # CodingOrchestrator(graph, ...) stores the compiled graph.
@@ -160,6 +185,8 @@ class OrchestratorProcess:
 
         if self._mcp:
             await self._mcp.shutdown()
+        if self._codegraph_mcp:
+            await self._codegraph_mcp.shutdown()
 
     async def stop(self) -> None:
         self._shutdown.set()
@@ -216,18 +243,62 @@ class OrchestratorProcess:
         _counter_token = None
 
         try:
-            payload    = json.loads(fields.get("payload", "{}"))
-            task_id    = payload.get("task_id", msg_id)
-            task_text  = payload.get("task", "")
-            session_id = payload.get("session_id") or task_id
-            user_id    = payload.get("user_id", "")
+            payload      = json.loads(fields.get("payload", "{}"))
+            task_id      = payload.get("task_id", msg_id)
+            task_text    = payload.get("task", "")
+            session_id   = payload.get("session_id") or task_id
+            user_id      = payload.get("user_id", "")
             workspace_id = payload.get("workspace_id", "")
+            kind         = payload.get("kind", "task")
+
+            # User-triggered compact — no graph run needed
+            if kind == "compact":
+                _gemma_base = orch._gemma_base
+
+                async def _compact_llm(p: str) -> str:
+                    import litellm as _litellm
+                    r = await _litellm.acompletion(
+                        model="openai/gemma-4-31b",
+                        api_base=_gemma_base,
+                        api_key="not-needed",
+                        messages=[{"role": "user", "content": p}],
+                        extra_body={"thinking_budget_tokens": 0},
+                    )
+                    return r.choices[0].message.content
+
+                result = await storage.context_manager.full_compact(
+                    session_id,
+                    llm_fn=_compact_llm,
+                )
+                await self._write_result(task_id, {"ok": True, **result})
+                return
 
             _emitter = events.EventEmitter(self._redis, task_id)
             _token = events.current_emitter.set(_emitter)
             # Per-task LLM call counter (A/B instrumentation): set a fresh counter for
             # this task's context; the litellm success callback increments it.
             _counter_token = call_counter.start()
+
+            # Emit active status so the frontend agent indicator lights up
+            await _emitter.emit(
+                "agent_status",
+                status={
+                    "brain": {
+                        "model": os.getenv("BRAIN_MODEL", "gemma-31b"),
+                        "endpoint": os.getenv("GEMMA_BASE", "http://localhost:8000/v1"),
+                        "state": "active",
+                        "node": "plan_node",
+                        "thinkingBudget": 3000,
+                    },
+                    "nervousSystem": {
+                        "name": "MCP bridge",
+                        "transport": "stdio",
+                        "state": "connected",
+                        "toolsRegistered": 0,
+                    },
+                    "hands": {"skills": []},
+                },
+            )
             await _emitter.emit("turn.start", task=task_text)
 
             # Fix 2: Record session if user_id and workspace_id are present
@@ -250,9 +321,40 @@ class OrchestratorProcess:
                 except Exception:
                     pass  # upsert failure never blocks task
 
+            # Load AGENT.md (or workspace.instructions DB field) — pinned for this session
+            agent_instructions = ""
+            try:
+                agent_instructions = await storage.workspaces.load_agent_instructions(workspace_id)
+            except Exception:
+                pass
+
+            # Auto-compact: check context fill before running the graph
+            try:
+                ctx_check = await storage.context_manager.build_context(
+                    session_id=session_id,
+                    current_task=task_text,
+                    system_prompt="",
+                    agent_instructions=agent_instructions,
+                )
+                if ctx_check.total_tokens >= FULL_THRESH:
+                    compact_result = await storage.context_manager.full_compact(
+                        session_id,
+                        llm_fn=lambda p: orch.architect(p, thinking_budget=0),
+                    )
+                    await events.emit("compact.auto", freed=compact_result["pruned_messages"])
+                    _log.info("task %s: auto full-compact freed %d messages", task_id, compact_result["pruned_messages"])
+                elif ctx_check.total_tokens >= MICRO_THRESH:
+                    freed = await storage.context_manager.microcompact(session_id)
+                    if freed:
+                        await events.emit("compact.micro", freed=freed)
+                        _log.info("task %s: microcompact freed %d chars", task_id, freed)
+            except Exception as exc:
+                _log.warning("auto-compact check failed (non-fatal): %s", exc)
+
             _log.info("task %s: %.80s", task_id, task_text)
             final_state = await orch.run_task(
                 task_text, session_id, user_id=user_id, workspace_id=workspace_id,
+                agent_instructions=agent_instructions,
             )
             task_succeeded = True
             # If the graph halted for clarification, surface the question — do NOT
@@ -320,6 +422,43 @@ class OrchestratorProcess:
                     not isinstance(final_state, dict) or final_state.get("error") is None
                 ) else "error"
                 _answer = final_state.get("final_answer", "") if isinstance(final_state, dict) else ""
+                # Emit idle status and stub context before turn.done so the frontend
+                # can update the agent indicator before the turn completes
+                await events.emit(
+                    "agent_status",
+                    status={
+                        "brain": {
+                            "model": os.getenv("BRAIN_MODEL", "gemma-31b"),
+                            "endpoint": os.getenv("GEMMA_BASE", "http://localhost:8000/v1"),
+                            "state": "idle",
+                            "node": "chat_node",
+                            "thinkingBudget": 0,
+                        },
+                        "nervousSystem": {
+                            "name": "MCP bridge",
+                            "transport": "stdio",
+                            "state": "connected",
+                            "toolsRegistered": 0,
+                        },
+                        "hands": {"skills": []},
+                    },
+                )
+                ctx_max = CTX_TOKENS
+                await events.emit(
+                    "context",
+                    window={
+                        "max": ctx_max,
+                        "used": 0,
+                        "free": ctx_max,
+                        "segments": {
+                            "systemPrompt": 0,
+                            "skillInstructions": 0,
+                            "conversation": 0,
+                            "workingMemory": 0,
+                            "reasoning": 0,
+                        },
+                    },
+                )
                 await events.emit("turn.done", status=_status, final_answer=_answer)
             except Exception:
                 pass

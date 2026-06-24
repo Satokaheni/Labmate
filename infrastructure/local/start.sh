@@ -155,13 +155,24 @@ fi
 # ─── MCP bridge (TypeScript) — build only; the orchestrator spawns it as a child ─
 MCP_BRIDGE_DIR="${REPO_ROOT}/services/mcp-bridge"
 MCP_DIST="${MCP_BRIDGE_DIR}/dist/index.js"
-# Rebuild when dist is missing OR stale (any src/*.ts newer than the compiled
-# entrypoint). A stale dist — e.g. compiled before a new src/ file was added —
-# loads but crashes the bridge at import time (ERR_MODULE_NOT_FOUND), which the
-# orchestrator only surfaces as "MCP bridge did not become ready".
+# Rebuild when dist is missing OR stale. A stale dist — e.g. compiled before a
+# new src/ file was added — loads but crashes the bridge at import time
+# (ERR_MODULE_NOT_FOUND), which the orchestrator only surfaces as "MCP bridge
+# did not become ready". Two staleness signals:
+#   (a) any src/*.ts newer than the compiled entrypoint (normal edit-then-run);
+#   (b) any src/*.ts with NO matching dist/*.js — catches an incomplete/committed
+#       dist on a FRESH CHECKOUT, where every file has the same mtime so (a) can
+#       never fire (this is exactly how dist/utils/formatError.js went missing).
 _mcp_stale() {
   [[ ! -f "$MCP_DIST" ]] && return 0
-  [[ -n "$(find "$MCP_BRIDGE_DIR/src" -name '*.ts' -newer "$MCP_DIST" -print -quit 2>/dev/null)" ]]
+  [[ -n "$(find "$MCP_BRIDGE_DIR/src" -name '*.ts' -newer "$MCP_DIST" -print -quit 2>/dev/null)" ]] && return 0
+  local ts rel js
+  while IFS= read -r ts; do
+    rel="${ts#"$MCP_BRIDGE_DIR"/src/}"
+    js="$MCP_BRIDGE_DIR/dist/${rel%.ts}.js"
+    [[ -f "$js" ]] || return 0
+  done < <(find "$MCP_BRIDGE_DIR/src" -name '*.ts' ! -name '*.d.ts' 2>/dev/null)
+  return 1
 }
 if _mcp_stale; then
   info "building MCP bridge (npm ci && npm run build) ..."
@@ -222,6 +233,41 @@ for i in $(seq 1 30); do
 done
 pass "Orchestrator running (pid $(cat "$PIDS/orchestrator.pid"))"
 
+# ─── ws_gateway ───────────────────────────────────────────────────────────────
+_gateway_alive() {
+  [[ -f "$PIDS/ws-gateway.pid" ]] && kill -0 "$(cat "$PIDS/ws-gateway.pid")" 2>/dev/null
+}
+_gateway_ready() {
+  curl -fsS "http://localhost:8787/healthz" 2>/dev/null | grep -q "ok"
+}
+if _gateway_alive && _gateway_ready; then
+  info "ws-gateway already running (pid $(cat "$PIDS/ws-gateway.pid"))"
+else
+  if _gateway_alive && ! _gateway_ready; then
+    info "ws-gateway pid exists but /health not responding — restarting ..."
+    kill "$(cat "$PIDS/ws-gateway.pid")" 2>/dev/null || true
+    sleep 1
+  fi
+  if [[ -z "${ADMIN_EMAIL:-}" || -z "${ADMIN_PASSWORD:-}" ]]; then
+    fail "ADMIN_EMAIL and ADMIN_PASSWORD must be set before starting ws-gateway (first-boot account seed). Export them or add them to local.env."
+  fi
+  info "starting ws-gateway on :8787 ..."
+  (
+    source "${SCRIPT_DIR}/local.env"
+    export PYTHONPATH="${REPO_ROOT}"
+    nohup python -m services.ws_gateway.server \
+      >"$LOGS/ws-gateway.log" 2>&1 &
+    echo $! >"$PIDS/ws-gateway.pid"
+  )
+  for i in $(seq 1 30); do
+    _gateway_alive || { fail "ws-gateway exited — see $LOGS/ws-gateway.log"; }
+    _gateway_ready && break
+    sleep 1
+    [[ $i -eq 30 ]] && fail "ws-gateway /health never responded — see $LOGS/ws-gateway.log"
+  done
+  pass "ws-gateway ready :8787 (pid $(cat "$PIDS/ws-gateway.pid"))"
+fi
+
 # ─── Discord connector (optional — only if DISCORD_BOT_TOKEN is set) ──────────
 if [[ -n "${DISCORD_BOT_TOKEN:-}" ]]; then
   _connector_alive() {
@@ -256,5 +302,6 @@ echo "    REDIS_URL=redis://localhost:6379/0"
 echo "    CHROMA_URL=http://localhost:8765  (CHROMA_HOST=localhost CHROMA_PORT=8765)"
 echo "    SEARXNG_URL=http://localhost:${SEARXNG_PORT:-8080}  (web-search skill)"
 echo "    GEMMA_BASE=http://localhost:8000/v1"
+echo "    LABMATE_GATEWAY_URL=ws://localhost:8787/ws  (CLI + Electron connect here)"
 echo "    -> source infrastructure/local/local.env to export these."
 echo "    -> Logs: $LOGS/  PIDs: $PIDS/"

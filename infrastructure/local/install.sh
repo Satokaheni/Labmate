@@ -107,7 +107,7 @@ fi
 # runtime (e.g. skill-worker dies with ModuleNotFoundError: 'frontmatter').
 log "python deps (core services) ..."
 PIP="pip install --break-system-packages -q"
-for svc in memory mcp-bridge orchestrator skill_runner skill_worker cli; do
+for svc in memory mcp-bridge orchestrator skill_runner skill_worker cli ws_gateway; do
   req="${REPO_ROOT}/services/${svc}/requirements.txt"
   [[ -f "$req" ]] && { log "  pip: services/${svc}"; $PIP -r "$req"; }
 done

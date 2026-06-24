@@ -120,13 +120,13 @@ async def test_handle_calls_run_task_and_acks():
     storage.workspaces = AsyncMock()
     storage.workspaces.record_session = AsyncMock()
     storage.workspaces.complete_session = AsyncMock()
+    storage.workspaces.load_agent_instructions = AsyncMock(return_value="")
 
     payload = json.dumps({"task_id": "t1", "task": "do something", "session_id": "s1"})
     await proc._handle("100-0", {"payload": payload}, orch, storage)
 
-    # Routing is single-intent only (routing_mode removed); run_task takes no mode kwarg.
     orch.run_task.assert_awaited_once_with(
-        "do something", "s1", user_id="", workspace_id=""
+        "do something", "s1", user_id="", workspace_id="", agent_instructions=""
     )
     proc._redis.xack.assert_awaited_once_with(GOALS_STREAM, GOALS_GROUP, "100-0")
 
@@ -184,14 +184,14 @@ async def test_handle_uses_task_id_as_session_id_when_absent():
     storage.workspaces = AsyncMock()
     storage.workspaces.record_session = AsyncMock()
     storage.workspaces.complete_session = AsyncMock()
+    storage.workspaces.load_agent_instructions = AsyncMock(return_value="")
 
     # No session_id in payload — should fall back to task_id
     payload = json.dumps({"task_id": "standalone-task", "task": "do it"})
     await proc._handle("400-0", {"payload": payload}, orch, storage)
 
-    # Routing is single-intent only (routing_mode removed); run_task takes no mode kwarg.
     orch.run_task.assert_awaited_once_with(
-        "do it", "standalone-task", user_id="", workspace_id=""
+        "do it", "standalone-task", user_id="", workspace_id="", agent_instructions=""
     )
 
 
@@ -442,7 +442,9 @@ async def test_handle_emits_turn_start_and_done():
     streams = [c.args[0] for c in proc._redis.xadd.await_args_list]
     assert "labmate:events:t-1" in streams
     types = [json.loads(c.args[1]["event"])["type"] for c in proc._redis.xadd.await_args_list]
-    assert types[0] == "turn.start"
+    # agent_status (active) is emitted first, then turn.start
+    assert types[0] == "agent_status"
+    assert "turn.start" in types
     assert "turn.done" in types
 
 

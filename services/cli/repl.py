@@ -13,9 +13,9 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style
 
 from .identity import Identity
-from .redis_client import LabmateRedisClient
 from .renderer import Renderer, extract_answer
 from .session_store import SessionStore, SessionRecord
+from .ws_client import LabmateWSClient
 
 HISTORY_PATH = Path.home() / ".labmate" / "input_history"
 
@@ -37,14 +37,15 @@ class REPLContext:
     workspace_paths: list[str]
     workspace_instructions: str | None
     session_id: str
-    redis_url: str
+    ws_url: str
+    token: str
 
 
 class REPL:
     def __init__(self, ctx: REPLContext) -> None:
         self._ctx = ctx
         self._renderer = Renderer()
-        self._redis = LabmateRedisClient(ctx.redis_url)
+        self._client = LabmateWSClient(ctx.ws_url, ctx.token)
         self._sessions = SessionStore()
         self._prompt_session = PromptSession(
             history=FileHistory(str(HISTORY_PATH)),
@@ -52,6 +53,13 @@ class REPL:
         )
 
     async def run(self) -> None:
+        from .token_store import clear_token
+        try:
+            await self._client.connect()
+        except PermissionError as exc:
+            clear_token()
+            self._renderer.print_error(f"Auth failed: {exc}")
+            return
         self._renderer.print_workspace(self._ctx.workspace_name, self._ctx.workspace_id)
         self._renderer.print_header(
             f"Hi {self._ctx.identity.display_name}! "
@@ -80,7 +88,7 @@ class REPL:
             else:
                 await self._send_task(line)
 
-        await self._redis.aclose()
+        await self._client.aclose()
 
     def _run_shell(self, cmd: str) -> None:
         result = subprocess.run(cmd, shell=True, text=True, capture_output=True)
@@ -151,8 +159,10 @@ class REPL:
             task_preview=task[:120],
         ))
 
+        workspace = self._ctx.workspace_paths[0] if self._ctx.workspace_paths else None
+
         try:
-            await self._redis.push_task(
+            await self._client.push_task(
                 task_id=task_id,
                 task=task,
                 session_id=turn_session_id,
@@ -160,7 +170,9 @@ class REPL:
                 workspace_id=self._ctx.workspace_id,
             )
             from .event_stream import run_task_with_streaming
-            result = await run_task_with_streaming(self._redis, self._renderer, task_id)
+            result = await run_task_with_streaming(
+                self._client, self._renderer, task_id, workspace=workspace
+            )
         except Exception as exc:
             self._renderer.print_error(f"Connection error: {exc}")
             return
@@ -171,8 +183,6 @@ class REPL:
 
         state = result.get("state", {})
         if isinstance(state, dict) and state.get("awaiting_clarification"):
-            # Agent halted to ask for more info — render distinctly. The same
-            # session continues, so the user's next message builds on this turn.
             self._renderer.print_clarification(
                 state.get("clarification_question") or extract_answer(state),
                 session_id=turn_session_id,

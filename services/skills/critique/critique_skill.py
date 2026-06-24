@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
+import re
 import subprocess
+import time
 from typing import TYPE_CHECKING, Literal
 
 try:
@@ -11,26 +14,52 @@ except ImportError:
 # Lazy tokenizer: loaded on first use so import of this module does not
 # trigger the heavy transformers + sklearn stack at test-collection time.
 _TOKENIZER = None
+_TOKENIZER_TRIED = False
+# The configured Gemma tokenizer id ("google/gemma-4-9b-it") is NOT a published
+# HF repo, so a naive from_pretrained() makes a network call that hangs/fails —
+# which previously stalled the critique convergence check until the verify gate's
+# ~60s dispatch timeout killed it. We load local-files-only (fails fast, never
+# hits the network) and fall back to a regex split when unavailable. This diff is
+# only a DoT convergence heuristic (how different are two revisions), not context
+# accounting, so an approximate tokenization is acceptable here (CLAUDE.md §3
+# concerns context-window counts). Override the id via GEMMA_TOKENIZER.
+_GEMMA_TOKENIZER = os.getenv("GEMMA_TOKENIZER", "google/gemma-4-9b-it")
+_WORD_RE = re.compile(r"\w+|[^\w\s]")
 
 
 def _get_tokenizer():
-    global _TOKENIZER
-    if _TOKENIZER is None:
-        from transformers import AutoTokenizer
-        _TOKENIZER = AutoTokenizer.from_pretrained("google/gemma-4-9b-it")
+    """Best-effort Gemma tokenizer; returns None (never raises, never hangs on
+    the network) when it can't be loaded from the local HF cache. Tried once."""
+    global _TOKENIZER, _TOKENIZER_TRIED
+    if _TOKENIZER is None and not _TOKENIZER_TRIED:
+        _TOKENIZER_TRIED = True
+        try:
+            from transformers import AutoTokenizer
+            _TOKENIZER = AutoTokenizer.from_pretrained(
+                _GEMMA_TOKENIZER, local_files_only=True
+            )
+        except Exception:
+            _TOKENIZER = None
     return _TOKENIZER
+
+
+def _tokenize(text: str) -> list:
+    """Token list for the convergence heuristic: real Gemma tokenizer if it is
+    locally available, otherwise a deterministic offline regex split."""
+    tok = _get_tokenizer()
+    if tok is not None:
+        return tok.encode(text)
+    return _WORD_RE.findall(text)
 
 
 def _token_diff(a: str, b: str) -> int:
     """Token-level symmetric-difference size between two outputs.
 
-    Uses the Gemma SentencePiece tokenizer (never tiktoken). A small value
-    means the revision is materially identical to the previous output, which
-    is the computational signature of Degeneration-of-Thought (DoT).
+    A small value means the revision is materially identical to the previous
+    output, which is the computational signature of Degeneration-of-Thought (DoT).
     """
-    tok = _get_tokenizer()
-    ta = set(tok.encode(a))
-    tb = set(tok.encode(b))
+    ta = set(_tokenize(a))
+    tb = set(_tokenize(b))
     return len(ta.symmetric_difference(tb))
 
 
@@ -97,6 +126,21 @@ class CritiqueSkill:
     STOP_THRESHOLD: float = 0.90
     MIN_CONFIDENCE: float = 0.50
     MEMORY_WINDOW: int = 3
+    # Wall-clock budget for the whole reflexion loop. The verify gate dispatches
+    # critique with a ~60s SkillRouter timeout; a single iteration is ~16s but a
+    # large artifact that never crosses STOP_THRESHOLD can run all MAX_ITERS and
+    # blow the window — which kills the dispatch and makes the gate silently
+    # fail-open. We instead stop iterating once the deadline is near and return
+    # the best-so-far verdict, so the gate always gets a real result in time.
+    # Default 45s leaves headroom under the 60s dispatch timeout. Override via
+    # CRITIQUE_MAX_WALL_SECONDS (0 disables the deadline).
+    MAX_WALL_SECONDS: float = float(os.getenv("CRITIQUE_MAX_WALL_SECONDS", "45"))
+    # CoVe (writing) verification fans out one isolated LLM call PER question, so
+    # the question count dominates writing-critique latency (1 plan + N answers +
+    # 1 evaluator calls). On a single-GPU Q4 host each call is ~12s, so 5 questions
+    # = ~7 calls = ~80s. Cap the count to keep the gate within its dispatch budget.
+    # Override via CRITIQUE_COVE_QUESTIONS.
+    COVE_QUESTIONS: int = int(os.getenv("CRITIQUE_COVE_QUESTIONS", "3"))
 
     def __init__(self, lm_client, constitution: list[str] | None = None):
         self._lm = lm_client            # instructor-wrapped LLM client
@@ -151,12 +195,13 @@ class CritiqueSkill:
         The draft IS in context here — only the planning step sees it.
         """
         prompt = (
-            "Read the following draft and list up to 5 specific, checkable factual "
-            "claims as verification questions, one per line:\n\n"
+            f"Read the following draft and list up to {self.COVE_QUESTIONS} specific, "
+            "checkable factual claims as verification questions, one per line:\n\n"
             f"{output}"
         )
         raw = self._lm.complete(prompt)
-        return [line.strip("- ").strip() for line in raw.strip().split("\n") if line.strip()][:5]
+        lines = [line.strip("- ").strip() for line in raw.strip().split("\n") if line.strip()]
+        return lines[: self.COVE_QUESTIONS]
 
     def _answer_in_isolation(self, question: str) -> str:
         """Answer a single verification question WITHOUT the draft in context.
@@ -209,6 +254,28 @@ class CritiqueSkill:
             ],
             temperature=0.1,
         )
+
+    def score_once(
+        self,
+        output: str,
+        task: str,
+        critique_type: Literal["code", "writing"] = "code",
+    ) -> Critique:
+        """Single-pass evaluation for the A2 verify GATE.
+
+        The gate consumes only {score, verdict, notes}, so the full critique()
+        machinery — the reflexion loop plus the CoVe per-question LLM fan-out —
+        is unnecessary and far too slow here: it makes 7-12+ model calls and runs
+        >120s on a single-GPU Q4 host, blowing the dispatch window and making the
+        gate silently fail-open. This path makes ONE evaluator call. Grounding is
+        limited to deterministic signals (tests/lint for code when provided; IMRaD
+        structure for writing) — no per-question LLM verification. The full
+        critique() loop remains for standalone refinement callers.
+        """
+        signals = ExternalSignals()
+        if critique_type == "writing":
+            signals.retrieval_snippets = _check_imrad_structure(output)
+        return self._invoke_evaluator(task, output, signals, memory=[])
 
     def _reflect(self, task: str, output: str, crit: Critique) -> Reflection:
         """Convert the evaluator's critique into concise verbal lessons for
@@ -380,6 +447,7 @@ class CritiqueSkill:
         candidate = output
         memory: list[Reflection] = []
         last_crit: Critique | None = None
+        start = time.monotonic()
 
         for _ in range(self.MAX_ITERS):
             signals = self.ground_with_signals(
@@ -401,6 +469,12 @@ class CritiqueSkill:
 
             if crit.verdict == "pass" or crit.score >= self.STOP_THRESHOLD:
                 return crit, best_output
+
+            # Wall-clock guard: a reflect+refine round is the expensive part. If we
+            # cannot afford another one before the dispatch deadline, stop now and
+            # return the freshest verdict rather than getting killed mid-refine.
+            if self.MAX_WALL_SECONDS > 0 and (time.monotonic() - start) >= self.MAX_WALL_SECONDS:
+                break
 
             if crit.confidence >= self.MIN_CONFIDENCE:
                 reflection = self._reflect(task, candidate, crit)

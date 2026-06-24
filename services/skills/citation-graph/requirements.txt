@@ -2,5 +2,6 @@ mcp
 semanticscholar>=0.8
 httpx
 pydantic>=2
+python-dotenv>=1.0
 
 # Dev note: tests also need `pytest` and `pytest-asyncio`, installed at repo level.
