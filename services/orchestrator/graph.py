@@ -29,6 +29,13 @@ AMBIGUITY_THRESHOLD = float(os.getenv("AMBIGUITY_THRESHOLD", "0.6"))
 # A2: artifacts scoring below this route back through reflect for revision.
 CRITIQUE_THRESHOLD = float(os.getenv("CRITIQUE_THRESHOLD", "0.90"))
 
+# Critique is a heavy multi-call skill (writing CoVe fans out one LLM call per
+# verification question), so it needs a longer dispatch budget than the router's
+# default 60s. Must stay UNDER the skill-worker's CALL_TIMEOUT (default 120s) so
+# the worker writes the result before the orchestrator stops polling — otherwise
+# the gate times out and silently fails open. Override via CRITIQUE_DISPATCH_TIMEOUT.
+CRITIQUE_DISPATCH_TIMEOUT = float(os.getenv("CRITIQUE_DISPATCH_TIMEOUT", "110"))
+
 # FIX 10 (A3): thinking budget for the assess_ambiguity node's architect() call
 #   (was hardcoded 1024; a lower default is faster on the local Q4 model).
 ASSESS_THINKING_BUDGET = int(os.getenv("ASSESS_THINKING_BUDGET", "768"))
@@ -568,6 +575,7 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
                     "task": state.get("root_goal", ""),
                     "critique_type": atype,
                 },
+                timeout=CRITIQUE_DISPATCH_TIMEOUT,
             )
             if isinstance(res, dict) and res.get("ok"):
                 payload = res.get("result")

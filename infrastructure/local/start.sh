@@ -155,13 +155,24 @@ fi
 # ─── MCP bridge (TypeScript) — build only; the orchestrator spawns it as a child ─
 MCP_BRIDGE_DIR="${REPO_ROOT}/services/mcp-bridge"
 MCP_DIST="${MCP_BRIDGE_DIR}/dist/index.js"
-# Rebuild when dist is missing OR stale (any src/*.ts newer than the compiled
-# entrypoint). A stale dist — e.g. compiled before a new src/ file was added —
-# loads but crashes the bridge at import time (ERR_MODULE_NOT_FOUND), which the
-# orchestrator only surfaces as "MCP bridge did not become ready".
+# Rebuild when dist is missing OR stale. A stale dist — e.g. compiled before a
+# new src/ file was added — loads but crashes the bridge at import time
+# (ERR_MODULE_NOT_FOUND), which the orchestrator only surfaces as "MCP bridge
+# did not become ready". Two staleness signals:
+#   (a) any src/*.ts newer than the compiled entrypoint (normal edit-then-run);
+#   (b) any src/*.ts with NO matching dist/*.js — catches an incomplete/committed
+#       dist on a FRESH CHECKOUT, where every file has the same mtime so (a) can
+#       never fire (this is exactly how dist/utils/formatError.js went missing).
 _mcp_stale() {
   [[ ! -f "$MCP_DIST" ]] && return 0
-  [[ -n "$(find "$MCP_BRIDGE_DIR/src" -name '*.ts' -newer "$MCP_DIST" -print -quit 2>/dev/null)" ]]
+  [[ -n "$(find "$MCP_BRIDGE_DIR/src" -name '*.ts' -newer "$MCP_DIST" -print -quit 2>/dev/null)" ]] && return 0
+  local ts rel js
+  while IFS= read -r ts; do
+    rel="${ts#"$MCP_BRIDGE_DIR"/src/}"
+    js="$MCP_BRIDGE_DIR/dist/${rel%.ts}.js"
+    [[ -f "$js" ]] || return 0
+  done < <(find "$MCP_BRIDGE_DIR/src" -name '*.ts' ! -name '*.d.ts' 2>/dev/null)
+  return 1
 }
 if _mcp_stale; then
   info "building MCP bridge (npm ci && npm run build) ..."

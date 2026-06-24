@@ -325,7 +325,7 @@ class SkillRouter:
         return None
 
     async def execute(
-        self, skill_name: str, tool: str, arguments: dict
+        self, skill_name: str, tool: str, arguments: dict, timeout: float | None = None
     ) -> dict[str, Any]:
         """
         Dispatch to the skill worker via Redis Streams, then poll for result.
@@ -337,10 +337,16 @@ class SkillRouter:
             skill_name: Name of the skill
             tool: Tool to invoke within the skill
             arguments: Arguments to pass to the tool
+            timeout: Optional per-call poll budget (seconds). Defaults to the
+                router's call_timeout. Heavy multi-call skills (e.g. the critique
+                verify gate, which fans out CoVe questions) pass a larger value —
+                it must stay under the skill-worker's CALL_TIMEOUT (default 120s)
+                so the worker actually writes the result before we stop polling.
 
         Returns:
             Result dict {"ok": bool, "result": ...} or {"ok": False, "error": "timeout"}
         """
+        call_timeout = timeout if timeout is not None else self._call_timeout
         task_id = str(uuid.uuid4())
         key = f"{RESULT_PREFIX}{task_id}"
 
@@ -374,7 +380,7 @@ class SkillRouter:
                         }
 
                 elapsed = asyncio.get_event_loop().time() - start
-                if elapsed > self._call_timeout:
+                if elapsed > call_timeout:
                     _log.warning("task %s timed out after %.1f s", task_id, elapsed)
                     return {"ok": False, "error": "timeout"}
 

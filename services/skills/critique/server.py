@@ -24,6 +24,21 @@ log = logging.getLogger("critique.server")
 
 GEMMA_BASE = os.getenv("GEMMA_BASE", "http://localhost:8000/v1")
 
+# CLAUDE.md §6: every llama.cpp request MUST set thinking_budget_tokens explicitly.
+# Post-April-2026 builds default it to INT_MAX when unset, which makes the model
+# reason unbounded and the critique reflexion loop (up to MAX_ITERS × several
+# calls) blow past the SkillRouter dispatch timeout (~60s) — the observed hang.
+# These calls are mechanical (generate/verify/score), so a small budget keeps
+# each call fast and deterministic. Override via CRITIQUE_THINKING_BUDGET.
+CRITIQUE_THINKING_BUDGET = int(os.getenv("CRITIQUE_THINKING_BUDGET", "512"))
+# instructor re-asks the model whenever the structured Critique fails schema
+# validation. The Q4 model fails this complex schema often, so an unbounded
+# (default) retry count fanned a single evaluator call out to ~6 model calls
+# (~55s). Cap it: a couple of attempts, then let the gate fall open gracefully
+# (server returns its error → verify treats the artifact as passed). Override
+# via CRITIQUE_MAX_RETRIES.
+CRITIQUE_MAX_RETRIES = int(os.getenv("CRITIQUE_MAX_RETRIES", "2"))
+
 
 class _GemmaClient:
     """Sync litellm shim that fulfils the CritiqueSkill lm_client interface."""
@@ -34,6 +49,7 @@ class _GemmaClient:
             api_base=GEMMA_BASE,
             api_key="not-needed",
             messages=[{"role": "user", "content": prompt}],
+            extra_body={"thinking_budget_tokens": CRITIQUE_THINKING_BUDGET},
         )
         return r.choices[0].message.content or ""
 
@@ -47,6 +63,8 @@ class _GemmaClient:
             temperature=temperature,
             api_base=GEMMA_BASE,
             api_key="not-needed",
+            max_retries=CRITIQUE_MAX_RETRIES,
+            extra_body={"thinking_budget_tokens": CRITIQUE_THINKING_BUDGET},
         )
 
 
@@ -90,7 +108,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         critique_type: Literal["code", "writing"] = arguments.get("critique_type", "code")
 
         def _run() -> dict:
-            crit, _ = _skill.critique(output, task, critique_type)
+            # Single-pass scoring: the verify gate needs only score/verdict/notes,
+            # not the full (slow) reflexion+CoVe loop. See CritiqueSkill.score_once.
+            crit = _skill.score_once(output, task, critique_type)
             notes = "; ".join(i.explanation for i in crit.issues_found)
             return {"score": crit.score, "verdict": crit.verdict, "notes": notes}
 
