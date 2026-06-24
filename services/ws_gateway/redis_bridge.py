@@ -7,6 +7,7 @@ import redis.asyncio as aioredis
 
 GOALS_STREAM = "labmate:goals"
 EVENTS_STREAM_PREFIX = "labmate:events:"
+TOOL_RESULTS_PREFIX = "labmate:tool-results:"
 
 
 async def push_task(
@@ -104,6 +105,15 @@ def translate_event(raw: dict, *, turn_id: str) -> Optional[dict]:
             "durationMs": raw.get("duration_ms", 0),
         }
 
+    if etype == "tool.request":
+        return {
+            "type": "tool.request",
+            "turnId": turn_id,
+            "toolRequestId": raw.get("tool_request_id", ""),
+            "name": raw.get("name", ""),
+            "args": raw.get("args", {}),
+        }
+
     if etype == "answer.delta":
         return {"type": "answer.delta", "turnId": turn_id, "text": raw.get("text", "")}
 
@@ -111,3 +121,24 @@ def translate_event(raw: dict, *, turn_id: str) -> Optional[dict]:
         return {"type": "turn.done", "turnId": turn_id, "status": raw.get("status", "complete")}
 
     return None
+
+
+async def write_tool_result(
+    redis: aioredis.Redis,
+    task_id: str,
+    tool_request_id: str,
+    result,
+    error: Optional[str] = None,
+) -> None:
+    """Write a local-tool result frame to labmate:tool-results:<task_id>."""
+    await redis.xadd(
+        f"{TOOL_RESULTS_PREFIX}{task_id}",
+        {
+            "result": json.dumps(
+                {"tool_request_id": tool_request_id, "result": result, "error": error},
+                default=str,
+            )
+        },
+        maxlen=200,
+        approximate=True,
+    )

@@ -12,7 +12,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from services.ws_gateway.auth import AuthService, build_auth_router
 from services.ws_gateway.boot import CheckFn, run_boot_sequence
 from services.ws_gateway.config import Config
-from services.ws_gateway.redis_bridge import push_task, tail_task_events, translate_event
+from services.ws_gateway.redis_bridge import (
+    push_task,
+    tail_task_events,
+    translate_event,
+    write_tool_result,
+)
 from services.ws_gateway.sessions import InMemorySessionStore, build_sessions_router
 from services.ws_gateway.user_store import MongoUserStore
 
@@ -39,13 +44,12 @@ async def _handle_send(
     ws: WebSocket,
     redis: aioredis.Redis,
     msg: dict,
-) -> None:
+) -> tuple[str, asyncio.Task]:
     task_id = "task-" + uuid.uuid4().hex[:12]
     turn_id = "turn-" + uuid.uuid4().hex[:12]
     session_id = msg.get("sessionId", "")
     text = msg.get("text", "")
 
-    # Tell the client a turn was created so it can render the user bubble + thinking.
     await ws.send_json(
         {
             "type": "turn.created",
@@ -61,7 +65,8 @@ async def _handle_send(
     )
 
     await push_task(redis, task_id, task=text, session_id=session_id)
-    await _relay_task(ws, redis, task_id, turn_id)
+    relay = asyncio.create_task(_relay_task(ws, redis, task_id, turn_id))
+    return task_id, relay
 
 
 async def _ws_loop(
@@ -87,11 +92,25 @@ async def _ws_loop(
     await run_boot_sequence(emit, boot_checks)
 
     # ── client message loop ────────────────────────────────────────────────
+    active_task_id: str | None = None
+    relay: asyncio.Task | None = None
     while True:
         msg = await ws.receive_json()
         mtype = msg.get("type")
         if mtype == "send":
-            await _handle_send(ws, redis, msg)
+            # Await the previous relay if one is still running (one turn at a time).
+            if relay is not None and not relay.done():
+                await relay
+            active_task_id, relay = await _handle_send(ws, redis, msg)
+        elif mtype == "tool.result":
+            if active_task_id is not None:
+                await write_tool_result(
+                    redis,
+                    active_task_id,
+                    msg.get("toolRequestId", ""),
+                    msg.get("result"),
+                    msg.get("error"),
+                )
         elif mtype == "cancel":
             await ws.send_json({"type": "turn.done", "turnId": msg.get("turnId", ""), "status": "error"})
         elif mtype in ("session.new", "session.open", "session.rename", "debug.set"):

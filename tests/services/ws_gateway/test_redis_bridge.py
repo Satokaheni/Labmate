@@ -5,7 +5,9 @@ from services.ws_gateway.redis_bridge import (
     push_task,
     tail_task_events,
     translate_event,
+    write_tool_result,
     GOALS_STREAM,
+    TOOL_RESULTS_PREFIX,
 )
 
 
@@ -80,3 +82,28 @@ def test_translate_turn_done():
 def test_translate_unknown_returns_none():
     raw = {"type": "answer.done", "task_id": "t1", "seq": 1, "text": "x"}
     assert translate_event(raw, turn_id="turn-1") is None
+
+
+def test_translate_tool_request_passthrough():
+    raw = {
+        "type": "tool.request", "task_id": "t1", "seq": 4,
+        "tool_request_id": "req-9", "name": "read_file", "args": {"path": "a.txt"},
+    }
+    out = translate_event(raw, turn_id="turn-1")
+    assert out == {
+        "type": "tool.request",
+        "turnId": "turn-1",
+        "toolRequestId": "req-9",
+        "name": "read_file",
+        "args": {"path": "a.txt"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_write_tool_result_xadds_to_results_stream(redis):
+    await write_tool_result(redis, "task-7", "req-9", {"content": "hi"}, error=None)
+    entries = await redis.xrange(f"{TOOL_RESULTS_PREFIX}task-7")
+    assert len(entries) == 1
+    _id, fields = entries[0]
+    frame = json.loads(fields["result"])
+    assert frame == {"tool_request_id": "req-9", "result": {"content": "hi"}, "error": None}

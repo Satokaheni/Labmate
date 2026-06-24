@@ -100,3 +100,47 @@ def test_send_pushes_task_and_relays_events(client, app, redis):
         assert delta == {"type": "answer.delta", "turnId": turn_id, "text": "ok"}
         done = ws.receive_json()
         assert done == {"type": "turn.done", "turnId": turn_id, "status": "complete"}
+
+
+def test_tool_result_message_writes_to_redis(client, app, redis):
+    """A tool.result message from the client is written to labmate:tool-results:<task_id>."""
+    import asyncio
+    token = app.state.auth.mint_token({"id": "u-001", "email": "admin@labmate.local", "role": "admin"})
+    with client.websocket_connect("/ws") as ws:
+        # auth + boot
+        ws.send_json({"type": "auth", "token": token})
+        assert ws.receive_json()["type"] == "auth.ok"
+        ev = ws.receive_json()
+        while ev["type"] != "boot.ready":
+            ev = ws.receive_json()
+
+        # send a task to establish an active_task_id
+        ws.send_json({"type": "send", "sessionId": "s1", "mode": "chat", "text": "read a file"})
+        created = ws.receive_json()
+        assert created["type"] == "turn.created"
+
+        # get the task_id from the goals stream
+        entries = asyncio.get_event_loop().run_until_complete(redis.xrange("labmate:goals"))
+        payload = json.loads(entries[0][1]["payload"])
+        task_id = payload["task_id"]
+
+        # send a tool.result (simulating Electron completing a local tool)
+        ws.send_json({
+            "type": "tool.result",
+            "toolRequestId": "req-42",
+            "result": {"content": "file contents"},
+            "error": None,
+        })
+
+        # yield control so the server can process the tool.result
+        asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.05))
+
+        # verify the frame landed in the tool-results stream
+        result_entries = asyncio.get_event_loop().run_until_complete(
+            redis.xrange(f"labmate:tool-results:{task_id}")
+        )
+        assert len(result_entries) == 1
+        frame = json.loads(result_entries[0][1]["result"])
+        assert frame["tool_request_id"] == "req-42"
+        assert frame["result"] == {"content": "file contents"}
+        assert frame["error"] is None
