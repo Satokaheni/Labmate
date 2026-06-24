@@ -31,12 +31,15 @@ function createWindow(): void {
 
 ipcMain.handle(
   'labmate:tool-execute',
-  async (_evt, payload: { name: string; args: Record<string, unknown> }) => {
-    const { name, args } = payload;
-    if (!LOCAL_TOOL_NAMES.includes(name as LocalToolName)) {
-      return { error: `unknown local tool: ${name}` };
-    }
+  async (_evt, payload: unknown) => {
     try {
+      if (!payload || typeof payload !== 'object') {
+        return { error: 'invalid payload' };
+      }
+      const { name, args } = payload as { name: string; args: Record<string, unknown> };
+      if (!LOCAL_TOOL_NAMES.includes(name as LocalToolName)) {
+        return { error: `unknown local tool: ${name}` };
+      }
       const result = await executeTool(name as LocalToolName, args ?? {}, WORKSPACE);
       return { result };
     } catch (err) {
@@ -45,7 +48,7 @@ ipcMain.handle(
   },
 );
 
-app.whenReady().then(createWindow);
+void app.whenReady().then(createWindow);
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
