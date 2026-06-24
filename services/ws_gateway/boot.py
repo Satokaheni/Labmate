@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import os
-from typing import Awaitable, Callable
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 import redis.asyncio as aioredis
+
+if TYPE_CHECKING:
+    from services.ws_gateway.sessions import InMemorySessionStore
 
 # (state, detail, message)
 CheckResult = tuple[str, str, str]
@@ -73,6 +76,8 @@ async def check_workspace(*, workspace_path: str | None = None) -> CheckResult:
 async def run_boot_sequence(
     emit: Callable[[dict], Awaitable[None]],
     checks: dict[str, CheckFn],
+    *,
+    session_store: "InMemorySessionStore | None" = None,
 ) -> bool:
     """Emit boot.plan, then per-subsystem starting/ready updates, then boot.ready.
 
@@ -98,10 +103,16 @@ async def run_boot_sequence(
             await emit({"type": "boot.error", "id": sid, "message": message})
 
     if all_required_ok:
+        sessions = session_store.list() if session_store is not None else []
+        active_id = sessions[0]["id"] if sessions else None
         await emit(
             {
                 "type": "boot.ready",
-                "sessionBootstrap": {"sessions": [], "activeSessionId": None, "agentStatus": _idle_status()},
+                "sessionBootstrap": {
+                    "sessions": sessions,
+                    "activeSessionId": active_id,
+                    "agentStatus": _idle_status(),
+                },
             }
         )
     return all_required_ok

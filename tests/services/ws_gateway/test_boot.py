@@ -80,3 +80,41 @@ async def test_run_boot_sequence_emits_updates_then_ready(redis):
     # one starting + one ready update per subsystem (5*2 = 10) between plan and ready
     updates = [e for e in emitted if e["type"] == "boot.update"]
     assert len(updates) == 10
+
+
+@pytest.mark.asyncio
+async def test_run_boot_sequence_warm_start_includes_sessions():
+    """boot.ready must include sessions from the store if one is provided."""
+    from services.ws_gateway.sessions import InMemorySessionStore
+    store = InMemorySessionStore()
+    store.create(title="My session", mode="chat", session_id="s-abc")
+
+    emitted = []
+    async def emit(ev):
+        emitted.append(ev)
+
+    async def ready_check(**_):
+        return ("ready", "ok", "")
+
+    checks = {k: ready_check for k in ("brain", "nervous_system", "hands", "memory", "workspace")}
+    await run_boot_sequence(emit, checks, session_store=store)
+
+    boot_ready = next(e for e in emitted if e["type"] == "boot.ready")
+    assert boot_ready["sessionBootstrap"]["sessions"] == store.list()
+    assert boot_ready["sessionBootstrap"]["activeSessionId"] == "s-abc"
+
+
+@pytest.mark.asyncio
+async def test_run_boot_sequence_empty_store_sends_empty_sessions():
+    """boot.ready with no sessions → sessions=[], activeSessionId=None."""
+    from services.ws_gateway.sessions import InMemorySessionStore
+    emitted = []
+    async def emit(ev):
+        emitted.append(ev)
+    async def ready_check(**_):
+        return ("ready", "ok", "")
+    checks = {k: ready_check for k in ("brain", "nervous_system", "hands", "memory", "workspace")}
+    await run_boot_sequence(emit, checks, session_store=InMemorySessionStore())
+    boot_ready = next(e for e in emitted if e["type"] == "boot.ready")
+    assert boot_ready["sessionBootstrap"]["sessions"] == []
+    assert boot_ready["sessionBootstrap"]["activeSessionId"] is None

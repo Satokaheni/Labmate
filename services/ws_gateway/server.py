@@ -74,6 +74,7 @@ async def _ws_loop(
     auth: AuthService,
     redis: aioredis.Redis,
     boot_checks: dict[str, CheckFn],
+    store: InMemorySessionStore,
 ) -> None:
     # ── auth handshake: first frame MUST be {type:'auth',token} ────────────
     first = await ws.receive_json()
@@ -89,7 +90,7 @@ async def _ws_loop(
     async def emit(ev: dict) -> None:
         await ws.send_json(ev)
 
-    await run_boot_sequence(emit, boot_checks)
+    await run_boot_sequence(emit, boot_checks, session_store=store)
 
     # ── client message loop ────────────────────────────────────────────────
     active_task_id: str | None = None
@@ -187,7 +188,7 @@ def build_app(
     async def ws_endpoint(ws: WebSocket) -> None:
         await ws.accept()
         try:
-            await _ws_loop(ws, auth, r, boot_checks)
+            await _ws_loop(ws, auth, r, boot_checks, store)
         except WebSocketDisconnect:
             return
 
