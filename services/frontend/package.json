@@ -2,9 +2,14 @@
   "name": "labmate-frontend",
   "private": true,
   "version": "0.1.0",
+  "main": "dist-electron/main.js",
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "build:main": "tsc -p electron/tsconfig.json && npm run postbuild:main",
+    "postbuild:main": "node -e \"require('fs').writeFileSync('dist-electron/package.json', JSON.stringify({type:'commonjs'},null,2))\"",
+    "dev:electron": "concurrently -k \"vite\" \"wait-on tcp:8080 && npm run build:main && cross-env ELECTRON_DEV=1 electron .\"",
+    "build:electron": "tsc -b && vite build && npm run build:main && electron-builder",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run",
@@ -23,11 +28,16 @@
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^5.0.0",
     "autoprefixer": "^10.4.19",
+    "concurrently": "^9.2.3",
+    "cross-env": "^7.0.3",
+    "electron": "^29.4.6",
+    "electron-builder": "^25.1.8",
     "jsdom": "^25.0.0",
     "postcss": "^8.4.39",
     "tailwindcss": "^3.4.4",
     "typescript": "^5.5.3",
     "vite": "^6.4.3",
-    "vitest": "^3.2.6"
+    "vitest": "^3.2.6",
+    "wait-on": "^8.0.5"
   }
 }
