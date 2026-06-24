@@ -146,6 +146,55 @@ def test_tool_result_message_writes_to_redis(client, app, redis):
         assert frame["error"] is None
 
 
+def test_cancel_writes_redis_flag_and_emits_turn_done_error(client, app, redis):
+    """cancel must write the Redis cancel key and emit turn.done:error."""
+    import asyncio
+    import json as _json
+    import fakeredis as _fakeredis
+    from fakeredis._server import FakeServer
+
+    token = app.state.auth.mint_token({"id": "u-001", "email": "admin@labmate.local", "role": "admin"})
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "auth", "token": token})
+        assert ws.receive_json()["type"] == "auth.ok"
+        ev = ws.receive_json()
+        while ev["type"] != "boot.ready":
+            ev = ws.receive_json()
+
+        # Start a task
+        ws.send_json({"type": "send", "sessionId": "s1", "mode": "chat", "text": "run"})
+        ev = ws.receive_json()
+        while ev["type"] != "turn.created":
+            ev = ws.receive_json()
+        turn_id = ev["turn"]["id"]
+
+        # Get the task_id from goals stream
+        entries = asyncio.get_event_loop().run_until_complete(redis.xrange("labmate:goals"))
+        task_id = _json.loads(entries[-1][1]["payload"])["task_id"]
+
+        # Cancel the turn
+        ws.send_json({"type": "cancel", "sessionId": "s1", "turnId": turn_id})
+        resp = ws.receive_json()
+        assert resp["type"] == "turn.done"
+        assert resp["status"] == "error"
+        assert resp["turnId"] == turn_id
+
+    # After the WS context closes, check the Redis cancel flag.
+    # We use a synchronous FakeRedis sharing the same FakeServer (located by pool host key)
+    # to avoid cross-event-loop issues with the async fakeredis connection's internal locks.
+    pool_kwargs = redis.connection_pool.connection_kwargs
+    host = pool_kwargs.get("host")
+    port = pool_kwargs.get("port", 6379)
+    version = pool_kwargs.get("version", (7,))
+    server_type = pool_kwargs.get("server_type", "redis")
+    v_str = ".".join(str(x) for x in version[:1])
+    server_key = f"{host}:{port}:{server_type}:v{v_str}"
+    shared_server = FakeServer.get_server(server_key, version=version, server_type=server_type)
+    r_sync = _fakeredis.FakeRedis(server=shared_server, decode_responses=True)
+    flag = r_sync.exists(f"labmate:cancel:{task_id}")
+    assert flag == 1
+
+
 def _boot_to_ready(ws, app):
     """Authenticate and drain all boot frames. Returns the boot.ready event."""
     token = app.state.auth.mint_token({"id": "u-001", "email": "admin@labmate.local", "role": "admin"})

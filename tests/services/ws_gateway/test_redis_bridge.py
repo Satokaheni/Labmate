@@ -145,3 +145,16 @@ def test_translate_artifact_created_passthrough():
     raw = {"type": "artifact_created", "artifact": artifact}
     out = translate_event(raw, turn_id="t1")
     assert out == {"type": "artifact.created", "turnId": "t1", "artifact": artifact}
+
+
+@pytest.mark.asyncio
+async def test_write_cancel_sets_redis_key(redis):
+    from services.ws_gateway.redis_bridge import write_cancel, check_cancel
+    await write_cancel(redis, "task-cancel-1")
+    assert await check_cancel(redis, "task-cancel-1") is True
+
+
+@pytest.mark.asyncio
+async def test_check_cancel_returns_false_when_not_set(redis):
+    from services.ws_gateway.redis_bridge import check_cancel
+    assert await check_cancel(redis, "task-not-cancelled") is False

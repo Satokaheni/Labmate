@@ -155,3 +155,17 @@ async def write_tool_result(
         maxlen=200,
         approximate=True,
     )
+
+
+CANCEL_PREFIX = "labmate:cancel:"
+CANCEL_TTL = 120  # seconds
+
+
+async def write_cancel(redis: aioredis.Redis, task_id: str) -> None:
+    """Signal that task_id should be cancelled. TTL ensures cleanup."""
+    await redis.set(f"{CANCEL_PREFIX}{task_id}", "1", ex=CANCEL_TTL)
+
+
+async def check_cancel(redis: aioredis.Redis, task_id: str) -> bool:
+    """Return True if a cancel signal exists for task_id."""
+    return bool(await redis.exists(f"{CANCEL_PREFIX}{task_id}"))

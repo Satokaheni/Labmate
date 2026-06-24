@@ -17,6 +17,7 @@ from services.ws_gateway.redis_bridge import (
     push_task,
     tail_task_events,
     translate_event,
+    write_cancel,
     write_tool_result,
 )
 from services.ws_gateway.sessions import InMemorySessionStore, build_sessions_router
@@ -187,7 +188,16 @@ async def _ws_loop(
                     msg.get("error"),
                 )
         elif mtype == "cancel":
-            await ws.send_json({"type": "turn.done", "turnId": msg.get("turnId", ""), "status": "error"})
+            turn_id_to_cancel = msg.get("turnId", "")
+            # Stop the relay task so no more events flow to the client
+            if relay is not None and not relay.done():
+                relay.cancel()
+            # Write Redis cancel flag so the orchestrator can detect cancellation
+            if active_task_id is not None:
+                await write_cancel(redis, active_task_id)
+            await ws.send_json({"type": "turn.done", "turnId": turn_id_to_cancel, "status": "error"})
+            relay = None
+            active_task_id = None
         elif mtype == "session.new":
             mode = msg.get("mode", "chat")
             session = store.create(title="New session", mode=mode)

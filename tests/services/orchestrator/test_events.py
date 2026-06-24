@@ -114,3 +114,20 @@ async def test_handle_emits_agent_status_active_and_idle():
     states = [e["status"]["brain"]["state"] for e in agent_status_events]
     assert "active" in states
     assert "idle" in states
+
+
+@pytest.mark.asyncio
+async def test_is_cancelled_returns_true_when_flag_set():
+    import fakeredis.aioredis
+    from services.orchestrator.events import is_cancelled
+    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    await r.set("labmate:cancel:task-x", "1", ex=60)
+    assert await is_cancelled(r, "task-x") is True
+
+
+@pytest.mark.asyncio
+async def test_is_cancelled_returns_false_when_no_flag():
+    import fakeredis.aioredis
+    from services.orchestrator.events import is_cancelled
+    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    assert await is_cancelled(r, "task-y") is False
