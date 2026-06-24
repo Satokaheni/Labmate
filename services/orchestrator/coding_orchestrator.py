@@ -127,6 +127,7 @@ class AsyncOrchestrator:
         self._gemma_base = gemma_api_base
         self.skill_router = skill_router
         self.mcp = mcp
+        self.codegraph_mcp = None  # set after construction if codegraph-embedder is running
         self.workspace = workspace
         self.max_steps = max_steps
         self.redis = redis
@@ -280,6 +281,28 @@ class AsyncOrchestrator:
                             "arguments": {"type": "object", "description": "Tool arguments"},
                         },
                         "required": ["skill", "tool", "arguments"],
+                    },
+                },
+            })
+
+        # Semantic code search — available when the codegraph-embedder MCP server is running
+        if self.codegraph_mcp is not None:
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": "code_semantic_search",
+                    "description": (
+                        "Search the codebase by meaning. Returns the top-k symbols "
+                        "(functions, classes, methods) most semantically relevant to the query. "
+                        "Use when you need to find code by what it DOES rather than what it's named."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "Natural language description of what to find"},
+                            "k":     {"type": "integer", "description": "Number of results (max 20)", "default": 8},
+                        },
+                        "required": ["query"],
                     },
                 },
             })
@@ -544,6 +567,21 @@ class AsyncOrchestrator:
                         else:
                             content = json.dumps({"error": "no bash runner available"})
 
+                    elif name == "code_semantic_search":
+                        if self.codegraph_mcp is not None:
+                            try:
+                                obs = await self.codegraph_mcp.call_tool(
+                                    "code_semantic_search",
+                                    {"query": args.get("query", ""), "k": args.get("k", 8)},
+                                )
+                                content = "\n".join(
+                                    c.text for c in obs.content if hasattr(c, "text")
+                                )
+                            except Exception as exc:
+                                content = json.dumps({"error": str(exc)})
+                        else:
+                            content = json.dumps({"error": "codegraph semantic search not available"})
+
                     else:
                         content = json.dumps({"error": f"unknown tool: {name}"})
 
@@ -691,6 +729,7 @@ class CodingOrchestrator:
         self.max_iter = max_iter
         self.stuck_n = stuck_n
         self.mcp = mcp          # MCPClientManager | None
+        self.agent_instructions: str = ""  # set per-task from AGENT.md
         self.skill_router = skill_router  # SkillRouter | None
         self._recent_actions: list[str] = []
         self._gate_futures: dict[str, asyncio.Future] = {}
@@ -701,6 +740,7 @@ class CodingOrchestrator:
         session_id: str,
         user_id: str = "",
         workspace_id: str = "",
+        agent_instructions: str = "",
     ) -> dict:
         """
         Entry point. Pass the same session_id to resume after a crash.
@@ -710,6 +750,9 @@ class CodingOrchestrator:
         A/B toggle were removed after an A/B showed no quality benefit at higher cost).
         """
         from .types import create_goal
+
+        # Set AGENT.md instructions for this task — used by _build_messages()
+        self.agent_instructions = agent_instructions
 
         initial: State = {
             "session_id": session_id,
@@ -734,6 +777,15 @@ class CodingOrchestrator:
         }
         return await self.graph.ainvoke(initial, cfg)
 
+    def _build_messages(self, prompt: str) -> list[dict]:
+        """Prepend AGENT.md as a system message when present."""
+        if self.agent_instructions:
+            return [
+                {"role": "system", "content": self.agent_instructions},
+                {"role": "user",   "content": prompt},
+            ]
+        return [{"role": "user", "content": prompt}]
+
     async def architect(self, prompt: str, thinking_budget: int = 3000) -> str:
         """
         Planning, self-reflection, aggregation -> Gemma 4 31B dense.
@@ -746,7 +798,7 @@ class CodingOrchestrator:
             model="openai/gemma-4-31b",
             api_base=self._gemma_base,
             api_key="not-needed",
-            messages=[{"role": "user", "content": prompt}],
+            messages=self._build_messages(prompt),
             extra_body={"thinking_budget_tokens": thinking_budget},
         )
         return r.choices[0].message.content
@@ -761,7 +813,7 @@ class CodingOrchestrator:
             model="openai/qwen2.5-coder-32b",
             api_base=self._qwen_base,
             api_key="not-needed",
-            messages=[{"role": "user", "content": prompt}],
+            messages=self._build_messages(prompt),
             extra_body={"thinking_budget_tokens": thinking_budget},
         )
         return r.choices[0].message.content

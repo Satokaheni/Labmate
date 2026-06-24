@@ -24,12 +24,14 @@ export interface WsState {
   context: ContextWindow | null;
   turns: Turn[];
   authError: string | null;
+  compacting: boolean;
 }
 
 type Action =
   | { type: 'CONNECTING' }
   | { type: 'AUTHENTICATING' }
   | { type: 'AUTH_ERROR'; reason: string }
+  | { type: 'AUTH_ERROR_HANDLED' }
   | { type: 'BOOT_PLAN'; subsystems: Subsystem[] }
   | { type: 'BOOT_UPDATE'; id: SubsystemId; state: SubsystemState; message?: string }
   | { type: 'BOOT_READY'; sessions: Session[]; activeSessionId: string | null; agentStatus: AgentStatus }
@@ -41,6 +43,8 @@ type Action =
   | { type: 'SESSION_UPDATED'; session: Session }
   | { type: 'REASONING_DONE'; turnId: string; reasoning: Reasoning }
   | { type: 'ARTIFACT_CREATED'; turnId: string; artifact: Artifact }
+  | { type: 'COMPACT_START' }
+  | { type: 'COMPACT_DONE' }
   | { type: 'CLOSED' };
 
 const INITIAL: WsState = {
@@ -52,6 +56,7 @@ const INITIAL: WsState = {
   context: null,
   turns: [],
   authError: null,
+  compacting: false,
 };
 
 function reducer(state: WsState, action: Action): WsState {
@@ -62,6 +67,8 @@ function reducer(state: WsState, action: Action): WsState {
       return { ...state, phase: 'authenticating' };
     case 'AUTH_ERROR':
       return { ...state, phase: 'error', authError: action.reason };
+    case 'AUTH_ERROR_HANDLED':
+      return { ...state, authError: null };
     case 'BOOT_PLAN':
       return { ...state, phase: 'booting', subsystems: action.subsystems };
     case 'BOOT_UPDATE':
@@ -126,8 +133,12 @@ function reducer(state: WsState, action: Action): WsState {
             : t,
         ),
       };
+    case 'COMPACT_START':
+      return { ...state, compacting: true };
+    case 'COMPACT_DONE':
+      return { ...state, compacting: false };
     case 'CLOSED':
-      return { ...state, phase: state.phase === 'ready' ? 'error' : 'idle' };
+      return { ...state, phase: state.phase === 'ready' ? 'error' : 'idle', compacting: false };
     default:
       return state;
   }
@@ -150,7 +161,12 @@ export function useLabmateWS(url: string, token: string | null, reconnectKey = 0
     };
 
     ws.onmessage = (ev: MessageEvent<string>) => {
-      const event = JSON.parse(ev.data) as StreamEvent;
+      let event: StreamEvent;
+      try {
+        event = JSON.parse(ev.data) as StreamEvent;
+      } catch {
+        return;
+      }
       switch (event.type) {
         case 'auth.ok':
           break;
@@ -198,12 +214,24 @@ export function useLabmateWS(url: string, token: string | null, reconnectKey = 0
         case 'artifact.created':
           dispatch({ type: 'ARTIFACT_CREATED', turnId: event.turnId, artifact: event.artifact });
           break;
+        case 'compact.done':
+          dispatch({ type: 'COMPACT_DONE' });
+          break;
+        case 'compact.auto':
+        case 'compact.micro':
+          // Silent auto-compact — no UI state change needed
+          break;
         case 'tool.request': {
           const reqId = event.toolRequestId;
+          // Capture `ws` (not wsRef.current) so a late async reply goes to the
+          // exact socket that issued the request, not a newer reconnected one.
+          const replySocket = ws;
           const reply = (result: unknown, error?: string) => {
-            wsRef.current?.send(
-              JSON.stringify({ type: 'tool.result', toolRequestId: reqId, result, error }),
-            );
+            if (replySocket.readyState === WebSocket.OPEN) {
+              replySocket.send(
+                JSON.stringify({ type: 'tool.result', toolRequestId: reqId, result, error }),
+              );
+            }
           };
           const api = window.electronAPI;
           if (!api) {
@@ -250,5 +278,19 @@ export function useLabmateWS(url: string, token: string | null, reconnectKey = 0
     wsRef.current?.send(JSON.stringify({ type: 'debug.set', sessionId, enabled }));
   }, []);
 
-  return { state, send, newSession, openSession, setDebug };
+  const compact = useCallback(() => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    dispatch({ type: 'COMPACT_START' });
+    wsRef.current.send(JSON.stringify({ type: 'compact' }));
+  }, []);
+
+  const cancel = useCallback(() => {
+    wsRef.current?.send(JSON.stringify({ type: 'cancel' }));
+  }, []);
+
+  const clearAuthError = useCallback(() => {
+    dispatch({ type: 'AUTH_ERROR_HANDLED' });
+  }, []);
+
+  return { state, send, newSession, openSession, setDebug, compact, cancel, clearAuthError };
 }

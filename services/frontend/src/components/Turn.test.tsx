@@ -38,7 +38,7 @@ describe('Turn', () => {
   it('collapses the reasoning block by default and expands on click', async () => {
     render(<Turn turn={assistantTurn} />);
     expect(screen.queryByText('Long reasoning trace here.')).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: /plan the change/i }));
+    await userEvent.click(screen.getByRole('button', { name: /expand reasoning/i }));
     expect(screen.getByText('Long reasoning trace here.')).toBeInTheDocument();
   });
 });

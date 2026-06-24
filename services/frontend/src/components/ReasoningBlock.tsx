@@ -9,6 +9,8 @@ export function ReasoningBlock({ reasoning }: { reasoning: Reasoning }) {
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        aria-label={open ? 'Collapse reasoning' : 'Expand reasoning'}
         className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-secondary hover:text-primary"
       >
         <span style={{ color: 'var(--accent-purple)' }}>{open ? '▾' : '▸'}</span>

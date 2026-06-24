@@ -26,6 +26,7 @@ export function ToolCallRow({ toolCall }: { toolCall: ToolCall }) {
         type="button"
         data-testid="tool-call-row"
         onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
         className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs"
       >
         {toolCall.status === 'running' ? (

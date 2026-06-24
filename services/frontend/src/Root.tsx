@@ -34,19 +34,16 @@ export function Root() {
   const [submitting, setSubmitting] = useState(false);
   const [reconnectKey, setReconnectKey] = useState(0);
 
-  const { state, send, newSession, openSession } = useLabmateWS(wsUrl, token, reconnectKey);
-
-  if (!wsUrl) {
-    return <OnboardingScreen onSaved={(url) => setWsUrl(url)} />;
-  }
+  const { state, send, newSession, openSession, compact, cancel, clearAuthError } = useLabmateWS(wsUrl, token, reconnectKey);
 
   useEffect(() => {
     if (state.authError) {
       clearToken();
       setToken(null);
       setLoginError(state.authError);
+      clearAuthError();
     }
-  }, [state.authError]);
+  }, [state.authError, clearAuthError]);
 
   const handleLogin = useCallback(async (creds: LoginCredentials) => {
     setSubmitting(true);
@@ -76,6 +73,10 @@ export function Root() {
     setReconnectKey((k) => k + 1);
   }, []);
 
+  if (!wsUrl) {
+    return <OnboardingScreen onSaved={(url) => setWsUrl(url)} />;
+  }
+
   if (!token) {
     return <LoginScreen onSubmit={handleLogin} submitting={submitting} error={loginError} />;
   }
@@ -92,8 +93,11 @@ export function Root() {
       agentStatus={state.agentStatus ?? undefined}
       context={state.context ?? undefined}
       onSend={(text) => send(text, state.activeSessionId ?? '')}
+      onStop={cancel}
       onOpenSession={openSession}
       onNewSession={newSession}
+      onCompact={compact}
+      compacting={state.compacting}
     />
   );
 }

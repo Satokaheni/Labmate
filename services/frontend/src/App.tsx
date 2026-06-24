@@ -27,8 +27,11 @@ export interface AppProps {
   agentStatus?: AgentStatus;
   context?: ContextWindow;
   onSend?: (text: string) => void;
+  onStop?: () => void;
   onOpenSession?: (id: string) => void;
   onNewSession?: (mode: Mode) => void;
+  onCompact?: () => void;
+  compacting?: boolean;
 }
 
 const MODES: Mode[] = ['chat', 'paper', 'code'];
@@ -40,8 +43,11 @@ export function App({
   agentStatus = EMPTY_STATUS,
   context = EMPTY_CONTEXT,
   onSend = () => {},
+  onStop,
   onOpenSession = () => {},
   onNewSession = () => {},
+  onCompact,
+  compacting = false,
 }: AppProps) {
   const [debug, setDebug] = useState(false);
   const [mode, setMode] = useState<Mode>('chat');
@@ -104,21 +110,21 @@ export function App({
 
   const center = (
     <>
-      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+      <div aria-live="polite" aria-label="Conversation" className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
         {turns.map((t) => (
           <Turn key={t.id} turn={t} onPreviewArtifact={setPreviewed} />
         ))}
       </div>
       <div className="px-6">
-        <ContextBar window={context} />
+        <ContextBar window={context} onCompact={onCompact} compacting={compacting} />
       </div>
       <Composer
         onSend={onSend}
-        onStop={() => {}}
+        onStop={onStop ?? (() => {})}
         streaming={agentStatus.brain.state === 'active'}
         node={agentStatus.brain.node}
         thinkingBudget={agentStatus.brain.thinkingBudget}
-        contextPct={Math.round((context.used / context.max) * 100)}
+        contextPct={context.max > 0 ? Math.round((context.used / context.max) * 100) : 0}
       />
     </>
   );

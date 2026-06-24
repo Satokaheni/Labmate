@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import type { Mode, Session } from '@/types/events';
 
 export interface SessionListProps {
@@ -21,8 +22,9 @@ function ModeIcon({ mode }: { mode: Mode }) {
 }
 
 export function SessionList({ sessions, activeId, onOpen }: SessionListProps) {
-  const sorted = [...sessions].sort(
-    (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+  const sorted = useMemo(
+    () => [...sessions].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
+    [sessions],
   );
 
   return (

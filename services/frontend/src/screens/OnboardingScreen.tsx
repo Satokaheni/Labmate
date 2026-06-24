@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { LabmateMark } from '@/components/LabmateMark';
 
 export interface OnboardingScreenProps {
@@ -25,28 +25,55 @@ export function OnboardingScreen({ onSaved }: OnboardingScreenProps) {
   const [errorMsg, setErrorMsg] = useState('');
   const [saving, setSaving] = useState(false);
 
+  const testWsRef = useRef<WebSocket | null>(null);
+  const testTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+      if (testTimerRef.current) clearTimeout(testTimerRef.current);
+      if (testWsRef.current) testWsRef.current.close();
+    };
+  }, []);
+
   const url = normaliseUrl(raw);
   const valid = url.startsWith('ws://') || url.startsWith('wss://');
 
   const testConnection = () => {
     if (!valid) return;
+    if (testTimerRef.current) clearTimeout(testTimerRef.current);
+    if (testWsRef.current) testWsRef.current.close();
     setTestState('testing');
     setErrorMsg('');
     const ws = new WebSocket(url);
+    testWsRef.current = ws;
     const timer = setTimeout(() => {
       ws.close();
-      setTestState('fail');
-      setErrorMsg('Timed out — is the backend running?');
+      testWsRef.current = null;
+      if (mountedRef.current) {
+        setTestState('fail');
+        setErrorMsg('Timed out — is the backend running?');
+      }
     }, 6000);
+    testTimerRef.current = timer;
     ws.onopen = () => {
       clearTimeout(timer);
+      testTimerRef.current = null;
+      ws.onopen = null;
+      ws.onerror = null;
       ws.close();
-      setTestState('ok');
+      testWsRef.current = null;
+      if (mountedRef.current) setTestState('ok');
     };
     ws.onerror = () => {
       clearTimeout(timer);
-      setTestState('fail');
-      setErrorMsg('Could not connect. Check the URL and that the backend is up.');
+      testTimerRef.current = null;
+      testWsRef.current = null;
+      if (mountedRef.current) {
+        setTestState('fail');
+        setErrorMsg('Could not connect. Check the URL and that the backend is up.');
+      }
     };
   };
 
@@ -54,7 +81,7 @@ export function OnboardingScreen({ onSaved }: OnboardingScreenProps) {
     if (!valid) return;
     setSaving(true);
     await window.electronAPI?.setConfig(url);
-    onSaved(url);
+    if (mountedRef.current) onSaved(url);
   };
 
   return (

@@ -12,25 +12,47 @@ const SEG_META: Array<{ key: SegKey; label: string; color: string }> = [
   { key: 'reasoning', label: 'reasoning', color: '#8c9bf0' },
 ];
 
-export function ContextBar({ window }: { window: ContextWindow }) {
+interface ContextBarProps {
+  window: ContextWindow;
+  onCompact?: () => void;
+  compacting?: boolean;
+}
+
+export function ContextBar({ window, onCompact, compacting }: ContextBarProps) {
   const [open, setOpen] = useState(false);
 
   return (
     <div className="flex flex-col gap-1.5">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="flex items-center justify-between text-left"
-      >
-        <span className="font-mono text-[11px] uppercase tracking-wide text-mono">Context</span>
-        <span data-testid="context-usage" className="font-mono text-[11px] text-secondary">
-          {formatTokens(window.used)} / {formatTokens(window.max)}
-        </span>
-      </button>
+      <div className="flex items-center justify-between">
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          aria-expanded={open}
+          aria-label={open ? 'Collapse context breakdown' : 'Expand context breakdown'}
+          className="flex items-center gap-2 text-left"
+        >
+          <span className="font-mono text-[11px] uppercase tracking-wide text-mono">Context</span>
+          <span data-testid="context-usage" className="font-mono text-[11px] text-secondary">
+            {formatTokens(window.used)} / {formatTokens(window.max)}
+          </span>
+        </button>
+        {onCompact && (
+          <button
+            type="button"
+            onClick={onCompact}
+            disabled={compacting}
+            aria-busy={compacting}
+            aria-label={compacting ? 'Compacting context' : 'Compact context'}
+            className="font-mono text-[10px] px-1.5 py-0.5 rounded border border-border-2 text-mono hover:text-primary disabled:opacity-40 transition-opacity"
+          >
+            {compacting ? 'Compacting…' : 'Compact'}
+          </button>
+        )}
+      </div>
 
       <div className="flex h-2 w-full overflow-hidden rounded-full bg-border-1">
         {SEG_META.map((m) => {
-          const pct = (window.segments[m.key] / window.max) * 100;
+          const pct = window.max > 0 ? (window.segments[m.key] / window.max) * 100 : 0;
           return (
             <div
               key={m.key}

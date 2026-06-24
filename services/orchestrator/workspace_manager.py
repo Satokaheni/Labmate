@@ -1,6 +1,7 @@
 from __future__ import annotations
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -129,3 +130,16 @@ class WorkspaceManager:
         cursor = self._db[SESSIONS].find(q).sort("created_at", -1).limit(limit)
         docs = await cursor.to_list(length=limit)
         return [SessionMeta(**_strip(d)) for d in docs]
+
+    async def load_agent_instructions(self, workspace_id: str) -> str:
+        """Return AGENT.md content from workspace root, falling back to workspace.instructions DB field."""
+        if not workspace_id:
+            return ""
+        ws_doc = await self._db[WORKSPACES].find_one({"workspace_id": workspace_id})
+        if not ws_doc:
+            return ""
+        for p in ws_doc.get("paths", []):
+            candidate = Path(p) / "AGENT.md"
+            if candidate.is_file():
+                return candidate.read_text(encoding="utf-8")
+        return ws_doc.get("instructions") or ""

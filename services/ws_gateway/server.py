@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time as _time
 import uuid
@@ -233,6 +234,48 @@ async def _ws_loop(
             debug_mode = enabled
             if sid:
                 store.set_debug(sid, enabled)
+        elif mtype == "compact":
+            if not active_session_id:
+                await ws.send_json({"type": "compact.done", "ok": False, "error": "no_session"})
+                continue
+            task_id = "compact-" + uuid.uuid4().hex[:12]
+            result_key = f"labmate:result:{task_id}"
+
+            # Subscribe BEFORE pushing to goals so we never miss the PUBLISH
+            pubsub = redis.pubsub()
+            await pubsub.subscribe(result_key)
+            try:
+                await redis.xadd(
+                    "labmate:goals",
+                    {
+                        "payload": json.dumps({
+                            "task_id":     task_id,
+                            "kind":        "compact",
+                            "session_id":  active_session_id,
+                            "user_id":     claims["sub"],
+                            "workspace_id": "",
+                        }),
+                    },
+                )
+
+                async def _await_result() -> dict | None:
+                    async for pmsg in pubsub.listen():
+                        if pmsg["type"] == "message":
+                            raw = await redis.get(result_key)
+                            return json.loads(raw) if raw else None
+                    return None
+
+                try:
+                    result_dict = await asyncio.wait_for(_await_result(), timeout=60.0)
+                except asyncio.TimeoutError:
+                    result_dict = None
+            finally:
+                await pubsub.aclose()
+
+            if result_dict:
+                await ws.send_json({"type": "compact.done", **result_dict})
+            else:
+                await ws.send_json({"type": "compact.done", "ok": False, "error": "timeout"})
         else:
             continue
 

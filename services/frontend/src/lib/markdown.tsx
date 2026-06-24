@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode } from 'react';
+import { Fragment, memo, type ReactNode } from 'react';
 
 function renderInline(text: string, keyPrefix: string): ReactNode[] {
   const out: ReactNode[] = [];
@@ -24,7 +24,7 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
   return out;
 }
 
-export function Markdown({ text }: { text: string }) {
+export const Markdown = memo(function Markdown({ text }: { text: string }) {
   const blocks = text.split(/```/g);
   return (
     <div className="whitespace-pre-wrap break-words text-sm leading-relaxed text-primary-alt">
@@ -53,4 +53,4 @@ export function Markdown({ text }: { text: string }) {
       })}
     </div>
   );
-}
+});

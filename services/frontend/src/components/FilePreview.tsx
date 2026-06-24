@@ -20,7 +20,7 @@ export function FilePreview({ artifact }: { artifact: Artifact | null }) {
             {artifact.language} · {formatBytes(artifact.sizeBytes)}
           </div>
         </div>
-        <a href={artifact.downloadUrl} className="text-xs text-secondary hover:text-primary">
+        <a href={artifact.downloadUrl} download rel="noopener noreferrer" className="text-xs text-secondary hover:text-primary">
           Download
         </a>
       </div>

@@ -33,6 +33,8 @@ export function ArtifactCard({ artifact, onPreview }: ArtifactCardProps) {
       </button>
       <a
         href={artifact.downloadUrl}
+        download
+        rel="noopener noreferrer"
         className="rounded-pill border border-border-3 px-2.5 py-1 text-xs text-secondary hover:text-primary"
       >
         Download

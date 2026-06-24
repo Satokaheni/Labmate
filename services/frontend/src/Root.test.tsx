@@ -17,6 +17,7 @@ const IDLE_STATE = {
   context: null,
   turns: [],
   authError: null,
+  compacting: false,
 };
 
 const AGENT_STATUS = {
@@ -32,7 +33,7 @@ const CONTEXT = {
 
 beforeEach(() => {
   vi.mocked(useLabmateWS).mockReturnValue({
-    state: IDLE_STATE, send: vi.fn(), newSession: vi.fn(), openSession: vi.fn(),
+    state: IDLE_STATE, send: vi.fn(), newSession: vi.fn(), openSession: vi.fn(), setDebug: vi.fn(), compact: vi.fn(), cancel: vi.fn(), clearAuthError: vi.fn(),
   });
   localStorage.clear();
   sessionStorage.clear();
@@ -48,7 +49,7 @@ describe('Root', () => {
     localStorage.setItem('labmate_token', 'tok');
     vi.mocked(useLabmateWS).mockReturnValue({
       state: { ...IDLE_STATE, phase: 'booting', subsystems: [] },
-      send: vi.fn(), newSession: vi.fn(), openSession: vi.fn(),
+      send: vi.fn(), newSession: vi.fn(), openSession: vi.fn(), setDebug: vi.fn(), compact: vi.fn(), cancel: vi.fn(), clearAuthError: vi.fn(),
     });
     render(<Root />);
     expect(screen.getByTestId('boot-progress')).toBeInTheDocument();
@@ -58,7 +59,7 @@ describe('Root', () => {
     localStorage.setItem('labmate_token', 'tok');
     vi.mocked(useLabmateWS).mockReturnValue({
       state: { ...IDLE_STATE, phase: 'ready', agentStatus: AGENT_STATUS, context: CONTEXT },
-      send: vi.fn(), newSession: vi.fn(), openSession: vi.fn(),
+      send: vi.fn(), newSession: vi.fn(), openSession: vi.fn(), setDebug: vi.fn(), compact: vi.fn(), cancel: vi.fn(), clearAuthError: vi.fn(),
     });
     render(<Root />);
     expect(screen.getByTestId('layout-topbar')).toBeInTheDocument();
@@ -106,7 +107,7 @@ describe('Root', () => {
     localStorage.setItem('labmate_token', 'stale-tok');
     vi.mocked(useLabmateWS).mockReturnValue({
       state: { ...IDLE_STATE, phase: 'error', authError: 'expired' },
-      send: vi.fn(), newSession: vi.fn(), openSession: vi.fn(),
+      send: vi.fn(), newSession: vi.fn(), openSession: vi.fn(), setDebug: vi.fn(), compact: vi.fn(), cancel: vi.fn(), clearAuthError: vi.fn(),
     });
     render(<Root />);
     await waitFor(() => expect(screen.getByLabelText('Email')).toBeInTheDocument());

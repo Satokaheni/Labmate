@@ -120,13 +120,13 @@ async def test_handle_calls_run_task_and_acks():
     storage.workspaces = AsyncMock()
     storage.workspaces.record_session = AsyncMock()
     storage.workspaces.complete_session = AsyncMock()
+    storage.workspaces.load_agent_instructions = AsyncMock(return_value="")
 
     payload = json.dumps({"task_id": "t1", "task": "do something", "session_id": "s1"})
     await proc._handle("100-0", {"payload": payload}, orch, storage)
 
-    # Routing is single-intent only (routing_mode removed); run_task takes no mode kwarg.
     orch.run_task.assert_awaited_once_with(
-        "do something", "s1", user_id="", workspace_id=""
+        "do something", "s1", user_id="", workspace_id="", agent_instructions=""
     )
     proc._redis.xack.assert_awaited_once_with(GOALS_STREAM, GOALS_GROUP, "100-0")
 
@@ -184,14 +184,14 @@ async def test_handle_uses_task_id_as_session_id_when_absent():
     storage.workspaces = AsyncMock()
     storage.workspaces.record_session = AsyncMock()
     storage.workspaces.complete_session = AsyncMock()
+    storage.workspaces.load_agent_instructions = AsyncMock(return_value="")
 
     # No session_id in payload — should fall back to task_id
     payload = json.dumps({"task_id": "standalone-task", "task": "do it"})
     await proc._handle("400-0", {"payload": payload}, orch, storage)
 
-    # Routing is single-intent only (routing_mode removed); run_task takes no mode kwarg.
     orch.run_task.assert_awaited_once_with(
-        "do it", "standalone-task", user_id="", workspace_id=""
+        "do it", "standalone-task", user_id="", workspace_id="", agent_instructions=""
     )
 
 

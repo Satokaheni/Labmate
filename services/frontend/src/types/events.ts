@@ -180,7 +180,10 @@ export type StreamEvent =
   | { type: 'turn.done'; turnId: string; status: 'complete' | 'error' }
   | { type: 'context.update'; window: ContextWindow }
   | { type: 'agent.status'; status: AgentStatus }
-  | { type: 'session.updated'; session: Session };
+  | { type: 'session.updated'; session: Session }
+  | { type: 'compact.done'; ok: boolean; summary_tokens?: number; pruned_messages?: number; error?: string }
+  | { type: 'compact.auto'; freed: number }
+  | { type: 'compact.micro'; freed: number };
 
 export type ClientMsg =
   | { type: 'auth'; token: string }
@@ -190,4 +193,5 @@ export type ClientMsg =
   | { type: 'session.rename'; sessionId: string; title: string }
   | { type: 'debug.set'; sessionId: string; enabled: boolean }
   | { type: 'cancel'; sessionId: string; turnId: string }
-  | { type: 'tool.result'; toolRequestId: string; result: unknown; error?: string };
+  | { type: 'tool.result'; toolRequestId: string; result: unknown; error?: string }
+  | { type: 'compact' };
