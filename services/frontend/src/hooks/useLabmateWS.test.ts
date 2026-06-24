@@ -105,6 +105,72 @@ describe('useLabmateWS', () => {
     );
   });
 
+  it('services tool.request via electronAPI and replies tool.result', async () => {
+    const executeTool = vi.fn().mockResolvedValue({ result: { content: 'hi' } });
+    // Set electronAPI directly to avoid replacing window (which breaks React DOM instanceof checks)
+    (window as Window & { electronAPI?: unknown }).electronAPI = { executeTool };
+
+    try {
+      renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+      act(() => {
+        mockWs.onopen?.();
+      });
+      act(() => {
+        mockWs.onmessage?.({
+          data: JSON.stringify({
+            type: 'tool.request',
+            turnId: 'turn-1',
+            toolRequestId: 'req-1',
+            name: 'read_file',
+            args: { path: 'a.txt' },
+          }),
+        });
+      });
+
+      await vi.waitFor(() => {
+        expect(executeTool).toHaveBeenCalledWith('read_file', { path: 'a.txt' });
+      });
+      await vi.waitFor(() => {
+        const sent = mockWs.send.mock.calls.map((c) => JSON.parse(c[0] as string));
+        expect(sent).toContainEqual({
+          type: 'tool.result',
+          toolRequestId: 'req-1',
+          result: { content: 'hi' },
+          error: undefined,
+        });
+      });
+    } finally {
+      delete (window as Window & { electronAPI?: unknown }).electronAPI;
+    }
+  });
+
+  it('replies tool.result with error when electronAPI is absent', async () => {
+    // Ensure electronAPI is not present
+    delete (window as Window & { electronAPI?: unknown }).electronAPI;
+
+    renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => {
+      mockWs.onopen?.();
+    });
+    act(() => {
+      mockWs.onmessage?.({
+        data: JSON.stringify({
+          type: 'tool.request',
+          turnId: 'turn-1',
+          toolRequestId: 'req-2',
+          name: 'read_file',
+          args: { path: 'a.txt' },
+        }),
+      });
+    });
+    await vi.waitFor(() => {
+      const sent = mockWs.send.mock.calls.map((c) => JSON.parse(c[0] as string));
+      const frame = sent.find((f) => f.toolRequestId === 'req-2');
+      expect(frame?.type).toBe('tool.result');
+      expect(frame?.error).toMatch(/no local filesystem/i);
+    });
+  });
+
   it('reconnects (new WebSocket) when reconnectKey increments and closes the old one', () => {
     const instances: typeof mockWs[] = [];
     vi.mocked(WebSocket).mockImplementation(() => {

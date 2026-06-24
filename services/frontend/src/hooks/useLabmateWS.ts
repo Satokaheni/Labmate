@@ -168,6 +168,26 @@ export function useLabmateWS(url: string, token: string | null, reconnectKey = 0
         case 'session.updated':
           dispatch({ type: 'SESSION_UPDATED', session: event.session });
           break;
+        case 'tool.request': {
+          const reqId = event.toolRequestId;
+          const reply = (result: unknown, error?: string) => {
+            wsRef.current?.send(
+              JSON.stringify({ type: 'tool.result', toolRequestId: reqId, result, error }),
+            );
+          };
+          const api = window.electronAPI;
+          if (!api) {
+            reply(null, 'no local filesystem available (not running in Electron)');
+            break;
+          }
+          void api
+            .executeTool(event.name, event.args)
+            .then((resp) => reply(resp.result ?? null, resp.error))
+            .catch((err) =>
+              reply(null, err instanceof Error ? err.message : String(err)),
+            );
+          break;
+        }
       }
     };
 
