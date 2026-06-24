@@ -168,6 +168,13 @@ export type StreamEvent =
       result: unknown;
       durationMs: number;
     }
+  | {
+      type: 'tool.request';
+      turnId: string;
+      toolRequestId: string;
+      name: 'read_file' | 'write_file' | 'list_dir';
+      args: Record<string, unknown>;
+    }
   | { type: 'answer.delta'; turnId: string; text: string }
   | { type: 'artifact.created'; turnId: string; artifact: Artifact }
   | { type: 'turn.done'; turnId: string; status: 'complete' | 'error' }
@@ -182,4 +189,5 @@ export type ClientMsg =
   | { type: 'session.open'; sessionId: string }
   | { type: 'session.rename'; sessionId: string; title: string }
   | { type: 'debug.set'; sessionId: string; enabled: boolean }
-  | { type: 'cancel'; sessionId: string; turnId: string };
+  | { type: 'cancel'; sessionId: string; turnId: string }
+  | { type: 'tool.result'; toolRequestId: string; result: unknown; error?: string };
