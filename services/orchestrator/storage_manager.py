@@ -13,6 +13,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 from .db_indexes import ensure_indexes
 from .workspace_manager import WorkspaceManager
+from .memory_consolidator import MemoryConsolidator
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,15 @@ class StorageManager:
                 pass
         await self._redis.aclose()
         self._mongo.close()
+
+    @property
+    def consolidator(self) -> MemoryConsolidator:
+        if not hasattr(self, "_consolidator"):
+            self._consolidator = MemoryConsolidator(
+                storage=self,
+                lm_base_url=os.getenv("GEMMA_BASE", "http://localhost:8000/v1"),
+            )
+        return self._consolidator
 
     @property
     def workspaces(self) -> WorkspaceManager:
