@@ -375,6 +375,7 @@ async def test_clear_tool_results_skips_recent_tool_results():
         cm = ContextManager(redis=redis, mongo_db=db, chroma_cols={}, embedder=AsyncMock())
         freed = await cm.clear_tool_results("s1")
 
+        assert recorded["sort"] == ("seq", -1)
         assert recorded["skip"] == cm._KEEP_RECENT_TOOL_RESULTS
         assert recorded["skip"] == 10
         assert freed > 0
