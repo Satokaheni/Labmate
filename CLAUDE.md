@@ -31,6 +31,42 @@ The codebase is mid-migration. Do not confuse the two:
 
 ---
 
+## Session Log — 2026-06-25 — READ THIS FIRST
+
+Branch `perf/latency-reduction`. This session shipped a new sequencing strategy and flipped it on by default. Everything below is committed and pushed.
+
+### Sequencing: `replan` is now the DEFAULT (replaces `skill_first`)
+
+`react_execute` was refactored into three reusable pieces and a mode dispatcher (`SEQUENCING_MODE`, in `services/orchestrator/coding_orchestrator.py`):
+- `_run_skill_first(goal)` — deterministic single-skill (the old skill-first fast-path), returns `None` when no skill matches.
+- `_run_react_loop(goal, max_steps)` — the multi-tool ReAct loop.
+- `_replan_loop(goal)` — **option A**: an explicit planner inspects the original goal + a history of completed sub-steps and emits the SINGLE next sub-goal (or `done`), executing each via skill-first with a bounded ReAct fallback for non-skill steps (fixes). The planner — not the executor — owns the completion decision, so it can't claim a goal is done unless history supports it. Hard-bounded by `MAX_SEQ_STEPS=5`.
+- **Compound gate** (`REPLAN_COMPOUND_GATE=1`): `_is_compound(goal)` (one cheap 128-budget classifier) runs first; single-step goals skip the planner and run once, so simple tasks pay no sequencing tax. Defaults to `compound=True` on any parse failure (never under-handle).
+
+**Why the flip — live A/B (`eval/seq_ab/`, 5 cases: 3 compound + 2 controls), judged by Opus:**
+
+| metric | baseline `skill_first` | `replan` v2 (gated) |
+|-|-|-|
+| compound (c1–c3) completion | 0.67 / 5 | **2.67 / 5** |
+| compound (c1–c3) honesty | 1.67 / 5 | **4.67 / 5** |
+| control (c4–c5) completion & honesty | 5 / 5 | 5 / 5 (tie) |
+
+The decisive factor: baseline **fabricated** completion on c1/c2 — claimed "I fixed the bug, all tests pass" after running only `test-gen`/`code-review`, which physically cannot edit or run code (`ok=True` + a lie). replan either does the work for real or honestly reports failure/partial state. The gate fixed the v1 over-sequencing regression (c4: 3 skills/190s → 1 skill/55s). New knobs: `SEQUENCING_MODE` (default `replan`), `MAX_SEQ_STEPS=5`, `REPLAN_COMPOUND_GATE=1`. 359 orchestrator tests pass (5 new in `TestReplanSequencing`). The A/B harness is reusable: `bash eval/seq_ab/run_mode.sh <skill_first|react|replan>`.
+
+### `test-gen` gained a `run_tests` tool (run ≠ generate)
+
+`services/skills/test-gen/` now exposes `run_tests` (plain `pytest` on an existing suite, returns `{passed, passed_count, failed_count, summary}`) plus a SKILL.md rule: **do NOT call `generate` to re-run tests that already exist** — call `run_tests` (or a plain `pytest` via code-sandbox). This removes the redundant `test-gen` regeneration that bloated the replan c1 trace. 10 test-gen tests pass.
+
+### NEXT STEPS — pick these up next
+
+**1. BUG to chase — `load_skill → False` mid-chain in replan (caps c1 completion).**
+`replan` c1 ended `ok=False` ("the necessary tools failed to load") because `SkillRunner.load_skill` (`services/skill_runner/skill_runner.py`) increments a shared `_activations` counter capped at `max_chain=8` and returns "skill activation limit reached" once exceeded. `reset_activations()` is called **once per goal** (in `react_execute`), but `_replan_loop` runs many sub-steps (c1 = ~10 skill loads) that all share that one counter, so it exhausts mid-chain. **This is replan-specific** — `skill_first` loads ≤1 skill per goal so it never hits the cap (baseline is NOT affected, despite first appearances). Fix options to evaluate: (a) call `reset_activations()` per sub-step inside `_replan_loop` (each sub-goal is conceptually a fresh mini-task — simplest); (b) raise `max_chain` for replan; (c) scope the activation counter per sub-goal. Prefer (a) but confirm it doesn't reintroduce runaway auto-loading within a single sub-step.
+
+**2. RESEARCH — lift replan compound completion from 2.67 → ~5.**
+replan is honest but still only *completes* ~2.67/5 on c1–c3. Goal: close that gap to near-5 without sacrificing the honesty win. Likely contributors beyond bug #1: the Q4 planner sometimes mis-sequences or stops early; the bounded ReAct fallback for "fix the code" can't persist edits in the Redis-only harness (no local-tool client — real CLI/WS deploys do have it, so re-measure there too); `MAX_SEQ_STEPS`/per-step budgets may be too tight. This likely needs real investigation — research planner-loop / reflexion patterns for small models, error-feedback grounding (feed raw tool output, not 600-char summaries, into the next planner step — mirrors how Claude Code grounds completion in the full transcript), and convergence criteria. **A new skill may be warranted** (e.g. a `deep-research` / web-research skill the user would add to Claude) to gather and synthesize the relevant agent-loop literature before implementing. Treat this as a scoped research task, then implement + re-run the `eval/seq_ab` A/B to measure the lift.
+
+---
+
 ## Session Log — 2026-06-23 — READ THIS FIRST
 
 Branch `feat/agent-event-stream`. Everything below is **committed and pushed**. The multi-intent routing saga is **CONCLUDED**: the feature was fixed, A/B-tested, then **replaced by single-intent routing** — the multi-intent decompose tier was removed entirely.

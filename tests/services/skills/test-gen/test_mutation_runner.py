@@ -33,6 +33,44 @@ def test_exit_code_1_is_not_an_error(fake_runner):
     assert result.total_count > 0
 
 
+def test_run_pytest_passing():
+    """run_tests re-runs an existing suite as-is and reports a pass."""
+    from mutation_runner import run_pytest, CommandResult
+
+    def runner(argv, cwd, timeout):
+        assert "pytest" in argv  # plain pytest, no generation
+        return CommandResult(0, "3 passed in 0.04s\n", "")
+
+    res = run_pytest("tests/test_calc.py", runner=runner)
+    assert res["passed"] is True
+    assert res["passed_count"] == 3
+    assert res["failed_count"] == 0
+    assert "3 passed" in res["summary"]
+
+
+def test_run_pytest_failing_is_not_passed():
+    from mutation_runner import run_pytest, CommandResult
+
+    def runner(argv, cwd, timeout):
+        return CommandResult(1, "1 failed, 2 passed in 0.05s\n", "")
+
+    res = run_pytest("tests/test_calc.py", runner=runner)
+    assert res["passed"] is False
+    assert res["passed_count"] == 2
+    assert res["failed_count"] == 1
+
+
+def test_run_pytest_counts_errors_as_failures():
+    from mutation_runner import run_pytest, CommandResult
+
+    def runner(argv, cwd, timeout):
+        return CommandResult(2, "1 error in 0.03s\n", "")
+
+    res = run_pytest("tests/test_calc.py", runner=runner)
+    assert res["passed"] is False
+    assert res["failed_count"] == 1
+
+
 def test_zero_total_guards_division(fake_runner):
     from mutation_runner import MutationRunner
 

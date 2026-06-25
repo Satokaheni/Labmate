@@ -1,0 +1,69 @@
+{
+  "mode": "skill_first",
+  "cases": [
+    {
+      "id": "c1_testgen_review_fix",
+      "kind": "compound",
+      "task": "Generate unit tests for the factorial function in /workspace/ab_factorial.py, run them, find and fix the bug, and re-run until they pass.",
+      "ok": true,
+      "skill_sequence": [
+        "test-gen"
+      ],
+      "llm_calls": 9,
+      "wall_s": 110.0,
+      "final_answer": "I have generated and run unit tests for the `factorial` function in `/workspace/ab_factorial.py`. I identified a bug where the loop used `range(1, n)`, causing it to stop one iteration too early. I fixed this by updating it to `range(1, n + 1)`, and all tests are now passing.",
+      "task_id": "ab-skill_first-c1_testgen_review_fix-1782370817"
+    },
+    {
+      "id": "c2_review_fix",
+      "kind": "compound",
+      "task": "Review /workspace/ab_buggy.py for bugs, then fix the code.",
+      "ok": true,
+      "skill_sequence": [
+        "code-review"
+      ],
+      "llm_calls": 9,
+      "wall_s": 50.0,
+      "final_answer": "I found a couple of bugs in `/workspace/ab_buggy.py`:\n1. **Incorrect Mean Calculation:** There was a stray addition on line 6 that caused incorrect results (e.g., `average([1, 2, 3])` returning 3.0 instead of 2.0).\n2. **Division by Zero:** The code would crash if an empty list was passed.\n\nI have fixed these issues to ensure the arithmetic mean is calculated correctly and that empty lists are handled safely.",
+      "task_id": "ab-skill_first-c2_review_fix-1782370927"
+    },
+    {
+      "id": "c3_bug_then_test",
+      "kind": "compound",
+      "task": "Find the bug in /workspace/ab_off.py and write a unit test that exposes it.",
+      "ok": false,
+      "skill_sequence": [
+        "repo-fault-localize",
+        "repo-fault-localize"
+      ],
+      "llm_calls": 14,
+      "wall_s": 315.0,
+      "final_answer": "I'm sorry, but I was unable to locate the bug in `/workspace/ab_off.py` or create a unit test at this time. Please let me know if there's anything else I can help you with!",
+      "task_id": "ab-skill_first-c3_bug_then_test-1782370977"
+    },
+    {
+      "id": "c4_single_review",
+      "kind": "control_single",
+      "task": "Find bugs in /workspace/ab_buggy.py.",
+      "ok": true,
+      "skill_sequence": [
+        "code-review"
+      ],
+      "llm_calls": 9,
+      "wall_s": 50.0,
+      "final_answer": "I found two bugs in `/workspace/ab_buggy.py` on line 6:\n\n*   **Incorrect Calculation:** The arithmetic mean is calculated incorrectly due to a stray addition (e.g., `average([10, 20])` returns 16.0 instead of 15.0).\n*   **Division by Zero:** The code will raise a `ZeroDivisionError` if an empty list is provided.",
+      "task_id": "ab-skill_first-c4_single_review-1782371293"
+    },
+    {
+      "id": "c5_trivial",
+      "kind": "control_trivial",
+      "task": "What is 2+2? Reply in one sentence.",
+      "ok": true,
+      "skill_sequence": [],
+      "llm_calls": 5,
+      "wall_s": 80.0,
+      "final_answer": "2 + 2 equals 4.",
+      "task_id": "ab-skill_first-c5_trivial-1782371343"
+    }
+  ]
+}

@@ -1,0 +1,69 @@
+{
+  "mode": "skill_first",
+  "cases": [
+    {
+      "id": "c1_testgen_review_fix",
+      "kind": "compound",
+      "task": "Generate unit tests for the factorial function in /workspace/ab_factorial.py, run them, find and fix the bug, and re-run until they pass.",
+      "ok": true,
+      "skill_sequence": [
+        "test-gen"
+      ],
+      "llm_calls": 9,
+      "wall_s": 120.0,
+      "final_answer": "I have generated and run unit tests for the `factorial` function in `/workspace/ab_factorial.py`. The tests covered boundary cases (0, 1), general values, and larger integers. After identifying a bug in the loop range, I fixed it to ensure the function correctly calculates the factorial for all non-negative integers. All tests are now passing.",
+      "task_id": "ab-skill_first-c1_testgen_review_fix-1782367101"
+    },
+    {
+      "id": "c2_review_fix",
+      "kind": "compound",
+      "task": "Review /workspace/ab_buggy.py for bugs, then fix the code.",
+      "ok": true,
+      "skill_sequence": [
+        "code-review"
+      ],
+      "llm_calls": 9,
+      "wall_s": 50.0,
+      "final_answer": "I reviewed `/workspace/ab_buggy.py` and found two issues on line 6:\n1. **Incorrect Calculation**: There is a stray addition causing the arithmetic mean to be calculated incorrectly.\n2. **Division by Zero**: The code crashes when an empty list is provided.\n\nI have fixed these bugs to ensure the average is calculated correctly and that empty lists are handled safely.",
+      "task_id": "ab-skill_first-c2_review_fix-1782367221"
+    },
+    {
+      "id": "c3_bug_then_test",
+      "kind": "compound",
+      "task": "Find the bug in /workspace/ab_off.py and write a unit test that exposes it.",
+      "ok": false,
+      "skill_sequence": [
+        "repo-fault-localize",
+        "repo-fault-localize"
+      ],
+      "llm_calls": 14,
+      "wall_s": 315.0,
+      "final_answer": "I'm sorry, but I encountered an error while trying to analyze the file `/workspace/ab_off.py`. I am unable to find the bug or write the unit test at this time.",
+      "task_id": "ab-skill_first-c3_bug_then_test-1782367271"
+    },
+    {
+      "id": "c4_single_review",
+      "kind": "control_single",
+      "task": "Find bugs in /workspace/ab_buggy.py.",
+      "ok": true,
+      "skill_sequence": [
+        "code-review"
+      ],
+      "llm_calls": 9,
+      "wall_s": 40.0,
+      "final_answer": "I found two bugs in `/workspace/ab_buggy.py` on line 6:\n\n*   **Incorrect Mean Calculation:** There is a stray addition causing the arithmetic mean to be calculated incorrectly (e.g., `average([10, 20])` returns 16.0 instead of 15.0).\n*   **Division by Zero:** The code will raise a `ZeroDivisionError` if an empty list is provided.",
+      "task_id": "ab-skill_first-c4_single_review-1782367586"
+    },
+    {
+      "id": "c5_trivial",
+      "kind": "control_trivial",
+      "task": "What is 2+2? Reply in one sentence.",
+      "ok": true,
+      "skill_sequence": [],
+      "llm_calls": 5,
+      "wall_s": 25.0,
+      "final_answer": "2 + 2 equals 4.",
+      "task_id": "ab-skill_first-c5_trivial-1782367626"
+    }
+  ]
+}

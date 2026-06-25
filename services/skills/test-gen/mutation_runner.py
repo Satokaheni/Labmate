@@ -61,6 +61,67 @@ def _subprocess_runner(argv: list[str], cwd: str | None, timeout: int) -> Comman
     return CommandResult(proc.returncode, proc.stdout, proc.stderr)
 
 
+def run_pytest(
+    test_file: str,
+    cwd: str | None = None,
+    timeout: int = 120,
+    runner: CommandRunner | None = None,
+) -> dict:
+    """Re-run an EXISTING pytest suite without regenerating anything.
+
+    Use this when the test file already exists and the source under test has not
+    changed — there is no need to call `generate`/`improve` again, just execute
+    the suite. Returns a structured pass/fail result.
+    """
+    run_cmd = runner or _subprocess_runner
+    argv = [sys.executable, "-m", "pytest", test_file, "-q", "--no-header"]
+    try:
+        res = run_cmd(argv, cwd, timeout)
+    except subprocess.TimeoutExpired:
+        log.error("pytest timed out after %ss on %s", timeout, test_file)
+        return {
+            "passed": False,
+            "returncode": -1,
+            "passed_count": 0,
+            "failed_count": 0,
+            "summary": f"pytest timed out after {timeout}s",
+            "raw_output": "",
+        }
+    except FileNotFoundError as exc:
+        log.error("pytest not runnable: %r", exc)
+        return {
+            "passed": False,
+            "returncode": -1,
+            "passed_count": 0,
+            "failed_count": 0,
+            "summary": f"could not run pytest: {exc}",
+            "raw_output": "",
+        }
+
+    output = (res.stdout or "") + "\n" + (res.stderr or "")
+
+    def _count(pat: str) -> int:
+        m = re.search(pat, output)
+        return int(m.group(1)) if m else 0
+
+    passed_count = _count(r"(\d+)\s+passed")
+    failed_count = _count(r"(\d+)\s+failed") + _count(r"(\d+)\s+error")
+    # pytest exit code 0 == all passed (and at least one test collected)
+    passed = res.returncode == 0 and failed_count == 0
+    # Last non-empty line is pytest's summary, e.g. "3 passed in 0.04s".
+    lines = [ln for ln in output.splitlines() if ln.strip()]
+    summary = lines[-1].strip() if lines else "(no output)"
+    log.info("pytest %s -> rc=%s passed=%d failed=%d", test_file, res.returncode, passed_count, failed_count)
+    return {
+        "passed": passed,
+        "returncode": res.returncode,
+        "passed_count": passed_count,
+        "failed_count": failed_count,
+        "summary": summary,
+        "raw_output": output[-4000:],
+    }
+
+
 class MutationRunner:
     def __init__(self, runner: CommandRunner | None = None) -> None:
         self._run_cmd: CommandRunner = runner or _subprocess_runner

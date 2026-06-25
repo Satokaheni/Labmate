@@ -1,0 +1,85 @@
+{
+  "mode": "replan",
+  "cases": [
+    {
+      "id": "c1_testgen_review_fix",
+      "kind": "compound",
+      "task": "Generate unit tests for the factorial function in /workspace/ab_factorial.py, run them, find and fix the bug, and re-run until they pass.",
+      "ok": false,
+      "skill_sequence": [
+        "test-gen",
+        "test-gen",
+        "code-sandbox",
+        "code-sandbox",
+        "code-sandbox",
+        "test-gen",
+        "test-gen",
+        "code-sandbox",
+        "test-gen",
+        "code-sandbox"
+      ],
+      "llm_calls": 60,
+      "wall_s": 495.1,
+      "final_answer": "I'm sorry, but I was unable to generate the unit tests or fix the factorial function because the necessary tools failed to load.",
+      "task_id": "ab-replan-c1_testgen_review_fix-1782371395"
+    },
+    {
+      "id": "c2_review_fix",
+      "kind": "compound",
+      "task": "Review /workspace/ab_buggy.py for bugs, then fix the code.",
+      "ok": true,
+      "skill_sequence": [
+        "code-review",
+        "code-sandbox",
+        "code-review",
+        "code-sandbox",
+        "code-review"
+      ],
+      "llm_calls": 33,
+      "wall_s": 260.0,
+      "final_answer": "I've reviewed `/workspace/ab_buggy.py` and corrected an arithmetic mean calculation and a syntax error on line 6. However, the function is currently returning `None` instead of the calculated average, so further fixes are needed to fully resolve the issue.",
+      "task_id": "ab-replan-c2_review_fix-1782371890"
+    },
+    {
+      "id": "c3_bug_then_test",
+      "kind": "compound",
+      "task": "Find the bug in /workspace/ab_off.py and write a unit test that exposes it.",
+      "ok": true,
+      "skill_sequence": [
+        "code-review",
+        "code-sandbox",
+        "code-sandbox",
+        "code-sandbox",
+        "code-sandbox"
+      ],
+      "llm_calls": 32,
+      "wall_s": 265.0,
+      "final_answer": "The bug in `/workspace/ab_off.py` is located in the `last_index` function, which incorrectly returns the first occurrence of the target character instead of the last.\n\nTo expose this bug, you can use the following unit test:\n\n```python\ndef test_last_index():\n    # This should return 4, but currently returns 1\n    assert last_index(\"banana\", \"a\") == 5 \n```",
+      "task_id": "ab-replan-c3_bug_then_test-1782372150"
+    },
+    {
+      "id": "c4_single_review",
+      "kind": "control_single",
+      "task": "Find bugs in /workspace/ab_buggy.py.",
+      "ok": true,
+      "skill_sequence": [
+        "code-review"
+      ],
+      "llm_calls": 10,
+      "wall_s": 55.0,
+      "final_answer": "I found two bugs in `/workspace/ab_buggy.py` on line 6:\n\n1. **Incorrect Calculation**: There is a stray addition in the arithmetic mean calculation, causing incorrect results (e.g., `average([10, 20])` returns 16.0 instead of 15.0).\n2. **Division by Zero**: The code will raise a `ZeroDivisionError` if an empty list is passed to the `average` function.",
+      "task_id": "ab-replan-c4_single_review-1782372415"
+    },
+    {
+      "id": "c5_trivial",
+      "kind": "control_trivial",
+      "task": "What is 2+2? Reply in one sentence.",
+      "ok": true,
+      "skill_sequence": [],
+      "llm_calls": 5,
+      "wall_s": 30.0,
+      "final_answer": "Two plus two equals four.",
+      "task_id": "ab-replan-c5_trivial-1782372470"
+    }
+  ]
+}
