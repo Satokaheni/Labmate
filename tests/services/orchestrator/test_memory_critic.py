@@ -49,3 +49,26 @@ async def test_critique_returns_false_on_invalid(storage):
     fake_llm = AsyncMock(return_value='{"verdict":"INVALID","reason":"contradicts"}')
     mc = MemoryConsolidator(storage, llm=fake_llm, critic_enabled=True)
     assert await mc._critique("UPDATE", "fact", "episodes") is False
+
+
+async def test_critic_drops_invalid_update_preserves_id(storage):
+    from services.orchestrator.memory_consolidator import MemoryConsolidator
+
+    fake_llm = AsyncMock(return_value='{"verdict":"INVALID","reason":"wrong"}')
+    mc = MemoryConsolidator(storage, llm=fake_llm, critic_enabled=True)
+    edits = {
+        "add": [],
+        "update": [{"id": "u1", "fact": "bad update", "importance": 3}],
+        "delete": [],
+    }
+    out = await mc._filter_edits(edits, "source episodes")
+    assert out["update"] == []  # invalid update dropped
+
+
+async def test_critique_case_insensitive_verdict(storage):
+    from services.orchestrator.memory_consolidator import MemoryConsolidator
+
+    # lowercase "invalid" should still be rejected
+    fake_llm = AsyncMock(return_value='{"verdict":"invalid","reason":"wrong"}')
+    mc = MemoryConsolidator(storage, llm=fake_llm, critic_enabled=True)
+    assert await mc._critique("ADD", "fact", "episodes") is False

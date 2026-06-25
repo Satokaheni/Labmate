@@ -248,7 +248,7 @@ class MemoryConsolidator:
         """
         try:
             raw = await self._complete(_CRITIC_PROMPT.format(
-                op=op, fact=fact, episodes=episodes_text[:4_000],
+                op=op, fact=fact, episodes=episodes_text,
             ))
             data = self._parse_json(raw)
         except (json.JSONDecodeError, ValueError):
@@ -267,10 +267,16 @@ class MemoryConsolidator:
             return edits
         kept_add = []
         for m in edits.get("add", []):
+            if not m.get("fact"):
+                kept_add.append(m)  # pass through (no fact to critique)
+                continue
             if await self._critique("ADD", m.get("fact", ""), episodes_text):
                 kept_add.append(m)
         kept_update = []
         for m in edits.get("update", []):
+            if not m.get("fact"):
+                kept_update.append(m)
+                continue
             if await self._critique("UPDATE", m.get("fact", ""), episodes_text):
                 kept_update.append(m)
         return {
@@ -377,7 +383,13 @@ class MemoryConsolidator:
             return False
         existing = await self._semantic.search(self._s, candidates[0]["fact"], top_k=10)
         edits = await self._self_edit(candidates, existing)
-        episodes_text = "\n".join(f"- {e.get('content', '')}" for e in episodes)
+        _ep_lines = [f"- {e['content']}" for e in episodes if e.get('content')]
+        episodes_text = ""
+        for _line in reversed(_ep_lines):  # most-recent episodes first
+            if len(episodes_text) + len(_line) + 1 > 4_000:
+                break
+            episodes_text = _line + "\n" + episodes_text
+        episodes_text = episodes_text.rstrip()
         edits = await self._filter_edits(edits, episodes_text)
         await self._apply_edits(session_id, edits)
         logger.info("consolidated session=%s add=%d update=%d delete=%d",
