@@ -63,7 +63,13 @@ RESULT_PREFIX = "labmate:result:"
 RESULT_TTL    = 86_400    # 24 h
 BLOCK_MS      = 5_000
 
-CTX_TOKENS   = int(os.getenv("CTX", "131072"))
+# Per-request context window the model actually serves = llama-server --ctx-size
+# DIVIDED BY --parallel (each slot gets ctx-size/n_parallel tokens). serve-model.sh
+# defaults to --ctx-size 262144 --parallel 2 → 131072 per request. This ceiling drives
+# the context gauge (used/free shown to the frontend) and the auto-compact thresholds,
+# so it must equal the PER-SLOT window, not the raw --ctx-size. Keep CTX_WINDOW in sync
+# with serve-model.sh whenever the slot math changes.
+CTX_TOKENS   = int(os.getenv("CTX_WINDOW", "131072"))
 MICRO_THRESH = int(CTX_TOKENS * 0.70)
 FULL_THRESH  = int(CTX_TOKENS * 0.85)
 
@@ -444,16 +450,22 @@ class OrchestratorProcess:
                     },
                 )
                 ctx_max = CTX_TOKENS
+                # Real context fill: the peak prompt_tokens across this task's LLM
+                # calls is the high-water mark of how full the window actually got.
+                # (We lack a per-segment breakdown from usage data, so the whole
+                # measured fill is attributed to `conversation` — the dominant
+                # real component — rather than fabricating a split.)
+                ctx_used = min(call_counter.get_peak_prompt_tokens(), ctx_max)
                 await events.emit(
                     "context",
                     window={
                         "max": ctx_max,
-                        "used": 0,
-                        "free": ctx_max,
+                        "used": ctx_used,
+                        "free": max(0, ctx_max - ctx_used),
                         "segments": {
                             "systemPrompt": 0,
                             "skillInstructions": 0,
-                            "conversation": 0,
+                            "conversation": ctx_used,
                             "workingMemory": 0,
                             "reasoning": 0,
                         },
