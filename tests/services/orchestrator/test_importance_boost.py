@@ -38,3 +38,11 @@ async def test_boost_ignores_missing_memory(storage):
     mem.update_one.reset_mock()
     await storage.boost_memory_importance(_OID)
     mem.update_one.assert_not_awaited()
+
+
+async def test_boost_ignores_non_numeric_importance(storage):
+    mem = storage._db["memories"]
+    mem.find_one = AsyncMock(return_value={"importance": "not-a-number"})
+    mem.update_one.reset_mock()
+    await storage.boost_memory_importance(_OID)
+    mem.update_one.assert_not_awaited()

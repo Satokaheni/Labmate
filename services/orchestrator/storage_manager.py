@@ -173,7 +173,7 @@ class StorageManager:
         Called when a memory is retrieved into context: frequently-used memories
         become more durable. Best-effort — bad/missing ids are ignored. Re-opens
         the outbox so the OutboxWorker refreshes Chroma metadata + the TTL on the
-        next sweep (see decay task). Importance is floored at 1.0 to stay in band.
+        next sweep (see decay task).
         """
         from bson import ObjectId
         try:
