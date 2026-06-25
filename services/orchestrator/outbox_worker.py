@@ -43,7 +43,10 @@ class OutboxWorker:
                     "valid_to": (doc.get("valid_to").isoformat()
                                  if isinstance(doc.get("valid_to"), datetime)
                                  else doc.get("valid_to")),
+                    "source": doc.get("source"),
+                    "importance": doc.get("importance"),
                 }
+                meta = {k: v for k, v in meta.items() if v is not None}
                 await col.upsert(
                     ids=[str(doc["_id"])],
                     documents=[text],

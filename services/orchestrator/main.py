@@ -434,6 +434,14 @@ class OrchestratorProcess:
             except Exception as exc:
                 _log.warning("auto-compact check failed (non-fatal): %s", exc)
 
+            # Importance-based decay sweep (at most once/hour per session)
+            try:
+                if await storage.cache_get(f"decay_swept:{session_id}") is None:
+                    asyncio.create_task(storage.decay_expired_memories(session_id))
+                    await storage.cache_set(f"decay_swept:{session_id}", "1", ttl=3600)
+            except Exception:
+                pass  # decay is best-effort; never block task execution
+
             _log.info("task %s: %.80s", task_id, task_text)
             final_state = await orch.run_task(
                 task_text, session_id, user_id=user_id, workspace_id=workspace_id,

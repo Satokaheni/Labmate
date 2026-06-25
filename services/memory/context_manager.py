@@ -71,12 +71,14 @@ class ContextManager:
         chroma_cols: dict,
         embedder,
         budget: ContextBudget | None = None,
+        storage=None,
     ) -> None:
         self.redis  = redis
         self.db     = mongo_db
         self.chroma = chroma_cols
         self.embed  = embedder
         self.budget = budget or ContextBudget()
+        self.storage = storage  # orchestrator StorageManager hook for importance boost
 
     async def build_context(
         self,
@@ -100,6 +102,7 @@ class ContextManager:
         # 2. RAG evidence — hybrid BM25 + dense → RRF → rerank
         rag_budget = min(b.slot(b.rag_share), max(0, remaining))
         rag_chunks = await self.hybrid_retrieve(current_task, token_budget=rag_budget)
+        await self._boost_retrieved(rag_chunks)
         rag_text   = "\n\n".join(c["text"] for c in rag_chunks)
         remaining -= token_count(rag_text)
 
@@ -260,6 +263,23 @@ class ContextManager:
             results.append({"id": cid, "text": text, "score": float(score)})
 
         return results
+
+    async def _boost_retrieved(self, chunks: list[dict]) -> None:
+        """Increment importance on every retrieved memory (best-effort, non-blocking).
+
+        Fire-and-forget: a boost failure must never break context assembly.
+        No-op when no storage hook is wired (e.g. unit tests of pure retrieval).
+        """
+        if not self.storage or not chunks:
+            return
+        for c in chunks:
+            cid = c.get("id")
+            if not cid:
+                continue
+            try:
+                await self.storage.boost_memory_importance(cid, delta=0.1)
+            except Exception:
+                _logger.debug("importance boost failed for %s", cid)
 
     # ── Compaction ────────────────────────────────────────────────────────────
 

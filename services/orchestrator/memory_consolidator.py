@@ -12,6 +12,22 @@ CONSOLIDATION_INTERVAL = 50  # episodes between consolidation runs
 GEMMA_BASE = os.getenv("GEMMA_BASE", "http://localhost:8000/v1")
 GEMMA_MODEL = os.getenv("GEMMA_MODEL", "google/gemma-4-31B-it")
 
+_VALID_SOURCES = {
+    "user_stated",
+    "tool_output",
+    "agent_generated",
+    "compaction_reflection",
+}
+_DEFAULT_SOURCE = "agent_generated"
+
+
+def _normalize_source(value) -> str:
+    """Coerce an LLM-supplied source string to the allowed taxonomy."""
+    if isinstance(value, str) and value.strip() in _VALID_SOURCES:
+        return value.strip()
+    return _DEFAULT_SOURCE
+
+
 # ---------------------------------------------------------------------------
 # Lazy Gemma tokenizer singleton (rule #3: never tiktoken)
 # ---------------------------------------------------------------------------
@@ -91,7 +107,12 @@ _EXTRACT_PROMPT = (
     "implicit in stable context.\n"
     "For each fact, assign an importance (1=trivial, 3=standard preference, "
     "5=safety-critical or identity-level). Higher importance slows decay.\n"
-    'Return STRICT JSON: [{{"fact": str, "importance": int}}].\n\n'
+    "For each fact, classify its SOURCE as exactly one of: "
+    '"user_stated" (the user asserted it), '
+    '"tool_output" (it came from a tool/search/file result), '
+    '"agent_generated" (an agent inferred or recommended it).\n'
+    'Return STRICT JSON: '
+    '[{{"fact": str, "importance": int, "source": str}}].\n\n'
     "EPISODES:\n{episodes}"
 )
 
@@ -105,9 +126,12 @@ _SELF_EDIT_PROMPT = (
     "  - ADD: candidate is wholly novel (no semantically-equivalent existing fact).\n"
     "  - NOOP: candidate is a duplicate already covered by an existing fact.\n"
     "When in doubt between UPDATE and DELETE, prefer UPDATE.\n"
+    "For each item in add/update, include source field:\n"
+    "  - If merging/synthesizing multiple sources: use 'agent_generated'.\n"
+    "  - Otherwise: echo the source from the input candidates unchanged.\n"
     "Return STRICT JSON: "
-    '{{"add": [{{"fact": str, "importance": int}}], '
-    '"update": [{{"id": str, "fact": str, "importance": int}}], '
+    '{{"add": [{{"fact": str, "importance": int, "source": str}}], '
+    '"update": [{{"id": str, "fact": str, "importance": int, "source": str}}], '
     '"delete": [{{"id": str}}], "noop": [{{"id": str}}]}}.\n\n'
     "NEW:\n{new}\n\nEXISTING:\n{existing}"
 )
@@ -124,14 +148,28 @@ _TASK_REFLECTION_PROMPT = (
     "REFLECTION:"
 )
 
+_CRITIC_PROMPT = (
+    "You are a strict memory critic. Decide whether the CANDIDATE memory should be "
+    "committed, given the SOURCE episodes it was derived from.\n"
+    "Reject (INVALID) if the candidate: contradicts the source, introduces facts not "
+    "supported by the source (hallucination), or uses the wrong operation for its "
+    "content.\n"
+    "Accept (VALID) if it is faithful to the source and self-contained.\n"
+    "OPERATION: {op}\n"
+    "CANDIDATE: {fact}\n"
+    "SOURCE EPISODES:\n{episodes}\n\n"
+    'Return STRICT JSON: {{"verdict": "VALID"|"INVALID", "reason": str}}.'
+)
+
 
 class MemoryConsolidator:
-    def __init__(self, storage, lm_base_url: str | None = None, llm=None) -> None:
+    def __init__(self, storage, lm_base_url: str | None = None, llm=None, critic_enabled: bool = False) -> None:
         self._s = storage
         self._base = lm_base_url or GEMMA_BASE
         self._llm = llm  # injectable async callable(messages) -> str; defaults to litellm
         self._episodic = EpisodicMemory()
         self._semantic = SemanticMemory()
+        self._critic_enabled = critic_enabled
 
     async def _complete(self, prompt: str) -> str:
         if self._llm is not None:
@@ -179,7 +217,11 @@ class MemoryConsolidator:
                     imp = max(1, min(5, int(m.get("importance", 3))))
                 except (TypeError, ValueError):
                     imp = 3
-                result.append({"fact": m["fact"], "importance": imp})
+                result.append({
+                    "fact": m["fact"],
+                    "importance": imp,
+                    "source": _normalize_source(m.get("source")),
+                })
         return result
 
     async def _self_edit(self, new_memories: list[dict], existing: list[dict]) -> dict:
@@ -198,13 +240,80 @@ class MemoryConsolidator:
             "delete": data.get("delete", []),
         }
 
-    def _memory_dict(self, session_id: str, m: dict) -> dict:
+    async def _gather_neighbors(self, candidates: list[dict], per_fact: int = 3) -> list[dict]:
+        """Retrieve top-N existing memories near each candidate; dedupe by id.
+
+        Replaces sending the full existing-memory set to _self_edit. For each new
+        candidate we pull its nearest existing neighbors so _self_edit only reasons
+        over plausibly-related facts. Returns [{id, fact}, ...] with unique ids.
+        """
+        seen: dict[str, dict] = {}
+        for cand in candidates:
+            fact = cand.get("fact", "")
+            if not fact:
+                continue
+            hits = await self._semantic.search(self._s, fact, top_k=per_fact)
+            for h in hits:
+                hid = h.get("id")
+                if hid and hid not in seen:
+                    # prefer the untagged fact (search_memories prefixes a [source] tag
+                    # onto "fact"); fall back to "fact" for callers that don't tag.
+                    seen[hid] = {"id": hid, "fact": h.get("raw_fact") or h.get("fact", "")}
+        return list(seen.values())
+
+    async def _critique(self, op: str, fact: str, episodes_text: str) -> bool:
+        """Return True if the candidate is VALID. Fail-open on parse/LLM error.
+
+        Fail-open (treat as VALID on error) is deliberate: a flaky critic must not
+        silently drop legitimate memories. Genuine rejections are explicit INVALID.
+        """
+        try:
+            raw = await self._complete(_CRITIC_PROMPT.format(
+                op=op, fact=fact, episodes=episodes_text,
+            ))
+            data = self._parse_json(raw)
+        except (json.JSONDecodeError, ValueError):
+            logger.warning("critic: non-JSON response, accepting candidate")
+            return True
+        verdict = str(data.get("verdict", "VALID")).strip().upper()
+        if verdict == "INVALID":
+            logger.info("critic rejected (%s): %s — %s",
+                        op, fact[:60], data.get("reason", ""))
+            return False
+        return True
+
+    async def _filter_edits(self, edits: dict, episodes_text: str) -> dict:
+        """Drop ADD/UPDATE candidates the critic marks INVALID. DELETE/NOOP pass through."""
+        if not self._critic_enabled:
+            return edits
+        kept_add = []
+        for m in edits.get("add", []):
+            if not m.get("fact"):
+                kept_add.append(m)  # pass through (no fact to critique)
+                continue
+            if await self._critique("ADD", m.get("fact", ""), episodes_text):
+                kept_add.append(m)
+        kept_update = []
+        for m in edits.get("update", []):
+            if not m.get("fact"):
+                kept_update.append(m)
+                continue
+            if await self._critique("UPDATE", m.get("fact", ""), episodes_text):
+                kept_update.append(m)
+        return {
+            "add": kept_add,
+            "update": kept_update,
+            "delete": edits.get("delete", []),
+        }
+
+    def _memory_dict(self, session_id: str, m: dict, source: str | None = None) -> dict:
         """Build the memory document stored in Chroma/Mongo."""
         return {
             "session_id": session_id,
             "fact": m["fact"],
             "importance": m.get("importance", 3),
             "embedding_text": m["fact"],
+            "source": _normalize_source(source if source is not None else m.get("source")),
         }
 
     async def _apply_edits(self, session_id: str, edits: dict) -> None:
@@ -293,11 +402,21 @@ class MemoryConsolidator:
         candidates = await self._extract_memories(episodes)
         if not candidates:
             return False
-        existing = await self._semantic.search(self._s, candidates[0]["fact"], top_k=10)
+        # Semantic pre-filter: only the nearest existing neighbors per candidate
+        existing = await self._gather_neighbors(candidates, per_fact=3)
         edits = await self._self_edit(candidates, existing)
+        _ep_lines = [f"- {e['content']}" for e in episodes if e.get('content')]
+        episodes_text = ""
+        for _line in reversed(_ep_lines):  # most-recent episodes first
+            if len(episodes_text) + len(_line) + 1 > 4_000:
+                break
+            episodes_text = _line + "\n" + episodes_text
+        episodes_text = episodes_text.rstrip()
+        edits = await self._filter_edits(edits, episodes_text)
         await self._apply_edits(session_id, edits)
-        logger.info("consolidated session=%s add=%d update=%d delete=%d",
-                    session_id, len(edits["add"]), len(edits["update"]), len(edits["delete"]))
+        logger.info("consolidated session=%s neighbors=%d add=%d update=%d delete=%d",
+                    session_id, len(existing),
+                    len(edits["add"]), len(edits["update"]), len(edits["delete"]))
         return True
 
     # --- Task 9: Redis Streams consumer ---------------------------------
