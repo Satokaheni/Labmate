@@ -534,9 +534,10 @@ class ContextManager:
     async def last_activity_seconds(self, session_id: str) -> float:
         """Seconds since the newest message in this session was written.
 
-        Reads the newest message's created_at. Returns 0.0 when the session has
-        no messages or the newest message lacks created_at — i.e. "not idle", so a
-        missing timestamp never triggers a surprise background compaction.
+        Reads the newest message's created_at. Accepts both float Unix timestamps
+        (the actual storage format: time.time()) and datetime objects. Returns 0.0
+        when the session has no messages or the field is absent/unrecognised — i.e.
+        "not idle", so a missing timestamp never triggers a surprise compaction.
         """
         cursor = (
             self.db["messages"]
@@ -548,6 +549,8 @@ class ContextManager:
         async for doc in cursor:
             newest = doc.get("created_at")
             break
+        if isinstance(newest, (int, float)):
+            newest = datetime.fromtimestamp(float(newest), tz=timezone.utc)
         if not isinstance(newest, datetime):
             return 0.0
         if newest.tzinfo is None:

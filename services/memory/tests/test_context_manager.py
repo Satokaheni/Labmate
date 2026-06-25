@@ -514,10 +514,11 @@ async def test_full_compact_emits_compact_quality_event():
 async def test_last_activity_seconds_reports_idle_time():
     """last_activity_seconds returns roughly the age of the newest message."""
     import datetime as _dt
+    import time as _time
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
         from services.memory.context_manager import ContextManager
 
-        old_ts = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(seconds=900)
+        old_ts = _time.time() - 900.0  # float Unix timestamp, as actually stored
         db = MagicMock()
         cursor = _AsyncIter([{"created_at": old_ts}])
         mock_sort = MagicMock()
@@ -536,11 +537,11 @@ async def test_last_activity_seconds_reports_idle_time():
 @pytest.mark.asyncio
 async def test_maybe_background_compact_skips_when_not_idle():
     """A recently-active session is never background-compacted."""
-    import datetime as _dt
+    import time as _time
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
         from services.memory.context_manager import ContextManager
 
-        recent_ts = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(seconds=5)
+        recent_ts = _time.time() - 5.0  # float Unix timestamp, as actually stored
         db = MagicMock()
         cursor = _AsyncIter([{"created_at": recent_ts}])
         mock_sort = MagicMock()
@@ -589,3 +590,30 @@ async def test_maybe_background_compact_runs_when_idle_and_full():
         cm.full_compact.assert_awaited_once()
         # old_ts retained to document the idle scenario under test
         assert old_ts < _dt.datetime.now(_dt.timezone.utc)
+
+
+def test_anchor_diverges_heuristic_boundaries():
+    """_anchor_diverges uses a 60% word-overlap threshold on tokens longer than 3 chars."""
+    with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
+        from services.memory.context_manager import ContextManager
+
+        cm = ContextManager(redis=AsyncMock(), mongo_db=MagicMock(), chroma_cols={}, embedder=AsyncMock())
+
+        # Build anchor with 10 distinct >3-char words
+        anchor_words = ["alpha", "bravo", "charlie", "delta", "echo",
+                        "foxtrot", "golf", "hotel", "india", "juliet"]
+        anchor = " ".join(anchor_words)
+
+        # 5/10 overlap = 50% → diverges (below 60% threshold)
+        low_summary = " ".join(anchor_words[:5]) + " unrelated stuff here"
+        assert cm._anchor_diverges(anchor, low_summary) is True
+
+        # 7/10 overlap = 70% → does not diverge (above 60% threshold)
+        high_summary = " ".join(anchor_words[:7]) + " some extra words"
+        assert cm._anchor_diverges(anchor, high_summary) is False
+
+        # Empty anchor → never diverges
+        assert cm._anchor_diverges("", "anything here") is False
+
+        # Non-empty anchor, empty summary → always diverges
+        assert cm._anchor_diverges("important fact", "") is True
