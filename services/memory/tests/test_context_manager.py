@@ -504,7 +504,7 @@ async def test_full_compact_emits_compact_quality_event():
         assert evt["turns_compacted"] == 5
         assert evt["reflections_count"] == 1
         assert evt["tokens_saved"] >= 0
-        assert 0.0 <= evt["compression_ratio"]
+        assert 0.0 <= evt["compression_ratio"] <= 1.0
         # Return contract is unchanged
         assert result["pruned_messages"] == 5
         assert result["reflections"] == ["use Python"]
