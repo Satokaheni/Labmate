@@ -65,40 +65,14 @@ MAX_GOAL_ATTEMPTS = int(os.getenv("MAX_GOAL_ATTEMPTS", "2"))
 #   (was hardcoded 3000; lower is faster on the local Q4 model).
 REFLECT_THINKING_BUDGET = int(os.getenv("REFLECT_THINKING_BUDGET", "1500"))
 
-# FIX 9: substrings (case-insensitive) that mark a failure as deterministic / environmental,
-# so reflect-retrying it can never help. Conservative on purpose — these are unambiguous
-# "this will fail identically every time" signals (missing tool/dep, no network, no creds).
-_NONRETRYABLE_ERROR_MARKERS = (
-    "skillunavailable",
-    "not available",
-    "unavailable",
-    "no such",
-    "not found",
-    "missing",
-    "docker",
-    "permission denied",
-    "eperm",
-    "enoent",
-    "connection refused",
-    "network",
-    "timed out",
-    "timeout",
-    "api key",
-    "apikey",
-    "credential",
-    "rate limit",
-    "429",
-)
+# Task 3: import the error classifier and add rate-limit knobs
+from .error_classifier import classify_error, ErrorClass, is_terminal
 
-
-def _is_nonretryable_error(err: str) -> bool:
-    """FIX 9: True when an error string clearly describes a deterministic/environmental
-    failure that a reflect-retry cannot fix (missing tool/dep, no network/creds, etc.).
-    Case-insensitive conservative substring match."""
-    if not err:
-        return False
-    low = err.lower()
-    return any(marker in low for marker in _NONRETRYABLE_ERROR_MARKERS)
+# RATE_LIMITED handling: a 429 may be retried a bounded number of times with a
+# short backoff before being treated as exhausted. Keep these small — on the
+# local pod a sustained 429 (e.g. Semantic Scholar without a key) will recur.
+MAX_RATE_LIMIT_RETRIES = int(os.getenv("MAX_RATE_LIMIT_RETRIES", "1"))
+RATE_LIMIT_BACKOFF_SECONDS = float(os.getenv("RATE_LIMIT_BACKOFF_SECONDS", "2.0"))
 
 
 def classify_artifact(text: str) -> str:
@@ -225,41 +199,60 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
 
         results = await async_orch.plan_and_dispatch(ready)
         last_artifact = {"type": "other", "payload": ""}
+        error_class_seen: str | None = None
         for r in results:
             gid = r.id
             # Idempotency guard (FIX #4): mark per-GOAL-ID only when COMPLETED.
-            # FAILED goals are NOT marked, so they stay retryable and increment attempts each time.
-            # This prevents the deadlock where a retry with the same summary was skipped.
             if markers.get(gid) == "completed":
-                continue  # idempotency guard: already applied for this goal
+                continue
             new_status = Status.COMPLETED if r.ok else Status.FAILED
-            # Increment attempts on FAILED (needed for router's reflect branch to trigger)
             if not r.ok:
-                # FIX 9: a deterministic/environmental failure (no Docker / no network /
-                # missing API key, etc.) will fail IDENTICALLY on every retry, so mark it
-                # EXHAUSTED immediately (attempts = MAX_GOAL_ATTEMPTS) instead of paying a
-                # reflect(budget)+re-execute for each of MAX_GOAL_ATTEMPTS identical failures.
-                # check()/router() then finalize with the error rather than reflect-retrying.
-                if _is_nonretryable_error(r.summary or ""):
+                # Classify the failure to decide retry vs. terminal. Replaces the
+                # crude _NONRETRYABLE_ERROR_MARKERS substring test (FIX 9).
+                cls = classify_error(r.summary or "")
+                error_class_seen = cls.value
+                tree[gid]["error_class"] = cls.value
+                if is_terminal(cls):
+                    # Environmental/deterministic: will fail identically on every
+                    # retry -> mark EXHAUSTED so check()/router() finalize with the
+                    # honest error instead of paying reflect()+re-execute per attempt.
                     tree[gid]["attempts"] = MAX_GOAL_ATTEMPTS
+                elif cls == ErrorClass.RATE_LIMITED:
+                    # Bounded backoff + capped retries. Cap is the SMALLER of the
+                    # rate-limit cap and the goal cap so a 429 never out-retries a
+                    # normal failure.
+                    prior = tree[gid].get("attempts", 0)
+                    rl_cap = min(MAX_RATE_LIMIT_RETRIES, MAX_GOAL_ATTEMPTS)
+                    if prior >= rl_cap:
+                        tree[gid]["attempts"] = MAX_GOAL_ATTEMPTS  # exhausted
+                    else:
+                        if RATE_LIMIT_BACKOFF_SECONDS > 0:
+                            import asyncio
+                            await asyncio.sleep(RATE_LIMIT_BACKOFF_SECONDS)
+                        tree[gid]["attempts"] = prior + 1
                 else:
+                    # TRANSIENT or RETRYABLE (unknown) -> normal increment.
                     tree[gid]["attempts"] = tree[gid].get("attempts", 0) + 1
-            # Set both result and error on failure so reflect/check can surface the error
             if r.ok:
                 update_status(tree, gid, new_status, result=r.summary)
             else:
                 update_status(tree, gid, new_status, result=r.summary, error=r.summary)
-            # Mark as completed only if succeeded; FAILED goals stay retryable
             if r.ok:
                 markers[gid] = "completed"
-            # Track last artifact for A2 verify gate
             if r.ok and r.summary:
                 last_artifact = {
                     "type": classify_artifact(r.summary),
                     "payload": r.summary,
                 }
 
-        return {"goal_tree": tree, "step_markers": markers, "last_artifact": last_artifact}
+        out: dict = {
+            "goal_tree": tree,
+            "step_markers": markers,
+            "last_artifact": last_artifact,
+        }
+        if error_class_seen is not None:
+            out["error_class"] = error_class_seen
+        return out
 
     async def check(state: State) -> dict:
         """

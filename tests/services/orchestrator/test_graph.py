@@ -1316,3 +1316,109 @@ class TestEndToEndGraphExecution:
                 if children:
                     child_id = children[0]
                     assert final_state["goal_tree"][child_id]["attempts"] == MAX_GOAL_ATTEMPTS
+
+
+@pytest.mark.mocked
+class TestExecuteNodeClassification:
+    @pytest.mark.asyncio
+    async def test_terminal_dependency_exhausts_immediately(self):
+        """A no-Docker / missing-tool failure is marked exhausted at MAX_GOAL_ATTEMPTS
+        in ONE pass (no reflect-retry), and records error_class."""
+        from services.orchestrator.graph import make_nodes, MAX_GOAL_ATTEMPTS
+        from services.orchestrator.coding_orchestrator import (
+            CodingOrchestrator, AsyncOrchestrator, Result,
+        )
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        result = Result(id="root", summary="docker: command not found", ok=False)
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+        mock_async_orch.plan_and_dispatch = AsyncMock(return_value=[result])
+
+        _, execute_node, *_ = make_nodes(mock_orch, mock_async_orch)
+        state = _make_state()
+        delta = await execute_node(state)
+
+        assert delta["goal_tree"]["root"]["attempts"] == MAX_GOAL_ATTEMPTS
+        assert delta["goal_tree"]["root"]["status"] == Status.FAILED.value
+        assert delta["error_class"] == "TERMINAL_DEPENDENCY"
+
+    @pytest.mark.asyncio
+    async def test_terminal_credential_exhausts_immediately(self):
+        from services.orchestrator.graph import make_nodes, MAX_GOAL_ATTEMPTS
+        from services.orchestrator.coding_orchestrator import (
+            CodingOrchestrator, AsyncOrchestrator, Result,
+        )
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        result = Result(id="root", summary="Missing API key for Figma", ok=False)
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+        mock_async_orch.plan_and_dispatch = AsyncMock(return_value=[result])
+
+        _, execute_node, *_ = make_nodes(mock_orch, mock_async_orch)
+        delta = await execute_node(_make_state())
+        assert delta["goal_tree"]["root"]["attempts"] == MAX_GOAL_ATTEMPTS
+        assert delta["error_class"] == "TERMINAL_CREDENTIAL"
+
+    @pytest.mark.asyncio
+    async def test_unknown_error_increments_by_one(self):
+        """Regression-safety: an unknown failure stays RETRYABLE and increments
+        attempts by exactly one (today's behavior)."""
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import (
+            CodingOrchestrator, AsyncOrchestrator, Result,
+        )
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        result = Result(id="root", summary="assertion failed: expected 4 got 5", ok=False)
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+        mock_async_orch.plan_and_dispatch = AsyncMock(return_value=[result])
+
+        _, execute_node, *_ = make_nodes(mock_orch, mock_async_orch)
+        state = _make_state()
+        before = state["goal_tree"]["root"].get("attempts", 0)
+        delta = await execute_node(state)
+        assert delta["goal_tree"]["root"]["attempts"] == before + 1
+        assert delta["error_class"] == "RETRYABLE"
+
+    @pytest.mark.asyncio
+    async def test_transient_timeout_increments_by_one(self):
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import (
+            CodingOrchestrator, AsyncOrchestrator, Result,
+        )
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        result = Result(id="root", summary="Request timed out after 60s", ok=False)
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+        mock_async_orch.plan_and_dispatch = AsyncMock(return_value=[result])
+
+        _, execute_node, *_ = make_nodes(mock_orch, mock_async_orch)
+        state = _make_state()
+        before = state["goal_tree"]["root"].get("attempts", 0)
+        delta = await execute_node(state)
+        assert delta["goal_tree"]["root"]["attempts"] == before + 1
+        assert delta["error_class"] == "TRANSIENT"
+
+    @pytest.mark.asyncio
+    async def test_rate_limited_capped_by_max_rate_limit_retries(self, monkeypatch):
+        """RATE_LIMITED retries up to MAX_RATE_LIMIT_RETRIES, then is exhausted."""
+        import services.orchestrator.graph as g
+        from services.orchestrator.coding_orchestrator import (
+            CodingOrchestrator, AsyncOrchestrator, Result,
+        )
+
+        monkeypatch.setattr(g, "MAX_RATE_LIMIT_RETRIES", 1)
+        monkeypatch.setattr(g, "RATE_LIMIT_BACKOFF_SECONDS", 0.0)
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        result = Result(id="root", summary="HTTP 429 Too Many Requests", ok=False)
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+        mock_async_orch.plan_and_dispatch = AsyncMock(return_value=[result])
+
+        _, execute_node, *_ = g.make_nodes(mock_orch, mock_async_orch)
+        state = _make_state()
+        # Pretend we've already retried once: at the cap, this pass exhausts it.
+        state["goal_tree"]["root"]["attempts"] = 1
+        delta = await execute_node(state)
+        assert delta["error_class"] == "RATE_LIMITED"
+        assert delta["goal_tree"]["root"]["attempts"] >= g.MAX_GOAL_ATTEMPTS
