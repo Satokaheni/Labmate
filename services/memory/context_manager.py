@@ -5,6 +5,7 @@ import hashlib
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from services.memory.tokenizer import token_count
 from services.memory.reranker import rerank
@@ -267,6 +268,8 @@ class ContextManager:
     _BLOCK_SIZE            = 20     # turns per parallel summarization block
     _KEEP_RECENT           = 15     # turns retained verbatim after full compact
     _KEEP_RECENT_TOOL_RESULTS = 10  # most-recent tool results never cleared (still referenced)
+    _IDLE_COMPACT_SECONDS  = 600    # idle threshold (s) before proactive background compact
+    _LOW_FILL_RATIO        = 0.50   # only background-compact when fill ratio exceeds this
 
     # Prompt used per block when summarizing in parallel
     _BLOCK_SUMMARY_PROMPT = (
@@ -527,6 +530,67 @@ class ContextManager:
             "pruned_messages": len(ids),
             "reflections": reflections,
         }
+
+    async def last_activity_seconds(self, session_id: str) -> float:
+        """Seconds since the newest message in this session was written.
+
+        Reads the newest message's created_at. Returns 0.0 when the session has
+        no messages or the newest message lacks created_at — i.e. "not idle", so a
+        missing timestamp never triggers a surprise background compaction.
+        """
+        cursor = (
+            self.db["messages"]
+            .find({"session_id": session_id}, {"created_at": 1})
+            .sort("seq", -1)
+            .limit(1)
+        )
+        newest = None
+        async for doc in cursor:
+            newest = doc.get("created_at")
+            break
+        if not isinstance(newest, datetime):
+            return 0.0
+        if newest.tzinfo is None:
+            newest = newest.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - newest).total_seconds())
+
+    async def maybe_background_compact(
+        self,
+        session_id: str,
+        llm_fn,
+        system_prompt: str = "",
+        agent_instructions: str = "",
+    ) -> dict | None:
+        """Compact proactively iff the session is idle AND context fill is high.
+
+        Returns the full_compact result dict when a compaction ran, else None.
+        Idle gate prevents racing an in-flight task; the LOW fill gate prevents
+        wasting an LLM call on a near-empty session. Never raises — background
+        callers treat None as "nothing to do".
+        """
+        try:
+            idle = await self.last_activity_seconds(session_id)
+            if idle < self._IDLE_COMPACT_SECONDS:
+                return None
+
+            ctx = await self.build_context(
+                session_id=session_id,
+                current_task="",
+                system_prompt=system_prompt,
+                agent_instructions=agent_instructions,
+            )
+            low_thresh = int(self.budget.effective_budget * self._LOW_FILL_RATIO)
+            if ctx.total_tokens < low_thresh:
+                return None
+
+            _logger.info(
+                "background compact: session %s idle %.0fs, fill %d/%d",
+                session_id, idle, ctx.total_tokens, self.budget.effective_budget,
+            )
+            return await self.full_compact(session_id, llm_fn)
+        except Exception:
+            _logger.warning("background compact failed (non-fatal)", exc_info=True)
+            return None
 
     # ── Consolidation worker ──────────────────────────────────────────────────
 

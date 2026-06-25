@@ -8,7 +8,7 @@ def _mock_token_count(text: str) -> int:
 
 
 class _AsyncIter:
-    """Async iterator that also supports Motor's chainable .sort() and .skip()."""
+    """Async iterator that also supports Motor's chainable .sort(), .skip(), and .limit()."""
     def __init__(self, docs):
         self._docs = iter(docs)
     def __aiter__(self): return self
@@ -19,6 +19,7 @@ class _AsyncIter:
             raise StopAsyncIteration
     def sort(self, *args, **kwargs): return self
     def skip(self, *args, **kwargs): return self
+    def limit(self, *args, **kwargs): return self
 
 
 @pytest.mark.asyncio
@@ -135,7 +136,7 @@ def test_context_budget_effective_budget():
 # ── Compaction tests ─────────────────────────────────────────────────────────
 
 class _AsyncIter:
-    """Async iterator that also supports Motor's chainable .sort() and .skip()."""
+    """Async iterator that also supports Motor's chainable .sort(), .skip(), and .limit()."""
     def __init__(self, docs):
         self._docs = iter(docs)
     def __aiter__(self): return self
@@ -146,6 +147,7 @@ class _AsyncIter:
             raise StopAsyncIteration
     def sort(self, *args, **kwargs): return self
     def skip(self, *args, **kwargs): return self
+    def limit(self, *args, **kwargs): return self
 
 
 def _make_cm(turns=None, redis_data=None):
@@ -505,3 +507,84 @@ async def test_full_compact_emits_compact_quality_event():
         # Return contract is unchanged
         assert result["pruned_messages"] == 5
         assert result["reflections"] == ["use Python"]
+
+
+@pytest.mark.asyncio
+async def test_last_activity_seconds_reports_idle_time():
+    """last_activity_seconds returns roughly the age of the newest message."""
+    import datetime as _dt
+    with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
+        from services.memory.context_manager import ContextManager
+
+        old_ts = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(seconds=900)
+        db = MagicMock()
+        cursor = _AsyncIter([{"created_at": old_ts}])
+        mock_sort = MagicMock()
+        mock_sort.limit = MagicMock(return_value=cursor)
+        mock_find = MagicMock()
+        mock_find.sort = MagicMock(return_value=mock_sort)
+        messages_col = MagicMock()
+        messages_col.find = MagicMock(return_value=mock_find)
+        db.__getitem__ = MagicMock(return_value=messages_col)
+
+        cm = ContextManager(redis=AsyncMock(), mongo_db=db, chroma_cols={}, embedder=AsyncMock())
+        idle = await cm.last_activity_seconds("s1")
+        assert idle >= 800   # ~900s, allow generous slack
+
+
+@pytest.mark.asyncio
+async def test_maybe_background_compact_skips_when_not_idle():
+    """A recently-active session is never background-compacted."""
+    import datetime as _dt
+    with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
+        from services.memory.context_manager import ContextManager
+
+        recent_ts = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(seconds=5)
+        db = MagicMock()
+        cursor = _AsyncIter([{"created_at": recent_ts}])
+        mock_sort = MagicMock()
+        mock_sort.limit = MagicMock(return_value=cursor)
+        mock_find = MagicMock()
+        mock_find.sort = MagicMock(return_value=mock_sort)
+        messages_col = MagicMock()
+        messages_col.find = MagicMock(return_value=mock_find)
+        db.__getitem__ = MagicMock(return_value=messages_col)
+
+        llm = AsyncMock()
+        cm = ContextManager(redis=AsyncMock(), mongo_db=db, chroma_cols={}, embedder=AsyncMock())
+        result = await cm.maybe_background_compact("s1", llm)
+        assert result is None
+        llm.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_maybe_background_compact_runs_when_idle_and_full():
+    """An idle, high-fill session triggers full_compact."""
+    import datetime as _dt
+    with (
+        patch("services.memory.context_manager.token_count", side_effect=_mock_token_count),
+        patch("services.memory.context_manager.rerank", new_callable=AsyncMock, return_value=[]),
+    ):
+        from services.memory.context_manager import ContextManager, ContextBudget
+
+        old_ts = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(seconds=1200)
+
+        cm = ContextManager(
+            redis=AsyncMock(), mongo_db=MagicMock(), chroma_cols={},
+            embedder=AsyncMock(), budget=ContextBudget(max_tokens=400, completion_reserve=20),
+        )
+        cm.last_activity_seconds = AsyncMock(return_value=1200.0)
+
+        from services.memory.context_manager import AssembledContext
+        cm.build_context = AsyncMock(return_value=AssembledContext(total_tokens=10_000))
+        cm.full_compact = AsyncMock(return_value={
+            "summary_tokens": 50, "pruned_messages": 7, "reflections": [],
+        })
+
+        llm = AsyncMock()
+        result = await cm.maybe_background_compact("s1", llm)
+        assert result is not None
+        assert result["pruned_messages"] == 7
+        cm.full_compact.assert_awaited_once()
+        # old_ts retained to document the idle scenario under test
+        assert old_ts < _dt.datetime.now(_dt.timezone.utc)
