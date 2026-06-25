@@ -276,6 +276,11 @@ class OrchestratorProcess:
                     session_id,
                     llm_fn=_compact_llm,
                 )
+                # Write reflections extracted during compaction to semantic memory
+                if result.get("reflections"):
+                    asyncio.create_task(storage.consolidator.write_reflections(
+                        session_id, result["reflections"]
+                    ))
                 await self._write_result(task_id, {"ok": True, **result})
                 return
 
@@ -349,6 +354,10 @@ class OrchestratorProcess:
                     )
                     await events.emit("compact.auto", freed=compact_result["pruned_messages"])
                     _log.info("task %s: auto full-compact freed %d messages", task_id, compact_result["pruned_messages"])
+                    if compact_result.get("reflections"):
+                        asyncio.create_task(storage.consolidator.write_reflections(
+                            session_id, compact_result["reflections"]
+                        ))
                 elif ctx_check.total_tokens >= MICRO_THRESH:
                     freed = await storage.context_manager.microcompact(session_id)
                     if freed:
@@ -401,6 +410,16 @@ class OrchestratorProcess:
                 "llm_calls": call_counter.get_count(),
             })
             _log.info("task %s complete", task_id)
+            # Task-boundary reflection: write to semantic memory asynchronously
+            _final_answer = (
+                final_state.get("final_answer", "") if isinstance(final_state, dict) else ""
+            )
+            asyncio.create_task(storage.consolidator.on_task_complete(
+                session_id=session_id,
+                goal=task_text[:500],
+                success=ok_flag,
+                summary=_final_answer[:1_000],
+            ))
 
         except Exception:
             _log.exception("task %s failed", task_id)
@@ -409,6 +428,13 @@ class OrchestratorProcess:
                 "error": "task_failed",
                 "llm_calls": call_counter.get_count(),
             })
+            # Failure reflection: always write — highest signal for learning
+            asyncio.create_task(storage.consolidator.on_task_complete(
+                session_id=session_id,
+                goal=task_text[:500],
+                success=False,
+                summary="Task raised an unhandled exception.",
+            ))
         finally:
             # Fix 2: Complete session in finally block
             if user_id and workspace_id:

@@ -4,6 +4,32 @@ import { formatTokens } from '@/lib/format';
 
 type SegKey = keyof ContextWindow['segments'];
 
+const DONUT_R = 6;
+const DONUT_CIRC = 2 * Math.PI * DONUT_R;
+
+function DonutRing({ pct }: { pct: number }) {
+  const filled = (pct / 100) * DONUT_CIRC;
+  const color =
+    pct >= 90 ? 'var(--accent-red, #f87171)' :
+    pct >= 70 ? 'var(--accent-amber, #f59e0b)' :
+    'var(--accent-green, #4ade80)';
+  return (
+    <svg width={16} height={16} viewBox="0 0 16 16" aria-hidden focusable="false">
+      <circle cx={8} cy={8} r={DONUT_R} fill="none" stroke="var(--border-1, #333)" strokeWidth={2.5} />
+      <circle
+        cx={8} cy={8} r={DONUT_R}
+        fill="none"
+        stroke={color}
+        strokeWidth={2.5}
+        strokeDasharray={DONUT_CIRC}
+        strokeDashoffset={DONUT_CIRC - filled}
+        strokeLinecap="round"
+        transform="rotate(-90 8 8)"
+      />
+    </svg>
+  );
+}
+
 const SEG_META: Array<{ key: SegKey; label: string; color: string }> = [
   { key: 'systemPrompt', label: 'systemPrompt', color: '#6aa6ff' },
   { key: 'skillInstructions', label: 'skillInstructions', color: '#56c08d' },
@@ -33,6 +59,7 @@ export function ContextBar({ window, onCompact, compacting }: ContextBarProps) {
           aria-label={open ? 'Collapse context breakdown' : 'Expand context breakdown'}
           className="flex items-center gap-2 text-left"
         >
+          <DonutRing pct={usedPct} />
           <span className="font-mono text-[11px] uppercase tracking-wide text-mono">Context</span>
           {compacting ? (
             <span data-testid="context-compacting" className="font-mono text-[11px] text-[var(--accent-amber)] [animation:breathe_1.5s_ease-in-out_infinite]">

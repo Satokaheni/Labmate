@@ -1,0 +1,82 @@
+fields:
+  - name: core_mechanism
+    description: What the technique actually does to tokens/memory
+    detail_level: brief
+
+  - name: api_level
+    description: "API/prompt-level (usable on any hosted model) vs model-internal (self-hosted only)"
+    detail_level: brief
+
+  - name: gradient_free
+    description: "Gradient-free / no training required vs requires fine-tuning or RL training"
+    detail_level: brief
+
+  - name: labmate_feasibility
+    description: "Can this be used in Labmate today (hosted Gemma 4 31B via llama.cpp)?"
+    detail_level: brief
+
+  - name: fidelity
+    description: "Information retention vs raw transcript — what is irreversibly lost"
+    detail_level: moderate
+
+  - name: reversibility
+    description: "Is discarded information permanently gone (summarization, eviction) or reconstructable (RAG, reversible compression)?"
+    detail_level: moderate
+
+  - name: write_vs_read_cost
+    description: "When is work paid — at compaction/ingestion (blocking) or at query time (retrieval latency)?"
+    detail_level: moderate
+
+  - name: labmate_fit
+    description: "How well it suits Labmate's use case: long research sessions, multi-tool calls, large document reads"
+    detail_level: moderate
+
+  - name: implementation_complexity
+    description: "Estimated effort to build in Labmate's orchestrator — hours/days, key integration points"
+    detail_level: moderate
+
+  - name: causal_ordering_preserved
+    description: "Does the model see events in correct time-order after compaction?"
+    detail_level: moderate
+
+  - name: provenance_preserved
+    description: "Does compacted memory retain pointers to source docs/tool calls/turns?"
+    detail_level: moderate
+
+  - name: temporal_knowledge_update
+    description: "Can the technique represent that a fact was true then superseded, or does it only store latest?"
+    detail_level: moderate
+
+  - name: controllability
+    description: "Can operator predictably control summary size/content? Stable across runs?"
+    detail_level: moderate
+
+  - name: agent_controlled
+    description: "Does the agent decide what to keep/recall (scratchpad, reflection) or does an external policy (decay, similarity) decide?"
+    detail_level: moderate
+
+  - name: failure_mode
+    description: "How quality degrades as session grows — graceful (retrieval), cliff-edge (truncation), or drift-accumulating (repeated summarization)?"
+    detail_level: detailed
+
+  - name: benchmark_evidence
+    description: "Known scores on LoCoMo / LongMemEval / BABILong and token footprint"
+    detail_level: detailed
+
+  - name: token_footprint
+    description: "Order-of-magnitude storage per conversation and ongoing overhead"
+    detail_level: detailed
+
+  - name: multi_agent_compatible
+    description: "Does it support spreading context across isolated subagent windows? (Relevant to Labmate's orchestrator)"
+    detail_level: detailed
+
+  - name: known_implementations
+    description: "Open-source or production systems using this approach"
+    detail_level: brief
+
+  - name: tradeoffs
+    description: "Key things you give up by choosing this approach"
+    detail_level: moderate
+
+uncertain: []

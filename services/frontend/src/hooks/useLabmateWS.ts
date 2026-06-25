@@ -122,6 +122,8 @@ function reducer(state: WsState, action: Action): WsState {
       const exists = state.sessions.some((s) => s.id === action.session.id);
       return {
         ...state,
+        // Auto-activate brand-new sessions so a fresh newSession() call switches to it.
+        activeSessionId: exists ? state.activeSessionId : action.session.id,
         sessions: exists
           ? state.sessions.map((s) => (s.id === action.session.id ? action.session : s))
           : [action.session, ...state.sessions],

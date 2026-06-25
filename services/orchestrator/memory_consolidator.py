@@ -84,18 +84,44 @@ class SemanticMemory:
 
 _EXTRACT_PROMPT = (
     "You are a memory extractor. From the conversation episodes below, extract "
-    "atomic, durable facts worth remembering (preferences, decisions, entities, "
-    "constraints). Return STRICT JSON: a list of objects with a single key "
-    '"fact". Omit ephemeral chit-chat.\n\nEPISODES:\n{episodes}'
+    "atomic, self-contained facts worth keeping long-term.\n"
+    "Include: user preferences, decisions, entities (people/papers/tools), "
+    "constraints, failures and lessons, AND agent confirmations/recommendations.\n"
+    "Omit: greetings, progress updates, ephemeral chit-chat, and anything already "
+    "implicit in stable context.\n"
+    "For each fact, assign an importance (1=trivial, 3=standard preference, "
+    "5=safety-critical or identity-level). Higher importance slows decay.\n"
+    'Return STRICT JSON: [{{"fact": str, "importance": int}}].\n\n'
+    "EPISODES:\n{episodes}"
 )
 
 _SELF_EDIT_PROMPT = (
-    "You reconcile NEW candidate memories against EXISTING memories. For each "
-    "candidate decide: add (novel), update (refines/contradicts an existing one "
-    "-> include its id), delete (an existing memory is now false -> include id), "
-    "or noop (duplicate). Return STRICT JSON: "
-    '{{"add": [{{"fact": str}}], "update": [{{"id": str, "fact": str}}], '
-    '"delete": [{{"id": str}}]}}.\n\nNEW:\n{new}\n\nEXISTING:\n{existing}'
+    "You reconcile NEW candidate memories against EXISTING memories.\n"
+    "CRITICAL disambiguation rule:\n"
+    "  - UPDATE: candidate REFINES or EXTENDS an existing fact (e.g., adding a "
+    "second dog is UPDATE of the 'user has a dog' fact, not DELETE + ADD).\n"
+    "  - DELETE: candidate CONTRADICTS and fully replaces an existing fact "
+    "(e.g., user changed employer — old fact is now false).\n"
+    "  - ADD: candidate is wholly novel (no semantically-equivalent existing fact).\n"
+    "  - NOOP: candidate is a duplicate already covered by an existing fact.\n"
+    "When in doubt between UPDATE and DELETE, prefer UPDATE.\n"
+    "Return STRICT JSON: "
+    '{{"add": [{{"fact": str, "importance": int}}], '
+    '"update": [{{"id": str, "fact": str, "importance": int}}], '
+    '"delete": [{{"id": str}}], "noop": [{{"id": str}}]}}.\n\n'
+    "NEW:\n{new}\n\nEXISTING:\n{existing}"
+)
+
+# Written to episodic memory at task-boundary (success or failure)
+_TASK_REFLECTION_PROMPT = (
+    "Write a concise, self-contained reflection on the following completed task.\n"
+    "If it succeeded, note what approach worked and any reusable insight.\n"
+    "If it failed, name the root cause and what to try differently next time.\n"
+    "Be specific — avoid generic observations. 2-4 sentences max.\n\n"
+    "TASK GOAL: {goal}\n"
+    "OUTCOME: {outcome}\n"
+    "SUMMARY: {summary}\n\n"
+    "REFLECTION:"
 )
 
 
@@ -146,7 +172,15 @@ class MemoryConsolidator:
         except (json.JSONDecodeError, ValueError):
             logger.warning("extract: non-JSON response, skipping batch")
             return []
-        return [m for m in data if isinstance(m, dict) and m.get("fact")]
+        result = []
+        for m in data:
+            if isinstance(m, dict) and m.get("fact"):
+                try:
+                    imp = max(1, min(5, int(m.get("importance", 3))))
+                except (TypeError, ValueError):
+                    imp = 3
+                result.append({"fact": m["fact"], "importance": imp})
+        return result
 
     async def _self_edit(self, new_memories: list[dict], existing: list[dict]) -> dict:
         raw = await self._complete(_SELF_EDIT_PROMPT.format(
@@ -164,13 +198,88 @@ class MemoryConsolidator:
             "delete": data.get("delete", []),
         }
 
+    def _memory_dict(self, session_id: str, m: dict) -> dict:
+        """Build the memory document stored in Chroma/Mongo."""
+        return {
+            "session_id": session_id,
+            "fact": m["fact"],
+            "importance": m.get("importance", 3),
+            "embedding_text": m["fact"],
+        }
+
     async def _apply_edits(self, session_id: str, edits: dict) -> None:
         for m in edits.get("add", []):
-            await self._semantic.upsert(self._s, {"session_id": session_id, "fact": m["fact"]})
+            await self._semantic.upsert(self._s, self._memory_dict(session_id, m))
         for m in edits.get("update", []):
-            await self._semantic.supersede(self._s, m["id"], {"session_id": session_id, "fact": m["fact"]})
+            await self._semantic.supersede(
+                self._s, m["id"], self._memory_dict(session_id, m)
+            )
         for m in edits.get("delete", []):
             await self._s.close_memory(m["id"])
+
+    async def write_reflections(self, session_id: str, reflections: list[str]) -> None:
+        """Write a list of insight strings (from compaction) to semantic memory.
+
+        Each string is written as an ADD with importance=3 (standard) unless
+        it looks like a lesson/failure insight (importance=4). This is the
+        bridge from compaction-time reflection extraction to persistent memory.
+        Debounced best-effort: individual write failures are logged, not raised.
+        """
+        lesson_signals = ("fail", "error", "lesson", "broke", "wrong", "bug", "avoid")
+        for insight in reflections:
+            try:
+                importance = 4 if any(s in insight.lower() for s in lesson_signals) else 3
+                await self._semantic.upsert(self._s, {
+                    "session_id": session_id,
+                    "fact": insight,
+                    "importance": importance,
+                    "embedding_text": insight,
+                    "source": "compaction_reflection",
+                })
+            except Exception:
+                logger.warning("write_reflections: failed to write '%s...'", insight[:60])
+
+    async def on_task_complete(
+        self,
+        session_id: str,
+        goal: str,
+        success: bool,
+        summary: str,
+    ) -> None:
+        """Write a Reflexion-style episode at task boundary (success or failure).
+
+        This is the highest-signal memory write trigger: the task boundary is when
+        we know for certain whether an approach worked. Failures get importance=4
+        (lessons); successes get importance=3. Runs async in the background so it
+        never adds latency to the task response.
+        """
+        outcome = "SUCCESS" if success else "FAILURE"
+        try:
+            reflection = await self._complete(
+                _TASK_REFLECTION_PROMPT.format(
+                    goal=goal[:500],
+                    outcome=outcome,
+                    summary=summary[:1_000],
+                )
+            )
+            reflection = reflection.strip()
+            if not reflection:
+                return
+            importance = 4 if not success else 3
+            await self._semantic.upsert(self._s, {
+                "session_id": session_id,
+                "fact": reflection,
+                "importance": importance,
+                "embedding_text": reflection,
+                "source": "task_reflection",
+                "outcome": outcome,
+            })
+            logger.info(
+                "on_task_complete: wrote %s reflection for session=%s",
+                outcome, session_id,
+            )
+        except Exception:
+            logger.warning("on_task_complete: reflection write failed (non-fatal)")
 
     async def maybe_consolidate(self, session_id: str) -> bool:
         """Run consolidation only every CONSOLIDATION_INTERVAL episodes.

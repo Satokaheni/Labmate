@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChatLayout } from '@/layouts/ChatLayout';
 import { LabmateMark } from '@/components/LabmateMark';
 import { SessionList } from '@/components/SessionList';
@@ -55,6 +55,17 @@ export function App({
   const [debug, setDebug] = useState(false);
   const [mode, setMode] = useState<Mode>('chat');
   const [previewed, setPreviewed] = useState<Artifact | null>(null);
+  const pendingSendRef = useRef<string | null>(null);
+
+  // When a new session is auto-created in response to the user sending with no active session,
+  // fire the buffered message as soon as activeSessionId becomes available.
+  useEffect(() => {
+    if (activeSessionId && pendingSendRef.current) {
+      const text = pendingSendRef.current;
+      pendingSendRef.current = null;
+      onSendRef.current(text);
+    }
+  }, [activeSessionId]);
 
   // Refs keep callbacks stable so useMemos don't re-run when parent re-creates functions.
   const onSendRef = useRef(onSend);
@@ -137,7 +148,14 @@ export function App({
         <ContextBar window={context} onCompact={compactEnabled ? () => { onCompactRef.current?.(); } : undefined} compacting={compacting} />
       </div>
       <Composer
-        onSend={(t) => { onSendRef.current(t); }}
+        onSend={(t) => {
+          if (activeSessionId) {
+            onSendRef.current(t);
+          } else {
+            pendingSendRef.current = t;
+            onNewSessionRef.current(mode);
+          }
+        }}
         onStop={() => { onStopRef.current?.(); }}
         streaming={agentStatus.brain.state === 'active'}
         node={agentStatus.brain.node}
@@ -145,7 +163,7 @@ export function App({
         contextPct={context.max > 0 ? Math.round((context.used / context.max) * 100) : 0}
       />
     </>
-  ), [turns, context, compactEnabled, compacting, agentStatus]);
+  ), [turns, context, compactEnabled, compacting, agentStatus, activeSessionId, mode]);
 
   const right = useMemo(() => {
     if (debug) {

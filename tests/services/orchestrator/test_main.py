@@ -121,6 +121,9 @@ async def test_handle_calls_run_task_and_acks():
     storage.workspaces.record_session = AsyncMock()
     storage.workspaces.complete_session = AsyncMock()
     storage.workspaces.load_agent_instructions = AsyncMock(return_value="")
+    storage.consolidator = AsyncMock()
+    storage.consolidator.on_task_complete = AsyncMock()
+    storage.consolidator.write_reflections = AsyncMock()
 
     payload = json.dumps({"task_id": "t1", "task": "do something", "session_id": "s1"})
     await proc._handle("100-0", {"payload": payload}, orch, storage)
@@ -143,6 +146,9 @@ async def test_handle_acks_on_failure():
     storage.workspaces = AsyncMock()
     storage.workspaces.record_session = AsyncMock()
     storage.workspaces.complete_session = AsyncMock()
+    storage.consolidator = AsyncMock()
+    storage.consolidator.on_task_complete = AsyncMock()
+    storage.consolidator.write_reflections = AsyncMock()
 
     payload = json.dumps({"task_id": "t2", "task": "fail", "session_id": "s2"})
     await proc._handle("200-0", {"payload": payload}, orch, storage)
@@ -163,6 +169,9 @@ async def test_handle_writes_error_result_on_failure():
     storage.workspaces = AsyncMock()
     storage.workspaces.record_session = AsyncMock()
     storage.workspaces.complete_session = AsyncMock()
+    storage.consolidator = AsyncMock()
+    storage.consolidator.on_task_complete = AsyncMock()
+    storage.consolidator.write_reflections = AsyncMock()
 
     payload = json.dumps({"task_id": "err-task", "task": "fail"})
     await proc._handle("300-0", {"payload": payload}, orch, storage)
@@ -435,6 +444,9 @@ async def test_handle_emits_turn_start_and_done():
     storage.workspaces.record_session = AsyncMock()
     storage.workspaces.complete_session = AsyncMock()
     storage.workspaces.upsert_workspace = AsyncMock()
+    storage.consolidator = MagicMock()
+    storage.consolidator.on_task_complete = AsyncMock()
+    storage.consolidator.write_reflections = AsyncMock()
 
     fields = {"payload": json.dumps({"task_id": "t-1", "task": "do it", "session_id": "t-1"})}
     await proc._handle("1-0", fields, orch, storage)

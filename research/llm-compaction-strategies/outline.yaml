@@ -1,0 +1,89 @@
+topic: LLM conversation compaction strategies — smarter summarization for long research sessions
+research_date: 2026-06-25
+
+items:
+  # --- Prompt/context-level (API-compatible, Labmate-viable) ---
+  - name: Sliding Window Summarization
+    category: Prompt-level
+    description: Keep recent N turns verbatim, summarize everything older into a rolling abstract
+  - name: Hierarchical Summarization
+    category: Prompt-level
+    description: Multi-level compression — turn → session → topic → abstract
+  - name: Progressive Summarization
+    category: Prompt-level
+    description: Each compaction re-summarizes "previous summary + new turns"; prevents lossy cascade
+  - name: Entity/Fact Extraction (Structured Scratchpad)
+    category: Prompt-level
+    description: Extract named entities, decisions, findings, open questions into structured store; discard raw prose
+  - name: Importance Scoring / Saliency
+    category: Prompt-level
+    description: LLM rates each turn for salience before compacting; low-scoring turns dropped or headline-only
+  - name: Semantic Chunking + Selective Retention
+    category: Prompt-level
+    description: Embed turns, cluster by topic similarity, keep one representative per cluster
+  - name: Token Budget Management (pre-LLM pruning)
+    category: Prompt-level
+    description: Deterministically drop low-value content (tool results, boilerplate) BEFORE LLM summarization
+  - name: Topic-Aware Compaction
+    category: Prompt-level
+    description: Detect topic shifts, summarize per-topic separately, retain topic headers in context
+  - name: Anchored / Parallel Compaction
+    category: Prompt-level
+    description: Anchored re-summarization reduces drift; parallel blocks remove blocking stall and improve determinism
+  - name: Reflection-Based Memory Synthesis
+    category: Prompt-level
+    description: Agent generates higher-order reflections ("why did X fail") stored alongside/instead of raw turns (Reflexion, SAGE)
+  - name: Scratchpad / External-File Memory
+    category: Prompt-level
+    description: Agent explicitly writes findings/plans to external file via tool call, reads back on demand — agent-controlled recall
+  - name: Decay / Forgetting-Curve Eviction
+    category: Prompt-level
+    description: Drop/down-weight memories on time-decay schedule (Ebbinghaus curve) rather than purely by salience
+  - name: Tool-Result Clearing
+    category: Prompt-level
+    description: Replace raw tool-result bodies with placeholders (Anthropic clear_tool_uses_20250919); keep reasoning intact
+  - name: Provider-Native Compaction
+    category: Prompt-level
+    description: Managed server-side compaction (Anthropic compact_20260112) — auto-summarizes near window limit, no client bookkeeping
+
+  # --- Memory-adjacent (retrieval/hybrid, API-compatible) ---
+  - name: Retrieval-Augmented Context (RAG-context)
+    category: Memory-adjacent
+    description: Push old turns to vector store; retrieve top-k per query and inject into context
+  - name: Summary + Retrieval Hybrid
+    category: Memory-adjacent
+    description: Running in-context summary PLUS vector store of raw turns; blend both at query time
+  - name: MemGPT-style Memory Paging
+    category: Memory-adjacent
+    description: Virtual-memory metaphor — page out old turns to storage, page in relevant on demand (Letta)
+  - name: Cognitive Memory Layers
+    category: Memory-adjacent
+    description: Separate working / episodic / semantic memory tiers (mem0, Letta, Labmate's existing system)
+  - name: Temporal Knowledge Graph Memory
+    category: Memory-adjacent
+    description: Facts stored in graph with validity windows so superseded facts are first-class (Zep/Graphiti, A-MEM)
+  - name: Reversible / Retain-and-Recall Compression
+    category: Memory-adjacent
+    description: Compress for storage but keep mapping back to detail — evicted content reconstructable (R³Mem, Hindsight 91.4% LongMemEval)
+
+  # --- Learned / trained (requires model access or training) ---
+  - name: Learned RL-Trained Compaction
+    category: Trained
+    description: Train model end-to-end to compress/update memory to maximize downstream reward (ACON, MEM1, MemAgent, Memory-R1)
+  - name: Hard Prompt Compression
+    category: Trained
+    description: Token-level pruning using small aux model — LLMLingua/LLMLingua-2; 2-5x reduction, black-box compatible
+  - name: Soft-Prompt / Gist-Token Compression
+    category: Model-internal
+    description: Compress context into learned dense embeddings (GIST, AutoCompressors, 500xCompressor) — requires fine-tuning
+  - name: Recurrent / Segment-Level Memory
+    category: Model-internal
+    description: Carry learned memory tokens segment-to-segment (RMT, Compressive Transformer, HMT) — architectural
+  - name: KV Cache Compression
+    category: Model-internal
+    description: Quantize/prune attention KV cache (H2O, SnapKV, StreamingLLM, PyramidKV) — self-hosted only
+
+execution:
+  batch_size: 5
+  items_per_agent: 5
+  output_dir: ./results

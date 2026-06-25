@@ -224,7 +224,40 @@ class ContextManager:
 
     # ── Compaction ────────────────────────────────────────────────────────────
 
-    _MICRO_STRIP_THRESHOLD = 1500  # chars; strip old message content beyond this
+    _MICRO_STRIP_THRESHOLD = 1500   # chars; strip old message content beyond this
+    _TOOL_RESULT_THRESHOLD = 600    # chars; tool results stripped more aggressively
+    _BLOCK_SIZE            = 20     # turns per parallel summarization block
+    _KEEP_RECENT           = 15     # turns retained verbatim after full compact
+
+    # Prompt used per block when summarizing in parallel
+    _BLOCK_SUMMARY_PROMPT = (
+        "Summarise the following conversation segment concisely.\n"
+        "Preserve all decisions, key facts, file paths, error messages, and unresolved tasks.\n"
+        "Discard greetings, repetitions, and small-talk.\n"
+        "{anchor_section}"
+        "SEGMENT:\n{history}\n\nSUMMARY:"
+    )
+
+    # Prompt used to merge parallel block summaries
+    _MERGE_PROMPT = (
+        "Merge the following segment summaries into one coherent summary.\n"
+        "Resolve duplicates. Preserve key facts, decisions, file paths, and open tasks.\n"
+        "Maintain chronological order.\n"
+        "{anchor_section}"
+        "SEGMENTS:\n{segments}\n\nMERGED SUMMARY:"
+    )
+
+    # Second LLM pass: extract durable insights for memory writing
+    _REFLECTION_PROMPT = (
+        "From this conversation summary, extract insights worth keeping in long-term memory.\n"
+        "Return ONLY a JSON object with these keys (omit empty lists):\n"
+        '  "decisions": [key decisions made],\n'
+        '  "preferences": [user working-style or tool preferences revealed],\n'
+        '  "findings": [key research findings or facts discovered],\n'
+        '  "lessons": [things that failed and what was learned]\n'
+        "Each item must be a single, self-contained sentence.\n\n"
+        "SUMMARY:\n{summary}\n\nJSON:"
+    )
 
     async def microcompact(self, session_id: str) -> int:
         """Strip content from old large messages without any LLM call.
@@ -253,55 +286,170 @@ class ContextManager:
                 freed += len(content) - len(stub)
         return freed
 
-    _KEEP_RECENT = 15  # turns retained verbatim after full compact
+    async def clear_tool_results(self, session_id: str) -> int:
+        """Replace large tool-result bodies with stubs before LLM summarization.
+
+        Targets role='tool' messages specifically, leaving conversation intact.
+        In long research sessions tool outputs (file reads, web search dumps)
+        dominate token usage; clearing them before summarization dramatically
+        reduces the LLM input without losing conversational context.
+        Returns chars freed.
+        """
+        cursor = self.db["messages"].find(
+            {
+                "session_id": session_id,
+                "role": "tool",
+                "stripped": {"$ne": True},
+            },
+            {"_id": 1, "content": 1},
+        )
+        freed = 0
+        async for doc in cursor:
+            content = doc.get("content", "")
+            if len(content) > self._TOOL_RESULT_THRESHOLD:
+                stub = f"[tool result: {len(content)} chars cleared]"
+                await self.db["messages"].update_one(
+                    {"_id": doc["_id"]},
+                    {"$set": {"content": stub, "stripped": True}},
+                )
+                freed += len(content) - len(stub)
+        return freed
+
+    async def _parallel_summarize(
+        self,
+        turns: list[dict],
+        anchor: str,
+        llm_fn,
+    ) -> str:
+        """Summarize turns in parallel blocks, merge when >1 block.
+
+        Parallel blocks eliminate the sequential stall on large histories.
+        The anchor (key facts from the first compaction) is passed to every
+        block and the merge so the summarizer cannot drift from established facts.
+        """
+        anchor_section = (
+            f"FIXED CONTEXT (always preserve):\n{anchor}\n\n" if anchor else ""
+        )
+
+        # Split turns into fixed-size blocks
+        blocks = [
+            turns[i: i + self._BLOCK_SIZE]
+            for i in range(0, len(turns), self._BLOCK_SIZE)
+        ]
+
+        async def _summarize_block(block: list[dict]) -> str:
+            history = "\n".join(
+                f"{t['role'].upper()}: {t['content']}" for t in block
+            )
+            prompt = self._BLOCK_SUMMARY_PROMPT.format(
+                anchor_section=anchor_section,
+                history=history,
+            )
+            return await llm_fn(prompt)
+
+        summaries = await asyncio.gather(*[_summarize_block(b) for b in blocks])
+
+        if len(summaries) == 1:
+            return summaries[0]
+
+        # Merge block summaries into one coherent summary
+        segments = "\n\n---\n\n".join(
+            f"Segment {i + 1}:\n{s}" for i, s in enumerate(summaries)
+        )
+        return await llm_fn(
+            self._MERGE_PROMPT.format(
+                anchor_section=anchor_section,
+                segments=segments,
+            )
+        )
+
+    async def _extract_reflections(self, summary: str, llm_fn) -> list[str]:
+        """Second LLM pass: extract durable insights for memory writing.
+
+        Returns a flat list of insight strings (decisions, preferences,
+        findings, lessons). Never raises — reflections are best-effort.
+        """
+        import json as _json
+        try:
+            raw = await llm_fn(
+                self._REFLECTION_PROMPT.format(summary=summary[:8_000])
+            )
+            start, end = raw.find("{"), raw.rfind("}") + 1
+            if start < 0 or end <= start:
+                return []
+            data = _json.loads(raw[start:end])
+            insights: list[str] = []
+            for key in ("decisions", "preferences", "findings", "lessons"):
+                insights.extend(data.get(key, []))
+            return [s for s in insights if isinstance(s, str) and s.strip()]
+        except Exception:
+            return []
 
     async def full_compact(self, session_id: str, llm_fn) -> dict:
-        """Summarise old turns → summary:{session_id} Redis key → prune MongoDB.
+        """Summarise old turns with anchoring and parallel blocks → prune MongoDB.
+
+        Improvements over naive summarization:
+          1. Tool-result clearing — strips large tool outputs before LLM input
+          2. Parallel blocks — concurrent summarization removes blocking stall
+          3. Anchoring — first summary stored as anchor; passed to all subsequent
+             compactions so the model cannot drift from early established facts
+          4. Reflection extraction — second LLM pass extracts durable insights
+             returned to the caller for writing to episodic/semantic memory
 
         llm_fn: async (prompt: str) -> str
-        Returns {"summary_tokens": int, "pruned_messages": int}.
+        Returns {summary_tokens, pruned_messages, reflections: list[str]}.
         """
+        # Step 1: clear tool results first (zero-LLM, maximum token recovery)
+        await self.clear_tool_results(session_id)
+
         cursor = (
             self.db["messages"]
             .find(
-                {"session_id": session_id, "stripped": {"$ne": True}},
+                {"session_id": session_id},
                 {"_id": 1, "seq": 1, "role": 1, "content": 1},
             )
             .sort("seq", 1)
         )
         all_turns = [doc async for doc in cursor]
         if len(all_turns) <= self._KEEP_RECENT:
-            return {"summary_tokens": 0, "pruned_messages": 0}
+            return {"summary_tokens": 0, "pruned_messages": 0, "reflections": []}
 
         to_compact = all_turns[: -self._KEEP_RECENT]
-        history_text = "\n".join(
-            f"{t['role'].upper()}: {t['content']}" for t in to_compact
-        )
-        prompt = (
-            "Summarise the following conversation history concisely. "
-            "Preserve all decisions, key facts, file paths, error messages, "
-            "and unresolved tasks. Discard greetings and small-talk.\n\n"
-            f"HISTORY:\n{history_text}\n\nSUMMARY:"
-        )
-        summary = await llm_fn(prompt)
 
-        existing = await self.redis.get(f"summary:{session_id}") or ""
-        combined = f"{existing}\n\n{summary}".strip() if existing else summary
+        # Step 2: load anchor (stable early-session facts; empty on first compact)
+        anchor = await self.redis.get(f"anchor:{session_id}") or ""
+
+        # Step 3: parallel anchored summarization
+        summary = await self._parallel_summarize(to_compact, anchor, llm_fn)
+
+        # Step 4: first compact → save result as the session anchor
+        if not anchor:
+            await self.redis.set(f"anchor:{session_id}", summary)
+
+        # Step 5: persist new summary (replace, not append — anchoring prevents drift)
         summary_key = f"summary:{session_id}"
-        await self.redis.set(summary_key, combined)
+        old_summary = await self.redis.get(summary_key) or ""
+        await self.redis.set(summary_key, summary)
 
+        # Step 6: prune compacted turns from MongoDB (rollback Redis on failure)
         ids = [t["_id"] for t in to_compact]
         try:
             await self.db["messages"].delete_many({"_id": {"$in": ids}})
         except Exception:
-            # Rollback: undo the Redis write so the next compact attempt starts clean
-            if existing:
-                await self.redis.set(summary_key, existing)
+            if old_summary:
+                await self.redis.set(summary_key, old_summary)
             else:
                 await self.redis.delete(summary_key)
             raise
 
-        return {"summary_tokens": token_count(summary), "pruned_messages": len(ids)}
+        # Step 7: extract reflections for the caller to write to memory
+        reflections = await self._extract_reflections(summary, llm_fn)
+
+        return {
+            "summary_tokens": token_count(summary),
+            "pruned_messages": len(ids),
+            "reflections": reflections,
+        }
 
     # ── Consolidation worker ──────────────────────────────────────────────────
 
