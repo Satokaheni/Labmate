@@ -937,6 +937,64 @@ class TestReactExecute:
         assert "complete" in result["summary"]
         assert "42" in result["summary"]
 
+    @pytest.mark.asyncio
+    async def test_react_execute_breaks_on_tool_loop_before_max_steps(self):
+        """Detector trips on a repeated run_bash call and halts before max_steps."""
+        orch = self._make_orch(max_steps=6)
+
+        # Model ALWAYS calls run_bash {command: ls} — a no-progress loop.
+        def _looping_response():
+            return self._make_tool_call_response("run_bash", {"command": "ls"})
+
+        call_count = {"n": 0}
+
+        async def _counting(*a, **k):
+            call_count["n"] += 1
+            return _looping_response()
+
+        mcp = AsyncMock()
+        mcp_result = MagicMock()
+        mcp_result.content = [MagicMock(text="files")]
+        mcp_result.isError = False
+        mcp.call_tool.return_value = mcp_result
+        orch.mcp = mcp
+
+        with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
+                   new_callable=AsyncMock, side_effect=_counting):
+            result = await orch.react_execute("loop forever")
+
+        assert result["ok"] is False
+        assert "loop" in result["summary"].lower()
+        # Must halt before exhausting all 6 steps.
+        assert call_count["n"] < 6
+
+    @pytest.mark.asyncio
+    async def test_react_execute_distinct_calls_do_not_trip_loop(self):
+        """Distinct read_file paths must NOT trip the detector; finish ends cleanly."""
+        orch = self._make_orch(max_steps=6, mcp=None)
+        orch.redis = None  # read_file without redis returns a structured error, not a crash
+
+        # Three distinct reads, then finish — no two consecutive identical sigs.
+        r1 = self._make_tool_call_response("read_file", {"path": "a.txt"})
+        r2 = self._make_tool_call_response("read_file", {"path": "b.txt"})
+        r3 = self._make_tool_call_response("read_file", {"path": "c.txt"})
+        rf = MagicMock()
+        mf = MagicMock()
+        mf.content = None
+        tcf = MagicMock()
+        tcf.id = "call_fin"
+        tcf.function.name = "finish"
+        tcf.function.arguments = json.dumps({"summary": "all read"})
+        mf.tool_calls = [tcf]
+        rf.choices = [MagicMock(message=mf)]
+
+        with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
+                   new_callable=AsyncMock, side_effect=[r1, r2, r3, rf]):
+            result = await orch.react_execute("read three files")
+
+        assert result["ok"] is True
+        assert result["summary"] == "all read"
+
 
 @pytest.mark.mocked
 class TestRunWorkerUsesReactExecute:
