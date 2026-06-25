@@ -153,6 +153,23 @@ REDIS_URL     = os.getenv("REDIS_URL",    "redis://localhost:6379/0")
 
 ---
 
+## Implementation Workflow
+
+This workflow applies to every implementation task in this repo. Never deviate from it.
+
+**Per-task loop:**
+1. **Haiku implements** — dispatch a fresh Haiku subagent with the full task spec. It writes code, tests, and commits.
+2. **Opus judges** — dispatch a fresh Opus subagent to review the commit. If React code was touched, also run `react-doctor` before the judge.
+3. If Opus finds issues → Haiku fixes → Opus judges again. Repeat until Opus gives a **pass** verdict.
+4. Mark the task complete and move to the next.
+
+**Full-project judge (after all tasks):**
+- Dispatch Opus as a full-project reviewer across all commits on the branch.
+- If issues found → run the per-task loop on the affected task → full-project judge again.
+- Repeat until the full-project Opus judge gives a **pass** verdict.
+
+---
+
 ## Live E2E Verification
 
 Run these after any change to confirm the stack still works. Start services in order:
