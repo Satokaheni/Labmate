@@ -167,6 +167,36 @@ class StorageManager:
             }},
         )
 
+    async def boost_memory_importance(self, memory_id: str, delta: float = 0.1) -> None:
+        """Increment a memory's importance (capped at 5.0) and re-project to Chroma.
+
+        Called when a memory is retrieved into context: frequently-used memories
+        become more durable. Best-effort — bad/missing ids are ignored. Re-opens
+        the outbox so the OutboxWorker refreshes Chroma metadata + the TTL on the
+        next sweep (see decay task). Importance is floored at 1.0 to stay in band.
+        """
+        from bson import ObjectId
+        try:
+            oid = ObjectId(memory_id)
+        except Exception:
+            return
+        doc = await self._db[MEMORIES].find_one({"_id": oid}, {"importance": 1})
+        if not doc:
+            return
+        current = doc.get("importance", 3)
+        try:
+            new_importance = min(5.0, float(current) + float(delta))
+        except (TypeError, ValueError):
+            return
+        await self._db[MEMORIES].update_one(
+            {"_id": oid},
+            {"$set": {
+                "importance": new_importance,
+                "outbox.processed": False,
+                "outbox.processed_at": None,
+            }},
+        )
+
     # --- search ----------------------------------------------------------
     async def search_memories(self, query: str, top_k: int = 5) -> list[dict]:
         """Vector search over the `semantic` Chroma collection.
