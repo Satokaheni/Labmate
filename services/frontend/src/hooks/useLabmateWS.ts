@@ -43,6 +43,8 @@ type Action =
   | { type: 'SESSION_UPDATED'; session: Session }
   | { type: 'REASONING_DONE'; turnId: string; reasoning: Reasoning }
   | { type: 'ARTIFACT_CREATED'; turnId: string; artifact: Artifact }
+  | { type: 'TOOL_START'; turnId: string; toolCall: Omit<ToolCall, 'result' | 'durationMs' | 'status'> }
+  | { type: 'TOOL_DONE'; turnId: string; toolId: string; status: ToolCall['status']; summary: string; result: unknown; durationMs: number }
   | { type: 'COMPACT_START' }
   | { type: 'COMPACT_DONE' }
   | { type: 'CLOSED' };
@@ -89,7 +91,15 @@ function reducer(state: WsState, action: Action): WsState {
         agentStatus: action.agentStatus,
       };
     case 'TURN_CREATED':
-      return { ...state, turns: [...state.turns, action.turn] };
+      return {
+        ...state,
+        turns: [
+          ...state.turns,
+          action.turn.role === 'assistant'
+            ? { ...action.turn, status: 'streaming' as const }
+            : action.turn,
+        ],
+      };
     case 'ANSWER_DELTA':
       return {
         ...state,
@@ -130,6 +140,31 @@ function reducer(state: WsState, action: Action): WsState {
         turns: state.turns.map((t) =>
           t.id === action.turnId
             ? { ...t, artifacts: [...(t.artifacts ?? []), action.artifact] }
+            : t,
+        ),
+      };
+    case 'TOOL_START':
+      return {
+        ...state,
+        turns: state.turns.map((t) =>
+          t.id === action.turnId
+            ? { ...t, toolCalls: [...(t.toolCalls ?? []), { ...action.toolCall, status: 'running' as const, result: null, durationMs: 0 }] }
+            : t,
+        ),
+      };
+    case 'TOOL_DONE':
+      return {
+        ...state,
+        turns: state.turns.map((t) =>
+          t.id === action.turnId
+            ? {
+                ...t,
+                toolCalls: (t.toolCalls ?? []).map((tc) =>
+                  tc.id === action.toolId
+                    ? { ...tc, status: action.status, summary: action.summary, result: action.result, durationMs: action.durationMs }
+                    : tc,
+                ),
+              }
             : t,
         ),
       };
@@ -217,6 +252,12 @@ export function useLabmateWS(url: string, token: string | null, reconnectKey = 0
           break;
         case 'reasoning.done':
           dispatch({ type: 'REASONING_DONE', turnId: event.turnId, reasoning: event.reasoning });
+          break;
+        case 'tool.start':
+          dispatch({ type: 'TOOL_START', turnId: event.turnId, toolCall: event.toolCall });
+          break;
+        case 'tool.done':
+          dispatch({ type: 'TOOL_DONE', turnId: event.turnId, toolId: event.toolId, status: event.status, summary: event.summary, result: event.result, durationMs: event.durationMs });
           break;
         case 'artifact.created':
           dispatch({ type: 'ARTIFACT_CREATED', turnId: event.turnId, artifact: event.artifact });

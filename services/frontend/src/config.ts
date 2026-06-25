@@ -16,7 +16,7 @@ const ec = window.electronAPI?.config;
 // In dev (ELECTRON_DEV=1) or browser, use the Vite env var.
 // In a packaged build, use the runtime URL from userData/config.json.
 export const WS_URL: string = ec?.isDev
-  ? (import.meta.env.VITE_WS_URL as string | undefined) ?? 'ws://localhost:8787/ws'
+  ? (import.meta.env.VITE_WS_URL as string | undefined) ?? 'wss://k49aase60no06l-8787.proxy.runpod.net/ws'
   : ec?.wsUrl ?? '';
 
 export const API_URL: string = WS_URL

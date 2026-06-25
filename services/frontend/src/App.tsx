@@ -147,16 +147,18 @@ export function App({
     </>
   ), [turns, context, compactEnabled, compacting, agentStatus]);
 
-  const right = useMemo(() => (
-    debug ? (
-      <div className="p-4 font-mono text-xs text-mono">
-        <div className="mb-2 uppercase tracking-wide">Live trace</div>
-        <div className="text-secondary">Debug mode on — node + tool events stream here.</div>
-      </div>
-    ) : (
-      <FilePreview artifact={previewed} />
-    )
-  ), [debug, previewed]);
+  const right = useMemo(() => {
+    if (debug) {
+      return (
+        <div className="p-4 font-mono text-xs text-mono">
+          <div className="mb-2 uppercase tracking-wide">Live trace</div>
+          <div className="text-secondary">Debug mode on — node + tool events stream here.</div>
+        </div>
+      );
+    }
+    if (!previewed) return null;
+    return <FilePreview artifact={previewed} />;
+  }, [debug, previewed]);
 
   return <ChatLayout topBar={topBar} left={left} center={center} right={right} />;
 }
