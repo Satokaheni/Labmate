@@ -320,21 +320,24 @@ async def test_parallel_summarize_calls_llm_per_block():
 
 
 def test_assembled_context_as_prompt_ordering():
-    """RAG evidence appears before summary, which appears before recent turns."""
+    """core → anchor → RAG → summary → recent turns ordering is preserved."""
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
         from services.memory.context_manager import AssembledContext
         ctx = AssembledContext(
             system_prompt="sys",
-            core_memory="goal",
-            recent_turns="recent",
-            retrieved_context="rag",
-            summary_buffer="summary",
+            core_memory="goalcore",
+            anchor_buffer="anchorfacts",
+            recent_turns="recenttext",
+            retrieved_context="ragtext",
+            summary_buffer="summarytext",
         )
         prompt = ctx.as_prompt()
-        rag_pos     = prompt.index("rag")
-        summary_pos = prompt.index("summary")
-        recent_pos  = prompt.index("recent")
-        assert rag_pos < summary_pos < recent_pos
+        core_pos    = prompt.index("goalcore")
+        anchor_pos  = prompt.index("anchorfacts")
+        rag_pos     = prompt.index("ragtext")
+        summary_pos = prompt.index("summarytext")
+        recent_pos  = prompt.index("recenttext")
+        assert core_pos < anchor_pos < rag_pos < summary_pos < recent_pos
 
 
 @pytest.mark.asyncio
@@ -374,3 +377,79 @@ async def test_clear_tool_results_skips_recent_tool_results():
         assert recorded["skip"] == 10
         assert freed > 0
         assert messages_col.update_one.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_build_context_surfaces_anchor_when_diverged():
+    """When the anchor's facts are absent from the summary, anchor_buffer is populated."""
+    with (
+        patch("services.memory.context_manager.token_count", side_effect=_mock_token_count),
+        patch("services.memory.context_manager.rerank", new_callable=AsyncMock, return_value=[]),
+    ):
+        from services.memory.context_manager import ContextManager, ContextBudget
+
+        store = {
+            "core:s1": "GOAL: build MCP bridge",
+            "summary:s1": "discussed unrelated weather topics today",
+            "anchor:s1": "project uses Gemma model with Redis streams for goals",
+        }
+        redis = AsyncMock()
+        redis.get = AsyncMock(side_effect=lambda k: store.get(k))
+
+        db = MagicMock()
+
+        class EmptyCursor:
+            def __aiter__(self): return self
+            async def __anext__(self): raise StopAsyncIteration
+
+        mock_sort = MagicMock()
+        mock_sort.limit = MagicMock(return_value=EmptyCursor())
+        mock_find = MagicMock()
+        mock_find.sort = MagicMock(return_value=mock_sort)
+        db.messages.find = MagicMock(return_value=mock_find)
+
+        embed = AsyncMock(return_value=[[0.1]])
+        budget = ContextBudget(max_tokens=4000, completion_reserve=100)
+        cm = ContextManager(redis=redis, mongo_db=db, chroma_cols={}, embedder=embed, budget=budget)
+
+        ctx = await cm.build_context("s1", "task", "system")
+        assert "KEY FACTS" in ctx.anchor_buffer
+        assert "Gemma" in ctx.anchor_buffer
+        assert "KEY FACTS" in ctx.as_prompt()
+
+
+@pytest.mark.asyncio
+async def test_build_context_omits_anchor_when_contained_in_summary():
+    """When the summary already contains the anchor's facts, anchor_buffer is empty."""
+    with (
+        patch("services.memory.context_manager.token_count", side_effect=_mock_token_count),
+        patch("services.memory.context_manager.rerank", new_callable=AsyncMock, return_value=[]),
+    ):
+        from services.memory.context_manager import ContextManager, ContextBudget
+
+        store = {
+            "core:s1": "GOAL: build MCP bridge",
+            "summary:s1": "project uses Gemma model with Redis streams for goals and more detail",
+            "anchor:s1": "project uses Gemma model with Redis streams for goals",
+        }
+        redis = AsyncMock()
+        redis.get = AsyncMock(side_effect=lambda k: store.get(k))
+
+        db = MagicMock()
+
+        class EmptyCursor:
+            def __aiter__(self): return self
+            async def __anext__(self): raise StopAsyncIteration
+
+        mock_sort = MagicMock()
+        mock_sort.limit = MagicMock(return_value=EmptyCursor())
+        mock_find = MagicMock()
+        mock_find.sort = MagicMock(return_value=mock_sort)
+        db.messages.find = MagicMock(return_value=mock_find)
+
+        embed = AsyncMock(return_value=[[0.1]])
+        budget = ContextBudget(max_tokens=4000, completion_reserve=100)
+        cm = ContextManager(redis=redis, mongo_db=db, chroma_cols={}, embedder=embed, budget=budget)
+
+        ctx = await cm.build_context("s1", "task", "system")
+        assert ctx.anchor_buffer == ""

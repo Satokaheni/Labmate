@@ -22,6 +22,7 @@ class ContextBudget:
     recent_turns_share:  float = 0.30
     rag_share:           float = 0.30
     summary_share:       float = 0.10
+    anchor_share:        float = 0.03
 
     @property
     def effective_budget(self) -> int:
@@ -36,6 +37,7 @@ class AssembledContext:
     agent_instructions: str = ""
     system_prompt:      str = ""
     core_memory:        str = ""
+    anchor_buffer:      str = ""
     recent_turns:       str = ""
     retrieved_context:  str = ""
     summary_buffer:     str = ""
@@ -44,13 +46,16 @@ class AssembledContext:
     def as_prompt(self) -> str:
         """Assemble with highest-value content near head, recent turns near tail.
 
-        Ordering: agent_instructions → system → core → RAG → summary → recent turns.
+        Ordering: agent_instructions → system → core → anchor → RAG → summary → recent.
         agent_instructions (AGENT.md) is pinned at the very top and survives compaction.
+        The anchor (founding facts) sits right after core memory so it stays visible
+        even after many compact cycles dilute it out of the rolling summary.
         """
         return "\n\n".join(filter(None, [
             self.agent_instructions,
             self.system_prompt,
             self.core_memory,
+            self.anchor_buffer,
             self.retrieved_context,
             self.summary_buffer,
             self.recent_turns,
@@ -103,6 +108,18 @@ class ContextManager:
         summary = self._trim_to_budget(summary, summary_budget)
         remaining -= token_count(summary)
 
+        # 3b. Anchor buffer — surface founding facts only when they have drifted
+        # out of the rolling summary, so the model keeps seeing them after many
+        # compact cycles. Capped to a small dedicated slot.
+        anchor_raw = await self.redis.get(f"anchor:{session_id}") or ""
+        anchor_buffer = ""
+        if self._anchor_diverges(anchor_raw, summary):
+            anchor_budget = min(b.slot(b.anchor_share), max(0, remaining))
+            anchor_body = self._trim_to_budget(anchor_raw, anchor_budget)
+            if anchor_body:
+                anchor_buffer = f"KEY FACTS (anchored, always relevant):\n{anchor_body}"
+                remaining -= token_count(anchor_buffer)
+
         # 4. Recent turns (newest retained on trim)
         recent_budget = min(b.slot(b.recent_turns_share), max(0, remaining))
         recent = await self._recent_turns(session_id, recent_budget)
@@ -111,6 +128,7 @@ class ContextManager:
             agent_instructions=agent_instructions,
             system_prompt=system_prompt,
             core_memory=core,
+            anchor_buffer=anchor_buffer,
             recent_turns=recent,
             retrieved_context=rag_text,
             summary_buffer=summary,
@@ -126,6 +144,26 @@ class ContextManager:
         while lines and token_count("\n".join(lines)) > budget:
             lines.pop(0)
         return "\n".join(lines)
+
+    def _anchor_diverges(self, anchor: str, summary: str) -> bool:
+        """True when the anchor carries facts not substantially present in summary.
+
+        Cheap token-overlap heuristic (no LLM): if fewer than 60% of the anchor's
+        distinct word tokens appear in the summary, the anchor has drifted out of
+        the rolling summary and must be surfaced separately.
+        """
+        anchor = (anchor or "").strip()
+        if not anchor:
+            return False
+        summary = (summary or "").strip()
+        if not summary:
+            return True
+        anchor_words = {w for w in anchor.lower().split() if len(w) > 3}
+        if not anchor_words:
+            return False
+        summary_words = {w for w in summary.lower().split() if len(w) > 3}
+        overlap = len(anchor_words & summary_words) / len(anchor_words)
+        return overlap < 0.60
 
     async def _recent_turns(self, session_id: str, budget: int) -> str:
         """Load recent turns from MongoDB, trim to budget (newest retained)."""
@@ -425,6 +463,15 @@ class ContextManager:
             return {"summary_tokens": 0, "pruned_messages": 0, "reflections": []}
 
         to_compact = all_turns[: -self._KEEP_RECENT]
+
+        # Pre-compaction token total of the turns we are about to replace — the
+        # denominator for the compression ratio reported in compact.quality.
+        pre_tokens = token_count(
+            "\n".join(
+                f"{t.get('role', '').upper()}: {t.get('content', '')}"
+                for t in to_compact
+            )
+        )
 
         # Step 2: load anchor (stable early-session facts; empty on first compact)
         anchor = await self.redis.get(f"anchor:{session_id}") or ""
