@@ -5,6 +5,7 @@ import hashlib
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from services.memory.tokenizer import token_count
 from services.memory.reranker import rerank
@@ -22,6 +23,7 @@ class ContextBudget:
     recent_turns_share:  float = 0.30
     rag_share:           float = 0.30
     summary_share:       float = 0.10
+    anchor_share:        float = 0.03
 
     @property
     def effective_budget(self) -> int:
@@ -36,6 +38,7 @@ class AssembledContext:
     agent_instructions: str = ""
     system_prompt:      str = ""
     core_memory:        str = ""
+    anchor_buffer:      str = ""
     recent_turns:       str = ""
     retrieved_context:  str = ""
     summary_buffer:     str = ""
@@ -44,13 +47,16 @@ class AssembledContext:
     def as_prompt(self) -> str:
         """Assemble with highest-value content near head, recent turns near tail.
 
-        Ordering: agent_instructions → system → core → RAG → summary → recent turns.
+        Ordering: agent_instructions → system → core → anchor → RAG → summary → recent.
         agent_instructions (AGENT.md) is pinned at the very top and survives compaction.
+        The anchor (founding facts) sits right after core memory so it stays visible
+        even after many compact cycles dilute it out of the rolling summary.
         """
         return "\n\n".join(filter(None, [
             self.agent_instructions,
             self.system_prompt,
             self.core_memory,
+            self.anchor_buffer,
             self.retrieved_context,
             self.summary_buffer,
             self.recent_turns,
@@ -103,6 +109,18 @@ class ContextManager:
         summary = self._trim_to_budget(summary, summary_budget)
         remaining -= token_count(summary)
 
+        # 3b. Anchor buffer — surface founding facts only when they have drifted
+        # out of the rolling summary, so the model keeps seeing them after many
+        # compact cycles. Capped to a small dedicated slot.
+        anchor_raw = await self.redis.get(f"anchor:{session_id}") or ""
+        anchor_buffer = ""
+        if self._anchor_diverges(anchor_raw, summary):
+            anchor_budget = min(b.slot(b.anchor_share), max(0, remaining))
+            anchor_body = self._trim_to_budget(anchor_raw, anchor_budget)
+            if anchor_body:
+                anchor_buffer = f"KEY FACTS (anchored, always relevant):\n{anchor_body}"
+                remaining -= token_count(anchor_buffer)
+
         # 4. Recent turns (newest retained on trim)
         recent_budget = min(b.slot(b.recent_turns_share), max(0, remaining))
         recent = await self._recent_turns(session_id, recent_budget)
@@ -111,6 +129,7 @@ class ContextManager:
             agent_instructions=agent_instructions,
             system_prompt=system_prompt,
             core_memory=core,
+            anchor_buffer=anchor_buffer,
             recent_turns=recent,
             retrieved_context=rag_text,
             summary_buffer=summary,
@@ -126,6 +145,26 @@ class ContextManager:
         while lines and token_count("\n".join(lines)) > budget:
             lines.pop(0)
         return "\n".join(lines)
+
+    def _anchor_diverges(self, anchor: str, summary: str) -> bool:
+        """True when the anchor carries facts not substantially present in summary.
+
+        Cheap token-overlap heuristic (no LLM): if fewer than 60% of the anchor's
+        distinct word tokens appear in the summary, the anchor has drifted out of
+        the rolling summary and must be surfaced separately.
+        """
+        anchor = (anchor or "").strip()
+        if not anchor:
+            return False
+        summary = (summary or "").strip()
+        if not summary:
+            return True
+        anchor_words = {w for w in anchor.lower().split() if len(w) > 3}
+        if not anchor_words:
+            return False
+        summary_words = {w for w in summary.lower().split() if len(w) > 3}
+        overlap = len(anchor_words & summary_words) / len(anchor_words)
+        return overlap < 0.60
 
     async def _recent_turns(self, session_id: str, budget: int) -> str:
         """Load recent turns from MongoDB, trim to budget (newest retained)."""
@@ -228,6 +267,9 @@ class ContextManager:
     _TOOL_RESULT_THRESHOLD = 600    # chars; tool results stripped more aggressively
     _BLOCK_SIZE            = 20     # turns per parallel summarization block
     _KEEP_RECENT           = 15     # turns retained verbatim after full compact
+    _KEEP_RECENT_TOOL_RESULTS = 10  # most-recent tool results never cleared (still referenced)
+    _IDLE_COMPACT_SECONDS  = 600    # idle threshold (s) before proactive background compact
+    _LOW_FILL_RATIO        = 0.50   # only background-compact when fill ratio exceeds this
 
     # Prompt used per block when summarizing in parallel
     _BLOCK_SUMMARY_PROMPT = (
@@ -293,15 +335,24 @@ class ContextManager:
         In long research sessions tool outputs (file reads, web search dumps)
         dominate token usage; clearing them before summarization dramatically
         reduces the LLM input without losing conversational context.
+
+        Age-aware: the _KEEP_RECENT_TOOL_RESULTS most-recent tool results are
+        left intact (the user / next turn may still refer to them); only older
+        tool results over the threshold are cleared.
         Returns chars freed.
         """
-        cursor = self.db["messages"].find(
-            {
-                "session_id": session_id,
-                "role": "tool",
-                "stripped": {"$ne": True},
-            },
-            {"_id": 1, "content": 1},
+        cursor = (
+            self.db["messages"]
+            .find(
+                {
+                    "session_id": session_id,
+                    "role": "tool",
+                    "stripped": {"$ne": True},
+                },
+                {"_id": 1, "content": 1},
+            )
+            .sort("seq", -1)
+            .skip(self._KEEP_RECENT_TOOL_RESULTS)
         )
         freed = 0
         async for doc in cursor:
@@ -416,6 +467,15 @@ class ContextManager:
 
         to_compact = all_turns[: -self._KEEP_RECENT]
 
+        # Pre-compaction token total of the turns we are about to replace — the
+        # denominator for the compression ratio reported in compact.quality.
+        pre_tokens = token_count(
+            "\n".join(
+                f"{t.get('role', '').upper()}: {t.get('content', '')}"
+                for t in to_compact
+            )
+        )
+
         # Step 2: load anchor (stable early-session facts; empty on first compact)
         anchor = await self.redis.get(f"anchor:{session_id}") or ""
 
@@ -445,11 +505,95 @@ class ContextManager:
         # Step 7: extract reflections for the caller to write to memory
         reflections = await self._extract_reflections(summary, llm_fn)
 
+        summary_tokens = token_count(summary)
+        tokens_saved = max(0, pre_tokens - summary_tokens)
+        compression_ratio = round(min(1.0, summary_tokens / pre_tokens), 4) if pre_tokens else 0.0
+
+        # Step 8: emit compaction quality for frontend instrumentation (best-effort).
+        # Lazy import keeps the memory service free of a hard orchestrator dependency;
+        # events.emit is a no-op when no task emitter is set (background/tests).
+        try:
+            from services.orchestrator import events as _events
+            await _events.emit(
+                "compact.quality",
+                session_id=session_id,
+                compression_ratio=compression_ratio,
+                turns_compacted=len(ids),
+                tokens_saved=tokens_saved,
+                reflections_count=len(reflections),
+            )
+        except Exception:
+            _logger.debug("compact.quality emit skipped", exc_info=True)
+
         return {
-            "summary_tokens": token_count(summary),
+            "summary_tokens": summary_tokens,
             "pruned_messages": len(ids),
             "reflections": reflections,
         }
+
+    async def last_activity_seconds(self, session_id: str) -> float:
+        """Seconds since the newest message in this session was written.
+
+        Reads the newest message's created_at. Accepts both float Unix timestamps
+        (the actual storage format: time.time()) and datetime objects. Returns 0.0
+        when the session has no messages or the field is absent/unrecognised — i.e.
+        "not idle", so a missing timestamp never triggers a surprise compaction.
+        """
+        cursor = (
+            self.db["messages"]
+            .find({"session_id": session_id}, {"created_at": 1})
+            .sort("seq", -1)
+            .limit(1)
+        )
+        newest = None
+        async for doc in cursor:
+            newest = doc.get("created_at")
+            break
+        if isinstance(newest, (int, float)):
+            newest = datetime.fromtimestamp(float(newest), tz=timezone.utc)
+        if not isinstance(newest, datetime):
+            return 0.0
+        if newest.tzinfo is None:
+            newest = newest.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - newest).total_seconds())
+
+    async def maybe_background_compact(
+        self,
+        session_id: str,
+        llm_fn,
+        system_prompt: str = "",
+        agent_instructions: str = "",
+    ) -> dict | None:
+        """Compact proactively iff the session is idle AND context fill is high.
+
+        Returns the full_compact result dict when a compaction ran, else None.
+        Idle gate prevents racing an in-flight task; the LOW fill gate prevents
+        wasting an LLM call on a near-empty session. Never raises — background
+        callers treat None as "nothing to do".
+        """
+        try:
+            idle = await self.last_activity_seconds(session_id)
+            if idle < self._IDLE_COMPACT_SECONDS:
+                return None
+
+            ctx = await self.build_context(
+                session_id=session_id,
+                current_task="",
+                system_prompt=system_prompt,
+                agent_instructions=agent_instructions,
+            )
+            low_thresh = int(self.budget.effective_budget * self._LOW_FILL_RATIO)
+            if ctx.total_tokens < low_thresh:
+                return None
+
+            _logger.info(
+                "background compact: session %s idle %.0fs, fill %d/%d",
+                session_id, idle, ctx.total_tokens, self.budget.effective_budget,
+            )
+            return await self.full_compact(session_id, llm_fn)
+        except Exception:
+            _logger.warning("background compact failed (non-fatal)", exc_info=True)
+            return None
 
     # ── Consolidation worker ──────────────────────────────────────────────────
 

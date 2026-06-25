@@ -262,3 +262,27 @@ async def test_storage_manager_has_workspace_manager(storage):
 async def test_storage_manager_workspace_manager_uses_same_db(storage):
     """WorkspaceManager receives the same db instance StorageManager uses."""
     assert storage.workspaces._db is storage._db
+
+
+# ---------------------------------------------------------------------------
+# context_manager property
+# ---------------------------------------------------------------------------
+
+def test_context_manager_property_returns_context_manager_instance(storage):
+    """StorageManager.context_manager returns a ContextManager and is lazily cached."""
+    from services.memory.context_manager import ContextManager
+
+    cm = storage.context_manager
+    assert isinstance(cm, ContextManager)
+    # Lazily cached — same object on repeated access
+    assert storage.context_manager is cm
+
+
+def test_context_manager_uses_storage_redis_and_db(storage):
+    """ContextManager is wired to the StorageManager's Redis and MongoDB."""
+    from services.memory.context_manager import ContextManager
+
+    cm = storage.context_manager
+    assert cm.redis is storage._redis
+    assert cm.db is storage._db
+    assert cm.chroma == {}  # empty; RAG skipped, compaction still works

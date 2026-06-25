@@ -87,6 +87,30 @@ class StorageManager:
         self._mongo.close()
 
     @property
+    def context_manager(self):
+        """Lazy ContextManager wired to this StorageManager's MongoDB and Redis.
+
+        chroma_cols is empty — RAG retrieval is skipped (hybrid_retrieve returns
+        nothing when no collections are present), which is fine for compaction
+        operations. If full RAG is needed, populate chroma_cols after setup.
+        """
+        if not hasattr(self, "_context_manager"):
+            from services.memory.context_manager import ContextManager
+            from services.memory.embedder import embed as _embed_fn
+            _redis = self._redis
+
+            async def _embedder(texts: list[str]) -> list[list[float]]:
+                return await _embed_fn(texts, redis=_redis)
+
+            self._context_manager = ContextManager(
+                redis=self._redis,
+                mongo_db=self._db,
+                chroma_cols={},
+                embedder=_embedder,
+            )
+        return self._context_manager
+
+    @property
     def consolidator(self) -> MemoryConsolidator:
         if not hasattr(self, "_consolidator"):
             self._consolidator = MemoryConsolidator(
