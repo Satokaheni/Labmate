@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 import chromadb
@@ -26,6 +26,24 @@ TASKS_STREAM = "tasks"
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# Importance -> days-until-expiry. importance >= 5 never expires.
+_TTL_DAYS = {1: 30, 2: 90, 3: 365, 4: 1095}
+
+
+def _expires_at(importance, now: datetime | None = None) -> datetime | None:
+    """Compute expiry from importance. Returns None for never-expiring (>=5)."""
+    try:
+        imp = int(round(float(importance)))
+    except (TypeError, ValueError):
+        imp = 3
+    days = _TTL_DAYS.get(imp)
+    if days is None:  # importance >= 5 (or <1 clamped); 5 = permanent
+        if imp >= 5:
+            return None
+        days = _TTL_DAYS[1]  # clamp anything below 1 to the shortest TTL
+    return (now or _utcnow()) + timedelta(days=days)
 
 
 class StorageManager:
@@ -143,6 +161,7 @@ class StorageManager:
             "valid_to": memory.get("valid_to"),
             "supersedes": memory.get("supersedes"),
             "created_at": _utcnow(),
+            "expires_at": _expires_at(memory.get("importance", 3)),
             "outbox": {
                 "kind": "memory_vector",
                 "processed": False,
@@ -196,6 +215,29 @@ class StorageManager:
                 "outbox.processed_at": None,
             }},
         )
+
+    async def decay_expired_memories(self, session_id: str, now: datetime | None = None) -> int:
+        """Close all currently-valid memories for a session whose expires_at is past.
+
+        Returns the number of memories closed. Calls close_memory() per hit so the
+        outbox re-projection marks them closed in Chroma. Idempotent: already-closed
+        memories (valid_to set) are excluded by the query.
+        """
+        cutoff = now or _utcnow()
+        cursor = self._db[MEMORIES].find(
+            {
+                "session_id": session_id,
+                "valid_to": None,
+                "expires_at": {"$ne": None, "$lte": cutoff},
+            },
+            {"_id": 1},
+        )
+        ids = [doc["_id"] async for doc in cursor]
+        for _id in ids:
+            await self.close_memory(str(_id), valid_to=cutoff)
+        if ids:
+            logger.info("decayed %d expired memories for session=%s", len(ids), session_id)
+        return len(ids)
 
     # --- search ----------------------------------------------------------
     async def search_memories(self, query: str, top_k: int = 5) -> list[dict]:
