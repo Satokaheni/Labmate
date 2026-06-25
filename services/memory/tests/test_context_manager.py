@@ -513,7 +513,6 @@ async def test_full_compact_emits_compact_quality_event():
 @pytest.mark.asyncio
 async def test_last_activity_seconds_reports_idle_time():
     """last_activity_seconds returns roughly the age of the newest message."""
-    import datetime as _dt
     import time as _time
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
         from services.memory.context_manager import ContextManager
