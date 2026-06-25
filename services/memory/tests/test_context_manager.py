@@ -453,3 +453,55 @@ async def test_build_context_omits_anchor_when_contained_in_summary():
 
         ctx = await cm.build_context("s1", "task", "system")
         assert ctx.anchor_buffer == ""
+
+
+@pytest.mark.asyncio
+async def test_full_compact_emits_compact_quality_event():
+    """full_compact emits compact.quality with ratio, counts, and tokens saved."""
+    with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
+        from services.memory.context_manager import ContextManager
+
+        redis_store: dict = {}
+        redis = AsyncMock()
+        redis.get = AsyncMock(side_effect=lambda k: redis_store.get(k))
+        redis.set = AsyncMock(side_effect=lambda k, v: redis_store.update({k: v}))
+        redis.delete = AsyncMock(side_effect=lambda k: redis_store.pop(k, None))
+
+        db = MagicMock()
+        turns = [
+            {"_id": str(i), "seq": i, "role": "user" if i % 2 == 0 else "assistant",
+             "content": f"message number {i} with some content to make tokens"}
+            for i in range(20)
+        ]
+        messages_col = MagicMock()
+        call_count = [0]
+        def _find(*args, **kwargs):
+            call_count[0] += 1
+            return _AsyncIter([] if call_count[0] == 1 else turns)
+        messages_col.find = MagicMock(side_effect=_find)
+        messages_col.update_one = AsyncMock()
+        messages_col.delete_many = AsyncMock()
+        db.__getitem__ = MagicMock(return_value=messages_col)
+
+        async def _llm(prompt: str) -> str:
+            return '{"decisions": ["use Python"]}' if "JSON" in prompt else "short summary"
+
+        captured = {}
+        async def _fake_emit(type, **fields):
+            captured[type] = fields
+
+        cm = ContextManager(redis=redis, mongo_db=db, chroma_cols={}, embedder=AsyncMock())
+
+        with patch("services.orchestrator.events.emit", side_effect=_fake_emit):
+            result = await cm.full_compact("s1", _llm)
+
+        assert "compact.quality" in captured
+        evt = captured["compact.quality"]
+        assert evt["session_id"] == "s1"
+        assert evt["turns_compacted"] == 5
+        assert evt["reflections_count"] == 1
+        assert evt["tokens_saved"] >= 0
+        assert 0.0 <= evt["compression_ratio"]
+        # Return contract is unchanged
+        assert result["pruned_messages"] == 5
+        assert result["reflections"] == ["use Python"]

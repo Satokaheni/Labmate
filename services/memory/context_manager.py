@@ -502,8 +502,28 @@ class ContextManager:
         # Step 7: extract reflections for the caller to write to memory
         reflections = await self._extract_reflections(summary, llm_fn)
 
+        summary_tokens = token_count(summary)
+        tokens_saved = max(0, pre_tokens - summary_tokens)
+        compression_ratio = round(summary_tokens / pre_tokens, 4) if pre_tokens else 0.0
+
+        # Step 8: emit compaction quality for frontend instrumentation (best-effort).
+        # Lazy import keeps the memory service free of a hard orchestrator dependency;
+        # events.emit is a no-op when no task emitter is set (background/tests).
+        try:
+            from services.orchestrator import events as _events
+            await _events.emit(
+                "compact.quality",
+                session_id=session_id,
+                compression_ratio=compression_ratio,
+                turns_compacted=len(ids),
+                tokens_saved=tokens_saved,
+                reflections_count=len(reflections),
+            )
+        except Exception:
+            _logger.debug("compact.quality emit skipped", exc_info=True)
+
         return {
-            "summary_tokens": token_count(summary),
+            "summary_tokens": summary_tokens,
             "pruned_messages": len(ids),
             "reflections": reflections,
         }
