@@ -103,7 +103,7 @@ def _execute_goal(ctx, goal):
             return await orch.react_execute(goal)
 
     import asyncio
-    ctx["react_result"] = asyncio.get_event_loop().run_until_complete(_run())
+    ctx["react_result"] = asyncio.run(_run())
 
 
 @then("react_execute returns ok False")
