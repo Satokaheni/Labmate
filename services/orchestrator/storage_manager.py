@@ -137,6 +137,8 @@ class StorageManager:
             "session_id": memory["session_id"],
             "fact": memory["fact"],
             "embedding_text": memory.get("embedding_text", memory["fact"]),
+            "importance": memory.get("importance", 3),
+            "source": memory.get("source", "agent_generated"),
             "valid_from": memory.get("valid_from") or _utcnow(),
             "valid_to": memory.get("valid_to"),
             "supersedes": memory.get("supersedes"),
@@ -183,9 +185,13 @@ class StorageManager:
             meta = metas[i] if i < len(metas) else {}
             if meta.get("valid_to"):  # skip closed facts
                 continue
+            src = meta.get("source")
+            fact_text = docs[i] if i < len(docs) else ""
+            display = f"[{src}] {fact_text}" if src else fact_text
             out.append({
                 "id": _id,
-                "fact": docs[i] if i < len(docs) else "",
+                "fact": display,
+                "raw_fact": fact_text,
                 "metadata": meta,
                 "distance": dists[i] if i < len(dists) else None,
             })

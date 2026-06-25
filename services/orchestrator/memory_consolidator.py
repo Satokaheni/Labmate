@@ -12,6 +12,22 @@ CONSOLIDATION_INTERVAL = 50  # episodes between consolidation runs
 GEMMA_BASE = os.getenv("GEMMA_BASE", "http://localhost:8000/v1")
 GEMMA_MODEL = os.getenv("GEMMA_MODEL", "google/gemma-4-31B-it")
 
+_VALID_SOURCES = {
+    "user_stated",
+    "tool_output",
+    "agent_generated",
+    "compaction_reflection",
+}
+_DEFAULT_SOURCE = "agent_generated"
+
+
+def _normalize_source(value) -> str:
+    """Coerce an LLM-supplied source string to the allowed taxonomy."""
+    if isinstance(value, str) and value.strip() in _VALID_SOURCES:
+        return value.strip()
+    return _DEFAULT_SOURCE
+
+
 # ---------------------------------------------------------------------------
 # Lazy Gemma tokenizer singleton (rule #3: never tiktoken)
 # ---------------------------------------------------------------------------
@@ -91,7 +107,12 @@ _EXTRACT_PROMPT = (
     "implicit in stable context.\n"
     "For each fact, assign an importance (1=trivial, 3=standard preference, "
     "5=safety-critical or identity-level). Higher importance slows decay.\n"
-    'Return STRICT JSON: [{{"fact": str, "importance": int}}].\n\n'
+    "For each fact, classify its SOURCE as exactly one of: "
+    '"user_stated" (the user asserted it), '
+    '"tool_output" (it came from a tool/search/file result), '
+    '"agent_generated" (an agent inferred or recommended it).\n'
+    'Return STRICT JSON: '
+    '[{{"fact": str, "importance": int, "source": str}}].\n\n'
     "EPISODES:\n{episodes}"
 )
 
@@ -179,7 +200,11 @@ class MemoryConsolidator:
                     imp = max(1, min(5, int(m.get("importance", 3))))
                 except (TypeError, ValueError):
                     imp = 3
-                result.append({"fact": m["fact"], "importance": imp})
+                result.append({
+                    "fact": m["fact"],
+                    "importance": imp,
+                    "source": _normalize_source(m.get("source")),
+                })
         return result
 
     async def _self_edit(self, new_memories: list[dict], existing: list[dict]) -> dict:
@@ -198,13 +223,14 @@ class MemoryConsolidator:
             "delete": data.get("delete", []),
         }
 
-    def _memory_dict(self, session_id: str, m: dict) -> dict:
+    def _memory_dict(self, session_id: str, m: dict, source: str | None = None) -> dict:
         """Build the memory document stored in Chroma/Mongo."""
         return {
             "session_id": session_id,
             "fact": m["fact"],
             "importance": m.get("importance", 3),
             "embedding_text": m["fact"],
+            "source": _normalize_source(source if source is not None else m.get("source")),
         }
 
     async def _apply_edits(self, session_id: str, edits: dict) -> None:
