@@ -7,6 +7,20 @@ def _mock_token_count(text: str) -> int:
     return max(0, len(text) // 4)
 
 
+class _AsyncIter:
+    """Async iterator that also supports Motor's chainable .sort() and .skip()."""
+    def __init__(self, docs):
+        self._docs = iter(docs)
+    def __aiter__(self): return self
+    async def __anext__(self):
+        try:
+            return next(self._docs)
+        except StopIteration:
+            raise StopAsyncIteration
+    def sort(self, *args, **kwargs): return self
+    def skip(self, *args, **kwargs): return self
+
+
 @pytest.mark.asyncio
 async def test_build_context_stays_within_budget():
     with (
@@ -321,3 +335,42 @@ def test_assembled_context_as_prompt_ordering():
         summary_pos = prompt.index("summary")
         recent_pos  = prompt.index("recent")
         assert rag_pos < summary_pos < recent_pos
+
+
+@pytest.mark.asyncio
+async def test_clear_tool_results_skips_recent_tool_results():
+    """The _KEEP_RECENT_TOOL_RESULTS most-recent tool results are not cleared.
+
+    The mock cursor records the skip() argument so we assert age-awareness is
+    wired through to the DB query (Motor applies .skip server-side).
+    """
+    with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
+        from services.memory.context_manager import ContextManager
+
+        redis = AsyncMock()
+        redis.get = AsyncMock(return_value=None)
+
+        recorded = {"skip": None, "sort": None}
+
+        class RecordingCursor(_AsyncIter):
+            def sort(self, *args, **kwargs):
+                recorded["sort"] = args
+                return self
+            def skip(self, n, *args, **kwargs):
+                recorded["skip"] = n
+                return self
+
+        db = MagicMock()
+        old_docs = [{"_id": "old1", "content": "x" * 1000}]
+        messages_col = MagicMock()
+        messages_col.find = MagicMock(return_value=RecordingCursor(old_docs))
+        messages_col.update_one = AsyncMock()
+        db.__getitem__ = MagicMock(return_value=messages_col)
+
+        cm = ContextManager(redis=redis, mongo_db=db, chroma_cols={}, embedder=AsyncMock())
+        freed = await cm.clear_tool_results("s1")
+
+        assert recorded["skip"] == cm._KEEP_RECENT_TOOL_RESULTS
+        assert recorded["skip"] == 10
+        assert freed > 0
+        assert messages_col.update_one.call_count == 1

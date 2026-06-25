@@ -228,6 +228,7 @@ class ContextManager:
     _TOOL_RESULT_THRESHOLD = 600    # chars; tool results stripped more aggressively
     _BLOCK_SIZE            = 20     # turns per parallel summarization block
     _KEEP_RECENT           = 15     # turns retained verbatim after full compact
+    _KEEP_RECENT_TOOL_RESULTS = 10  # most-recent tool results never cleared (still referenced)
 
     # Prompt used per block when summarizing in parallel
     _BLOCK_SUMMARY_PROMPT = (
@@ -293,15 +294,24 @@ class ContextManager:
         In long research sessions tool outputs (file reads, web search dumps)
         dominate token usage; clearing them before summarization dramatically
         reduces the LLM input without losing conversational context.
+
+        Age-aware: the _KEEP_RECENT_TOOL_RESULTS most-recent tool results are
+        left intact (the user / next turn may still refer to them); only older
+        tool results over the threshold are cleared.
         Returns chars freed.
         """
-        cursor = self.db["messages"].find(
-            {
-                "session_id": session_id,
-                "role": "tool",
-                "stripped": {"$ne": True},
-            },
-            {"_id": 1, "content": 1},
+        cursor = (
+            self.db["messages"]
+            .find(
+                {
+                    "session_id": session_id,
+                    "role": "tool",
+                    "stripped": {"$ne": True},
+                },
+                {"_id": 1, "content": 1},
+            )
+            .sort("seq", -1)
+            .skip(self._KEEP_RECENT_TOOL_RESULTS)
         )
         freed = 0
         async for doc in cursor:
