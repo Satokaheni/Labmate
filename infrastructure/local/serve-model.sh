@@ -19,9 +19,9 @@ LLAMA_SERVER="${LLAMA_SERVER:-/workspace/llama.cpp/build/bin/llama-server}"
 MODEL="${MODEL:-/workspace/models/gemma-4-gguf/gemma-4-31B-it-UD-Q4_K_XL.gguf}"
 ALIAS="${ALIAS:-gemma-4}"
 PORT="${PORT:-8000}"
-CTX="${CTX:-16384}"
+CTX="${CTX:-131072}"
 NGL="${NGL:-999}"          # offload all layers to GPU (A6000 48GB fits the 18.8GB model)
-PARALLEL="${PARALLEL:-4}"  # concurrent request slots (FIX 10: was 2; KV cache for 4 slots @ ctx 16384 fits 48GB GPU w/ 18GB model)
+PARALLEL="${PARALLEL:-2}"  # 2 slots × 128k ctx with 4-bit KV cache fits 32GB target VRAM
 
 LOGS="${REPO_ROOT}/.data/logs"; PIDS="${REPO_ROOT}/.data/pids"
 mkdir -p "$LOGS" "$PIDS"
@@ -35,7 +35,7 @@ if ready; then info "llama-server already serving on :${PORT}"; exit 0; fi
 [[ -x "$LLAMA_SERVER" ]] || fail "llama-server not built at $LLAMA_SERVER — run install.sh"
 [[ -f "$MODEL" ]]        || fail "GGUF not found at $MODEL — run install.sh"
 
-info "launching llama-server: ${MODEL##*/} on :${PORT} (ctx=${CTX}, ngl=${NGL}, --jinja) ..."
+info "launching llama-server: ${MODEL##*/} on :${PORT} (ctx=${CTX}, ngl=${NGL}, parallel=${PARALLEL}) ..."
 nohup "$LLAMA_SERVER" \
   -m "$MODEL" \
   --alias "$ALIAS" \
@@ -45,9 +45,13 @@ nohup "$LLAMA_SERVER" \
   --n-gpu-layers "$NGL" \
   --parallel "$PARALLEL" \
   --jinja \
-  -fa on \
-  --reasoning-format deepseek \
-  --reasoning-budget-message $'\n</think>\n' \
+  -fa 1 \
+  --cache-type-k q4_0 \
+  --cache-type-v q4_0 \
+  --chat-template-kwargs '{"enable_thinking":false}' \
+  --temp 1.0 \
+  --top-p 0.95 \
+  --top-k 64 \
   >"$LOGS/llama-server.log" 2>&1 &
 echo $! > "$PIDS/llama-server.pid"
 info "llama-server pid $(cat "$PIDS/llama-server.pid") — logs: $LOGS/llama-server.log"
