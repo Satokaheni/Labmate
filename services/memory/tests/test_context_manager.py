@@ -7,21 +7,6 @@ def _mock_token_count(text: str) -> int:
     return max(0, len(text) // 4)
 
 
-class _AsyncIter:
-    """Async iterator that also supports Motor's chainable .sort(), .skip(), and .limit()."""
-    def __init__(self, docs):
-        self._docs = iter(docs)
-    def __aiter__(self): return self
-    async def __anext__(self):
-        try:
-            return next(self._docs)
-        except StopIteration:
-            raise StopAsyncIteration
-    def sort(self, *args, **kwargs): return self
-    def skip(self, *args, **kwargs): return self
-    def limit(self, *args, **kwargs): return self
-
-
 @pytest.mark.asyncio
 async def test_build_context_stays_within_budget():
     with (

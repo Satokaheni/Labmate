@@ -507,7 +507,7 @@ class ContextManager:
 
         summary_tokens = token_count(summary)
         tokens_saved = max(0, pre_tokens - summary_tokens)
-        compression_ratio = round(summary_tokens / pre_tokens, 4) if pre_tokens else 0.0
+        compression_ratio = round(min(1.0, summary_tokens / pre_tokens), 4) if pre_tokens else 0.0
 
         # Step 8: emit compaction quality for frontend instrumentation (best-effort).
         # Lazy import keeps the memory service free of a hard orchestrator dependency;
