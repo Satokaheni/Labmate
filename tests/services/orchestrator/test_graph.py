@@ -961,6 +961,14 @@ class TestApprovalNode:
 
 @pytest.mark.mocked
 class TestVerifyNode:
+    @pytest.fixture(autouse=True)
+    def _enable_verify_gate(self, monkeypatch):
+        """Auto-critique is OFF by default (CRITIQUE_ARTIFACT_TYPES=""). These tests
+        exercise the gate firing for code/writing, so enable it here (auto-restored).
+        The pass-through tests use type 'other', which skips regardless."""
+        import services.orchestrator.graph as _graph_mod
+        monkeypatch.setattr(_graph_mod, "CRITIQUE_ARTIFACT_TYPES", ("code", "writing"))
+
     @pytest.mark.asyncio
     async def test_verify_passes_through_non_code_writing(self):
         from services.orchestrator.graph import make_nodes

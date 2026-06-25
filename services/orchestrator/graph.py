@@ -38,7 +38,11 @@ CRITIQUE_DISPATCH_TIMEOUT = float(os.getenv("CRITIQUE_DISPATCH_TIMEOUT", "110"))
 
 # FIX 10 (A3): thinking budget for the assess_ambiguity node's architect() call
 #   (was hardcoded 1024; a lower default is faster on the local Q4 model).
-ASSESS_THINKING_BUDGET = int(os.getenv("ASSESS_THINKING_BUDGET", "768"))
+# PERF: 768 thinking tokens ≈ 25s of decode on the Q4 host for a single yes/no-ish
+# ambiguity judgement that runs on EVERY request. 384 roughly halves that with
+# negligible effect on the binary "is this ambiguous" call; raise via env if the
+# gate starts missing genuinely ambiguous prompts.
+ASSESS_THINKING_BUDGET = int(os.getenv("ASSESS_THINKING_BUDGET", "384"))
 
 # FIX 10 (B2): direct-answer fast-path. When route() reports a skill-less SINGLE intent
 # (e.g. "What is 2+2?"), the plan node answers directly via architect() and HALTS the
@@ -58,6 +62,20 @@ DIRECT_ANSWER_THINKING_BUDGET = int(os.getenv("DIRECT_ANSWER_THINKING_BUDGET", "
 #   before the artifact is ACCEPTED and we proceed to check. 1 -> at most one reflect pass;
 #   0 -> verify is advisory and never loops.
 MAX_VERIFY_RETRIES = int(os.getenv("MAX_VERIFY_RETRIES", "1"))
+# PERF/FIT: which artifact types run the automatic critique verify-gate. The critique
+# skill scores output against an academic-paper constitution (C1 citations, C4 "no new
+# numbers", IMRaD section structure) via a slow Q4 evaluator call. That rubric fits a
+# paper draft — but NOT chat answers and NOT code (code isn't IMRaD-structured, and the
+# gate runs with no tests/lint signals, so on code it's just an LLM second-guessing
+# itself against a citation rubric). It also adds ~50-70s/request and "routinely scores
+# a correct artifact < 0.90" before the gate accepts it anyway. So the automatic gate is
+# OFF by default (empty set → verify always skips). Paper critique is still available
+# on demand: an explicit "critique this draft" request routes to the critique skill
+# directly. To re-enable the auto-gate for a type set CRITIQUE_ARTIFACT_TYPES=writing
+# (or code,writing).
+CRITIQUE_ARTIFACT_TYPES = tuple(
+    t.strip() for t in os.getenv("CRITIQUE_ARTIFACT_TYPES", "").split(",") if t.strip()
+)
 # MAX_GOAL_ATTEMPTS: how many times a FAILED goal may be reflect-retried (replaces the old
 #   hardcoded cap of 3). A goal with attempts >= MAX_GOAL_ATTEMPTS is considered exhausted.
 MAX_GOAL_ATTEMPTS = int(os.getenv("MAX_GOAL_ATTEMPTS", "2"))
@@ -549,11 +567,11 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         artifact = state.get("last_artifact") or {"type": "other", "payload": ""}
         atype = artifact.get("type")
         router_obj = getattr(orch, "skill_router", None)
-        if atype not in ("code", "writing") or router_obj is None:
+        if atype not in CRITIQUE_ARTIFACT_TYPES or router_obj is None:
             await events.emit(
                 "reasoning",
                 node="verify",
-                summary="skipped (no code/writing artifact)",
+                summary=f"skipped (artifact type '{atype}' not in critique set)",
                 text="",
             )
             # FIX 9: nothing to critique -> never reflect.
