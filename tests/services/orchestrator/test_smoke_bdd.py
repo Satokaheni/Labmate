@@ -40,6 +40,8 @@ def _program_tool_call(fake_model, tool: str, path: str) -> None:
 
 @when("the orchestrator asks the model a question")
 def _ask_model(reply_box: dict) -> None:
+    import asyncio
+
     async def _call():
         return await litellm.acompletion(
             model="openai/gemma-4-31b",
@@ -48,9 +50,7 @@ def _ask_model(reply_box: dict) -> None:
             messages=[{"role": "user", "content": "anything"}],
         )
 
-    import asyncio
-
-    reply_box["resp"] = asyncio.get_event_loop().run_until_complete(_call())
+    reply_box["resp"] = asyncio.run(_call())
 
 
 @then(parsers.parse('the model reply is "{expected}"'))
