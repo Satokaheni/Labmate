@@ -15,9 +15,9 @@ docs/superpowers/plans/2026-06-25-bdd-harness-foundation.md
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, MagicMock
 
 import httpx
+import litellm
 import pytest
 
 # The inference seam every orchestrator model call routes through.
@@ -26,7 +26,7 @@ INFERENCE_COMPLETIONS_URL = "http://localhost:8000/v1/chat/completions"
 
 
 @pytest.fixture
-def fake_model(respx_mock, monkeypatch):
+async def fake_model(respx_mock):
     """Program the inference seam to return a deterministic completion.
 
     Returns a callable used inside @given steps (or directly in a test)
@@ -39,79 +39,65 @@ def fake_model(respx_mock, monkeypatch):
         fake_model(None, content="2 + 2 = 4")
 
     The last call wins: re-calling re-programs the same route.
+
+    Implementation: Creates an httpx.AsyncClient and sets it as
+    litellm.aclient_session so litellm's OpenAI client uses it.
+    respx intercepts all HTTP calls through this client.
     """
+    # Create an httpx client that respx can intercept
+    async with httpx.AsyncClient() as client:
+        # Store the original aclient_session
+        original_session = getattr(litellm, "aclient_session", None)
 
-    def _set(
-        tool_name: str | None,
-        arguments: dict | None = None,
-        *,
-        content: str | None = None,
-    ) -> None:
-        if tool_name is not None:
-            message = {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [
-                    {
-                        "id": "call_test",
-                        "type": "function",
-                        "function": {
-                            "name": tool_name,
-                            "arguments": json.dumps(arguments or {}),
-                        },
-                    }
+        # Set our client as litellm's session
+        litellm.aclient_session = client
+
+        def _set(
+            tool_name: str | None,
+            arguments: dict | None = None,
+            *,
+            content: str | None = None,
+        ) -> None:
+            if tool_name is not None:
+                message = {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_test",
+                            "type": "function",
+                            "function": {
+                                "name": tool_name,
+                                "arguments": json.dumps(arguments or {}),
+                            },
+                        }
+                    ],
+                }
+                finish_reason = "tool_calls"
+            else:
+                message = {"role": "assistant", "content": content or ""}
+                finish_reason = "stop"
+
+            body = {
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "gemma4-local",
+                "choices": [
+                    {"index": 0, "message": message, "finish_reason": finish_reason}
                 ],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "total_tokens": 15,
+                },
             }
-            finish_reason = "tool_calls"
-        else:
-            message = {"role": "assistant", "content": content or ""}
-            finish_reason = "stop"
+            # Program respx to intercept and mock the inference HTTP seam
+            respx_mock.post(INFERENCE_COMPLETIONS_URL).mock(
+                return_value=httpx.Response(200, json=body)
+            )
 
-        body = {
-            "id": "chatcmpl-test",
-            "object": "chat.completion",
-            "created": 0,
-            "model": "gemma4-local",
-            "choices": [
-                {"index": 0, "message": message, "finish_reason": finish_reason}
-            ],
-            "usage": {
-                "prompt_tokens": 10,
-                "completion_tokens": 5,
-                "total_tokens": 15,
-            },
-        }
-        # Set up respx mock for httpx-based clients
-        respx_mock.post(INFERENCE_COMPLETIONS_URL).mock(
-            return_value=httpx.Response(200, json=body)
-        )
+        yield _set
 
-        # Also create a mock response object for litellm
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message = MagicMock()
-        mock_response.choices[0].message.content = body["choices"][0]["message"].get(
-            "content"
-        )
-
-        # Parse tool_calls from the body and create proper mock objects
-        tool_calls_data = body["choices"][0]["message"].get("tool_calls")
-        if tool_calls_data:
-            tool_calls = []
-            for tc in tool_calls_data:
-                mock_tool_call = MagicMock()
-                mock_tool_call.function = MagicMock()
-                mock_tool_call.function.name = tc["function"]["name"]
-                mock_tool_call.function.arguments = tc["function"]["arguments"]
-                tool_calls.append(mock_tool_call)
-            mock_response.choices[0].message.tool_calls = tool_calls
-        else:
-            mock_response.choices[0].message.tool_calls = None
-
-        # Patch litellm.acompletion to return the mock response
-        async def mock_acompletion(*args, **kwargs):
-            return mock_response
-
-        monkeypatch.setattr("litellm.acompletion", mock_acompletion)
-
-    return _set
+        # Restore original aclient_session
+        litellm.aclient_session = original_session
