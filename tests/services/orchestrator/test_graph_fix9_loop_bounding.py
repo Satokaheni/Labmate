@@ -6,7 +6,7 @@ These tests prove the Fix 9 invariants WITHOUT a GPU or live services:
   2. A deterministic/environmental ("non-retryable") failure bails immediately
      instead of paying MAX_GOAL_ATTEMPTS reflect+re-execute passes.
   3. An ordinary (retryable) failure still gets its full MAX_GOAL_ATTEMPTS passes.
-  4. _is_nonretryable_error classifies error strings conservatively.
+  4. classify_error + is_terminal classifies error strings conservatively.
   5. verify_router is a pure function of the committed _verify_reflect flag and
      keeps the backward-compat threshold fallback.
 """
@@ -18,11 +18,11 @@ from services.orchestrator.graph import (
     build_graph,
     verify_router,
     router,
-    _is_nonretryable_error,
     MAX_VERIFY_RETRIES,
     MAX_GOAL_ATTEMPTS,
     CRITIQUE_THRESHOLD,
 )
+from services.orchestrator.error_classifier import classify_error, is_terminal
 from services.orchestrator.coding_orchestrator import (
     CodingOrchestrator,
     AsyncOrchestrator,
@@ -33,22 +33,40 @@ from langgraph.checkpoint.memory import MemorySaver
 
 
 # --------------------------------------------------------------------------- #
-# 4. _is_nonretryable_error
+# 4. classify_error + is_terminal (replaces _is_nonretryable_error)
 # --------------------------------------------------------------------------- #
-class TestIsNonretryableError:
+class TestClassifyError:
     @pytest.mark.parametrize("err", [
         "SkillUnavailable: code-sandbox",
         "docker daemon not running",
         "Connection refused",
         "network unreachable",
-        "request timed out",
         "missing API key",
-        "rate limit exceeded (429)",
         "ENOENT: no such file",
         "permission denied (EPERM)",
     ])
-    def test_marks_environmental_failures(self, err):
-        assert _is_nonretryable_error(err) is True
+    def test_marks_environmental_failures_as_terminal(self, err):
+        cls = classify_error(err)
+        assert is_terminal(cls) is True
+
+    @pytest.mark.parametrize("err", [
+        "request timed out",
+        "Request timed out after 60s",
+    ])
+    def test_marks_timeout_as_transient(self, err):
+        from services.orchestrator.error_classifier import ErrorClass
+        cls = classify_error(err)
+        assert cls == ErrorClass.TRANSIENT
+        assert is_terminal(cls) is False
+
+    @pytest.mark.parametrize("err", [
+        "rate limit exceeded (429)",
+        "HTTP 429 Too Many Requests",
+    ])
+    def test_marks_rate_limit_as_rate_limited(self, err):
+        from services.orchestrator.error_classifier import ErrorClass
+        cls = classify_error(err)
+        assert cls == ErrorClass.RATE_LIMITED
 
     @pytest.mark.parametrize("err", [
         "AssertionError: expected 4 got 5",
@@ -57,12 +75,12 @@ class TestIsNonretryableError:
         "syntax error on line 3",
         "",
     ])
-    def test_does_not_mark_ordinary_logic_failures(self, err):
+    def test_marks_ordinary_logic_failures_as_retryable(self, err):
+        from services.orchestrator.error_classifier import ErrorClass
         # These are exactly the failures a reflect-retry CAN fix; must stay retryable.
-        assert _is_nonretryable_error(err) is False
-
-    def test_none_safe(self):
-        assert _is_nonretryable_error(None) is False  # type: ignore[arg-type]
+        cls = classify_error(err)
+        assert cls == ErrorClass.RETRYABLE
+        assert is_terminal(cls) is False
 
 
 # --------------------------------------------------------------------------- #
