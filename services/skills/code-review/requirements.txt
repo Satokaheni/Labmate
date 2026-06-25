@@ -1,0 +1,5 @@
+mcp>=1.0.0
+instructor>=1.0
+pydantic>=2
+litellm>=1.0
+ruff>=0.4
