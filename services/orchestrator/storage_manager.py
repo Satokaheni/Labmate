@@ -149,7 +149,7 @@ class StorageManager:
     async def store_memory(self, memory: dict) -> str:
         """Insert one semantic fact + outbox marker in a single Mongo write.
 
-        memory: {session_id, fact, valid_from?, valid_to?, supersedes?}
+        memory: {session_id, fact, importance?, source?, valid_from?, valid_to?, supersedes?}
         """
         doc = {
             "session_id": memory["session_id"],
@@ -211,6 +211,7 @@ class StorageManager:
             {"_id": oid},
             {"$set": {
                 "importance": new_importance,
+                "expires_at": _expires_at(new_importance),
                 "outbox.processed": False,
                 "outbox.processed_at": None,
             }},

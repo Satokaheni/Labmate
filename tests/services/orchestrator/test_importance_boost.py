@@ -23,6 +23,7 @@ async def test_boost_reopens_outbox(storage):
     update = mem.update_one.await_args.args[1]["$set"]
     assert update["importance"] == 3.1
     assert update["outbox.processed"] is False
+    assert "expires_at" in update
 
 
 async def test_boost_ignores_bad_id(storage):

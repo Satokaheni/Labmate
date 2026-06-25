@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-pytestmark = [pytest.mark.mocked, pytest.mark.asyncio]
+pytestmark = [pytest.mark.mocked]
 
 
 def _now():
@@ -24,8 +24,11 @@ def test_expires_at_table():
     assert _expires_at(5, n) is None      # never expires
     assert _expires_at(7, n) is None      # clamps high to never
     assert _expires_at("bad", n) == n + timedelta(days=365)  # default importance 3
+    assert _expires_at(0, n) == n + timedelta(days=30)   # clamps low to 30 days
+    assert _expires_at(-1, n) == n + timedelta(days=30)  # negative also clamps
 
 
+@pytest.mark.asyncio
 async def test_store_memory_sets_expires_at(storage, mock_mongo):
     await storage.store_memory({"session_id": "s1", "fact": "f", "importance": 1})
     doc = mock_mongo._collections["memories"].insert_one.await_args.args[0]
@@ -36,6 +39,7 @@ async def test_store_memory_sets_expires_at(storage, mock_mongo):
     assert doc5["expires_at"] is None
 
 
+@pytest.mark.asyncio
 async def test_decay_closes_past_due(storage, mock_mongo):
     from bson import ObjectId
 
@@ -61,6 +65,7 @@ async def test_decay_closes_past_due(storage, mock_mongo):
     assert storage.close_memory.await_args.kwargs["valid_to"] == n
 
 
+@pytest.mark.asyncio
 async def test_decay_query_excludes_never_and_closed(storage, mock_mongo):
     captured = {}
 
