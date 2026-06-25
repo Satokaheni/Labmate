@@ -87,6 +87,41 @@ def classify_artifact(text: str) -> str:
     return "other"
 
 
+# Maximum number of prior reflections (most-recent) fed back into a retry's
+# diagnosis prompt. Bounded so the prompt cannot grow unboundedly across
+# many retries; deterministic ordering (chronological) for reproducibility.
+MAX_PRIOR_REFLECTIONS = 3
+
+
+def collect_prior_reflections(
+    state: "State",
+    goal_id: str,
+    cap: int = MAX_PRIOR_REFLECTIONS,
+) -> list[str]:
+    """Return prior reflection texts recorded for `goal_id`, in chronological
+    order, keeping only the last `cap`.
+
+    Pure: reads only `state["messages"]`. Reflection messages are the dicts
+    appended by the reflect node, shaped
+    ``{"role": "reflection", "goal_id": <id>, "content": <text>}``.
+    Entries that are not reflections, or that lack a matching ``goal_id``
+    (e.g. legacy pre-change reflections, or reflections for other goals),
+    are ignored. ``cap <= 0`` yields an empty list.
+    """
+    messages = state.get("messages") or []
+    matches = [
+        m["content"]
+        for m in messages
+        if isinstance(m, dict)
+        and m.get("role") == "reflection"
+        and m.get("goal_id") == goal_id
+        and "content" in m
+    ]
+    if cap <= 0:
+        return []
+    return matches[-cap:]
+
+
 def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
     """
     Factory that closes over the orchestrator instances so nodes are plain
