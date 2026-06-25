@@ -148,14 +148,28 @@ _TASK_REFLECTION_PROMPT = (
     "REFLECTION:"
 )
 
+_CRITIC_PROMPT = (
+    "You are a strict memory critic. Decide whether the CANDIDATE memory should be "
+    "committed, given the SOURCE episodes it was derived from.\n"
+    "Reject (INVALID) if the candidate: contradicts the source, introduces facts not "
+    "supported by the source (hallucination), or uses the wrong operation for its "
+    "content.\n"
+    "Accept (VALID) if it is faithful to the source and self-contained.\n"
+    "OPERATION: {op}\n"
+    "CANDIDATE: {fact}\n"
+    "SOURCE EPISODES:\n{episodes}\n\n"
+    'Return STRICT JSON: {{"verdict": "VALID"|"INVALID", "reason": str}}.'
+)
+
 
 class MemoryConsolidator:
-    def __init__(self, storage, lm_base_url: str | None = None, llm=None) -> None:
+    def __init__(self, storage, lm_base_url: str | None = None, llm=None, critic_enabled: bool = False) -> None:
         self._s = storage
         self._base = lm_base_url or GEMMA_BASE
         self._llm = llm  # injectable async callable(messages) -> str; defaults to litellm
         self._episodic = EpisodicMemory()
         self._semantic = SemanticMemory()
+        self._critic_enabled = critic_enabled
 
     async def _complete(self, prompt: str) -> str:
         if self._llm is not None:
@@ -224,6 +238,45 @@ class MemoryConsolidator:
             "add": data.get("add", []),
             "update": data.get("update", []),
             "delete": data.get("delete", []),
+        }
+
+    async def _critique(self, op: str, fact: str, episodes_text: str) -> bool:
+        """Return True if the candidate is VALID. Fail-open on parse/LLM error.
+
+        Fail-open (treat as VALID on error) is deliberate: a flaky critic must not
+        silently drop legitimate memories. Genuine rejections are explicit INVALID.
+        """
+        try:
+            raw = await self._complete(_CRITIC_PROMPT.format(
+                op=op, fact=fact, episodes=episodes_text[:4_000],
+            ))
+            data = self._parse_json(raw)
+        except (json.JSONDecodeError, ValueError):
+            logger.warning("critic: non-JSON response, accepting candidate")
+            return True
+        verdict = str(data.get("verdict", "VALID")).strip().upper()
+        if verdict == "INVALID":
+            logger.info("critic rejected (%s): %s — %s",
+                        op, fact[:60], data.get("reason", ""))
+            return False
+        return True
+
+    async def _filter_edits(self, edits: dict, episodes_text: str) -> dict:
+        """Drop ADD/UPDATE candidates the critic marks INVALID. DELETE/NOOP pass through."""
+        if not self._critic_enabled:
+            return edits
+        kept_add = []
+        for m in edits.get("add", []):
+            if await self._critique("ADD", m.get("fact", ""), episodes_text):
+                kept_add.append(m)
+        kept_update = []
+        for m in edits.get("update", []):
+            if await self._critique("UPDATE", m.get("fact", ""), episodes_text):
+                kept_update.append(m)
+        return {
+            "add": kept_add,
+            "update": kept_update,
+            "delete": edits.get("delete", []),
         }
 
     def _memory_dict(self, session_id: str, m: dict, source: str | None = None) -> dict:
@@ -324,6 +377,8 @@ class MemoryConsolidator:
             return False
         existing = await self._semantic.search(self._s, candidates[0]["fact"], top_k=10)
         edits = await self._self_edit(candidates, existing)
+        episodes_text = "\n".join(f"- {e.get('content', '')}" for e in episodes)
+        edits = await self._filter_edits(edits, episodes_text)
         await self._apply_edits(session_id, edits)
         logger.info("consolidated session=%s add=%d update=%d delete=%d",
                     session_id, len(edits["add"]), len(edits["update"]), len(edits["delete"]))
