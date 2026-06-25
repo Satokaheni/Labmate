@@ -8,6 +8,8 @@ from pytest_bdd import scenarios, given, when, then, parsers
 
 from services.orchestrator.loop_detection import LoopDetector, call_signature
 
+pytestmark = [pytest.mark.bdd, pytest.mark.mocked]
+
 scenarios("features/tool_loop_detection.feature")
 
 

@@ -16,6 +16,8 @@ import litellm
 import pytest
 from pytest_bdd import scenarios, given, when, then, parsers
 
+pytestmark = [pytest.mark.bdd, pytest.mark.mocked]
+
 # Bind every Scenario in smoke.feature to the step defs below.
 scenarios("features/smoke.feature")
 

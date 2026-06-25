@@ -22,7 +22,7 @@ from services.orchestrator.types import (
     Status, create_goal, update_status,
 )
 
-pytestmark = pytest.mark.mocked
+pytestmark = [pytest.mark.bdd, pytest.mark.mocked]
 
 # Bind every scenario in the feature file.
 scenarios("features/error_classification.feature")
