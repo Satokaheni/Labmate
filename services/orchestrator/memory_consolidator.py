@@ -240,6 +240,27 @@ class MemoryConsolidator:
             "delete": data.get("delete", []),
         }
 
+    async def _gather_neighbors(self, candidates: list[dict], per_fact: int = 3) -> list[dict]:
+        """Retrieve top-N existing memories near each candidate; dedupe by id.
+
+        Replaces sending the full existing-memory set to _self_edit. For each new
+        candidate we pull its nearest existing neighbors so _self_edit only reasons
+        over plausibly-related facts. Returns [{id, fact}, ...] with unique ids.
+        """
+        seen: dict[str, dict] = {}
+        for cand in candidates:
+            fact = cand.get("fact", "")
+            if not fact:
+                continue
+            hits = await self._semantic.search(self._s, fact, top_k=per_fact)
+            for h in hits:
+                hid = h.get("id")
+                if hid and hid not in seen:
+                    # prefer the untagged fact (search_memories prefixes a [source] tag
+                    # onto "fact"); fall back to "fact" for callers that don't tag.
+                    seen[hid] = {"id": hid, "fact": h.get("raw_fact") or h.get("fact", "")}
+        return list(seen.values())
+
     async def _critique(self, op: str, fact: str, episodes_text: str) -> bool:
         """Return True if the candidate is VALID. Fail-open on parse/LLM error.
 
@@ -381,7 +402,8 @@ class MemoryConsolidator:
         candidates = await self._extract_memories(episodes)
         if not candidates:
             return False
-        existing = await self._semantic.search(self._s, candidates[0]["fact"], top_k=10)
+        # Semantic pre-filter: only the nearest existing neighbors per candidate
+        existing = await self._gather_neighbors(candidates, per_fact=3)
         edits = await self._self_edit(candidates, existing)
         _ep_lines = [f"- {e['content']}" for e in episodes if e.get('content')]
         episodes_text = ""
@@ -392,8 +414,9 @@ class MemoryConsolidator:
         episodes_text = episodes_text.rstrip()
         edits = await self._filter_edits(edits, episodes_text)
         await self._apply_edits(session_id, edits)
-        logger.info("consolidated session=%s add=%d update=%d delete=%d",
-                    session_id, len(edits["add"]), len(edits["update"]), len(edits["delete"]))
+        logger.info("consolidated session=%s neighbors=%d add=%d update=%d delete=%d",
+                    session_id, len(existing),
+                    len(edits["add"]), len(edits["update"]), len(edits["delete"]))
         return True
 
     # --- Task 9: Redis Streams consumer ---------------------------------
