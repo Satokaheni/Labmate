@@ -1,12 +1,16 @@
 ---
 name: code-review
 description: >
-  Multi-angle adversarial code review for diffs, files, or directories. Runs 5
-  independent analysis angles (correctness, security, removed behavior, language
-  pitfalls, wrapper correctness), batch-verifies candidates, does a gap sweep,
-  and returns findings ranked by severity. Use when asked to review code, audit a
-  PR, find bugs, or check a file for issues.
-trigger: "Use when reviewing code, auditing a diff or PR, or finding bugs in a file"
+  Multi-angle adversarial review of SOURCE CODE ONLY — diffs, code files, or
+  repositories. Runs 5 independent analysis angles (correctness, security, removed
+  behavior, language pitfalls, wrapper correctness), batch-verifies candidates,
+  does a gap sweep, and returns code findings ranked by severity. Use ONLY when the
+  thing being reviewed is program source code: "review this code/diff/PR", "find
+  bugs in foo.py", "audit my changes", "check this file for security issues". Do
+  NOT use for reviewing prose, essays, research papers, documentation, or any
+  natural-language WRITING — those go to the critique skill (which reviews and
+  improves writing). If the target is not code, this skill is the wrong choice.
+trigger: "Use ONLY when reviewing program source code (a diff, code file, or repo) — never prose or documents"
 tools:
   - code_review
 version: "0.1.0"
