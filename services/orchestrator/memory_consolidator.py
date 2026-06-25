@@ -126,9 +126,12 @@ _SELF_EDIT_PROMPT = (
     "  - ADD: candidate is wholly novel (no semantically-equivalent existing fact).\n"
     "  - NOOP: candidate is a duplicate already covered by an existing fact.\n"
     "When in doubt between UPDATE and DELETE, prefer UPDATE.\n"
+    "For each item in add/update, include source field:\n"
+    "  - If merging/synthesizing multiple sources: use 'agent_generated'.\n"
+    "  - Otherwise: echo the source from the input candidates unchanged.\n"
     "Return STRICT JSON: "
-    '{{"add": [{{"fact": str, "importance": int}}], '
-    '"update": [{{"id": str, "fact": str, "importance": int}}], '
+    '{{"add": [{{"fact": str, "importance": int, "source": str}}], '
+    '"update": [{{"id": str, "fact": str, "importance": int, "source": str}}], '
     '"delete": [{{"id": str}}], "noop": [{{"id": str}}]}}.\n\n'
     "NEW:\n{new}\n\nEXISTING:\n{existing}"
 )

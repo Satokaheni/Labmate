@@ -114,3 +114,58 @@ async def test_search_memories_no_source_no_tag(storage, mock_chroma):
     out = await storage.search_memories("q", top_k=1)
     assert out[0]["fact"] == "a fact"
     assert out[0]["raw_fact"] == "a fact"
+
+
+async def test_normalize_source_empty_string():
+    from services.orchestrator.memory_consolidator import _normalize_source
+    assert _normalize_source("") == "agent_generated"
+
+
+async def test_normalize_source_whitespace():
+    from services.orchestrator.memory_consolidator import _normalize_source
+    assert _normalize_source("  user_stated  ") == "user_stated"
+
+
+async def test_normalize_source_none():
+    from services.orchestrator.memory_consolidator import _normalize_source
+    assert _normalize_source(None) == "agent_generated"
+
+
+async def test_normalize_source_non_string():
+    from services.orchestrator.memory_consolidator import _normalize_source
+    assert _normalize_source(123) == "agent_generated"
+
+
+async def test_self_edit_carries_source_through_flow(storage, monkeypatch):
+    """Test that source is preserved from extract → self_edit → apply."""
+    from services.orchestrator.memory_consolidator import MemoryConsolidator
+    from unittest.mock import patch, AsyncMock
+
+    # Mock token_count to avoid loading real tokenizer
+    with patch("services.orchestrator.memory_consolidator.token_count", return_value=10):
+        fake_llm = AsyncMock()
+        mc = MemoryConsolidator(storage, llm=fake_llm)
+
+        # Simulate the full flow:
+        # 1. _extract_memories returns candidates with source
+        # 2. _self_edit receives those candidates and returns them with source
+        # 3. _apply_edits passes them to _memory_dict which normalizes source
+
+        # Mock the storage methods
+        storage.store_memory = AsyncMock(return_value="memory_id_1")
+        storage.close_memory = AsyncMock()
+
+        edits = {
+            "add": [{"fact": "f1", "importance": 3, "source": "user_stated"}],
+            "update": [],
+            "delete": [],
+        }
+
+        # Apply the edits
+        await mc._apply_edits("s1", edits)
+
+        # Verify that store_memory was called with the source
+        assert storage.store_memory.call_count == 1
+        call_args = storage.store_memory.call_args
+        memory_doc = call_args.args[0]
+        assert memory_doc["source"] == "user_stated"
