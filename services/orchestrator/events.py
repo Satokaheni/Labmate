@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from contextvars import ContextVar
 from typing import Any
@@ -25,6 +26,19 @@ from typing import Any
 import redis.asyncio as aioredis
 
 _log = logging.getLogger("events")
+
+# llama-server's --reasoning-budget-message injects a literal "</think>" when the
+# thinking budget is hit (and budget-0 tool-selection calls can yield only that
+# tag). Strip stray <think>/</think> markers so reasoning events never surface the
+# raw tag as their "thinking" text.
+_THINK_TAG_RE = re.compile(r"</?think>")
+
+
+def clean_reasoning(text: str) -> str:
+    """Remove <think>/</think> markers and surrounding whitespace from reasoning."""
+    if not text:
+        return ""
+    return _THINK_TAG_RE.sub("", text).strip()
 
 EVENTS_STREAM_PREFIX = "labmate:events:"
 EVENTS_MAXLEN = 2000
@@ -42,13 +56,14 @@ def extract_reasoning(response: Any) -> str:
             return ""
         message = getattr(choices[0], "message", None)
         rc = getattr(message, "reasoning_content", None) if message else None
-        return rc or ""
+        return clean_reasoning(rc or "")
     except Exception:
         return ""
 
 
 def reasoning_summary(text: str) -> str:
     """First non-empty line of reasoning, trimmed to 120 chars."""
+    text = clean_reasoning(text)
     for line in (text or "").splitlines():
         line = line.strip()
         if line:

@@ -19,9 +19,18 @@ LLAMA_SERVER="${LLAMA_SERVER:-/workspace/llama.cpp/build/bin/llama-server}"
 MODEL="${MODEL:-/workspace/models/gemma-4-gguf/gemma-4-31B-it-UD-Q4_K_XL.gguf}"
 ALIAS="${ALIAS:-gemma-4}"
 PORT="${PORT:-8000}"
-CTX="${CTX:-131072}"
+# --ctx-size is the TOTAL KV budget SHARED across --parallel slots: each request gets
+# ctx-size / parallel tokens. 262144/2 = 131072 per request (= the model's n_ctx_train).
+# With the 4-bit KV cache below (--cache-type-k/v q4_0) the KV footprint is ~1/4 of f16:
+# this Gemma 4 31B (10 global layers @ 4 KV heads/head_dim 512 + 50 sliding-window layers
+# @ window 1024) is ~3 GiB per 131072-token slot at q4_0, so 2 slots ≈ 6 GiB KV + 18.8 GiB
+# weights + buffers ≈ ~27 GiB — fits the 48 GiB A6000 with wide margin (and a 32 GiB card).
+# NOTE: PARALLEL must NOT raise per-request context — it DIVIDES it. Going back to 4 slots
+# would quarter each request to 65536 (or 4096 at the old 16384 ctx). If you hit CUDA OOM,
+# drop PARALLEL to 1 (a single 131072 slot) or halve CTX.
+CTX="${CTX:-262144}"
 NGL="${NGL:-999}"          # offload all layers to GPU (A6000 48GB fits the 18.8GB model)
-PARALLEL="${PARALLEL:-2}"  # 2 slots × 128k ctx with 4-bit KV cache fits 32GB target VRAM
+PARALLEL="${PARALLEL:-2}"  # 2 concurrent request slots → 262144/2 = 131072 tokens each
 
 LOGS="${REPO_ROOT}/.data/logs"; PIDS="${REPO_ROOT}/.data/pids"
 mkdir -p "$LOGS" "$PIDS"

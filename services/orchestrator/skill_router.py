@@ -171,12 +171,14 @@ class SkillRouter:
         if chosen is None:
             return None
         _log.info("selected skill: %s", chosen)
-        await events.emit(
-            "reasoning",
-            node="route",
-            summary=events.reasoning_summary(self._last_reasoning),
-            text=self._last_reasoning,
-        )
+        _route_reasoning = events.clean_reasoning(self._last_reasoning)
+        if _route_reasoning:
+            await events.emit(
+                "reasoning",
+                node="route",
+                summary=events.reasoning_summary(_route_reasoning),
+                text=_route_reasoning,
+            )
         return chosen
 
     async def route(self, task: str) -> RouteResult:
@@ -199,12 +201,14 @@ class SkillRouter:
         skill, confidence = await self._confidence_check(task)
         if skill is not None and confidence >= CONFIDENCE_THRESHOLD:
             _log.info("route() resolved task to skill: %s (confidence=%.2f)", skill, confidence)
-            await events.emit(
-                "reasoning",
-                node="route",
-                summary=events.reasoning_summary(self._last_reasoning),
-                text=self._last_reasoning,
-            )
+            _route_reasoning = events.clean_reasoning(self._last_reasoning)
+            if _route_reasoning:
+                await events.emit(
+                    "reasoning",
+                    node="route",
+                    summary=events.reasoning_summary(_route_reasoning),
+                    text=_route_reasoning,
+                )
             return RouteResult(skills=[skill], sub_intents=sub_intents)
 
         # No confident skill -> direct-answer fall-through (plan node answers directly).

@@ -3,8 +3,12 @@ name: web-search
 description: >
   Live web search and page fetching via self-hosted SearXNG. Use when the local corpus
   lacks current information — API documentation updates, recent papers, library changelogs,
-  or any fact requiring freshness. Pairs with citation-check for grounding web results.
-  Operates fully locally via Docker (no cloud search API required).
+  or any fact requiring freshness. Also use to LOCATE a software tool, model, library,
+  package, project homepage, or source-code/GitHub repository, and to answer general
+  "where can I find / download / get X" questions (e.g. "where can I find Whisper?" →
+  finds github.com/openai/whisper). Prefer this over dataset-search whenever the target
+  is software/a repo/a model rather than a training or evaluation dataset. Pairs with
+  citation-check for grounding web results. Operates fully locally (no cloud search API).
 trigger: "Use when needing current information not available in the local document library"
 tools:
   - search

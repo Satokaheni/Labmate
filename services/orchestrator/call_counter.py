@@ -32,15 +32,26 @@ _log = logging.getLogger("call_counter")
 
 
 class CallCounter:
-    """A simple mutable per-task completion counter."""
+    """A simple mutable per-task completion counter.
 
-    __slots__ = ("count",)
+    Also tracks `peak_prompt_tokens`: the largest prompt_tokens seen in any single
+    completion this task. That peak is the real high-water mark of how full the
+    model's context window got — the orchestrator emits it as the `context` event's
+    `used` (replacing the old hardcoded 0 stub).
+    """
+
+    __slots__ = ("count", "peak_prompt_tokens")
 
     def __init__(self) -> None:
         self.count = 0
+        self.peak_prompt_tokens = 0
 
     def increment(self) -> None:
         self.count += 1
+
+    def observe_prompt_tokens(self, prompt_tokens: int) -> None:
+        if prompt_tokens > self.peak_prompt_tokens:
+            self.peak_prompt_tokens = prompt_tokens
 
 
 # Task-scoped counter. No counter set (e.g. unit tests, off-task calls) => callback no-ops.
@@ -70,12 +81,44 @@ def get_count() -> int:
     return counter.count if counter is not None else 0
 
 
-def _increment_current() -> None:
-    """Increment the current task's counter; no-op when none is set. Never raises."""
+def get_peak_prompt_tokens() -> int:
+    """Largest single-call prompt_tokens this task — the context window high-water mark.
+
+    Returns 0 when no counter is set or no usage was reported.
+    """
+    counter = current_counter.get()
+    return counter.peak_prompt_tokens if counter is not None else 0
+
+
+def _extract_prompt_tokens(response_obj: Any) -> int:
+    """Pull usage.prompt_tokens from a litellm response (object or dict); 0 if absent."""
+    try:
+        usage = getattr(response_obj, "usage", None)
+        if usage is None and isinstance(response_obj, dict):
+            usage = response_obj.get("usage")
+        if usage is None:
+            return 0
+        pt = getattr(usage, "prompt_tokens", None)
+        if pt is None and isinstance(usage, dict):
+            pt = usage.get("prompt_tokens")
+        return int(pt) if pt else 0
+    except Exception:
+        return 0
+
+
+def _increment_current(response_obj: Any = None) -> None:
+    """Increment the current task's counter; no-op when none is set. Never raises.
+
+    Also records the call's prompt_tokens so the context window indicator can report
+    real usage instead of a 0 stub.
+    """
     try:
         counter = current_counter.get()
         if counter is not None:
             counter.increment()
+            pt = _extract_prompt_tokens(response_obj)
+            if pt:
+                counter.observe_prompt_tokens(pt)
     except Exception:  # pragma: no cover - defensive: a counter bug must never break a task
         pass
 
@@ -90,10 +133,10 @@ try:
         """Increments the current task's counter on each successful completion."""
 
         def log_success_event(self, kwargs, response_obj, start_time, end_time):  # noqa: D401
-            _increment_current()
+            _increment_current(response_obj)
 
         async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):  # noqa: D401
-            _increment_current()
+            _increment_current(response_obj)
 
     _CALL_COUNT_LOGGER = _CallCountLogger()
 
