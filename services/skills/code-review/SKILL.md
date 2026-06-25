@@ -7,6 +7,8 @@ description: >
   and returns findings ranked by severity. Use when asked to review code, audit a
   PR, find bugs, or check a file for issues.
 trigger: "Use when reviewing code, auditing a diff or PR, or finding bugs in a file"
+tools:
+  - code_review
 version: "0.1.0"
 license: MIT
 requires: []
@@ -17,6 +19,17 @@ requires: []
 Adversarial code review inspired by the multi-angle, verify-then-sweep pattern.
 Unlike the `critique` skill (which improves output iteratively), this skill hunts
 for bugs and does not revise anything.
+
+## MCP tool
+
+This skill exposes exactly one tool, named **`code_review`** (with an underscore —
+NOT the hyphenated skill name). Call it like:
+
+```json
+{"tool": "code_review", "arguments": {"diff": "<git diff text>", "path": "<file or dir>", "k": 15}}
+```
+
+Provide `diff` OR `path` (at least one); `k` is the optional max findings (default 15).
 
 ## When to use
 
