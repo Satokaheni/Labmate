@@ -47,6 +47,7 @@ class State(TypedDict, total=False):
     step_markers: dict[str, str]      # step_id -> 'started' | 'completed'
     messages: Annotated[list, add]    # reducer-safe; parallel nodes may append
     error: str | None
+    error_class: str                  # ErrorClass.value of the last failed goal (observability + routing)
     final_answer: str                 # Clean summary for Discord/user display
     workspace_id: str                 # which workspace this session belongs to
     user_id: str                      # stable user identifier

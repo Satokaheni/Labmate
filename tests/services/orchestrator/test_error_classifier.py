@@ -163,3 +163,18 @@ class TestClassifierProperties:
         for marker in legacy:
             cls = classify_error(marker)
             assert cls != ErrorClass.RETRYABLE, f"{marker!r} regressed to RETRYABLE"
+
+
+@pytest.mark.mocked
+class TestStateField:
+    def test_state_accepts_error_class_field(self):
+        from services.orchestrator.types import State  # noqa: F401
+        # TypedDict total=False: error_class is an optional key. A plain dict
+        # carrying it must satisfy the annotation at type-check time and at
+        # runtime round-trip cleanly.
+        s: State = {"error_class": ErrorClass.TERMINAL_DEPENDENCY.value}
+        assert s["error_class"] == "TERMINAL_DEPENDENCY"
+
+    def test_error_class_annotation_present(self):
+        from services.orchestrator.types import State
+        assert "error_class" in State.__annotations__
