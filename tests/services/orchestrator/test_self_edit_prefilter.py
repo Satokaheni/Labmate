@@ -89,3 +89,36 @@ async def test_maybe_consolidate_uses_neighbors(storage, mock_mongo):
     mc._gather_neighbors.assert_awaited_once()
     # _self_edit received the neighbor set as the existing-memories arg
     assert mc._self_edit.await_args.args[1] == [{"id": "n1", "fact": "old"}]
+
+
+async def test_maybe_consolidate_retains_filter_edits_call(storage, mock_mongo):
+    from services.orchestrator.memory_consolidator import (
+        MemoryConsolidator, CONSOLIDATION_INTERVAL,
+    )
+
+    mc = MemoryConsolidator(storage, llm=AsyncMock())
+    _ = storage._db["episodes"]
+    mock_mongo._collections["episodes"].count_documents = AsyncMock(
+        return_value=CONSOLIDATION_INTERVAL
+    )
+
+    class _Cur:
+        def __init__(self, docs): self._docs = docs
+        def sort(self, *_): return self
+        def limit(self, n): return self
+        def __aiter__(self):
+            async def g():
+                for d in self._docs:
+                    yield d
+            return g()
+
+    mock_mongo._collections["episodes"].find = lambda q: _Cur([{"content": "ep"}])
+
+    mc._extract_memories = AsyncMock(return_value=[{"fact": "f", "importance": 3}])
+    mc._gather_neighbors = AsyncMock(return_value=[])
+    mc._self_edit = AsyncMock(return_value={"add": [], "update": [], "delete": []})
+    mc._filter_edits = AsyncMock(return_value={"add": [], "update": [], "delete": []})
+    mc._apply_edits = AsyncMock()
+
+    await mc.maybe_consolidate("s1")
+    mc._filter_edits.assert_awaited_once()
