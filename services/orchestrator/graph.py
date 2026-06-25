@@ -419,15 +419,29 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
     async def reflect(state: State) -> dict:
         """
         Reflexion: write a natural-language diagnosis to episodic memory.
-        Conditions the next execute attempt on the stored reflection.
+        Conditions the next execute attempt on the stored reflection AND on
+        any prior reflections for THIS goal, so retries escalate strategy
+        instead of repeating the same diagnosis.
         """
         import copy
         gid = state["current_goal_id"]
         goal = state["goal_tree"][gid]
+
+        priors = collect_prior_reflections(state, gid)
+        prior_section = ""
+        if priors:
+            numbered = "\n".join(f"  {i}. {p}" for i, p in enumerate(priors, 1))
+            prior_section = (
+                "\nPreviously tried (do NOT repeat these fixes — they already failed):\n"
+                f"{numbered}\n"
+                "Propose a DIFFERENT approach and escalate your strategy.\n"
+            )
+
         reflection = await orch.architect(
             f"The following subtask failed (attempt {goal['attempts']}):\n"
             f"Goal: {goal['description']}\n"
             f"Error: {goal['error']}\n"
+            f"{prior_section}"
             "Write a concise diagnosis and what to do differently on the next attempt.",
             thinking_budget=REFLECT_THINKING_BUDGET,  # FIX 9: was 3000
         )
@@ -442,7 +456,9 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         update_status(tree, gid, Status.PENDING)
         return {
             "goal_tree": tree,
-            "messages": [{"role": "reflection", "content": reflection}],
+            # Tag with goal_id so collect_prior_reflections can attribute this
+            # reflection on the next retry of the same goal.
+            "messages": [{"role": "reflection", "goal_id": gid, "content": reflection}],
         }
 
     async def approval(state: State) -> dict:
