@@ -77,14 +77,18 @@ class SkillRouter:
         redis: aioredis.Redis,
         gemma_api_base: str,
         *,
-        call_timeout: float = 60.0,
+        call_timeout: float = float(os.getenv("SKILL_CALL_TIMEOUT", "135")),
     ) -> None:
         """
         Args:
             runner: SkillRunner instance with .discover() already called
             redis: redis.asyncio.Redis client for task dispatch and result polling
             gemma_api_base: base URL for Gemma 4 31B (e.g. http://localhost:8000/v1)
-            call_timeout: max seconds to wait for a result
+            call_timeout: max seconds to wait for a skill result. MUST exceed the
+                skill-worker's CALL_TIMEOUT (default 120s) so the router receives the
+                worker's own result/timeout instead of giving up first — a 60s router
+                budget cut off heavy skills (test-gen, code-review, critique) mid-run.
+                Override via SKILL_CALL_TIMEOUT.
         """
         self._runner = runner
         self._redis = redis
