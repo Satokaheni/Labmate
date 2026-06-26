@@ -244,3 +244,46 @@ class TestClassifyComplexity:
                 os.environ["TRIVIAL_MAX_WORDS"] = original
             else:
                 os.environ.pop("TRIVIAL_MAX_WORDS", None)
+
+    def test_ambiguous_pattern_fix_the_thing(self):
+        """'Fix the thing' is ambiguous despite matching fact_pattern → must NOT skip."""
+        result = classify_complexity("Fix the thing.", enabled=True)
+        assert result.skip_ambiguity is False
+        assert result.skip_verify is False
+        assert "ambiguous" in result.reason.lower()
+
+    def test_ambiguous_pattern_make_it_better(self):
+        """'Make it better' is vague ambiguity → must NOT skip."""
+        result = classify_complexity("Make it better.", enabled=True)
+        assert result.skip_ambiguity is False
+        assert result.skip_verify is False
+        assert "ambiguous" in result.reason.lower()
+
+    def test_ambiguous_pattern_improve_this(self):
+        """'Improve this' is inherently vague → must NOT skip."""
+        result = classify_complexity("Improve this.", enabled=True)
+        assert result.skip_ambiguity is False
+        assert result.skip_verify is False
+        assert "ambiguous" in result.reason.lower()
+
+    def test_ambiguous_pattern_enhance_code(self):
+        """'Enhance the code' matches ambiguous pattern → must NOT skip."""
+        result = classify_complexity("Enhance the code faster.", enabled=True)
+        assert result.skip_ambiguity is False
+        assert result.skip_verify is False
+        assert "ambiguous" in result.reason.lower()
+
+    def test_ambiguous_pattern_modify_that_cleaner(self):
+        """'Modify that cleaner' matches ambiguous pattern → must NOT skip."""
+        result = classify_complexity("Modify that cleaner.", enabled=True)
+        assert result.skip_ambiguity is False
+        assert result.skip_verify is False
+        assert "ambiguous" in result.reason.lower()
+
+    def test_clear_code_task_not_blocked_by_ambiguous_guard(self):
+        """A clear code task like 'Write a Python function' still skips ambiguity."""
+        result = classify_complexity("Write a Python function to sum numbers.", enabled=True)
+        assert result.skip_ambiguity is True
+        assert result.skip_verify is False
+        # Reason should be about code/writing, not ambiguous
+        assert "code or writing" in result.reason.lower()

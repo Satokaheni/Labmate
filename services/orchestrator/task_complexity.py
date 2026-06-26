@@ -44,6 +44,35 @@ def _trivial_max_words() -> int:
         return 12
 
 
+# Patterns that indicate ambiguity or vagueness, forcing skip_ambiguity=False
+# even if the task matches another trivial pattern.
+# Examples: "make it better", "fix the thing", "improve this"
+_AMBIGUOUS_PATTERNS = (
+    r"(?:make|fix|improve|enhance|modify|update|change)\s+(?:it|this|that|the\s+\w+)\s+(?:better|faster|cleaner|more\s+\w+)",
+    r"(?:fix|improve|make better)\s+the\s+thing",
+    r"(?:improve|enhance|fix)\s+(?:this|that|it)",
+)
+
+
+def _contains_ambiguous_pattern(normalized_task: str) -> bool:
+    """Check if task matches an ambiguous/vague pattern.
+
+    Ambiguous patterns (like 'make it better', 'fix the thing') indicate
+    tasks that are genuinely ambiguous despite matching a trivial pattern.
+    These should NOT skip the ambiguity gate.
+
+    Args:
+        normalized_task: The lowercase-normalized task string.
+
+    Returns:
+        True if the task matches any ambiguous pattern.
+    """
+    for pattern in _AMBIGUOUS_PATTERNS:
+        if re.search(pattern, normalized_task, re.IGNORECASE):
+            return True
+    return False
+
+
 def classify_complexity(
     task: str,
     *,
@@ -71,6 +100,16 @@ def classify_complexity(
     normalized = task.lower().strip()
     word_count = len(task.split())
     max_trivial_words = _trivial_max_words()
+
+    # Guard: Check for ambiguous patterns FIRST
+    # If the task contains vague/ambiguous phrasing (e.g. "make it better", "fix the thing"),
+    # force skip_ambiguity=False regardless of other pattern matches.
+    if _contains_ambiguous_pattern(normalized):
+        return Complexity(
+            skip_ambiguity=False,
+            skip_verify=False,
+            reason="ambiguous/vague phrasing (requires ambiguity gate)",
+        )
 
     # Pattern 1: Simple arithmetic/math queries
     # Examples: "What is 2+2?", "Calculate 10*5", "Compute the square root of 16"
