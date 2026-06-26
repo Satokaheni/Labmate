@@ -817,4 +817,8 @@ class TestRenderResult:
         assert result == "Fallback result"
 
 
-import discord
+# Discord connector is deferred: the `discord` package is intentionally NOT
+# installed in the active stack (see CLAUDE.md). importorskip lets the suite
+# collect cleanly — this module is skipped (pytestmark above) until Discord is
+# explicitly integrated — instead of failing collection with ModuleNotFoundError.
+discord = pytest.importorskip("discord")
