@@ -53,7 +53,7 @@ class StorageManager:
                 col,
                 metadata={"embed_model": EMBED_MODEL, "hnsw:space": "cosine"},
             )
-            for col in ("episodic", "semantic", "procedural")
+            for col in ("episodic", "semantic", "procedural", "code_symbols")
         }
 
         pool = aioredis.ConnectionPool.from_url(

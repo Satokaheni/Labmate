@@ -55,7 +55,7 @@ async def hybrid_code_search(
     shortlist_meta  = [metadatas[idx_map[i]] for i in shortlist_ids]
 
     scores = await rerank(query, shortlist_docs)
-    ranked = sorted(zip(scores, shortlist_docs, shortlist_meta), reverse=True)
+    ranked = sorted(zip(scores, shortlist_docs, shortlist_meta), key=lambda t: t[0], reverse=True)
 
     return [
         {
