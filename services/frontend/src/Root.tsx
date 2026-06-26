@@ -66,7 +66,7 @@ export function Root() {
     clearAuthErrorRef.current();
   }, []);
 
-  const { state, send, newSession, openSession, compact, cancel, clearAuthError } = useLabmateWS(
+  const { state, send, newSession, openSession, compact, cancel, deleteSession, clearAuthError } = useLabmateWS(
     wsUrl, auth.token, auth.reconnectKey, { onAuthError: handleAuthError },
   );
   clearAuthErrorRef.current = clearAuthError;
@@ -125,6 +125,7 @@ export function Root() {
       onOpenSession={openSession}
       onNewSession={newSession}
       onCompact={compact}
+      onDeleteSession={deleteSession}
       compacting={state.compacting}
     />
   );

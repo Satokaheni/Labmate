@@ -44,7 +44,7 @@ function makeElectronAPI(token: string | null = null) {
 
 beforeEach(() => {
   vi.mocked(useLabmateWS).mockReturnValue({
-    state: IDLE_STATE, send: vi.fn(), newSession: vi.fn(), openSession: vi.fn(), setDebug: vi.fn(), compact: vi.fn(), cancel: vi.fn(), clearAuthError: vi.fn(),
+    state: IDLE_STATE, send: vi.fn(), newSession: vi.fn(), openSession: vi.fn(), setDebug: vi.fn(), compact: vi.fn(), cancel: vi.fn(), deleteSession: vi.fn(), clearAuthError: vi.fn(),
   });
   vi.stubGlobal('electronAPI', makeElectronAPI());
 });
@@ -63,7 +63,7 @@ describe('Root', () => {
     vi.stubGlobal('electronAPI', makeElectronAPI('tok'));
     vi.mocked(useLabmateWS).mockReturnValue({
       state: { ...IDLE_STATE, phase: 'booting', subsystems: [] },
-      send: vi.fn(), newSession: vi.fn(), openSession: vi.fn(), setDebug: vi.fn(), compact: vi.fn(), cancel: vi.fn(), clearAuthError: vi.fn(),
+      send: vi.fn(), newSession: vi.fn(), openSession: vi.fn(), setDebug: vi.fn(), compact: vi.fn(), cancel: vi.fn(), deleteSession: vi.fn(), clearAuthError: vi.fn(),
     });
     render(<Root />);
     expect(screen.getByTestId('boot-progress')).toBeInTheDocument();
@@ -73,7 +73,7 @@ describe('Root', () => {
     vi.stubGlobal('electronAPI', makeElectronAPI('tok'));
     vi.mocked(useLabmateWS).mockReturnValue({
       state: { ...IDLE_STATE, phase: 'ready', agentStatus: AGENT_STATUS, context: CONTEXT },
-      send: vi.fn(), newSession: vi.fn(), openSession: vi.fn(), setDebug: vi.fn(), compact: vi.fn(), cancel: vi.fn(), clearAuthError: vi.fn(),
+      send: vi.fn(), newSession: vi.fn(), openSession: vi.fn(), setDebug: vi.fn(), compact: vi.fn(), cancel: vi.fn(), deleteSession: vi.fn(), clearAuthError: vi.fn(),
     });
     render(<Root />);
     expect(screen.getByTestId('layout-topbar')).toBeInTheDocument();
@@ -123,7 +123,7 @@ describe('Root', () => {
       capturedOnAuthError = options?.onAuthError;
       return {
         state: { ...IDLE_STATE, phase: 'error', authError: 'expired' },
-        send: vi.fn(), newSession: vi.fn(), openSession: vi.fn(), setDebug: vi.fn(), compact: vi.fn(), cancel: vi.fn(), clearAuthError: vi.fn(),
+        send: vi.fn(), newSession: vi.fn(), openSession: vi.fn(), setDebug: vi.fn(), compact: vi.fn(), cancel: vi.fn(), deleteSession: vi.fn(), clearAuthError: vi.fn(),
       };
     });
     render(<Root />);

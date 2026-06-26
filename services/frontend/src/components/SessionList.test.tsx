@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import { SessionList } from './SessionList';
@@ -36,5 +36,35 @@ describe('SessionList', () => {
     render(<SessionList sessions={sessions} activeId={null} onOpen={vi.fn()} />);
     expect(screen.getByTestId('mode-icon-code')).toBeInTheDocument();
     expect(screen.getByTestId('mode-icon-chat')).toBeInTheDocument();
+  });
+
+  it('shows the delete button on hover and calls onDelete when clicked', async () => {
+    const onDelete = vi.fn();
+    const { container } = render(
+      <SessionList sessions={sessions} activeId={null} onOpen={vi.fn()} onDelete={onDelete} />
+    );
+
+    const listItem = container.querySelector('li');
+    expect(listItem).toBeDefined();
+    expect(screen.queryByTestId('session-delete')).not.toBeInTheDocument();
+
+    fireEvent.mouseEnter(listItem!);
+
+    const deleteButton = screen.getByTestId('session-delete');
+    expect(deleteButton).toBeInTheDocument();
+
+    await userEvent.click(deleteButton);
+    expect(onDelete).toHaveBeenCalledWith(sessions[1].id);
+  });
+
+  it('does not show the delete button when onDelete is not provided', () => {
+    const { container } = render(
+      <SessionList sessions={sessions} activeId={null} onOpen={vi.fn()} />
+    );
+
+    const listItem = container.querySelector('li');
+    fireEvent.mouseEnter(listItem!);
+
+    expect(screen.queryByTestId('session-delete')).not.toBeInTheDocument();
   });
 });

@@ -191,6 +191,7 @@ export type ClientMsg =
   | { type: 'session.new'; mode: Mode }
   | { type: 'session.open'; sessionId: string }
   | { type: 'session.rename'; sessionId: string; title: string }
+  | { type: 'session.delete'; sessionId: string }
   | { type: 'debug.set'; sessionId: string; enabled: boolean }
   | { type: 'cancel'; sessionId: string; turnId: string }
   | { type: 'tool.result'; toolRequestId: string; result: unknown; error?: string }

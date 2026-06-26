@@ -33,6 +33,7 @@ export interface AppProps {
   onStop?: () => void;
   onOpenSession?: (id: string) => void;
   onNewSession?: (mode: Mode) => void;
+  onDeleteSession?: (sessionId: string) => void;
   onCompact?: () => void;
   compacting?: boolean;
 }
@@ -49,6 +50,7 @@ export function App({
   onStop,
   onOpenSession = () => {},
   onNewSession = () => {},
+  onDeleteSession = () => {},
   onCompact,
   compacting = false,
 }: AppProps) {
@@ -76,6 +78,8 @@ export function App({
   onOpenSessionRef.current = onOpenSession;
   const onNewSessionRef = useRef(onNewSession);
   onNewSessionRef.current = onNewSession;
+  const onDeleteSessionRef = useRef(onDeleteSession);
+  onDeleteSessionRef.current = onDeleteSession;
   const onCompactRef = useRef(onCompact);
   onCompactRef.current = onCompact;
 
@@ -131,7 +135,7 @@ export function App({
         </button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-2">
-        <SessionList sessions={sessions} activeId={activeSessionId} onOpen={(id) => onOpenSessionRef.current(id)} />
+        <SessionList sessions={sessions} activeId={activeSessionId} onOpen={(id) => onOpenSessionRef.current(id)} onDelete={(id) => onDeleteSessionRef.current(id)} />
       </div>
       <SystemFooter status={agentStatus} />
     </div>

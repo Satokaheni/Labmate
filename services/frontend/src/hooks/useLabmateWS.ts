@@ -41,6 +41,7 @@ type Action =
   | { type: 'CONTEXT_UPDATE'; window: ContextWindow }
   | { type: 'AGENT_STATUS'; status: AgentStatus }
   | { type: 'SESSION_UPDATED'; session: Session }
+  | { type: 'SESSION_DELETED'; sessionId: string }
   | { type: 'REASONING_DONE'; turnId: string; reasoning: Reasoning }
   | { type: 'ARTIFACT_CREATED'; turnId: string; artifact: Artifact }
   | { type: 'TOOL_START'; turnId: string; toolCall: Omit<ToolCall, 'result' | 'durationMs' | 'status'> }
@@ -129,6 +130,13 @@ function reducer(state: WsState, action: Action): WsState {
           : [action.session, ...state.sessions],
       };
     }
+    case 'SESSION_DELETED':
+      return {
+        ...state,
+        sessions: state.sessions.filter((s) => s.id !== action.sessionId),
+        activeSessionId:
+          state.activeSessionId === action.sessionId ? null : state.activeSessionId,
+      };
     case 'REASONING_DONE':
       return {
         ...state,
@@ -338,9 +346,14 @@ export function useLabmateWS(url: string, token: string | null, reconnectKey = 0
     wsRef.current?.send(JSON.stringify({ type: 'cancel' }));
   }, []);
 
+  const deleteSession = useCallback((sessionId: string) => {
+    wsRef.current?.send(JSON.stringify({ type: 'session.delete', sessionId }));
+    dispatch({ type: 'SESSION_DELETED', sessionId });
+  }, []);
+
   const clearAuthError = useCallback(() => {
     dispatch({ type: 'AUTH_ERROR_HANDLED' });
   }, []);
 
-  return { state, send, newSession, openSession, setDebug, compact, cancel, clearAuthError };
+  return { state, send, newSession, openSession, setDebug, compact, cancel, deleteSession, clearAuthError };
 }
