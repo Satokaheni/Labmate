@@ -32,6 +32,7 @@ from .message_repair import sanitize_messages, message_repair_enabled
 from .tool_grounding import ground_tool_result, DEFAULT_TOOL_RESULT_BUDGET
 from .edit_intent import requires_editing
 from .verification_stop import needs_verification, build_verify_nudge
+from .completion_guard import reconcile_ok
 
 # Max chars of RAW tool output (test results, file contents, bash stdout/stderr,
 # skill results) fed back into the ReAct context per tool call. Generous on
@@ -430,7 +431,15 @@ class AsyncOrchestrator:
         # Include the skill name in tools_used for curator sequence tracking
         skill_name = skill_result.get("skill_name", "") if isinstance(skill_result, dict) else ""
         tools_list = [skill_name] if skill_name else []
-        return {"ok": ok, "summary": text[:2000], "tools_used": tools_list}
+        # Reconcile ok with the answer: a single-skill goal runs no in-loop test
+        # verification, so tests_passed=False. The live fix here is the PUNT
+        # shape — a read-only skill that returns ok=True with "file too large /
+        # provide a snippet" must NOT be reported as a success (report §4.5).
+        summary = text[:2000]
+        recon_ok, note = reconcile_ok(ok, summary, tests_passed=False)
+        if note:
+            summary = (summary + " " + note)[:2000]
+        return {"ok": recon_ok, "summary": summary, "tools_used": tools_list}
 
     def _maybe_repair(self, messages: list[dict]) -> list[dict]:
         """Repair the messages list right before a model call, when enabled.

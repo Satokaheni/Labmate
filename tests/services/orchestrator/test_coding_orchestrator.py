@@ -1979,3 +1979,47 @@ async def test_react_loop_tolerates_two_identical_write_file_calls(monkeypatch):
 
     # The 2nd identical write_file did NOT halt the loop.
     assert "loop detected" not in result["summary"].lower()
+
+
+class TestSkillFirstPuntReconciliation:
+    """Wire-in (a): a read-only skill that returns ok=True with a PUNT answer
+    ('file too large') must be downgraded to ok=False by reconcile_ok."""
+
+    @pytest.mark.asyncio
+    async def test_skill_first_punt_answer_downgraded_to_ok_false(self):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator
+
+        orch = AsyncOrchestrator(skill_router=MagicMock(), mcp=None, workspace="/tmp")
+        # skill_router.run returns a ok=True result whose text is a punt.
+        orch.skill_router.run = AsyncMock(return_value={
+            "ok": True,
+            "result": (
+                "I couldn't analyze the file because it is too large. "
+                "Please provide a smaller snippet."
+            ),
+            "skill_name": "repo-fault-localize",
+        })
+
+        out = await orch._run_skill_first("find the bug in /workspace/huge.py")
+
+        assert out is not None
+        assert out["ok"] is False
+        assert "too large" in out["summary"].lower()
+        assert "completion-guard" in out["summary"].lower()
+
+    @pytest.mark.asyncio
+    async def test_skill_first_honest_success_unchanged(self):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator
+
+        orch = AsyncOrchestrator(skill_router=MagicMock(), mcp=None, workspace="/tmp")
+        orch.skill_router.run = AsyncMock(return_value={
+            "ok": True,
+            "result": "Here are three potential bugs I found in the file.",
+            "skill_name": "code-review",
+        })
+
+        out = await orch._run_skill_first("review /workspace/app.py for bugs")
+
+        assert out is not None
+        assert out["ok"] is True
+        assert "completion-guard" not in out["summary"].lower()
