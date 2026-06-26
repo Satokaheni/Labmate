@@ -124,3 +124,56 @@ def _verify_runs(ctx):
     # skip_verify is False, so a below-threshold score reflects (normal behavior).
     state = {"skip_verify": ctx["complexity"].skip_verify, "_verify_reflect": True}
     assert verify_router(state) == "reflect"
+
+
+# F2 FIX: Conditional gates skip_ambiguity cross-plan consistency
+@pytest.mark.mocked
+def test_skip_ambiguity_blocks_clarification_even_if_high_ambiguity_score(monkeypatch):
+    """F2 FIX: trivial task with skip_ambiguity=True must NOT halt for
+    clarification even if the LLM scores it >=AMBIGUITY_THRESHOLD.
+
+    The assess_ambiguity node gates the awaiting_clarification block on
+    `not complexity.skip_ambiguity`, so clarification is suppressed for
+    trivial tasks. The clarification_router then sees awaiting_clarification=False
+    and returns 'execute', not END.
+    """
+    # Enable conditional gates feature
+    monkeypatch.setenv("ENABLE_CONDITIONAL_GATES", "1")
+
+    # Trivial task that the classifier marks skip_ambiguity=True
+    task = "What is 2+2?"
+    complexity = classify_complexity(task, enabled=True)
+    assert complexity.skip_ambiguity is True
+
+    # But mock the architect() to return a HIGH ambiguity score (>=0.6)
+    # to simulate the case where the classifier is conservative but the
+    # LLM still finds the task ambiguous.
+    mock_orch = MagicMock(spec=CodingOrchestrator)
+    mock_orch.architect = AsyncMock(
+        return_value='{"assumptions": ["user wants arithmetic"], "ambiguity": 0.8, "blocking_question": "Do you want decimal or binary?"}'
+    )
+    mock_async = MagicMock(spec=AsyncOrchestrator)
+    assess = make_nodes(mock_orch, mock_async)[5]
+
+    tree: dict = {}
+    create_goal(tree, "root", None, task)
+    state = {
+        "session_id": "test_f2",
+        "goal_tree": tree,
+        "current_goal_id": "root",
+        "step_markers": {},
+        "messages": [],
+        "error": None,
+        "root_goal": task,
+    }
+
+    # Run assess_ambiguity node
+    delta = run_async(assess(state))
+
+    # The LLM did score it high (0.8), but assess_ambiguity gated the
+    # clarification block on `not complexity.skip_ambiguity`, so awaiting_clarification
+    # must NOT be set (not present in delta, which means it defaults to False in routers).
+    assert "awaiting_clarification" not in delta
+    assert "clarification_question" not in delta
+    assert delta["ambiguity"] == 0.8  # still recorded for metrics
+    assert delta["skip_ambiguity"] is True  # classifier verdict preserved

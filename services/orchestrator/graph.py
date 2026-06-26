@@ -586,7 +586,9 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         # coding_orchestrator.stream surface clarification_question as the answer and
         # suppress any guess. Reuse the same clarification_request event the plan node
         # emits so downstream consumers see one consistent shape.
-        if ambiguity >= AMBIGUITY_THRESHOLD:
+        # HOWEVER: if skip_ambiguity is True (trivial task), honor that decision and
+        # never halt for clarification even if the LLM scores the task ambiguous.
+        if ambiguity >= AMBIGUITY_THRESHOLD and not complexity.skip_ambiguity:
             question = blocking_question or "Could you clarify what you'd like me to do?"
             await events.emit(
                 "clarification_request",
