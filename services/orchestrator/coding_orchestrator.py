@@ -179,6 +179,7 @@ class Result:
     summary: str
     artifacts: dict = field(default_factory=dict)
     ok: bool = True
+    tools_used: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -418,7 +419,10 @@ class AsyncOrchestrator:
             else:
                 # Structured result: serialize to JSON
                 text = json.dumps(res, default=str)
-        return {"ok": ok, "summary": text[:2000]}
+        # Include the skill name in tools_used for curator sequence tracking
+        skill_name = skill_result.get("skill_name", "") if isinstance(skill_result, dict) else ""
+        tools_list = [skill_name] if skill_name else []
+        return {"ok": ok, "summary": text[:2000], "tools_used": tools_list}
 
     def _maybe_repair(self, messages: list[dict]) -> list[dict]:
         """Repair the messages list right before a model call, when enabled.
@@ -464,6 +468,9 @@ class AsyncOrchestrator:
         # Per-goal tool-loop detector — halt early if the model repeats the same
         # tool call or cycles a tiny set of calls and would otherwise burn the budget.
         loop_detector = LoopDetector()
+
+        # Per-goal tools accumulation for skill-curator sequence capture.
+        _tools_used: list[str] = []
 
         # Verification-stop guard (hermes pattern). Track which files this run
         # edited and whether a passing verification has been observed. The guard
@@ -527,6 +534,7 @@ class AsyncOrchestrator:
                                 "cancelled by user mid-turn; partial progress only — "
                                 "the requested work was not fully completed"
                             ),
+                            "tools_used": _tools_used,
                         }
                     # (2) Steer — handle both pre-written and mid-loop steers differently.
                     #     Pre-written (read before loop): defer to turn 2 (unit test).
@@ -550,17 +558,18 @@ class AsyncOrchestrator:
                     return {
                         "ok": False,
                         "summary": "wall-clock deadline exceeded",
+                        "tools_used": _tools_used,
                     }
 
                 # Hard absolute ceiling (prevents infinite loops of distinct cheap reads).
                 if not budget.record_turn():
-                    return {"ok": False, "summary": "absolute turn limit exceeded"}
+                    return {"ok": False, "summary": "absolute turn limit exceeded", "tools_used": _tools_used}
 
                 # Consume one unit; on exhaustion take the single grace turn,
                 # else stop with a clear "budget exhausted" outcome.
                 if not budget.consume():
                     if not budget.grace():
-                        return {"ok": False, "summary": "budget exhausted"}
+                        return {"ok": False, "summary": "budget exhausted", "tools_used": _tools_used}
                     # grace turn: fall through and run one more iteration.
 
                 # Track tools used this turn so a cheap-only turn can be refunded.
@@ -646,12 +655,17 @@ class AsyncOrchestrator:
                     return {
                         "ok": True,
                         "summary": (msg.content or "")[:2000],
+                        "tools_used": _tools_used,
                     }
 
                 # Process each tool call
                 for tc in tool_calls:
                     name = tc.function.name
                     _turn_tools.append(name)
+                    # Accumulate all dispatched tools for skill-curator sequence capture
+                    # (excluding "finish" which is not a real tool dispatch).
+                    if name != "finish":
+                        _tools_used.append(name)
                     try:
                         args = json.loads(tc.function.arguments or "{}")
                     except (json.JSONDecodeError, ValueError):
@@ -698,7 +712,7 @@ class AsyncOrchestrator:
                                 summary + " [verification-stop: tests were NOT "
                                 "verified to pass within the nudge budget]"
                             )[:2000]
-                        return {"ok": True, "summary": summary}
+                        return {"ok": True, "summary": summary, "tools_used": _tools_used}
 
                     # No-progress / tool-loop detection. finish already returned
                     # above, so only genuinely dispatched tools reach here.
@@ -722,6 +736,7 @@ class AsyncOrchestrator:
                                 f"loop detected ({_reason}): repeated tool "
                                 f"'{name}' — halting to avoid burning steps"
                             ),
+                            "tools_used": _tools_used,
                         }
 
                     # Emit tool.start for all non-finish tools
@@ -955,6 +970,7 @@ class AsyncOrchestrator:
                             f"no-progress breaker tripped "
                             f"({pstep.consecutive} consecutive idle turns)"
                         ),
+                        "tools_used": _tools_used,
                     }
 
                 # Update pending steer for next iteration (defer injection by one turn).
@@ -963,7 +979,7 @@ class AsyncOrchestrator:
                 # (No update needed here since mid-loop steers are never put into _pending_steer)
 
         except Exception as exc:
-            return {"ok": False, "summary": f"error: {str(exc)[:1000]}"}
+            return {"ok": False, "summary": f"error: {str(exc)[:1000]}", "tools_used": _tools_used}
 
     async def _is_compound(self, goal: str) -> bool:
         """Classify whether a goal genuinely requires multiple DISTINCT sequential
@@ -1060,6 +1076,7 @@ class AsyncOrchestrator:
             planner_system += f"\n\nAvailable skills:\n{catalog}"
 
         history: list[dict] = []
+        _all_tools_used: list[str] = []  # accumulate tools across all sub-steps
 
         def render_history() -> str:
             if not history:
@@ -1115,16 +1132,20 @@ class AsyncOrchestrator:
                 else:
                     step_res = await self._run_react_loop(nxt, max(2, min(self.max_steps, 3)))
 
+                # Accumulate tools used in this sub-step
+                if "tools_used" in step_res and isinstance(step_res.get("tools_used"), list):
+                    _all_tools_used.extend(step_res["tools_used"])
+
                 history.append({
                     "step": nxt,
                     "ok": bool(step_res.get("ok")),
                     "summary": str(step_res.get("summary", ""))[:600],
                 })
         except Exception as exc:
-            return {"ok": False, "summary": f"error: {str(exc)[:1000]}"}
+            return {"ok": False, "summary": f"error: {str(exc)[:1000]}", "tools_used": _all_tools_used}
 
         if not history:
-            return {"ok": False, "summary": "planner produced no actionable sub-steps"}
+            return {"ok": False, "summary": "planner produced no actionable sub-steps", "tools_used": _all_tools_used}
 
         # Synthesize an honest final answer from the step history.
         synth_user = (
@@ -1150,7 +1171,7 @@ class AsyncOrchestrator:
             summary = render_history()
 
         all_ok = all(h["ok"] for h in history)
-        return {"ok": all_ok, "summary": summary[:2000] or render_history()[:2000]}
+        return {"ok": all_ok, "summary": summary[:2000] or render_history()[:2000], "tools_used": _all_tools_used}
 
     async def _run_worker(self, t: SubTask) -> str:
         """
@@ -1175,6 +1196,7 @@ class AsyncOrchestrator:
                             id=t.id,
                             summary=ret["summary"],
                             ok=ret["ok"],
+                            tools_used=ret.get("tools_used", []),
                         )
         except asyncio.CancelledError:
             await self.budget.refund(t.est_tokens)

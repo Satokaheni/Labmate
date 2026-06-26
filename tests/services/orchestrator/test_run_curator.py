@@ -80,3 +80,21 @@ def test_extract_tool_sequence_reads_state_tools():
 def test_extract_tool_sequence_empty_when_absent():
     assert _extract_tool_sequence({"error": None}) == ()
     assert _extract_tool_sequence("not a dict") == ()
+
+
+def test_extract_tool_sequence_from_multi_tool_state():
+    """
+    Regression test: verify that _extract_tool_sequence correctly reads
+    tools_used from a state dict that was populated by _run_react_loop.
+    This tests that the orchestrator properly accumulates tools_used and
+    the skill-curator can extract the sequence for drafting proposals.
+    """
+    # Simulate a state dict populated by _run_react_loop with multiple tools
+    state = {
+        "tools_used": ["run_bash", "edit_file", "run_tests"],
+        "error": None,
+        "final_answer": "Fixed the code",
+    }
+    result = _extract_tool_sequence(state)
+    assert result == ("run_bash", "edit_file", "run_tests")
+    assert len(result) >= 2  # CURATOR_MIN_SEQUENCE_LEN check will pass

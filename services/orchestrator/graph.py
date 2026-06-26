@@ -286,6 +286,7 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         results = await async_orch.plan_and_dispatch(ready)
         last_artifact = {"type": "other", "payload": ""}
         error_class_seen: str | None = None
+        _accumulated_tools: list[str] = []  # accumulate tools for skill-curator
         for r in results:
             gid = r.id
             # Idempotency guard (FIX #4): mark per-GOAL-ID only when COMPLETED.
@@ -330,6 +331,9 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
                     "type": classify_artifact(r.summary),
                     "payload": r.summary,
                 }
+            # Accumulate tools_used from this result
+            if r.ok and hasattr(r, "tools_used") and isinstance(r.tools_used, list):
+                _accumulated_tools.extend(r.tools_used)
 
         out: dict = {
             "goal_tree": tree,
@@ -338,6 +342,9 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         }
         if error_class_seen is not None:
             out["error_class"] = error_class_seen
+        # Thread tools_used into state for skill-curator capture
+        if _accumulated_tools:
+            out["tools_used"] = _accumulated_tools
         return out
 
     async def check(state: State) -> dict:

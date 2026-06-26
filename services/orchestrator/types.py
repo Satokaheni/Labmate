@@ -77,6 +77,8 @@ class State(TypedDict, total=False):
     # Revise-before-deliver (opt-in; ENABLE_FINALIZE_REVISION). Additive, default-absent.
     finalize_revisions: int           # count of revise->revise passes taken (bounds the gate)
     revised: bool                     # True once the revise node replaced final_answer
+    # Tool sequence accumulation (skill-curator feature). Additive, default-absent.
+    tools_used: list[str]             # ordered list of tool/skill names dispatched during goal execution
 
 
 def now_iso() -> str:
