@@ -109,3 +109,15 @@ def test_build_revision_prompt_keeps_answer_when_already_correct():
     # The instruction must permit returning the answer UNCHANGED (no forced edit).
     p = build_revision_prompt("t", "ans").lower()
     assert "unchanged" in p or "as is" in p or "return it unchanged" in p
+
+
+# ── State fields exist (additive, total=False) ───────────────────────────────
+def test_state_accepts_finalize_revision_fields():
+    from services.orchestrator.types import State
+
+    s: State = {"finalize_revisions": 1, "revised": True}
+    assert s["finalize_revisions"] == 1
+    assert s["revised"] is True
+    # The annotations must declare them so static tools and readers see them.
+    assert "finalize_revisions" in State.__annotations__
+    assert "revised" in State.__annotations__

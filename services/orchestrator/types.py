@@ -74,6 +74,9 @@ class State(TypedDict, total=False):
     complexity: dict                  # {"skip_ambiguity": bool, "skip_verify": bool, "reason": str}
     skip_ambiguity: bool              # committed by assess_ambiguity; read by ambiguity_router
     skip_verify: bool                 # committed by assess_ambiguity; read by verify_router
+    # Revise-before-deliver (opt-in; ENABLE_FINALIZE_REVISION). Additive, default-absent.
+    finalize_revisions: int           # count of revise->revise passes taken (bounds the gate)
+    revised: bool                     # True once the revise node replaced final_answer
 
 
 def now_iso() -> str:
