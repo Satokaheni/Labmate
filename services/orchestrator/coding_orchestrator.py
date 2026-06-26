@@ -486,7 +486,13 @@ class AsyncOrchestrator:
         # exhaustion and refunds cheap read-only iterations (CHEAP_TOOLS).
         # Additionally, record_turn() enforces a hard absolute turn ceiling that
         # cannot be refunded, preventing infinite loops from distinct cheap reads.
-        cap = int(os.getenv("LABMATE_MAX_ITERATIONS", str(self.max_steps)))
+        # Edit/fix goals are inherently multi-step (edit -> run tests -> see
+        # failure -> edit again), so they get a higher iteration ceiling than
+        # read/answer goals. Non-edit goals keep the existing default cap.
+        if requires_editing(goal):
+            cap = int(os.getenv("LABMATE_MAX_ITERATIONS_EDIT", "12"))
+        else:
+            cap = int(os.getenv("LABMATE_MAX_ITERATIONS", str(self.max_steps)))
         budget = IterationBudget(max_total=cap)
         # Wall-clock deadline (guard layered on top of step counting). 0 disables.
         deadline_s = float(os.getenv("LABMATE_GOAL_DEADLINE_S", "600"))

@@ -1384,6 +1384,60 @@ class TestReactExecuteBudget:
         # (before grace can fire again), or after grace is exhausted.
         assert ("absolute turn limit" in result["summary"] or "budget exhausted" in result["summary"])
 
+    @pytest.mark.mocked
+    @pytest.mark.asyncio
+    async def test_edit_goal_gets_higher_iteration_ceiling(self, monkeypatch):
+        """An edit-intent goal builds the budget with LABMATE_MAX_ITERATIONS_EDIT
+        (default 12), giving more than max_steps (6) turns of headroom."""
+        monkeypatch.setattr(
+            "services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "skill_first"
+        )
+        # Leave LABMATE_MAX_ITERATIONS and LABMATE_MAX_ITERATIONS_EDIT unset -> defaults.
+        monkeypatch.delenv("LABMATE_MAX_ITERATIONS", raising=False)
+        monkeypatch.delenv("LABMATE_MAX_ITERATIONS_EDIT", raising=False)
+        from services.orchestrator import events
+
+        orch = AsyncOrchestrator(skill_router=None, mcp=MagicMock(), max_steps=6)
+
+        async def _local(redis, name, args):
+            if name == "read_file":
+                return args.get("content", "")  # echo so write verifies
+            return {"ok": True}
+        monkeypatch.setattr(
+            "services.orchestrator.coding_orchestrator.request_local_tool", _local
+        )
+        orch.redis = MagicMock()
+
+        calls = [0]
+        async def _model(*a, **k):
+            calls[0] += 1
+            # DISTINCT content each turn -> distinct signatures (no loop trip).
+            # write_file is NOT refundable, so each turn consumes a unit.
+            return MagicMock(choices=[MagicMock(
+                message=_msg_with_tool_call(
+                    "write_file", json.dumps({"path": "a.py", "content": f"v{calls[0]}"})
+                )
+            )])
+
+        class FakeEmitter:
+            async def emit(self, type, **f):
+                pass
+
+        with patch(
+            "services.orchestrator.coding_orchestrator.acompletion_with_failover",
+            new_callable=AsyncMock,
+            side_effect=_model,
+        ):
+            token = events.current_emitter.set(FakeEmitter())
+            try:
+                result = await orch.react_execute("fix the bug in a.py")  # edit intent
+            finally:
+                events.current_emitter.reset(token)
+
+        # With the old shared cap of 6 this would stop near 6 consume-turns; the edit
+        # ceiling of 12 lets it run materially further before halting.
+        assert calls[0] > 7
+
 
 @pytest.mark.asyncio
 async def test_react_routes_read_file_to_local_tool():
