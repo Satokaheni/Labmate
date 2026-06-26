@@ -35,7 +35,7 @@ def test_canonical_prefix_uses_sorted_keys_and_is_valid_json():
 def test_no_skill_router_tool_names_and_order():
     a = PromptAssembler(skill_router=None, codegraph_enabled=False)
     names = [t["function"]["name"] for t in a.tools()]
-    assert names == ["read_file", "write_file", "list_dir", "run_bash", "finish"]
+    assert names == ["read_file", "write_file", "list_dir", "run_bash", "run_tests", "finish"]
 
 
 @pytest.mark.mocked
@@ -52,7 +52,7 @@ def test_skill_router_prepends_load_skill_and_call_skill_tool():
     names = [t["function"]["name"] for t in a.tools()]
     assert names == [
         "load_skill", "call_skill_tool",
-        "read_file", "write_file", "list_dir", "run_bash", "finish",
+        "read_file", "write_file", "list_dir", "run_bash", "run_tests", "finish",
     ]
     # catalog is appended to the system content (progressive disclosure)
     assert "test-skill" in a.system_message()["content"]
@@ -64,7 +64,7 @@ def test_codegraph_enabled_inserts_semantic_search_before_static_tail():
     names = [t["function"]["name"] for t in a.tools()]
     assert names == [
         "code_semantic_search",
-        "read_file", "write_file", "list_dir", "run_bash", "finish",
+        "read_file", "write_file", "list_dir", "run_bash", "run_tests", "finish",
     ]
 
 
