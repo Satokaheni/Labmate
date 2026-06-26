@@ -24,6 +24,7 @@ from .local_tools import (
 )
 from .loop_detection import LoopDetector, call_signature
 from .iteration_budget import IterationBudget, CHEAP_TOOLS
+from .message_repair import sanitize_messages, message_repair_enabled
 from .tool_grounding import ground_tool_result, DEFAULT_TOOL_RESULT_BUDGET
 from .edit_intent import requires_editing
 from .verification_stop import needs_verification, build_verify_nudge
@@ -387,6 +388,17 @@ class AsyncOrchestrator:
                 text = json.dumps(res, default=str)
         return {"ok": ok, "summary": text[:2000]}
 
+    def _maybe_repair(self, messages: list[dict]) -> list[dict]:
+        """Repair the messages list right before a model call, when enabled.
+
+        Drops orphaned tool results and merges illegal adjacent same-role runs
+        so malformed sequences (from injected synthetic turns) never reach the
+        OpenAI-compatible endpoint. No-op pass-through when the flag is off.
+        """
+        if message_repair_enabled():
+            return sanitize_messages(messages)
+        return messages
+
     async def _run_react_loop(self, goal: str, max_steps: int) -> dict:
         """Multi-tool ReAct loop bounded by ``max_steps``.
 
@@ -449,7 +461,7 @@ class AsyncOrchestrator:
                     model="openai/gemma-4-31b",
                     bases=self._bases,
                     api_key="not-needed",
-                    messages=messages,
+                    messages=self._maybe_repair(messages),
                     tools=tools,
                     tool_choice="auto",
                     extra_body={"thinking_budget_tokens": 2048},
