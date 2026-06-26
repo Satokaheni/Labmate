@@ -51,6 +51,7 @@ from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncO
 from services.orchestrator.storage_manager import StorageManager
 from services.orchestrator.mcp_client_manager import MCPClientManager
 from services.orchestrator.skill_router import SkillRouter
+from services.orchestrator.memory_search import MemorySearch
 from services.orchestrator import events
 from services.orchestrator import call_counter
 from services.skill_runner.skill_runner import SkillRunner
@@ -170,6 +171,7 @@ class OrchestratorProcess:
             # Wire redis and codegraph_mcp outside the try/except (always available)
             async_orch.redis = self._redis
             async_orch.codegraph_mcp = self._codegraph_mcp
+            async_orch.memory_search = MemorySearch(_sm)
 
             # CodingOrchestrator and build_graph have a circular dependency:
             # build_graph(orch, ...) closes node functions over the orch object;
