@@ -23,6 +23,7 @@ services/frontend/tailwind.config.d.ts
 
 # ─── Runtime data (Mongo / Redis / Chroma / logs / pids) ──────────────────────
 .data/
+services/skills/.skill_telemetry.json
 
 # ─── Local / machine-specific config ─────────────────────────────────────────
 .claude/settings.local.json
