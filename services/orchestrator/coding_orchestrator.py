@@ -8,7 +8,7 @@ import subprocess
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Callable
 from aiolimiter import AsyncLimiter
 
 from .types import Goal, State, Status, get_ready_goals, update_status, now_iso
@@ -207,6 +207,7 @@ class AsyncOrchestrator:
         workspace: str = ".",
         max_steps: int = 6,
         redis=None,
+        now: Callable[[], float] | None = None,
     ) -> None:
         self.sem = asyncio.Semaphore(max_inflight)
         self.rpm_limiter = AsyncLimiter(rpm, 60)
@@ -224,6 +225,7 @@ class AsyncOrchestrator:
         self.workspace = workspace
         self.max_steps = max_steps
         self.redis = redis
+        self._now: Callable[[], float] = now if now is not None else time.monotonic
 
     async def plan_and_dispatch(self, ready_goals: list[dict]) -> list[Result]:
         """
