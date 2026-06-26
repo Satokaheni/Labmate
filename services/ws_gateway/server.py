@@ -19,6 +19,7 @@ from services.ws_gateway.redis_bridge import (
     tail_task_events,
     translate_event,
     write_cancel,
+    write_steer,
     write_tool_result,
 )
 from services.ws_gateway.sessions import InMemorySessionStore, build_sessions_router
@@ -211,6 +212,15 @@ async def _ws_loop(
             await ws.send_json({"type": "turn.done", "turnId": turn_id_to_cancel, "status": "error"})
             relay = None
             active_task_id = None
+        elif mtype == "steer":
+            # Out-of-band steer: deliver a mid-turn user instruction to the
+            # running task. The orchestrator drains it at the top of its next
+            # ReAct turn and injects it as a marked user message — the relay
+            # keeps streaming, the turn is NOT cancelled.
+            steer_text = msg.get("text", "")
+            if active_task_id is not None and steer_text:
+                await write_steer(redis, active_task_id, steer_text)
+            await ws.send_json({"type": "steer.ack", "taskId": active_task_id or ""})
         elif mtype == "session.new":
             mode = msg.get("mode", "chat")
             session = store.create(title="New session", mode=mode)
