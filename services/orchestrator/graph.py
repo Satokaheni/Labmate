@@ -11,6 +11,7 @@ from langgraph.types import interrupt
 from .types import State, Status, Goal, get_ready_goals, update_status, now_iso, create_goal
 from .coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 from . import events
+from .task_complexity import classify_complexity
 
 _log = logging.getLogger("graph")
 
@@ -566,6 +567,20 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             "blocking_question": blocking_question,
         }
 
+        # Task 3: Call complexity classifier to determine skip flags (if feature enabled).
+        # The classifier is pure and deterministic, always returns the same result for
+        # a given task. Stash both the classifier verdict and the committed skip flags
+        # in the result dict so StateGraph commits them to the session state.
+        complexity = classify_complexity(goal)
+        result["complexity"] = {
+            "skip_ambiguity": complexity.skip_ambiguity,
+            "skip_verify": complexity.skip_verify,
+            "reason": complexity.reason,
+        }
+        # Stash the skip flags as top-level state keys so the routers can read them.
+        result["skip_ambiguity"] = complexity.skip_ambiguity
+        result["skip_verify"] = complexity.skip_verify
+
         # On high ambiguity, HALT and ask the user a clarifying question rather than
         # guessing. ambiguity_router sends this node's output to END; main._handle /
         # coding_orchestrator.stream surface clarification_question as the answer and
@@ -686,22 +701,30 @@ def router(state: State) -> str:
 
 
 def ambiguity_router(state: State) -> str:
-    """A1: route after assess_ambiguity. On high ambiguity, HALT (END) so the agent
-    asks the user a clarifying question instead of guessing; otherwise plan."""
+    """A1: route after assess_ambiguity. Task 3: honors skip_ambiguity flag before
+    the threshold check. On high ambiguity, HALT (END) so the agent asks the user a
+    clarifying question instead of guessing; otherwise plan."""
+    # Task 3: If skip_ambiguity is True, short-circuit and proceed directly to plan
+    if state.get("skip_ambiguity"):
+        return "plan"
     if float(state.get("ambiguity", 0.0)) >= AMBIGUITY_THRESHOLD:
         return END
     return "plan"
 
 
 def verify_router(state: State) -> str:
-    """A2 / FIX 9: route after verify. The verify node decides (and commits) whether a
-    reflect pass is warranted via `_verify_reflect`, which is True only when the artifact
-    scored below CRITIQUE_THRESHOLD AND fewer than MAX_VERIFY_RETRIES verify->reflect passes
-    have been taken. This router is a pure function of that committed flag, so the
-    verify<->reflect loop is bounded (it cannot loop forever).
+    """A2 / FIX 9 / Task 3: route after verify. Task 3: honors skip_verify flag before
+    the threshold check. The verify node decides (and commits) whether a reflect pass is
+    warranted via `_verify_reflect`, which is True only when the artifact scored below
+    CRITIQUE_THRESHOLD AND fewer than MAX_VERIFY_RETRIES verify->reflect passes have been
+    taken. This router is a pure function of that committed flag, so the verify<->reflect
+    loop is bounded (it cannot loop forever).
 
     Backward-compat: if `_verify_reflect` was never set by the verify node (e.g. a hand-built
     state in older tests), fall back to the original threshold comparison."""
+    # Task 3: If skip_verify is True, short-circuit and proceed directly to check
+    if state.get("skip_verify"):
+        return "check"
     if "_verify_reflect" in state:
         return "reflect" if state.get("_verify_reflect") else "check"
     if float(state.get("critique_score", 1.0)) < CRITIQUE_THRESHOLD:
