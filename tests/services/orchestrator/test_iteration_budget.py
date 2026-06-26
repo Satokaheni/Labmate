@@ -45,3 +45,42 @@ class TestIterationBudgetCore:
         assert "write_file" not in CHEAP_TOOLS
         assert "call_skill_tool" not in CHEAP_TOOLS
         assert "finish" not in CHEAP_TOOLS
+
+
+@pytest.mark.mocked
+class TestIterationBudgetRefund:
+    def test_refund_restores_one_unit(self):
+        b = IterationBudget(max_total=3)
+        b.consume()
+        b.consume()
+        assert b.used == 2
+        b.refund()
+        assert b.used == 1
+        assert b.remaining == 2
+
+    def test_refund_cannot_go_below_zero(self):
+        b = IterationBudget(max_total=3)
+        # No consume yet — refund must be a no-op, not negative.
+        b.refund()
+        assert b.used == 0
+        assert b.remaining == 3
+
+    def test_refund_cannot_exceed_max_total(self):
+        b = IterationBudget(max_total=2)
+        b.consume()
+        # Two refunds against a single consume: used floors at 0, so remaining
+        # never exceeds max_total (a refund cannot manufacture budget).
+        b.refund()
+        b.refund()
+        assert b.used == 0
+        assert b.remaining == 2  # not 3
+
+    def test_refund_then_consume_allows_extra_turn(self):
+        # Cap of 2: consume a cheap turn, refund it, then 2 working turns fit.
+        b = IterationBudget(max_total=2)
+        assert b.consume() is True   # cheap turn
+        b.refund()                   # refunded
+        assert b.consume() is True   # work 1
+        assert b.consume() is True   # work 2
+        assert b.consume() is False  # now exhausted
+        assert b.used == 2
