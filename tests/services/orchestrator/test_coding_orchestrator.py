@@ -6,7 +6,7 @@ import pytest
 import graphlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from services.orchestrator.coding_orchestrator import TokenBudget, AsyncOrchestrator, Result, SubTask, CodingOrchestrator
+from services.orchestrator.coding_orchestrator import TokenBudget, AsyncOrchestrator, Result, SubTask, CodingOrchestrator, _run_bash_passed
 
 
 @pytest.fixture(autouse=True)
@@ -25,6 +25,35 @@ def _pin_skill_first_sequencing(monkeypatch):
 
 def _chunk(text):
     return MagicMock(choices=[MagicMock(delta=MagicMock(content=text))])
+
+
+def test_run_bash_passed_anchored_pytest_patterns():
+    """Test _run_bash_passed uses anchored pytest summary patterns, not loose substrings.
+
+    This guards against false positives from filenames or variable names containing 'ok',
+    e.g. 'collected 1 item ... broken_module imported ok' should NOT mark tests passed
+    unless there is an actual pytest pass summary like "1 passed".
+    """
+    # True: explicit pytest pass summary
+    assert _run_bash_passed("collected 1 item\n1 passed in 0.05s") is True
+    assert _run_bash_passed("2 passed, 0 failed") is True
+    assert _run_bash_passed("tests/test_foo.py::test_bar PASSED\n\n1 passed in 0.1s") is True
+
+    # False: 'ok' or 'passed' only in non-summary context
+    assert _run_bash_passed("collected 1 item ... broken_module imported ok") is False
+    assert _run_bash_passed("This output looks ok but has no pytest summary") is False
+    assert _run_bash_passed("module ok.py loaded successfully") is False
+
+    # False: explicit failure
+    assert _run_bash_passed("1 failed, 0 passed in 0.5s") is False
+    assert _run_bash_passed("collected 1 item\nTraceback (most recent call last):") is False
+    assert _run_bash_passed("Error: something went wrong") is False
+
+    # False: error JSON blob
+    assert _run_bash_passed('{"error": "command not found"}') is False
+
+    # False: no summary at all (ambiguous case; defensive default is False)
+    assert _run_bash_passed("some random output with no test summary") is False
 
 
 @pytest.mark.asyncio

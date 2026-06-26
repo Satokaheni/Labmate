@@ -112,20 +112,46 @@ def _run_bash_passed(content: str) -> bool:
     """Best-effort: did a pytest run_bash invocation pass?
 
     run_bash returns raw stdout/stderr text (or an error JSON blob on
-    failure). Treat an error JSON as failed. Otherwise treat the output
-    as passing UNLESS it shows a pytest failure marker.
+    failure). Treat an error JSON as failed. Otherwise match anchored
+    pytest summary patterns to avoid false positives from arbitrary text
+    containing 'ok' (e.g. 'ok' in filenames, variable names, etc).
     """
     import json as _json
+    import re
+
     try:
         data = _json.loads(content)
         if isinstance(data, dict) and "error" in data:
             return False
     except (TypeError, ValueError):
         pass
+
     lowered = str(content).lower()
-    if "failed" in lowered or "traceback" in lowered or " error" in lowered:
+
+    # Check for traceback or " error" as explicit failure (not a summary pattern).
+    if "traceback" in lowered or " error" in lowered:
         return False
-    return "passed" in lowered or "ok" in lowered
+
+    # Look for anchored pytest summary patterns.
+    # A pytest summary with failures looks like "X failed" where X is non-zero.
+    # Pattern to detect: digit + "failed" or "error(s)" — this matches "1 failed", "2 errors" etc.
+    # We check if the count is non-zero by looking for non-zero leading digit.
+    has_failed = re.search(r'\b[1-9]\d*\s+(failed|errors?)\b', lowered) is not None
+
+    # If there are actual failures (count > 0), it failed.
+    if has_failed:
+        return False
+
+    # Otherwise, look for a passing summary: "X passed" where X > 0.
+    has_passed = re.search(r'\b[1-9]\d*\s+passed\b', lowered) is not None
+
+    # If we see tests passing and no non-zero failure count, it passed.
+    if has_passed:
+        return True
+
+    # Fallback: if no summary patterns found, return False to avoid
+    # false positives from incomplete or malformed output.
+    return False
 
 
 # ---------------------------------------------------------------------------
