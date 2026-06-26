@@ -160,3 +160,131 @@ async def test_no_steer_no_cancel_unchanged(orch_with_redis):
     result = await _with_task("t-plain", _run)
     assert result["ok"] is True
     assert result["summary"] == "all done"
+
+
+def _bash_read_write_then_finish():
+    """Four model responses: turn 1 calls run_bash, turn 2 calls read_file,
+    turn 3 calls write_file, turn 4 calls finish. Different tools to avoid
+    loop detection."""
+    def _mk_bash():
+        tc = MagicMock()
+        tc.id = "c1"
+        tc.function = MagicMock()
+        tc.function.name = "run_bash"
+        tc.function.arguments = json.dumps({"command": "ls"})
+        msg = MagicMock()
+        msg.content = None
+        msg.tool_calls = [tc]
+        msg.reasoning_content = ""
+        msg.model_dump = lambda: {
+            "role": "assistant", "content": "",
+            "tool_calls": [{"id": "c1", "type": "function",
+                            "function": {"name": "run_bash", "arguments": "{}"}}],
+        }
+        return MagicMock(choices=[MagicMock(message=msg)])
+
+    def _mk_read():
+        tc = MagicMock()
+        tc.id = "c2"
+        tc.function = MagicMock()
+        tc.function.name = "read_file"
+        tc.function.arguments = json.dumps({"path": "/tmp/test.py"})
+        msg = MagicMock()
+        msg.content = None
+        msg.tool_calls = [tc]
+        msg.reasoning_content = ""
+        msg.model_dump = lambda: {
+            "role": "assistant", "content": "",
+            "tool_calls": [{"id": "c2", "type": "function",
+                            "function": {"name": "read_file", "arguments": "{}"}}],
+        }
+        return MagicMock(choices=[MagicMock(message=msg)])
+
+    def _mk_write():
+        tc = MagicMock()
+        tc.id = "c3"
+        tc.function = MagicMock()
+        tc.function.name = "write_file"
+        tc.function.arguments = json.dumps({"path": "/tmp/test2.py", "content": "# test"})
+        msg = MagicMock()
+        msg.content = None
+        msg.tool_calls = [tc]
+        msg.reasoning_content = ""
+        msg.model_dump = lambda: {
+            "role": "assistant", "content": "",
+            "tool_calls": [{"id": "c3", "type": "function",
+                            "function": {"name": "write_file", "arguments": "{}"}}],
+        }
+        return MagicMock(choices=[MagicMock(message=msg)])
+
+    def _mk_finish():
+        tc = MagicMock()
+        tc.id = "c4"
+        tc.function = MagicMock()
+        tc.function.name = "finish"
+        tc.function.arguments = json.dumps({"summary": "done"})
+        msg = MagicMock()
+        msg.content = None
+        msg.tool_calls = [tc]
+        msg.reasoning_content = ""
+        msg.model_dump = lambda: {"role": "assistant", "content": "", "tool_calls": []}
+        return MagicMock(choices=[MagicMock(message=msg)])
+
+    return [_mk_bash(), _mk_read(), _mk_write(), _mk_finish()]
+
+
+@pytest.mark.asyncio
+async def test_steer_injected_exactly_once_across_four_turns(orch_with_redis):
+    """Regression test: steer should be injected exactly once on turn 2,
+    not re-injected on turns 3+. This test runs 4 turns with pre-written steer
+    and verifies the OOB steer text appears in exactly one captured message list."""
+    orch, r = orch_with_redis
+    captured = []
+
+    async def _capture(*a, **k):
+        # Record the messages seen on each model call, then return the scripted resp.
+        captured.append([dict(m) for m in k["messages"]])
+        return _capture.responses.pop(0)
+    _capture.responses = _bash_read_write_then_finish()
+
+    await events.write_steer(r, "t-steer-4t", "focus on error handling")
+
+    async def _run():
+        with patch("services.orchestrator.coding_orchestrator.acompletion_with_failover",
+                   new=AsyncMock(side_effect=_capture)):
+            return await orch._run_react_loop("refactor code", 6)
+
+    await _with_task("t-steer-4t", _run)
+
+    # We should have 4 model calls captured.
+    assert len(captured) == 4
+
+    # The steer text should appear in exactly ONE message list.
+    turns_with_steer = []
+    for turn_idx, msg_list in enumerate(captured):
+        blob = json.dumps(msg_list)
+        if "focus on error handling" in blob:
+            turns_with_steer.append(turn_idx)
+
+    assert len(turns_with_steer) == 1, (
+        f"Steer text should appear exactly once, but found in {len(turns_with_steer)} "
+        f"calls at turns {turns_with_steer}"
+    )
+    # The steer should appear on turn 2 (index 1)
+    assert turns_with_steer[0] == 1, (
+        f"Steer text should appear on turn 2 (index 1), but appeared at index {turns_with_steer[0]}"
+    )
+
+    # Verify the marker is also in turn 2
+    second_blob = json.dumps(captured[1])
+    assert "OUT-OF-BAND USER MESSAGE" in second_blob
+    assert "[/OUT-OF-BAND USER MESSAGE]" in second_blob
+
+    # Verify turns 3 and 4 do NOT have the steer text
+    third_blob = json.dumps(captured[2])
+    assert "focus on error handling" not in third_blob
+    fourth_blob = json.dumps(captured[3])
+    assert "focus on error handling" not in fourth_blob
+
+    # Consumed exactly once — the key is gone.
+    assert await r.exists("labmate:steer:t-steer-4t") == 0

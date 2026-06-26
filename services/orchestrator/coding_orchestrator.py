@@ -571,11 +571,21 @@ class AsyncOrchestrator:
                 # persistent messages list, so it appears exactly once.
                 _messages_for_model = messages
                 # Use either the deferred pre-written steer or the immediately-injected mid-loop steer.
-                _steer_this_turn = _pending_steer or _to_inject
+                # Defer pre-written steers to turn 2+ (step > 0) so they are injected as corrections
+                # to tool results, not as initial instructions. Mid-loop steers are immediate (step-agnostic).
+                _steer_this_turn = None
+                if step > 0 and _pending_steer is not None:
+                    _steer_this_turn = _pending_steer
+                elif _to_inject is not None:
+                    _steer_this_turn = _to_inject
                 if _steer_this_turn:
                     _messages_for_model = inject_steer(messages, _steer_this_turn)
                     if _task_id is not None and self.redis is not None:
                         await events.emit("steer.injected", task_id=_task_id, text=_steer_this_turn)
+                    # Clear the pending steer so it is not re-injected on subsequent turns.
+                    # Mid-loop steers (_to_inject) are already cleared at line 517 each turn.
+                    if _pending_steer is not None:
+                        _pending_steer = None
 
                 r = await acompletion_with_failover(
                     model="openai/gemma-4-31b",
