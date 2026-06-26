@@ -366,6 +366,55 @@ class TestAsyncOrchestrator:
         # Verify we hit the ceiling (2*3=6 turns), not way beyond
         assert turn_count[0] <= 7  # 6 + 1 for the final check
 
+    @pytest.mark.asyncio
+    async def test_run_tests_turn_is_refunded(self, monkeypatch):
+        """run_tests turns must be refunded — verification should not eat the budget.
+        With refund working, distinct run_tests turns run up to the absolute ceiling
+        (2*max_total), not just max_total."""
+        monkeypatch.setattr(
+            "services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "skill_first"
+        )
+        monkeypatch.setenv("LABMATE_MAX_ITERATIONS", "2")  # small cap to make the refund observable
+        from services.orchestrator import events
+
+        orch = AsyncOrchestrator(skill_router=None, mcp=MagicMock(), max_steps=2)
+
+        # run_tests goes through build_run_tests_command + a bash seam; stub the
+        # seam so each call returns a benign failing-but-valid result and a DISTINCT
+        # signature (distinct command) so the loop detector never trips.
+        async def _bash(*a, **k):
+            return MagicMock(content=[MagicMock(text="0 passed")], isError=False)
+        orch.mcp.call_tool = _bash
+
+        calls = [0]
+        async def _model(*a, **k):
+            calls[0] += 1
+            return MagicMock(choices=[MagicMock(
+                message=_msg_with_tool_call(
+                    "run_tests", json.dumps({"path": f"tests/test_{calls[0]}.py"})
+                )
+            )])
+
+        class FakeEmitter:
+            async def emit(self, type, **f):
+                pass
+
+        with patch(
+            "services.orchestrator.coding_orchestrator.acompletion_with_failover",
+            new_callable=AsyncMock,
+            side_effect=_model,
+        ):
+            token = events.current_emitter.set(FakeEmitter())
+            try:
+                result = await orch.react_execute("non-edit: just run tests repeatedly")
+            finally:
+                events.current_emitter.reset(token)
+
+        # If run_tests were NOT refunded, the loop would stop at the consume cap (2)
+        # with "budget exhausted". With the refund it reaches the absolute ceiling.
+        assert "budget exhausted" not in result["summary"]
+        assert calls[0] > 2  # ran past the consume cap thanks to refunds
+
 
 @pytest.mark.mocked
 class TestCodingOrchestrator:
@@ -675,16 +724,17 @@ class TestReactExecute:
         orch = self._make_orch(max_steps=2)
 
         # cap=2 working turns + 1 grace turn = 3 model calls before stopping.
-        r1 = self._make_tool_call_response("run_bash", {"command": "ls"})
-        r2 = self._make_tool_call_response("run_bash", {"command": "pwd"})
-        r3 = self._make_tool_call_response("run_bash", {"command": "whoami"})
+        # Use write_file (non-refundable) to test budget exhaustion; run_bash is now refundable.
+        r1 = self._make_tool_call_response("write_file", {"path": "a.txt", "content": "1"})
+        r2 = self._make_tool_call_response("write_file", {"path": "b.txt", "content": "2"})
+        r3 = self._make_tool_call_response("write_file", {"path": "c.txt", "content": "3"})
 
         with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
                    new_callable=AsyncMock, side_effect=[r1, r2, r3]):
-            # Mock MCP to return bash result
+            # Mock MCP to return write result
             mcp = AsyncMock()
             mcp_result = MagicMock()
-            mcp_result.content = [MagicMock(text="output")]
+            mcp_result.content = [MagicMock(text="file written")]
             mcp_result.isError = False
             mcp.call_tool.return_value = mcp_result
             orch.mcp = mcp
@@ -1231,18 +1281,23 @@ class TestReactExecuteBudget:
 
     @pytest.mark.asyncio
     async def test_exhaustion_grants_exactly_one_grace_call(self):
-        """Cap 2 + always-run_bash => model is called cap+1 (=3) times, then stops."""
+        """Cap 2 + always-write_file => model is called cap+1 (=3) times, then stops.
+
+        Uses write_file (non-refundable) to test budget exhaustion; run_bash is now refundable.
+        """
         orch = self._make_orch(max_steps=2)
         mcp = AsyncMock()
         mcp_result = MagicMock()
-        mcp_result.content = [MagicMock(text="output")]
+        mcp_result.content = [MagicMock(text="file written")]
         mcp_result.isError = False
         mcp.call_tool.return_value = mcp_result
         orch.mcp = mcp
 
-        # Different commands to avoid loop detector (each call has different args)
+        # Different files to avoid loop detector (each call has different args)
         responses = [
-            MagicMock(choices=[MagicMock(message=self._bash_resp(f"echo {i}"))])
+            MagicMock(choices=[MagicMock(message=_msg_with_tool_call(
+                "write_file", json.dumps({"path": f"file{i}.txt", "content": str(i)})
+            ))])
             for i in range(10)
         ]
 

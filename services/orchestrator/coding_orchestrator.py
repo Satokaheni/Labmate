@@ -24,7 +24,7 @@ from .local_tools import (
     verify_written_content,
 )
 from .loop_detection import LoopDetector, call_signature, repeat_limit_for
-from .iteration_budget import IterationBudget, CHEAP_TOOLS
+from .iteration_budget import IterationBudget, REFUNDABLE_TOOLS
 from .steer_inject import inject_steer
 from .progress_breaker import ProgressBreaker, ProgressStep
 from .message_repair import sanitize_messages, message_repair_enabled
@@ -951,11 +951,11 @@ class AsyncOrchestrator:
                         "content": content,
                     })
 
-                # Refund this turn if EVERY tool call it made was a cheap read.
-                # Pure inspection (read_file / list_dir / code_semantic_search)
-                # must not starve genuine work. A turn with no tool calls already
-                # returned above, so _turn_tools is non-empty here.
-                if _turn_tools and all(t in CHEAP_TOOLS for t in _turn_tools):
+                # Refund this turn if EVERY tool call it made was a refundable read/verify/inspect (REFUNDABLE_TOOLS).
+                # Pure inspection (read_file / list_dir / code_semantic_search) and
+                # verification (run_tests / run_bash / memory_search) must not starve genuine work.
+                # A turn with no tool calls already returned above, so _turn_tools is non-empty here.
+                if _turn_tools and all(t in REFUNDABLE_TOOLS for t in _turn_tools):
                     budget.refund()
 
                 # No-progress breaker (after the turn's work). Compute whether
