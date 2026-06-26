@@ -15,7 +15,12 @@ from .types import Goal, State, Status, get_ready_goals, update_status, now_iso
 from . import events
 from .model_client import acompletion_with_failover, resolve_bases
 from .prompt_assembler import PromptAssembler
-from .local_tools import LOCAL_TOOL_NAMES, request_local_tool
+from .local_tools import (
+    LOCAL_TOOL_NAMES,
+    request_local_tool,
+    build_run_tests_command,
+    shape_run_tests_result,
+)
 from .loop_detection import LoopDetector, call_signature
 from .iteration_budget import IterationBudget, CHEAP_TOOLS
 
@@ -544,6 +549,34 @@ class AsyncOrchestrator:
                                 content = json.dumps({"error": str(exc)})
                         else:
                             content = json.dumps({"error": "no bash runner available"})
+
+                    elif name == "run_tests":
+                        # First-class test runner: run the REAL pytest command through
+                        # the same server-side bash seam run_bash uses (sandbox rule),
+                        # and hand the model the RAW pass/fail output so it cannot
+                        # fabricate "all tests pass".
+                        if self.mcp is not None:
+                            command, timeout_ms = build_run_tests_command(args)
+                            try:
+                                obs = await self.mcp.call_tool(
+                                    "exec_run",
+                                    {
+                                        "command": command,
+                                        "cwd": self.workspace,
+                                        "timeout": timeout_ms,
+                                    },
+                                )
+                                raw = "\n".join(
+                                    c.text for c in obs.content if hasattr(c, "text")
+                                )
+                                exit_code = 1 if getattr(obs, "isError", False) else 0
+                                content = json.dumps(
+                                    shape_run_tests_result(exit_code, raw)
+                                )
+                            except Exception as exc:
+                                content = json.dumps({"error": str(exc)})
+                        else:
+                            content = json.dumps({"error": "no test runner available"})
 
                     elif name == "code_semantic_search":
                         if self.codegraph_mcp is not None:
