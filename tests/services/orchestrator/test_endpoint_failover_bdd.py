@@ -10,6 +10,7 @@ from services.orchestrator.model_client import (
     acompletion_with_failover,
     AllEndpointsExhausted,
 )
+from tests.conftest import run_async
 
 pytestmark = pytest.mark.mocked
 
@@ -117,8 +118,6 @@ def _set_cap(ctx, n):
 # ── When ─────────────────────────────────────────────────────────────────────
 @when(parsers.re(r"I request a completion with failover across (both endpoints|that endpoint)"))
 def _do_request(ctx, router):
-    import asyncio
-
     async def _main():
         # Create an httpx client that respx can intercept
         async with httpx.AsyncClient() as client:
@@ -149,7 +148,7 @@ def _do_request(ctx, router):
                 litellm.num_retries = original_retries
 
     try:
-        ctx["result"] = asyncio.run(_main())
+        ctx["result"] = run_async(_main())
     except Exception as exc:  # noqa: BLE001 — captured for the Then steps
         ctx["error"] = exc
 

@@ -6,6 +6,7 @@ import pytest
 from pytest_bdd import scenarios, given, when, then, parsers
 
 from services.orchestrator.coding_orchestrator import AsyncOrchestrator
+from tests.conftest import run_async
 
 scenarios("features/prefix_cache_stability.feature")
 
@@ -85,12 +86,11 @@ def _scripted(scripted_completion):
 
 @when(parsers.parse('react_execute runs the goal "{goal}"'), target_fixture="run_bodies")
 def _run(orch, scripted_completion, goal):
-    import asyncio
     async def _run_async():
         out = await orch.react_execute(goal)
         assert out["ok"] is True
         return scripted_completion          # the recorded bodies list
-    return asyncio.run(_run_async())
+    return run_async(_run_async())
 
 
 @then("the model received at least 2 requests")
@@ -145,7 +145,6 @@ def _orch2():
 @when(parsers.parse('react_execute runs the goal "{goal}" on each orchestrator'),
       target_fixture="two_run_bodies")
 def _run_two(orch, orch2, goal):
-    import asyncio
     async def _run_async():
         # Independent recordings for each orchestrator so order can't bleed.
         bodies_a: list[dict] = []
@@ -170,7 +169,7 @@ def _run_two(orch, orch2, goal):
             await orch2.react_execute(goal)
         return bodies_a, bodies_b
 
-    return asyncio.run(_run_async())
+    return run_async(_run_async())
 
 
 @then("the tools list sent by both orchestrators is identical in order and content")

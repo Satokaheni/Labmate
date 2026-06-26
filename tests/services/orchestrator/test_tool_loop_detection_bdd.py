@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from pytest_bdd import scenarios, given, when, then, parsers
 
 from services.orchestrator.loop_detection import LoopDetector, call_signature
+from tests.conftest import run_async
 
 pytestmark = [pytest.mark.bdd, pytest.mark.mocked]
 
@@ -104,8 +105,7 @@ def _execute_goal(ctx, goal):
                    new_callable=AsyncMock, side_effect=_counting):
             return await orch.react_execute(goal)
 
-    import asyncio
-    ctx["react_result"] = asyncio.run(_run())
+    ctx["react_result"] = run_async(_run())
 
 
 @then("react_execute returns ok False")

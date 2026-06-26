@@ -5,7 +5,6 @@ no GPU, no services. The ambiguity gate's "still runs" assertions drive the real
 assess_ambiguity node with a mocked architect() (no LLM)."""
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -17,6 +16,7 @@ from services.orchestrator.task_complexity import classify_complexity
 from services.orchestrator.graph import make_nodes, ambiguity_router, verify_router
 from services.orchestrator.types import create_goal
 from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+from tests.conftest import run_async
 
 scenarios("features/conditional_gates.feature")
 
@@ -113,7 +113,7 @@ def _ambiguity_runs(ctx):
         "root_goal": ctx["task"],
     }
 
-    delta = asyncio.run(assess(state))
+    delta = run_async(assess(state))
     mock_orch.architect.assert_awaited_once()
     assert "ambiguity" in delta
     assert delta["skip_ambiguity"] is False

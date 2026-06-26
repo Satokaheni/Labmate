@@ -21,6 +21,7 @@ from services.orchestrator.error_classifier import (
 from services.orchestrator.types import (
     Status, create_goal, update_status,
 )
+from tests.conftest import run_async
 
 pytestmark = [pytest.mark.bdd, pytest.mark.mocked]
 
@@ -103,10 +104,9 @@ def goal_fails(ctx, error):
 
 @when("the execute node processes the failed result")
 def run_execute(ctx):
-    import asyncio
     from services.orchestrator.graph import make_nodes
     _, execute_node, *_ = make_nodes(ctx["orch"], ctx["async_orch"])
-    ctx["delta"] = asyncio.run(execute_node(ctx["state"]))
+    ctx["delta"] = run_async(execute_node(ctx["state"]))
 
 
 @then("the goal is marked exhausted at MAX_GOAL_ATTEMPTS")

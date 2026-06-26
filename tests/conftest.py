@@ -14,6 +14,7 @@ docs/superpowers/plans/2026-06-25-bdd-harness-foundation.md
 """
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
@@ -23,6 +24,30 @@ import pytest
 # The inference seam every orchestrator model call routes through.
 # Source of truth: services/orchestrator/graph.py GEMMA_BASE default.
 INFERENCE_COMPLETIONS_URL = "http://localhost:8000/v1/chat/completions"
+
+
+def run_async(coro):
+    """Run an async coroutine and clean up pending tasks.
+
+    This helper cancels and awaits all pending tasks before closing the event
+    loop, preventing "coroutine '...' was never awaited" RuntimeWarnings from
+    background tasks (OutboxWorker.run, litellm logging workers, etc.) that
+    are spawned incidentally but not essential to the test assertion.
+
+    Use in place of bare asyncio.run() in BDD step defs.
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        # Cancel and await all pending tasks to allow cleanup
+        pending = asyncio.all_tasks(loop)
+        for task in pending:
+            task.cancel()
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        loop.close()
 
 
 @pytest.fixture
