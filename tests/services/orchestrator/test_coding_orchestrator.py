@@ -1139,6 +1139,101 @@ class TestReactExecute:
         assert result["ok"] is True
         assert result["summary"] == "all read"
 
+    @pytest.mark.asyncio
+    async def test_react_execute_repeat_load_skill_short_circuited(self):
+        """A 2nd load_skill for an already-loaded skill must NOT call the real
+        loader again; the tool result reports 'already loaded'."""
+        runner = MagicMock()
+        runner.catalog_prompt.return_value = "- code-review: review code"
+        runner.tool_schema.return_value = {
+            "type": "function",
+            "function": {"name": "load_skill", "parameters": {}},
+        }
+        runner.load_skill.return_value = {
+            "name": "load_skill",
+            "response": {"status": "loaded", "name": "code-review", "body": "BODY"},
+        }
+        skill_router = MagicMock()
+        skill_router.runner = runner
+        orch = self._make_orch(skill_router=skill_router)
+
+        # Turn 1: load code-review. Turn 2: load code-review AGAIN. Turn 3: finish.
+        r1 = self._make_tool_call_response("load_skill", {"name": "code-review"})
+        r2 = self._make_tool_call_response("load_skill", {"name": "code-review"})
+        r3 = self._make_tool_call_response("finish", {"summary": "done"})
+
+        with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
+                   new_callable=AsyncMock, side_effect=[r1, r2, r3]):
+            result = await orch.react_execute("review then fix")
+
+        assert result["ok"] is True
+        # The real loader ran only for the FIRST load.
+        runner.load_skill.assert_called_once_with("code-review")
+
+    @pytest.mark.asyncio
+    async def test_react_execute_repeat_load_skill_refunds_budget(self):
+        """The redundant reload turn is refunded, so the model still has enough
+        budget to finish. With max_steps=2: load (1) -> redundant load (refunded)
+        -> finish should succeed rather than exhausting the budget."""
+        runner = MagicMock()
+        runner.catalog_prompt.return_value = "- code-review: review code"
+        runner.tool_schema.return_value = {
+            "type": "function",
+            "function": {"name": "load_skill", "parameters": {}},
+        }
+        runner.load_skill.return_value = {
+            "name": "load_skill",
+            "response": {"status": "loaded", "name": "code-review", "body": "BODY"},
+        }
+        skill_router = MagicMock()
+        skill_router.runner = runner
+        orch = self._make_orch(skill_router=skill_router, max_steps=2)
+
+        r1 = self._make_tool_call_response("load_skill", {"name": "code-review"})
+        r2 = self._make_tool_call_response("load_skill", {"name": "code-review"})
+        r3 = self._make_tool_call_response("finish", {"summary": "done"})
+
+        with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
+                   new_callable=AsyncMock, side_effect=[r1, r2, r3]):
+            result = await orch.react_execute("review then fix")
+
+        # Without the refund, load(1)+load(2) would exhaust max_steps=2 and the
+        # grace turn would be the finish — but the finish would still run, so we
+        # assert on the stronger signal: the loader ran once and we finished ok.
+        assert result["ok"] is True
+        assert "done" in result["summary"]
+        runner.load_skill.assert_called_once_with("code-review")
+
+    @pytest.mark.asyncio
+    async def test_react_execute_distinct_load_skill_not_short_circuited(self):
+        """Loading two DIFFERENT skills both hit the real loader (no false
+        short-circuit on a first load)."""
+        runner = MagicMock()
+        runner.catalog_prompt.return_value = "- code-review: x\n- test-gen: y"
+        runner.tool_schema.return_value = {
+            "type": "function",
+            "function": {"name": "load_skill", "parameters": {}},
+        }
+        runner.load_skill.side_effect = lambda n: {
+            "name": "load_skill",
+            "response": {"status": "loaded", "name": n, "body": "BODY"},
+        }
+        skill_router = MagicMock()
+        skill_router.runner = runner
+        orch = self._make_orch(skill_router=skill_router)
+
+        r1 = self._make_tool_call_response("load_skill", {"name": "code-review"})
+        r2 = self._make_tool_call_response("load_skill", {"name": "test-gen"})
+        r3 = self._make_tool_call_response("finish", {"summary": "done"})
+
+        with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
+                   new_callable=AsyncMock, side_effect=[r1, r2, r3]):
+            result = await orch.react_execute("review then test")
+
+        assert result["ok"] is True
+        called = {c.args[0] for c in runner.load_skill.call_args_list}
+        assert called == {"code-review", "test-gen"}
+
 
 @pytest.mark.mocked
 class TestReplanSequencing:

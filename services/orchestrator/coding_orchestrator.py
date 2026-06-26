@@ -25,6 +25,7 @@ from .local_tools import (
 )
 from .loop_detection import LoopDetector, call_signature, repeat_limit_for
 from .iteration_budget import IterationBudget, REFUNDABLE_TOOLS
+from .load_skill_guard import is_repeat_load, already_loaded_message
 from .steer_inject import inject_steer
 from .progress_breaker import ProgressBreaker, ProgressStep
 from .message_repair import sanitize_messages, message_repair_enabled
@@ -65,6 +66,13 @@ MAX_SEQ_STEPS = int(os.getenv("MAX_SEQ_STEPS", "5"))
 # step goals skip the planner loop entirely (run once via skill-first / ReAct) so a
 # simple "review this file" doesn't pay the planner-sequencing tax (over-sequencing).
 REPLAN_COMPOUND_GATE = os.getenv("REPLAN_COMPOUND_GATE", "1") == "1"
+
+# When 1 (default), a load_skill call for a skill ALREADY loaded this goal is
+# short-circuited (no real reload) AND the wasted iteration is refunded, so the
+# weak local model cannot burn its step budget re-loading the same skills. When
+# 0, the redundant reload is still short-circuited but the budget is NOT
+# refunded (lets an operator A/B the refund half in isolation).
+REFUND_REPEAT_LOAD_SKILL = os.getenv("LABMATE_REFUND_REPEAT_LOAD_SKILL", "1") == "1"
 
 
 # ---------------------------------------------------------------------------
@@ -481,6 +489,11 @@ class AsyncOrchestrator:
         verify_nudges_used: int = 0
         max_verify_nudges = int(os.getenv("MAX_VERIFY_NUDGES", "2"))
 
+        # Skills already loaded THIS goal. A repeat load_skill for a name in
+        # this set is short-circuited + refunded (see load_skill dispatch below)
+        # so the model stops churning its iteration budget re-loading skills.
+        loaded_skills: set[str] = set()
+
         # ReAct loop — bounded by an IterationBudget (replaces the bare
         # range(max_steps) cap). The budget grants ONE grace turn after
         # exhaustion and refunds cheap read-only iterations (CHEAP_TOOLS).
@@ -722,9 +735,20 @@ class AsyncOrchestrator:
 
                     # No-progress / tool-loop detection. finish already returned
                     # above, so only genuinely dispatched tools reach here.
-                    if loop_detector.record(
-                        call_signature(name, args),
-                        repeat_limit=repeat_limit_for(name),
+                    # Special case: for repeat load_skill calls, skip the halt check
+                    # because we will dedupe them (short-circuit + refund). Still
+                    # record the signature for backstop detection in case a true
+                    # loop of failed loads occurs.
+                    _is_repeat_load_skill = (
+                        name == "load_skill"
+                        and is_repeat_load(args.get("name", ""), loaded_skills)
+                    )
+                    if (
+                        not _is_repeat_load_skill
+                        and loop_detector.record(
+                            call_signature(name, args),
+                            repeat_limit=repeat_limit_for(name),
+                        )
                     ):
                         _reason = loop_detector.reason()
                         await events.emit(
@@ -748,6 +772,14 @@ class AsyncOrchestrator:
                             "tools_used": _tools_used,
                         }
 
+                    # For repeat load_skill, record the signature for backstop
+                    # loop detection in case a true loop of failed loads occurs.
+                    if _is_repeat_load_skill:
+                        loop_detector.record(
+                            call_signature(name, args),
+                            repeat_limit=repeat_limit_for(name),
+                        )
+
                     # Emit tool.start for all non-finish tools
                     _tool_id = uuid.uuid4().hex[:12]
                     _kind = "skill" if name == "call_skill_tool" else "tool"
@@ -763,8 +795,33 @@ class AsyncOrchestrator:
                     )
 
                     if name == "load_skill" and self.skill_router is not None:
-                        obs = self.skill_router.runner.load_skill(args.get("name", ""))
-                        content = json.dumps(obs)
+                        _skill_name = args.get("name", "")
+                        if is_repeat_load(_skill_name, loaded_skills):
+                            # Already loaded this goal: do NOT reload. Return a
+                            # clear "already loaded — call its tools directly"
+                            # result and refund the wasted iteration so a churn
+                            # of redundant loads cannot starve real work.
+                            obs = already_loaded_message(_skill_name, loaded_skills)
+                            content = json.dumps(obs)
+                            if REFUND_REPEAT_LOAD_SKILL:
+                                budget.refund()
+                            await events.emit(
+                                "load_skill.deduped",
+                                name=_skill_name,
+                                loaded=sorted(loaded_skills),
+                                refunded=REFUND_REPEAT_LOAD_SKILL,
+                            )
+                        else:
+                            obs = self.skill_router.runner.load_skill(_skill_name)
+                            content = json.dumps(obs)
+                            # Record a successful first load so a later repeat is
+                            # deduped. Only record on a real 'loaded'/'already_loaded'
+                            # status — an error (unknown skill / cap) must NOT be
+                            # remembered as loaded.
+                            _resp = obs.get("response") if isinstance(obs, dict) else None
+                            _status = _resp.get("status") if isinstance(_resp, dict) else None
+                            if _skill_name and _status in ("loaded", "already_loaded"):
+                                loaded_skills.add(_skill_name)
 
                     elif name == "call_skill_tool" and self.skill_router is not None:
                         res = await self.skill_router.execute(
