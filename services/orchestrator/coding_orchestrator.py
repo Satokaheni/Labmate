@@ -23,7 +23,7 @@ from .local_tools import (
     shape_run_tests_result,
     verify_written_content,
 )
-from .loop_detection import LoopDetector, call_signature
+from .loop_detection import LoopDetector, call_signature, repeat_limit_for
 from .iteration_budget import IterationBudget, CHEAP_TOOLS
 from .steer_inject import inject_steer
 from .progress_breaker import ProgressBreaker, ProgressStep
@@ -716,7 +716,10 @@ class AsyncOrchestrator:
 
                     # No-progress / tool-loop detection. finish already returned
                     # above, so only genuinely dispatched tools reach here.
-                    if loop_detector.record(call_signature(name, args)):
+                    if loop_detector.record(
+                        call_signature(name, args),
+                        repeat_limit=repeat_limit_for(name),
+                    ):
                         _reason = loop_detector.reason()
                         await events.emit(
                             "loop.detected",

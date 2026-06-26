@@ -1727,3 +1727,51 @@ async def test_verification_stop_cap_accepts_finish_honestly(monkeypatch):
     assert result["ok"] is True
     assert "not verified" in result["summary"].lower()
     assert mock.call_count == 3
+
+
+@pytest.mark.mocked
+@pytest.mark.asyncio
+async def test_react_loop_tolerates_two_identical_write_file_calls(monkeypatch):
+    """A legit 'edit, test failed, edit again' retry: two identical write_file
+    calls must NOT trip the loop detector (mutating tolerance >= 4)."""
+    monkeypatch.setattr(
+        "services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "skill_first"
+    )
+    from services.orchestrator import events
+
+    orch = AsyncOrchestrator(skill_router=None, mcp=MagicMock(), max_steps=6)
+    # write_file goes through the local-tool seam; make read-back match so the
+    # write is reported as verified (content "x").
+    async def _local(redis, name, args):
+        if name == "read_file":
+            return "x"
+        return {"ok": True}
+    monkeypatch.setattr(
+        "services.orchestrator.coding_orchestrator.request_local_tool", _local
+    )
+    orch.redis = MagicMock()
+
+    write_msg = lambda: MagicMock(choices=[MagicMock(
+        message=_msg_with_tool_call("write_file", json.dumps({"path": "a.py", "content": "x"}))
+    )])
+    finish_msg = MagicMock(tool_calls=None, content="done")
+    finish_msg.model_dump = lambda: {"role": "assistant", "content": "done"}
+    finish_resp = MagicMock(choices=[MagicMock(message=finish_msg)])
+
+    class FakeEmitter:
+        async def emit(self, type, **f):
+            pass
+
+    with patch(
+        "services.orchestrator.coding_orchestrator.acompletion_with_failover",
+        new_callable=AsyncMock,
+        side_effect=[write_msg(), write_msg(), finish_resp],
+    ):
+        token = events.current_emitter.set(FakeEmitter())
+        try:
+            result = await orch.react_execute("apply a patch to a.py")
+        finally:
+            events.current_emitter.reset(token)
+
+    # The 2nd identical write_file did NOT halt the loop.
+    assert "loop detected" not in result["summary"].lower()
