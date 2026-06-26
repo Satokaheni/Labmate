@@ -26,8 +26,10 @@ def conditional_gates_enabled() -> bool:
     """Check whether conditional gates are enabled via env var.
 
     Returns False by default (feature is off).
+    Treats "0", "false", "no", "off" (case-insensitive) as False.
     """
-    return bool(os.environ.get("ENABLE_CONDITIONAL_GATES", ""))
+    _FALSEY = {"", "0", "false", "no", "off"}
+    return os.getenv("ENABLE_CONDITIONAL_GATES", "0").strip().lower() not in _FALSEY
 
 
 def classify_complexity(

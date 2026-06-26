@@ -52,24 +52,32 @@ class TestConditionalGatesEnabled:
             if original is not None:
                 os.environ["ENABLE_CONDITIONAL_GATES"] = original
 
-    def test_true_when_set(self):
-        """Env var set to any truthy value → True."""
+    @pytest.mark.parametrize(
+        "falsey_value",
+        ["", "0", "false", "False", "FALSE", "no", "No", "off", "Off", "OFF"],
+    )
+    def test_false_for_explicit_falsey_values(self, falsey_value):
+        """Env var set to falsey values (0, false, no, off) → False."""
         original = os.environ.get("ENABLE_CONDITIONAL_GATES")
         try:
-            os.environ["ENABLE_CONDITIONAL_GATES"] = "1"
-            assert conditional_gates_enabled() is True
+            os.environ["ENABLE_CONDITIONAL_GATES"] = falsey_value
+            assert conditional_gates_enabled() is False, f"Failed for value: {falsey_value!r}"
         finally:
             if original is not None:
                 os.environ["ENABLE_CONDITIONAL_GATES"] = original
             else:
                 os.environ.pop("ENABLE_CONDITIONAL_GATES", None)
 
-    def test_false_when_set_to_empty_string(self):
-        """Empty string is falsy."""
+    @pytest.mark.parametrize(
+        "truthy_value",
+        ["1", "true", "True", "TRUE", "yes", "Yes", "on", "On", "ON"],
+    )
+    def test_true_for_explicit_truthy_values(self, truthy_value):
+        """Env var set to truthy values (1, true, yes, on) → True."""
         original = os.environ.get("ENABLE_CONDITIONAL_GATES")
         try:
-            os.environ["ENABLE_CONDITIONAL_GATES"] = ""
-            assert conditional_gates_enabled() is False
+            os.environ["ENABLE_CONDITIONAL_GATES"] = truthy_value
+            assert conditional_gates_enabled() is True, f"Failed for value: {truthy_value!r}"
         finally:
             if original is not None:
                 os.environ["ENABLE_CONDITIONAL_GATES"] = original
