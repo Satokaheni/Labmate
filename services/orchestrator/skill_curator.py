@@ -20,6 +20,7 @@ import tempfile
 from collections import deque
 from dataclasses import dataclass, asdict
 from pathlib import Path
+from typing import Awaitable, Callable
 
 from services.orchestrator import events
 from services.orchestrator.skill_telemetry import SkillState, compute_state
@@ -249,4 +250,62 @@ async def propose_skill(
         return dest
     except Exception as exc:  # best-effort — never propagate into goal execution
         log.debug("propose_skill failed for %s: %s", getattr(seq, "name", "?"), exc)
+        return None
+
+
+def _draft_prompt(seq: "CapturedSequence") -> str:
+    tools = " then ".join(seq.tools)
+    return (
+        "You are distilling a successful agent run into a reusable skill "
+        "description. The agent achieved the goal:\n"
+        f"  {seq.goal}\n"
+        f"by using these tools in order: {tools}.\n\n"
+        "Write ONE or TWO plain sentences describing WHEN to use a skill that "
+        "performs this sequence. No preamble, no markdown."
+    )
+
+
+async def run_curator(
+    *,
+    skills_root: "Path",
+    state_path: "Path",
+    recent: RecentSequences,
+    draft_fn: "Callable[[str], Awaitable[str]]",
+    now: float,
+    idle_for_s: float,
+    interval_hours: float = CURATOR_INTERVAL_HOURS,
+    min_idle_hours: float = CURATOR_MIN_IDLE_HOURS,
+) -> "Path | None":
+    """One curator cycle: gate -> draft (1 LLM call) -> stage proposal -> persist.
+
+    Best-effort: any failure (incl. draft_fn raising) is caught, logged at DEBUG,
+    and returns None — the curator never breaks goal execution.
+    """
+    try:
+        state = load_state(state_path)
+        if not should_run_now(state, now, interval_hours, min_idle_hours, idle_for_s):
+            return None
+
+        sequences = recent.snapshot()
+        if not sequences:
+            # Nothing to draft from, but still record that we ran (avoids busy-looping
+            # the gate every cycle once the interval has elapsed).
+            state.last_run_at = now
+            state.run_count += 1
+            save_state(state_path, state)
+            return None
+
+        seq = sequences[-1]  # most recent successful multi-tool sequence
+        description = (await draft_fn(_draft_prompt(seq))).strip()
+        if not description:
+            description = f"Proposed skill distilled from: {seq.goal}"
+
+        dest = await propose_skill(skills_root, seq, description)
+
+        state.last_run_at = now
+        state.run_count += 1
+        save_state(state_path, state)
+        return dest
+    except Exception as exc:  # best-effort isolation
+        log.debug("run_curator cycle failed (non-fatal): %s", exc)
         return None
