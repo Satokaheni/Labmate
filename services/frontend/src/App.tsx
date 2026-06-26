@@ -59,6 +59,7 @@ export function App({
   const [debug, setDebug] = useState(false);
   const [mode, setMode] = useState<Mode>('chat');
   const [previewed, setPreviewed] = useState<Artifact | null>(null);
+  const [rightPanel, setRightPanel] = useState<'file' | 'tools' | null>(null);
   const pendingSendRef = useRef<string | null>(null);
 
   // When a new session is auto-created in response to the user sending with no active session,
@@ -86,6 +87,11 @@ export function App({
   onRenameSessionRef.current = onRenameSession;
   const onCompactRef = useRef(onCompact);
   onCompactRef.current = onCompact;
+  const handlePreviewArtifactRef = useRef<(artifact: Artifact) => void>(() => {});
+  handlePreviewArtifactRef.current = (artifact) => {
+    setPreviewed(artifact);
+    setRightPanel('file');
+  };
 
   // Boolean dep: only re-run center when compact goes from undefined ↔ defined.
   const compactEnabled = onCompact !== undefined;
@@ -100,6 +106,21 @@ export function App({
           <span className="h-2 w-2 rounded-full" style={{ background: 'var(--accent-green)' }} />
           healthy
         </span>
+        {previewed && (
+          <button
+            type="button"
+            data-testid="file-preview-btn"
+            aria-pressed={rightPanel === 'file'}
+            onClick={() => setRightPanel((p) => (p === 'file' ? null : 'file'))}
+            title={previewed.name}
+            className={[
+              'rounded-pill border border-border-2 px-2 py-0.5 font-mono text-[11px] transition',
+              rightPanel === 'file' ? 'text-primary' : 'text-secondary hover:text-primary',
+            ].join(' ')}
+          >
+            {previewed.preview === 'doc' ? '⬚ md' : '⬚ file'}
+          </button>
+        )}
         <button
           type="button"
           onClick={() => setDebug((d) => !d)}
@@ -110,7 +131,7 @@ export function App({
         </button>
       </div>
     </div>
-  ), [debug, mode]);
+  ), [debug, mode, previewed, rightPanel]);
 
   const left = useMemo(() => (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -149,7 +170,7 @@ export function App({
     <>
       <div aria-live="polite" aria-label="Conversation" className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
         {turns.map((t) => (
-          <Turn key={t.id} turn={t} onPreviewArtifact={setPreviewed} />
+          <Turn key={t.id} turn={t} onPreviewArtifact={(a) => handlePreviewArtifactRef.current(a)} />
         ))}
       </div>
       <Composer
@@ -188,9 +209,11 @@ export function App({
         </div>
       );
     }
-    if (!previewed) return null;
-    return <FilePreview artifact={previewed} />;
-  }, [debug, previewed]);
+    if (rightPanel === 'file' && previewed) {
+      return <FilePreview artifact={previewed} />;
+    }
+    return null;
+  }, [debug, previewed, rightPanel]);
 
   return <ChatLayout topBar={topBar} left={left} center={center} right={right} />;
 }
