@@ -442,8 +442,18 @@ class AsyncOrchestrator:
         # cannot be refunded, preventing infinite loops from distinct cheap reads.
         cap = int(os.getenv("LABMATE_MAX_ITERATIONS", str(self.max_steps)))
         budget = IterationBudget(max_total=cap)
+        # Wall-clock deadline (guard layered on top of step counting). 0 disables.
+        deadline_s = float(os.getenv("LABMATE_GOAL_DEADLINE_S", "600"))
+        start = self._now()
         try:
             while True:
+                # Wall-clock guard: stop if this goal has run past its deadline.
+                if deadline_s > 0 and (self._now() - start) > deadline_s:
+                    return {
+                        "ok": False,
+                        "summary": "wall-clock deadline exceeded",
+                    }
+
                 # Hard absolute ceiling (prevents infinite loops of distinct cheap reads).
                 if not budget.record_turn():
                     return {"ok": False, "summary": "absolute turn limit exceeded"}
