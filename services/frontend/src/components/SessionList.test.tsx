@@ -67,4 +67,51 @@ describe('SessionList', () => {
 
     expect(screen.queryByTestId('session-delete')).not.toBeInTheDocument();
   });
+
+  it('shows rename button on hover and activates inline edit with existing title', () => {
+    const testSessions: Session[] = [
+      { id: 's1', title: 'My chat', mode: 'chat' as const, turnCount: 2,
+        contextTokens: 0, updatedAt: new Date().toISOString(), createdAt: new Date().toISOString() },
+    ];
+    const onRename = vi.fn();
+    const { container } = render(<SessionList sessions={testSessions} activeId={null} onOpen={() => {}} onRename={onRename} />);
+
+    const listItem = container.querySelector('li');
+    fireEvent.mouseEnter(listItem!);
+    const renameBtn = screen.getByTestId('session-rename');
+    expect(renameBtn).toBeInTheDocument();
+
+    fireEvent.click(renameBtn);
+    const input = screen.getByTestId('session-rename-input');
+    expect(input).toHaveValue('My chat');
+
+    fireEvent.change(input, { target: { value: 'New title' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onRename).toHaveBeenCalledWith('s1', 'New title');
+  });
+
+  it('cancels rename on Escape without calling onRename', () => {
+    const testSessions: Session[] = [
+      { id: 's1', title: 'My chat', mode: 'chat' as const, turnCount: 0,
+        contextTokens: 0, updatedAt: new Date().toISOString(), createdAt: new Date().toISOString() },
+    ];
+    const onRename = vi.fn();
+    const { container } = render(<SessionList sessions={testSessions} activeId={null} onOpen={() => {}} onRename={onRename} />);
+
+    const listItem = container.querySelector('li');
+    fireEvent.mouseEnter(listItem!);
+    fireEvent.click(screen.getByTestId('session-rename'));
+    fireEvent.keyDown(screen.getByTestId('session-rename-input'), { key: 'Escape' });
+    expect(onRename).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('session-rename-input')).not.toBeInTheDocument();
+  });
+
+  it('does not show rename button when onRename is not provided', () => {
+    const { container } = render(
+      <SessionList sessions={sessions} activeId={null} onOpen={() => {}} />
+    );
+    const listItem = container.querySelector('li');
+    fireEvent.mouseEnter(listItem!);
+    expect(screen.queryByTestId('session-rename')).not.toBeInTheDocument();
+  });
 });

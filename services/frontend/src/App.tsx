@@ -34,6 +34,7 @@ export interface AppProps {
   onOpenSession?: (id: string) => void;
   onNewSession?: (mode: Mode) => void;
   onDeleteSession?: (sessionId: string) => void;
+  onRenameSession?: (sessionId: string, title: string) => void;
   onCompact?: () => void;
   compacting?: boolean;
 }
@@ -51,6 +52,7 @@ export function App({
   onOpenSession = () => {},
   onNewSession = () => {},
   onDeleteSession = () => {},
+  onRenameSession = () => {},
   onCompact,
   compacting = false,
 }: AppProps) {
@@ -80,6 +82,8 @@ export function App({
   onNewSessionRef.current = onNewSession;
   const onDeleteSessionRef = useRef(onDeleteSession);
   onDeleteSessionRef.current = onDeleteSession;
+  const onRenameSessionRef = useRef(onRenameSession);
+  onRenameSessionRef.current = onRenameSession;
   const onCompactRef = useRef(onCompact);
   onCompactRef.current = onCompact;
 
@@ -135,7 +139,7 @@ export function App({
         </button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-2">
-        <SessionList sessions={sessions} activeId={activeSessionId} onOpen={(id) => onOpenSessionRef.current(id)} onDelete={(id) => onDeleteSessionRef.current(id)} />
+        <SessionList sessions={sessions} activeId={activeSessionId} onOpen={(id) => onOpenSessionRef.current(id)} onDelete={(id) => onDeleteSessionRef.current(id)} onRename={(id, title) => onRenameSessionRef.current(id, title)} />
       </div>
       <SystemFooter status={agentStatus} />
     </div>
@@ -151,6 +155,12 @@ export function App({
       <Composer
         onSend={(t) => {
           if (activeSessionId) {
+            // Auto-title: if this is the very first message, name the session from it
+            const activeSession = sessions.find((s) => s.id === activeSessionId);
+            if (activeSession && activeSession.turnCount === 0) {
+              const words = t.trim().split(/\s+/).slice(0, 4).join(' ');
+              onRenameSessionRef.current(activeSessionId, words);
+            }
             onSendRef.current(t);
           } else {
             pendingSendRef.current = t;
@@ -167,7 +177,7 @@ export function App({
         <ContextBar window={context} onCompact={compactEnabled ? () => { onCompactRef.current?.(); } : undefined} compacting={compacting} />
       </div>
     </>
-  ), [turns, context, compactEnabled, compacting, agentStatus, activeSessionId, mode]);
+  ), [turns, context, compactEnabled, compacting, agentStatus, activeSessionId, mode, sessions]);
 
   const right = useMemo(() => {
     if (debug) {

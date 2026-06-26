@@ -352,9 +352,13 @@ export function useLabmateWS(url: string, token: string | null, reconnectKey = 0
     dispatch({ type: 'SESSION_DELETED', sessionId });
   }, []);
 
+  const renameSession = useCallback((sessionId: string, title: string) => {
+    wsRef.current?.send(JSON.stringify({ type: 'session.rename', sessionId, title }));
+  }, []);
+
   const clearAuthError = useCallback(() => {
     dispatch({ type: 'AUTH_ERROR_HANDLED' });
   }, []);
 
-  return { state, send, newSession, openSession, setDebug, compact, cancel, deleteSession, clearAuthError };
+  return { state, send, newSession, openSession, setDebug, compact, cancel, deleteSession, renameSession, clearAuthError };
 }
