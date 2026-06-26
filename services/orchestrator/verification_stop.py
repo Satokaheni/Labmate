@@ -29,3 +29,19 @@ def needs_verification(
     if tests_passed:
         return False
     return nudges_used < max_nudges
+
+
+def build_verify_nudge(edited_files: set[str]) -> str:
+    """A synthetic user message that forces the agent back into the loop.
+
+    Deterministic (files sorted) so the appended tail stays byte-stable across
+    runs. Mirrors the hermes verification-stop nudge: run the verification
+    command, read any failure, repair the code, re-run, finish only on pass.
+    """
+    files = ", ".join(sorted(edited_files)) if edited_files else "the files you changed"
+    return (
+        f"You edited {files} but you have not shown that the tests pass. "
+        "Run the relevant verification command now (e.g. the run_tests tool, "
+        "or pytest / npm test via run_bash). Read any failure output, fix the "
+        "code, and re-run. Only call finish once the tests actually pass."
+    )
