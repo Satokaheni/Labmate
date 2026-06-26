@@ -27,13 +27,51 @@ def message_repair_enabled() -> bool:
     return os.getenv("ENABLE_MESSAGE_REPAIR", "1").strip().lower() not in _FALSEY
 
 
+def _declared_tool_call_ids(messages: list[dict]) -> set[str]:
+    """All tool_call ids declared by any assistant message in the list."""
+    ids: set[str] = set()
+    for m in messages:
+        if m.get("role") == "assistant":
+            for tc in m.get("tool_calls") or []:
+                tid = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+                if tid is not None:
+                    ids.add(tid)
+    return ids
+
+
+def _drop_orphan_tool_results(messages: list[dict]) -> list[dict]:
+    """Drop any tool message whose tool_call_id was never declared by a
+    PRECEDING assistant tool_calls entry. Uses a running set so a tool result
+    that appears BEFORE its assistant call is still treated as orphaned.
+    """
+    declared_so_far: set[str] = set()
+    out: list[dict] = []
+    for m in messages:
+        role = m.get("role")
+        if role == "assistant":
+            for tc in m.get("tool_calls") or []:
+                tid = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+                if tid is not None:
+                    declared_so_far.add(tid)
+            out.append(dict(m))
+        elif role == "tool":
+            if m.get("tool_call_id") in declared_so_far:
+                out.append(dict(m))
+            # else: orphaned → drop
+        else:
+            out.append(dict(m))
+    return out
+
+
 def sanitize_messages(messages: list[dict]) -> list[dict]:
     """Return a NEW, repaired copy of ``messages`` (see module docstring).
 
     Stub: filled in by later tasks. For now, a shallow copy so callers already
     get a new list (purity contract) without behavior change.
     """
-    return [dict(m) for m in messages]
+    if not messages:
+        return []
+    return _drop_orphan_tool_results(messages)
 
 
 def validate_messages(messages: list[dict]) -> list[str]:
