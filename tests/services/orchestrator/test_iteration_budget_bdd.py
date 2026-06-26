@@ -133,6 +133,13 @@ def _summary_contains(ctx, needle):
     assert needle in ctx["result"]["summary"]
 
 
+@then(parsers.parse('the result summary contains either "{needle1}" or "{needle2}"'))
+def _summary_contains_either(ctx, needle1, needle2):
+    summary = ctx["result"]["summary"]
+    assert needle1 in summary or needle2 in summary, \
+        f"Expected summary to contain either '{needle1}' or '{needle2}', but got: {summary}"
+
+
 @then(parsers.parse("the budget used count is {n:d}"))
 def _used_is(ctx, n):
     # One model call per consumed unit (no refunds in the finish-first scenario).

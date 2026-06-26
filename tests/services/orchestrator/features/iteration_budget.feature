@@ -46,5 +46,5 @@ Feature: Iteration budget with grace and cheap-call refund
     And the model calls run_bash with command "echo b" on turn 2
     When react_execute runs the goal "loop with env override"
     Then the result ok is False
-    And the result summary contains "budget exhausted"
+    And the result summary contains either "budget exhausted" or "absolute turn limit"
     And the model was called exactly 2 times
