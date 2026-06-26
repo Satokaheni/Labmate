@@ -25,6 +25,7 @@ from .local_tools import (
 )
 from .loop_detection import LoopDetector, call_signature
 from .iteration_budget import IterationBudget, CHEAP_TOOLS
+from .steer_inject import inject_steer
 from .progress_breaker import ProgressBreaker, ProgressStep
 from .message_repair import sanitize_messages, message_repair_enabled
 from .tool_grounding import ground_tool_result, DEFAULT_TOOL_RESULT_BUDGET
@@ -487,6 +488,35 @@ class AsyncOrchestrator:
         start = self._now()
         try:
             while True:
+                # ── Live interrupt: cancel + steer (top of every turn) ──────────
+                # task_id comes from the active EventEmitter (set per-task in
+                # main._handle); None in unit tests with no emitter / no redis,
+                # in which case both checks are skipped and the loop is unchanged.
+                try:
+                    _task_id = events.current_task_id()
+                except AttributeError:
+                    _task_id = None  # FakeEmitter in tests lacks _task_id
+                if _task_id is not None and self.redis is not None:
+                    # (1) Cancel — honest partial halt (this is the in-loop cancel
+                    #     check that was previously MISSING entirely).
+                    if await events.is_cancelled(self.redis, _task_id):
+                        await events.emit("turn.cancelled", task_id=_task_id, steps=budget.used)
+                        return {
+                            "ok": False,
+                            "summary": (
+                                "cancelled by user mid-turn; partial progress only — "
+                                "the requested work was not fully completed"
+                            ),
+                        }
+                    # (2) Steer — drain the pending mid-turn user instruction and
+                    #     inject it as a marked out-of-band user message on the LAST
+                    #     tool message (or a standalone user turn if none yet), so
+                    #     the next model call treats it as a genuine user steer.
+                    _steer = await events.read_and_clear_steer(self.redis, _task_id)
+                    if _steer:
+                        messages = inject_steer(messages, _steer)
+                        await events.emit("steer.injected", task_id=_task_id, text=_steer)
+
                 # Wall-clock guard: stop if this goal has run past its deadline.
                 if deadline_s > 0 and (self._now() - start) > deadline_s:
                     return {
