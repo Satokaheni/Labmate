@@ -24,6 +24,17 @@ from .local_tools import (
 )
 from .loop_detection import LoopDetector, call_signature
 from .iteration_budget import IterationBudget, CHEAP_TOOLS
+from .tool_grounding import ground_tool_result, DEFAULT_TOOL_RESULT_BUDGET
+
+# Max chars of RAW tool output (test results, file contents, bash stdout/stderr,
+# skill results) fed back into the ReAct context per tool call. Generous on
+# purpose: the weak local model must SEE real evidence, not a 600-char summary.
+# Over budget → ground_tool_result keeps a head + tail + marker (end-of-output
+# evidence like FAILED/assert lines survives). Replaces the old [:4000]/[:2000]
+# hard cuts. See services/orchestrator/tool_grounding.py.
+LABMATE_TOOL_RESULT_BUDGET = int(
+    os.getenv("LABMATE_TOOL_RESULT_BUDGET", str(DEFAULT_TOOL_RESULT_BUDGET))
+)
 
 # Sequencing strategy for react_execute (A/B knob — see eval/seq_ab):
 #   skill_first (DEFAULT): a confidently-matched skill runs deterministically and
@@ -492,7 +503,9 @@ class AsyncOrchestrator:
                             args.get("tool", ""),
                             args.get("arguments", {}),
                         )
-                        content = json.dumps(res)[:4000]
+                        content = ground_tool_result(
+                            json.dumps(res), LABMATE_TOOL_RESULT_BUDGET
+                        )
                         # Emit artifact.created if the skill produced a file
                         if isinstance(res, dict):
                             _result = res.get("result") if isinstance(res.get("result"), dict) else {}
@@ -548,7 +561,10 @@ class AsyncOrchestrator:
                                             default=str,
                                         )
                                 else:
-                                    content = json.dumps({"result": result}, default=str)
+                                    content = ground_tool_result(
+                                        json.dumps({"result": result}, default=str),
+                                        LABMATE_TOOL_RESULT_BUDGET,
+                                    )
                             except Exception as exc:
                                 content = json.dumps({"error": str(exc)})
                         else:
@@ -567,8 +583,11 @@ class AsyncOrchestrator:
                                         "timeout": 30000,
                                     },
                                 )
-                                content = "\n".join(
-                                    c.text for c in obs.content if hasattr(c, "text")
+                                content = ground_tool_result(
+                                    "\n".join(
+                                        c.text for c in obs.content if hasattr(c, "text")
+                                    ),
+                                    LABMATE_TOOL_RESULT_BUDGET,
                                 )
                             except Exception as exc:
                                 content = json.dumps({"error": str(exc)})
@@ -610,8 +629,11 @@ class AsyncOrchestrator:
                                     "code_semantic_search",
                                     {"query": args.get("query", ""), "k": args.get("k", 8)},
                                 )
-                                content = "\n".join(
-                                    c.text for c in obs.content if hasattr(c, "text")
+                                content = ground_tool_result(
+                                    "\n".join(
+                                        c.text for c in obs.content if hasattr(c, "text")
+                                    ),
+                                    LABMATE_TOOL_RESULT_BUDGET,
                                 )
                             except Exception as exc:
                                 content = json.dumps({"error": str(exc)})
