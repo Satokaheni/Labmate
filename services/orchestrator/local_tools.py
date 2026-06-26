@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import shlex
 import time
 import uuid
 from typing import Any
@@ -29,6 +31,59 @@ LOCAL_TOOL_NAMES: frozenset[str] = frozenset({"read_file", "write_file", "list_d
 TOOL_RESULTS_PREFIX = "labmate:tool-results:"
 TOOL_RESULTS_MAXLEN = 200
 DEFAULT_TIMEOUT_S = 30.0
+
+RUN_TESTS_DEFAULT_CMD = "pytest"
+RUN_TESTS_TIMEOUT_MS_DEFAULT = 120000
+
+
+def build_run_tests_command(args: dict[str, Any]) -> tuple[str, int]:
+    """Pure builder: ReAct tool args -> (shell command string, timeout_ms).
+
+    The base runner is LABMATE_TEST_CMD (default "pytest"); callers may scope
+    the run with args["path"] (a file/dir/nodeid) and args["expr"] (a pytest
+    -k expression). Timeout precedence: args["timeout_ms"] > LABMATE_TEST_TIMEOUT_MS
+    > RUN_TESTS_TIMEOUT_MS_DEFAULT. No subprocess is launched here — this is a
+    pure, unit-testable shaping function; execution happens via the bash seam.
+    """
+    base = os.getenv("LABMATE_TEST_CMD", RUN_TESTS_DEFAULT_CMD).strip() or RUN_TESTS_DEFAULT_CMD
+    parts = [base]
+
+    path = str(args.get("path") or "").strip()
+    if path:
+        parts.append(shlex.quote(path) if (" " in path) else path)
+
+    expr = str(args.get("expr") or "").strip()
+    if expr:
+        # A multi-word -k expression ("a or b") must be a single shell arg.
+        parts.append("-k")
+        parts.append(shlex.quote(expr) if (" " in expr) else expr)
+
+    command = " ".join(parts)
+
+    timeout_ms = args.get("timeout_ms")
+    if timeout_ms is None:
+        env_to = os.getenv("LABMATE_TEST_TIMEOUT_MS")
+        timeout_ms = int(env_to) if env_to else RUN_TESTS_TIMEOUT_MS_DEFAULT
+    else:
+        timeout_ms = int(timeout_ms)
+
+    return command, timeout_ms
+
+
+def shape_run_tests_result(exit_code: int, raw_output: str) -> dict[str, Any]:
+    """Pure shaper: a finished test run -> {ok, exit_code, raw_output}.
+
+    `ok` mirrors the real process exit code (0 == pass). `raw_output` is the
+    RAW combined stdout/stderr, only tail-truncated to 8000 chars — NEVER
+    summarized, so the model sees real pass/fail text (the failing-assertion
+    lines) and cannot fabricate "all tests pass".
+    """
+    raw = raw_output or ""
+    return {
+        "ok": int(exit_code) == 0,
+        "exit_code": int(exit_code),
+        "raw_output": raw[-8000:],
+    }
 
 
 def _current_task_id() -> str:
