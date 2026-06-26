@@ -170,6 +170,29 @@ This workflow applies to every implementation task in this repo. Never deviate f
 
 ---
 
+## Harness Robustness — Single-Intent Hardening (2026-06-25)
+
+Branch `feat/harness-robustness` (off `994df92`). Eight features added to harden the single-intent ReAct harness, derived from a comparison with the `hermes-agent` and `openclaw` harnesses. All built TDD/BDD via the Implementation Workflow above (39 tasks, haiku-implement → opus-judge, then per-plan + whole-branch opus review). Suite: orchestrator + memory **684 passed**. Plans live in `docs/superpowers/plans/2026-06-25-*.md`.
+
+| Feature | New module | Wires into | Env knobs (default) |
+|---|---|---|---|
+| Error classification | `services/orchestrator/error_classifier.py` (`ErrorClass`, `classify_error`) | `graph.py` `execute_node` — replaced the `_NONRETRYABLE_ERROR_MARKERS` substring test; terminal classes skip retry, rate-limited gets bounded backoff | `MAX_RATE_LIMIT_RETRIES=1`, `RATE_LIMIT_BACKOFF_SECONDS=2.0` |
+| Tool-loop detection | `services/orchestrator/loop_detection.py` (`LoopDetector`) | `coding_orchestrator.py` `react_execute` — breaks early on repeated/cycling tool calls; emits `loop.detected` | `LOOP_REPEAT_LIMIT=2` |
+| Stateful reflection | `collect_prior_reflections()` in `graph.py` | `reflect` node — feeds prior per-goal reflections into the diagnosis prompt (reflection messages now tagged with `goal_id`) | — (uses `REFLECT_THINKING_BUDGET`) |
+| Conditional gates | `services/orchestrator/task_complexity.py` (`classify_complexity`, `conditional_gates_enabled`) | `graph.py` `assess_ambiguity` + `ambiguity_router` + `verify_router` — skips ambiguity/verify gates for trivial tasks | `ENABLE_CONDITIONAL_GATES=0` (**OFF by default**), `TRIVIAL_MAX_WORDS=12` |
+| Iteration budget | `services/orchestrator/iteration_budget.py` (`IterationBudget`) | `coding_orchestrator.py` `react_execute` — replaced the `range(max_steps)` cap with consume/refund + one-shot grace call + absolute turn cap | `LABMATE_MAX_ITERATIONS` (default = `max_steps`, 6) |
+| Prefix-cache stability | `services/orchestrator/prompt_assembler.py` (`PromptAssembler`) | `coding_orchestrator.py` `react_execute` — builds a byte-stable system+tools prefix once per goal so llama.cpp reuses the cached prefix | — |
+| Endpoint failover | `services/orchestrator/model_client.py` (`acompletion_with_failover`, `AllEndpointsExhausted`, `resolve_bases`) | `coding_orchestrator.py` — routes architect/editor/react/aggregate/stream model calls; fails over on 5xx/conn/timeout, 4xx is terminal | `LABMATE_FALLBACK_BASES=""`, `LABMATE_MODEL_MAX_ATTEMPTS_PER_BASE=2`, `LABMATE_MODEL_BACKOFF_BASE_S=0.5`, `LABMATE_MODEL_BACKOFF_MAX_S=4.0` |
+| BDD foundation | `tests/conftest.py` `fake_model` (respx HTTP-seam mock) | pytest-bdd layer: `tests/services/orchestrator/features/*.feature` + `test_*_bdd.py`; `bdd` marker in `pytest.ini` | — |
+
+**Notes for testing:**
+- **Conditional gates are OFF by default** — export `ENABLE_CONDITIONAL_GATES=1` to exercise them.
+- New additive `State` fields: `error_class` (error-classification); `complexity`, `skip_ambiguity`, `skip_verify` (conditional-gates). No removals.
+- Error-classification (skill-failure retry policy) and endpoint-failover (transport-error retry) deliberately use **separate** classifiers — the whole-branch review confirmed they are distinct concerns, not a duplication to consolidate.
+- BDD step defs run async orchestrator code via a shared async-run helper in `tests/conftest.py`; pytest-bdd scenarios are tagged `@mocked` and use the `fake_model` fixture (no GPU).
+
+---
+
 ## Live E2E Verification
 
 Run these after any change to confirm the stack still works. Start services in order:
@@ -250,6 +273,37 @@ Acceptance: new skill ≥ 0.80, no existing skill drops > 0.05. If a skill mis-r
 | `MCP bridge did not become ready` | Bridge crash or missing `dist/index.js` — run `npm run build` in `services/mcp-bridge/` |
 | `llama-server` 5xx / timeout | Model not loaded or VRAM OOM |
 | ws_gateway `auth_failed` | JWT credentials wrong or `ADMIN_EMAIL`/`ADMIN_PASSWORD` not seeded |
+
+### 7. Harness-robustness feature checks (the 8 features above)
+
+These are unit/BDD-covered (`PYTHONPATH=. python -m pytest tests/services/orchestrator/ -q` → all green). To exercise them **live** on RunPod, watch `.data/logs/orchestrator.log` while pushing tasks:
+
+```bash
+# Conditional gates — OFF by default; enable, then a trivial task should skip the ambiguity + verify gates
+ENABLE_CONDITIONAL_GATES=1 infrastructure/local/start.sh   # (or export before starting the orchestrator)
+PYTHONPATH=. python -m services.cli "What is 2+2? Reply in one sentence."
+#   log: assess_ambiguity skipped (trivial) + verify skipped → faster turn. An ambiguous task ("improve it") still gates.
+
+# Error classification — a skill failing for an environmental/terminal reason must NOT retry to exhaustion
+PYTHONPATH=. python -m services.cli "Run this code in the sandbox: print(1)"   # if Docker absent → TERMINAL_DEPENDENCY
+#   log: classify_error → terminal class → finalized WITHOUT MAX_GOAL_ATTEMPTS retry loop (fast fail, not 2x reflect).
+
+# Endpoint failover — point primary at a dead port with a working fallback; confirm failover, not a hard error
+GEMMA_BASE="http://localhost:9999/v1" LABMATE_FALLBACK_BASES="http://localhost:8000/v1" \
+  PYTHONPATH=. python -m services.cli "Say hello."
+#   log: primary endpoint conn-refused → failover to fallback → success. All-dead → AllEndpointsExhausted (terminal).
+
+# Iteration budget — a long multi-step task should get a grace call near the cap, not a hard mid-step cut
+#   log: "budget exhausted" with a final grace turn; cheap read-only tool turns are refunded.
+
+# Tool-loop detection — if the Q4 model repeats the same tool+args, the loop breaks early
+#   log: loop.detected (reason=repeat|cycle) instead of thrashing to the iteration cap.
+
+# Stateful reflection — a goal that fails twice: the 2nd reflect prompt includes the 1st reflection
+#   log (reflect node): prior-reflection text present + "do not repeat" instruction on attempt 2.
+```
+
+Knobs to tune live: `LOOP_REPEAT_LIMIT`, `TRIVIAL_MAX_WORDS`, `LABMATE_MAX_ITERATIONS`, `MAX_RATE_LIMIT_RETRIES`, `LABMATE_MODEL_MAX_ATTEMPTS_PER_BASE`. See the Harness Robustness table for defaults.
 
 ---
 
