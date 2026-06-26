@@ -184,6 +184,7 @@ Branch `feat/harness-robustness` (off `994df92`). Eight features added to harden
 | Prefix-cache stability | `services/orchestrator/prompt_assembler.py` (`PromptAssembler`) | `coding_orchestrator.py` `react_execute` — builds a byte-stable system+tools prefix once per goal so llama.cpp reuses the cached prefix | — |
 | Endpoint failover | `services/orchestrator/model_client.py` (`acompletion_with_failover`, `AllEndpointsExhausted`, `resolve_bases`) | `coding_orchestrator.py` — routes architect/editor/react/aggregate/stream model calls; fails over on 5xx/conn/timeout, 4xx is terminal | `LABMATE_FALLBACK_BASES=""`, `LABMATE_MODEL_MAX_ATTEMPTS_PER_BASE=2`, `LABMATE_MODEL_BACKOFF_BASE_S=0.5`, `LABMATE_MODEL_BACKOFF_MAX_S=4.0` |
 | BDD foundation | `tests/conftest.py` `fake_model` (respx HTTP-seam mock) | pytest-bdd layer: `tests/services/orchestrator/features/*.feature` + `test_*_bdd.py`; `bdd` marker in `pytest.ini` | — |
+| Wall-clock + no-progress breaker | `services/orchestrator/progress_breaker.py` (`ProgressBreaker`, `ProgressStep`) | `coding_orchestrator.py` `_run_react_loop` — per-turn wall-clock deadline (injectable clock) + idle breaker that trips after N no-progress turns; both layered on top of `IterationBudget` step counting | `LABMATE_GOAL_DEADLINE_S=600` (0 disables), `LABMATE_NOPROGRESS_LIMIT=5` (0 disables) |
 
 **Notes for testing:**
 - **Conditional gates are OFF by default** — export `ENABLE_CONDITIONAL_GATES=1` to exercise them.
