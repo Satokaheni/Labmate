@@ -68,6 +68,12 @@ class State(TypedDict, total=False):
     clarification_question: str       # the single question to surface to the user
     # FIX 10: direct-answer fast-path
     direct_answer: bool               # True when the plan node answered a skill-less single intent directly
+    # Conditional gates (skip ambiguity/verify for trivial tasks). Additive; all
+    # default-absent (State is total=False). complexity stores the classifier's
+    # serialized verdict for events/debugging; skip_* are the committed routing flags.
+    complexity: dict                  # {"skip_ambiguity": bool, "skip_verify": bool, "reason": str}
+    skip_ambiguity: bool              # committed by assess_ambiguity; read by ambiguity_router
+    skip_verify: bool                 # committed by assess_ambiguity; read by verify_router
 
 
 def now_iso() -> str:
