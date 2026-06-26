@@ -67,3 +67,16 @@ async def test_run_curator_swallows_draft_failure(tmp_path):
         now=200 * HOUR, idle_for_s=9999,
     )
     assert out is None  # best-effort: failure is swallowed, no raise
+
+
+from services.orchestrator.main import _extract_tool_sequence
+
+
+def test_extract_tool_sequence_reads_state_tools():
+    state = {"tools_used": ["code-review", "edit_file"], "error": None}
+    assert _extract_tool_sequence(state) == ("code-review", "edit_file")
+
+
+def test_extract_tool_sequence_empty_when_absent():
+    assert _extract_tool_sequence({"error": None}) == ()
+    assert _extract_tool_sequence("not a dict") == ()
