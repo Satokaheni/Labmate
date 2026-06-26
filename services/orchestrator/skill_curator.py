@@ -15,10 +15,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
+import tempfile
 from collections import deque
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
+from services.orchestrator import events
 from services.orchestrator.skill_telemetry import SkillState, compute_state
 
 log = logging.getLogger("skill_curator")  # -> stderr via host handlers
@@ -161,3 +164,89 @@ def sweep_transitions(
         )
         verdicts[u.name] = state.value
     return verdicts
+
+
+_STUB_TEMPLATE = '''\
+# ============================================================================
+# NOT FUNCTIONAL — agent-drafted scaffold. DO NOT ACTIVATE AS-IS.
+# A human must implement this MCP server, verify it, then move this skill out
+# of `.proposed/` to activate it. The curator NEVER ships a runnable server.
+# ============================================================================
+"""Proposed skill server scaffold for: {name}
+
+Candidate derived from a successful tool sequence:
+    {tools}
+"""
+
+
+def main() -> None:
+    raise NotImplementedError(
+        "Proposed skill {name!r} has no implemented server yet. "
+        "Implement the MCP server, then move this skill out of .proposed/."
+    )
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+
+def _render_skill_md(seq: "CapturedSequence", description: str) -> str:
+    steps = "\n".join(f"{i}. Use `{t}`" for i, t in enumerate(seq.tools, start=1))
+    # Hand-written frontmatter (write-side) — keep it simple + deterministic.
+    return (
+        "---\n"
+        f"name: {seq.name}\n"
+        f"description: {description}\n"
+        "provenance: agent-created\n"
+        "status: proposed\n"
+        "---\n"
+        f"# {seq.name} (PROPOSED — pending human review)\n\n"
+        f"{description}\n\n"
+        f"Derived from goal: {seq.goal}\n\n"
+        "## Distilled step sequence\n\n"
+        f"{steps}\n"
+    )
+
+
+async def propose_skill(
+    skills_root: "Path",
+    seq: "CapturedSequence",
+    description: str,
+) -> "Path | None":
+    """Atomically stage a `.proposed/<name>/` draft and emit `skill.proposed`.
+
+    PROPOSAL-ONLY: writes ONLY under `skills_root/.proposed/`, produces a
+    non-functional `server.py.stub`, and never activates the skill. Best-effort:
+    returns None on failure (logged DEBUG). Idempotent: re-proposing replaces the
+    prior draft.
+    """
+    try:
+        proposed_root = Path(skills_root) / PROPOSED_DIRNAME
+        proposed_root.mkdir(parents=True, exist_ok=True)
+        dest = proposed_root / seq.name
+
+        # Build the full draft in a temp dir, then atomically swap it into place
+        # so a half-written draft is never observable.
+        tmp = Path(tempfile.mkdtemp(prefix=f"{seq.name}.", dir=proposed_root))
+        try:
+            (tmp / "SKILL.md").write_text(
+                _render_skill_md(seq, description), encoding="utf-8"
+            )
+            (tmp / "server.py.stub").write_text(
+                _STUB_TEMPLATE.format(name=seq.name, tools=", ".join(seq.tools)),
+                encoding="utf-8",
+            )
+            if dest.exists():
+                shutil.rmtree(dest)
+            os.replace(tmp, dest)
+        finally:
+            if tmp.exists():
+                shutil.rmtree(tmp, ignore_errors=True)
+
+        await events.emit(SKILL_PROPOSED_EVENT, name=seq.name, path=str(dest))
+        log.info("proposed skill draft staged: %s", dest)
+        return dest
+    except Exception as exc:  # best-effort — never propagate into goal execution
+        log.debug("propose_skill failed for %s: %s", getattr(seq, "name", "?"), exc)
+        return None
