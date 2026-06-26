@@ -164,8 +164,8 @@ async def test_no_steer_no_cancel_unchanged(orch_with_redis):
 
 def _bash_read_write_then_finish():
     """Four model responses: turn 1 calls write_file (non-refundable), turn 2 calls read_file,
-    turn 3 calls run_bash, turn 4 calls finish. Different tools to avoid
-    loop detection. Ordered so first consumed turn is turn 1, steer injects on turn 2."""
+    turn 3 calls write_file (non-refundable, distinct args), turn 4 calls finish. Different tools/args
+    to avoid loop detection. Ordered so first consumed turn is turn 1, steer injects on turn 2."""
     def _mk_write():
         tc = MagicMock()
         tc.id = "c1"
@@ -200,12 +200,13 @@ def _bash_read_write_then_finish():
         }
         return MagicMock(choices=[MagicMock(message=msg)])
 
-    def _mk_bash():
+    def _mk_write_second():
+        """Second write_file with distinct args to avoid loop detection."""
         tc = MagicMock()
         tc.id = "c3"
         tc.function = MagicMock()
-        tc.function.name = "run_bash"
-        tc.function.arguments = json.dumps({"command": "ls"})
+        tc.function.name = "write_file"
+        tc.function.arguments = json.dumps({"path": "/tmp/test2.py", "content": "# test2"})
         msg = MagicMock()
         msg.content = None
         msg.tool_calls = [tc]
@@ -213,7 +214,7 @@ def _bash_read_write_then_finish():
         msg.model_dump = lambda: {
             "role": "assistant", "content": "",
             "tool_calls": [{"id": "c3", "type": "function",
-                            "function": {"name": "run_bash", "arguments": "{}"}}],
+                            "function": {"name": "write_file", "arguments": "{}"}}],
         }
         return MagicMock(choices=[MagicMock(message=msg)])
 
@@ -230,7 +231,7 @@ def _bash_read_write_then_finish():
         msg.model_dump = lambda: {"role": "assistant", "content": "", "tool_calls": []}
         return MagicMock(choices=[MagicMock(message=msg)])
 
-    return [_mk_write(), _mk_read(), _mk_bash(), _mk_finish()]
+    return [_mk_write(), _mk_read(), _mk_write_second(), _mk_finish()]
 
 
 @pytest.mark.asyncio
