@@ -117,7 +117,7 @@ def five_prior_reflections(ctx, gid, first, last):
 def reflect_runs(ctx):
     import asyncio
     reflect, mock_orch = _build_reflect()
-    out = asyncio.get_event_loop().run_until_complete(_run(reflect, _state(ctx)))
+    out = asyncio.run(_run(reflect, _state(ctx)))
     ctx["node_output"] = out
     ctx["captured_prompt"] = mock_orch.architect.call_args.args[0]
     return True
