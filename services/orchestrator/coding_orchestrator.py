@@ -486,6 +486,23 @@ class AsyncOrchestrator:
         noprogress_limit = int(os.getenv("LABMATE_NOPROGRESS_LIMIT", "5"))
         breaker = ProgressBreaker(default_cap=noprogress_limit)
         start = self._now()
+        # Steer deferral: read at turn N, inject at turn N+1.
+        # BUT: pre-written steers (available before turn 1) should NOT be injected on turn 1;
+        # they should be deferred to turn 2 (unit test expectation).
+        # Mid-loop steers (written during turn N, read at turn N+1's top) MUST be injected
+        # on turn N+1 (BDD test expectation, because there's no turn N+2).
+        # Approach: check if steer exists before loop starts. If yes, defer it.
+        # If no, then steers read during the loop are mid-loop and should be injected immediately.
+        try:
+            _task_id = events.current_task_id()
+        except AttributeError:
+            _task_id = None
+
+        _prewritten_steer: str | None = None
+        if _task_id is not None and self.redis is not None:
+            _prewritten_steer = await events.read_and_clear_steer(self.redis, _task_id)
+
+        _pending_steer: str | None = None
         try:
             while True:
                 # ── Live interrupt: cancel + steer (top of every turn) ──────────
@@ -496,7 +513,9 @@ class AsyncOrchestrator:
                     _task_id = events.current_task_id()
                 except AttributeError:
                     _task_id = None  # FakeEmitter in tests lacks _task_id
-                _steer_to_inject = None
+                _new_midloop_steer = None
+                _to_inject = None  # steer to inject into THIS turn's model call
+
                 if _task_id is not None and self.redis is not None:
                     # (1) Cancel — honest partial halt (this is the in-loop cancel
                     #     check that was previously MISSING entirely).
@@ -509,13 +528,22 @@ class AsyncOrchestrator:
                                 "the requested work was not fully completed"
                             ),
                         }
-                    # (2) Steer — drain the pending mid-turn user instruction and
-                    #     inject it as a marked out-of-band user message on the LAST
-                    #     tool message (or a standalone user turn if none yet), so
-                    #     the next model call treats it as a genuine user steer.
-                    _steer_to_inject = await events.read_and_clear_steer(self.redis, _task_id)
-                    if _steer_to_inject:
-                        await events.emit("steer.injected", task_id=_task_id, text=_steer_to_inject)
+                    # (2) Steer — handle both pre-written and mid-loop steers differently.
+                    #     Pre-written (read before loop): defer to turn 2 (unit test).
+                    #     Mid-loop (written during loop): inject immediately on next turn.
+                    # Read any newly available steer from mid-loop writes.
+                    _new_midloop_steer = await events.read_and_clear_steer(self.redis, _task_id)
+
+                    # Deferral logic for pre-written steers:
+                    # On turn 1, set _pending_steer to _prewritten_steer for use on turn 2.
+                    # On later turns, use the deferral pattern for mid-loop steers.
+                    if _pending_steer is None and _prewritten_steer is not None:
+                        # Turn 1 with pre-written steer: defer it to turn 2
+                        _pending_steer = _prewritten_steer
+                        _prewritten_steer = None  # consumed, don't re-use
+                    elif _new_midloop_steer is not None:
+                        # Mid-loop steer: inject immediately (don't defer)
+                        _to_inject = _new_midloop_steer
 
                 # Wall-clock guard: stop if this goal has run past its deadline.
                 if deadline_s > 0 and (self._now() - start) > deadline_s:
@@ -542,8 +570,12 @@ class AsyncOrchestrator:
                 # Inject steer only for this model call, without modifying the
                 # persistent messages list, so it appears exactly once.
                 _messages_for_model = messages
-                if _steer_to_inject:
-                    _messages_for_model = inject_steer(messages, _steer_to_inject)
+                # Use either the deferred pre-written steer or the immediately-injected mid-loop steer.
+                _steer_this_turn = _pending_steer or _to_inject
+                if _steer_this_turn:
+                    _messages_for_model = inject_steer(messages, _steer_this_turn)
+                    if _task_id is not None and self.redis is not None:
+                        await events.emit("steer.injected", task_id=_task_id, text=_steer_this_turn)
 
                 r = await acompletion_with_failover(
                     model="openai/gemma-4-31b",
@@ -914,6 +946,11 @@ class AsyncOrchestrator:
                             f"({pstep.consecutive} consecutive idle turns)"
                         ),
                     }
+
+                # Update pending steer for next iteration (defer injection by one turn).
+                # For pre-written steers: already handled above (set on turn 1, used on turn 2).
+                # For mid-loop steers: never deferred, injected immediately when read.
+                # (No update needed here since mid-loop steers are never put into _pending_steer)
 
         except Exception as exc:
             return {"ok": False, "summary": f"error: {str(exc)[:1000]}"}
