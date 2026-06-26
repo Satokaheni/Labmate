@@ -12,6 +12,7 @@ from aiolimiter import AsyncLimiter
 
 from .types import Goal, State, Status, get_ready_goals, update_status, now_iso
 from . import events
+from .prompt_assembler import PromptAssembler
 from .local_tools import LOCAL_TOOL_NAMES, request_local_tool
 from .loop_detection import LoopDetector, call_signature
 import os
@@ -270,149 +271,16 @@ class AsyncOrchestrator:
                         text = json.dumps(res, default=str)
                 return {"ok": ok, "summary": text[:2000]}
 
-        # Build tool list
-        tools = []
-        if self.skill_router is not None:
-            tools.append(self.skill_router.runner.tool_schema())
-            # Only include call_skill_tool when skill_router is available
-            tools.append({
-                "type": "function",
-                "function": {
-                    "name": "call_skill_tool",
-                    "description": "Execute a tool within a loaded skill.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "skill": {"type": "string", "description": "Skill name"},
-                            "tool": {"type": "string", "description": "Tool name"},
-                            "arguments": {"type": "object", "description": "Tool arguments"},
-                        },
-                        "required": ["skill", "tool", "arguments"],
-                    },
-                },
-            })
-
-        # Semantic code search — available when the codegraph-embedder MCP server is running
-        if self.codegraph_mcp is not None:
-            tools.append({
-                "type": "function",
-                "function": {
-                    "name": "code_semantic_search",
-                    "description": (
-                        "Search the codebase by meaning. Returns the top-k symbols "
-                        "(functions, classes, methods) most semantically relevant to the query. "
-                        "Use when you need to find code by what it DOES rather than what it's named."
-                    ),
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {"type": "string", "description": "Natural language description of what to find"},
-                            "k":     {"type": "integer", "description": "Number of results (max 20)", "default": 8},
-                        },
-                        "required": ["query"],
-                    },
-                },
-            })
-
-        # Always include run_bash and finish
-        tools.extend([
-            {
-                "type": "function",
-                "function": {
-                    "name": "read_file",
-                    "description": "Read a UTF-8 text file from the user's local workspace.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "description": "Workspace-relative file path"},
-                        },
-                        "required": ["path"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "write_file",
-                    "description": "Write (create or overwrite) a UTF-8 text file in the user's local workspace.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "description": "Workspace-relative file path"},
-                            "content": {"type": "string", "description": "Full file contents to write"},
-                        },
-                        "required": ["path", "content"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "list_dir",
-                    "description": "List entries of a directory in the user's local workspace.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "description": "Workspace-relative directory path"},
-                        },
-                        "required": ["path"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "run_bash",
-                    "description": "Run a bash command in the workspace.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "command": {"type": "string", "description": "Bash command"},
-                        },
-                        "required": ["command"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "finish",
-                    "description": "Finish the task and return the summary.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "summary": {"type": "string", "description": "Task summary"},
-                        },
-                        "required": ["summary"],
-                    },
-                },
-            },
-        ])
-
-        # Build system prompt with catalog
-        catalog = ""
-        if self.skill_router is not None:
-            catalog = self.skill_router.runner.catalog_prompt()
-
-        system = (
-            "You are an execution agent with access to specialized SKILLS plus a generic shell. "
-            "CRITICAL RULE: if ANY available skill matches the task, you MUST accomplish it with "
-            "that skill — call load_skill(name) to read its instructions, then "
-            "call_skill_tool(skill, tool, arguments) to run the right tool. Do NOT use run_bash to "
-            "hand-replicate what a skill already does (e.g. do not grep/sed/write files yourself "
-            "when a code-search, test-generation, parsing, audit, or documentation skill exists). "
-            "Use run_bash ONLY when no available skill fits the task. "
-            "Do NOT call finish until the work is actually done — and when a matching skill exists, "
-            "finish only AFTER call_skill_tool has returned its result. Call finish(summary) to end. "
-            "SANDBOX RULE: run_bash is for read-only inspection (ls, cat, grep, git status) only. "
-            "Any code you author or execute — Python, Node, shell scripts, pytest — MUST go through "
-            "the code-sandbox skill (load_skill('code-sandbox') then call_skill_tool), NEVER run_bash."
+        # Build the prefix ONCE per goal. The same frozen system message and tools
+        # list are reused on every ReAct step below, so llama-server's longest-common-
+        # prefix prompt cache hits and only the appended tail is recomputed.
+        assembler = PromptAssembler(
+            skill_router=self.skill_router,
+            codegraph_enabled=self.codegraph_mcp is not None,
         )
-        if catalog:
-            system += f"\n\n{catalog}"
-
+        tools = assembler.tools()                 # frozen list — never rebuilt per step
         messages = [
-            {"role": "system", "content": system},
+            assembler.system_message(),           # frozen system dict at index 0
             {"role": "user", "content": goal},
         ]
 

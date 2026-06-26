@@ -1243,9 +1243,32 @@ async def test_react_file_tool_with_no_redis_returns_error():
     assert out["summary"] == "done"
 
 
+@pytest.mark.asyncio
+async def test_react_execute_builds_prompt_assembler_once_per_goal():
+    """The ReAct loop constructs exactly one PromptAssembler per react_execute call."""
+    from services.orchestrator.coding_orchestrator import AsyncOrchestrator
+    orch = AsyncOrchestrator(skill_router=None, mcp=None, max_steps=3)
+
+    # Step 1: run_bash (no mcp -> returns error dict, loop continues). Step 2: finish.
+    r1 = _msg_with_tool_call("run_bash", '{"command":"ls"}')
+    r2 = _msg_with_tool_call("finish", '{"summary":"done"}')
+    resp1 = MagicMock(choices=[MagicMock(message=r1)])
+    resp2 = MagicMock(choices=[MagicMock(message=r2)])
+
+    with patch("services.orchestrator.coding_orchestrator.PromptAssembler") as MockPA:
+        instance = MockPA.return_value
+        instance.system_message.return_value = {"role": "system", "content": "SYS"}
+        instance.tools.return_value = [{"type": "function", "function": {"name": "finish"}}]
+        with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
+                   new_callable=AsyncMock, side_effect=[resp1, resp2]):
+            out = await orch.react_execute("inspect then finish")
+
+    assert out["ok"] is True
+    # Exactly one assembler for the whole goal — not one per step.
+    assert MockPA.call_count == 1
+
+
 def test_react_system_prompt_directs_code_to_sandbox():
-    import inspect
-    from services.orchestrator import coding_orchestrator
-    src = inspect.getsource(coding_orchestrator.AsyncOrchestrator.react_execute)
-    assert "code-sandbox" in src
-    assert "run_bash" in src
+    from services.orchestrator.prompt_assembler import BASE_SYSTEM_PROMPT
+    assert "code-sandbox" in BASE_SYSTEM_PROMPT
+    assert "run_bash" in BASE_SYSTEM_PROMPT
