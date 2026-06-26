@@ -189,3 +189,58 @@ class TestClassifyComplexity:
         # Call it again; environment unchanged.
         result_after = classify_complexity(task, enabled=True)
         assert result_before == result_after
+
+    def test_long_what_is_query_does_not_skip_ambiguity(self):
+        """A 'what is' query >12 words should NOT skip ambiguity gate.
+
+        This test verifies that the TRIVIAL_MAX_WORDS guard is enforced.
+        The query 'What is the best way to architect a distributed multi-tenant
+        streaming pipeline with exactly-once semantics...' is 22 words and should
+        NOT be classified as a trivial fact lookup.
+        """
+        # A long "what is" query (22 words)
+        task = (
+            "What is the best way to architect a distributed multi-tenant "
+            "streaming pipeline with exactly-once semantics and fault tolerance?"
+        )
+        result = classify_complexity(task, enabled=True)
+        # Should NOT skip ambiguity because it exceeds the default 12-word limit
+        assert result.skip_ambiguity is False
+        assert result.skip_verify is False
+        assert "complex" in result.reason.lower()
+
+    def test_trivial_max_words_env_var_respected(self):
+        """TRIVIAL_MAX_WORDS env var limits when tasks skip ambiguity.
+
+        With TRIVIAL_MAX_WORDS=5, a 6-word 'What is X?' should NOT skip.
+        """
+        original = os.environ.get("TRIVIAL_MAX_WORDS")
+        try:
+            os.environ["TRIVIAL_MAX_WORDS"] = "5"
+            # 6-word task
+            task = "What is the capital of France today?"
+            result = classify_complexity(task, enabled=True)
+            # Should NOT skip because 6 words > 5 word limit
+            assert result.skip_ambiguity is False
+        finally:
+            if original is not None:
+                os.environ["TRIVIAL_MAX_WORDS"] = original
+            else:
+                os.environ.pop("TRIVIAL_MAX_WORDS", None)
+
+    def test_simple_fact_within_limit_skips(self):
+        """A simple fact query within the word limit DOES skip ambiguity."""
+        original = os.environ.get("TRIVIAL_MAX_WORDS")
+        try:
+            os.environ["TRIVIAL_MAX_WORDS"] = "10"
+            # 5-word task (well within 10-word limit)
+            task = "What is the capital of France?"
+            result = classify_complexity(task, enabled=True)
+            # Should skip ambiguity because 5 words <= 10 word limit
+            assert result.skip_ambiguity is True
+            assert result.skip_verify is True
+        finally:
+            if original is not None:
+                os.environ["TRIVIAL_MAX_WORDS"] = original
+            else:
+                os.environ.pop("TRIVIAL_MAX_WORDS", None)

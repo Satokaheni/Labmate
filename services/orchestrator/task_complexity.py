@@ -32,6 +32,18 @@ def conditional_gates_enabled() -> bool:
     return os.getenv("ENABLE_CONDITIONAL_GATES", "0").strip().lower() not in _FALSEY
 
 
+def _trivial_max_words() -> int:
+    """Get the max word count for a task to be eligible as trivial.
+
+    Reads TRIVIAL_MAX_WORDS env var (default 12). Returns the integer value,
+    or 12 if the env var is not a valid integer.
+    """
+    try:
+        return int(os.getenv("TRIVIAL_MAX_WORDS", "12"))
+    except (TypeError, ValueError):
+        return 12
+
+
 def classify_complexity(
     task: str,
     *,
@@ -57,6 +69,8 @@ def classify_complexity(
 
     # Normalize: lowercase, strip whitespace
     normalized = task.lower().strip()
+    word_count = len(task.split())
+    max_trivial_words = _trivial_max_words()
 
     # Pattern 1: Simple arithmetic/math queries
     # Examples: "What is 2+2?", "Calculate 10*5", "Compute the square root of 16"
@@ -66,7 +80,7 @@ def classify_complexity(
         r"[\d\s\+\-\*\/\(\)\^√.]+\??",
         re.IGNORECASE,
     )
-    if arithmetic_pattern.search(normalized):
+    if arithmetic_pattern.search(normalized) and word_count <= max_trivial_words:
         return Complexity(
             skip_ambiguity=True,
             skip_verify=True,
@@ -80,9 +94,13 @@ def classify_complexity(
         re.IGNORECASE,
     )
     # Exclude if it looks multi-step (contains "and", "also", "additionally")
-    if fact_pattern.search(normalized) and not re.search(
-        r"\b(?:and|also|additionally|build|create|design|generate|write|code)\b",
-        normalized,
+    if (
+        fact_pattern.search(normalized)
+        and not re.search(
+            r"\b(?:and|also|additionally|build|create|design|generate|write|code)\b",
+            normalized,
+        )
+        and word_count <= max_trivial_words
     ):
         return Complexity(
             skip_ambiguity=True,
@@ -97,7 +115,7 @@ def classify_complexity(
         r"(?:write|generate|create|code|implement|build|design|draft|compose|script|make|develop)\s+(?:a\s+)?(?:python|javascript|typescript|java|c\+\+|rust|go|sql|html|css|bash|shell|function|class|method|algorithm|email|letter|doc|paragraph|story|poem)",
         re.IGNORECASE,
     )
-    if code_patterns.search(normalized):
+    if code_patterns.search(normalized) and word_count <= max_trivial_words:
         return Complexity(
             skip_ambiguity=True,
             skip_verify=False,
@@ -111,7 +129,7 @@ def classify_complexity(
         r"(?:search|find|look\s+(?:up|for)|find\s+(?:papers|articles|research|datasets|data))",
         re.IGNORECASE,
     )
-    if search_pattern.search(normalized):
+    if search_pattern.search(normalized) and word_count <= max_trivial_words:
         return Complexity(
             skip_ambiguity=True,
             skip_verify=False,
