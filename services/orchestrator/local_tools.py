@@ -168,3 +168,24 @@ async def write_tool_result(
         maxlen=TOOL_RESULTS_MAXLEN,
         approximate=True,
     )
+
+
+def verify_written_content(requested: str, readback: Any) -> str | None:
+    """Compare what we asked to write against what the file reads back.
+
+    Returns None when the read-back content matches the requested content
+    exactly (write confirmed applied). Otherwise returns an explicit error
+    string the model will see in the tool result, so a write that silently
+    did not apply (the "code was not successfully updated" failure) surfaces
+    as a hard, visible error instead of a phantom success. A non-string
+    read-back (dict/None/etc.) is treated as a mismatch.
+    """
+    if isinstance(readback, str) and readback == requested:
+        return None
+    got_len = len(readback) if isinstance(readback, str) else "n/a (non-text read-back)"
+    return (
+        "write verification failed: file content after write did not match the "
+        f"content that was requested (requested {len(requested)} chars, "
+        f"read back {got_len}). The write may not have applied — re-read the "
+        "file and try again; do NOT report the file as updated."
+    )

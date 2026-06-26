@@ -186,3 +186,36 @@ async def test_write_tool_result_with_error(redis):
     frame = json.loads(fields["result"])
     assert frame["error"] == "path escape"
     assert frame["result"] is None
+
+
+# ── write_file read-back verification ────────────────────────────────────────
+from services.orchestrator.local_tools import verify_written_content  # noqa: E402
+
+
+def test_verify_written_content_returns_none_on_exact_match():
+    assert verify_written_content("hello\nworld\n", "hello\nworld\n") is None
+
+
+def test_verify_written_content_flags_mismatch():
+    err = verify_written_content("NEW CONTENT", "OLD CONTENT")
+    assert err is not None
+    assert err.startswith("write verification failed")
+    assert "did not match" in err
+
+
+def test_verify_written_content_flags_partial_write():
+    err = verify_written_content("line1\nline2\n", "line1\n")
+    assert err is not None
+    assert "did not match" in err
+
+
+def test_verify_written_content_treats_non_string_readback_as_mismatch():
+    err = verify_written_content("content", {"unexpected": "shape"})
+    assert err is not None
+    assert "did not match" in err
+
+
+def test_verify_written_content_treats_none_readback_as_mismatch():
+    err = verify_written_content("content", None)
+    assert err is not None
+    assert "did not match" in err
