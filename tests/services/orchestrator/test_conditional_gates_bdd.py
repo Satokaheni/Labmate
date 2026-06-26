@@ -114,7 +114,7 @@ def _ambiguity_runs(ctx):
 
     import asyncio
 
-    delta = asyncio.get_event_loop().run_until_complete(assess(state))
+    delta = asyncio.run(assess(state))
     mock_orch.architect.assert_awaited_once()
     assert "ambiguity" in delta
     assert delta["skip_ambiguity"] is False
