@@ -92,7 +92,7 @@ describe('SessionList', () => {
 
   it('cancels rename on Escape without calling onRename', () => {
     const testSessions: Session[] = [
-      { id: 's1', title: 'My chat', mode: 'chat' as const, turnCount: 0,
+      { id: 's1', title: 'My chat', mode: 'chat' as const, turnCount: 2,
         contextTokens: 0, updatedAt: new Date().toISOString(), createdAt: new Date().toISOString() },
     ];
     const onRename = vi.fn();
@@ -113,5 +113,36 @@ describe('SessionList', () => {
     const listItem = container.querySelector('li');
     fireEvent.mouseEnter(listItem!);
     expect(screen.queryByTestId('session-rename')).not.toBeInTheDocument();
+  });
+
+  it('commits rename on input blur', () => {
+    const testSessions: Session[] = [
+      { id: 's1', title: 'Old title', mode: 'chat' as const, turnCount: 0,
+        contextTokens: 0, updatedAt: new Date().toISOString(), createdAt: new Date().toISOString() },
+    ];
+    const onRename = vi.fn();
+    render(<SessionList sessions={testSessions} activeId={null} onOpen={() => {}} onRename={onRename} />);
+
+    fireEvent.mouseEnter(screen.getByRole('listitem'));
+    fireEvent.click(screen.getByTestId('session-rename'));
+    const input = screen.getByTestId('session-rename-input');
+    fireEvent.change(input, { target: { value: 'Blurred title' } });
+    fireEvent.blur(input);
+    expect(onRename).toHaveBeenCalledWith('s1', 'Blurred title');
+  });
+
+  it('does not call onRename when committed value is empty whitespace', () => {
+    const testSessions: Session[] = [
+      { id: 's1', title: 'My chat', mode: 'chat' as const, turnCount: 0,
+        contextTokens: 0, updatedAt: new Date().toISOString(), createdAt: new Date().toISOString() },
+    ];
+    const onRename = vi.fn();
+    render(<SessionList sessions={testSessions} activeId={null} onOpen={() => {}} onRename={onRename} />);
+
+    fireEvent.mouseEnter(screen.getByRole('listitem'));
+    fireEvent.click(screen.getByTestId('session-rename'));
+    fireEvent.change(screen.getByTestId('session-rename-input'), { target: { value: '   ' } });
+    fireEvent.keyDown(screen.getByTestId('session-rename-input'), { key: 'Enter' });
+    expect(onRename).not.toHaveBeenCalled();
   });
 });

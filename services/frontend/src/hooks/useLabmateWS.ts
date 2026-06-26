@@ -353,7 +353,8 @@ export function useLabmateWS(url: string, token: string | null, reconnectKey = 0
   }, []);
 
   const renameSession = useCallback((sessionId: string, title: string) => {
-    wsRef.current?.send(JSON.stringify({ type: 'session.rename', sessionId, title }));
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: 'session.rename', sessionId, title }));
   }, []);
 
   const clearAuthError = useCallback(() => {
