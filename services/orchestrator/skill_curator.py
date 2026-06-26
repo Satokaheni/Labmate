@@ -63,3 +63,26 @@ class RecentSequences:
 
     def snapshot(self) -> list[CapturedSequence]:
         return list(self._buf)
+
+
+def should_run_now(
+    state,
+    now: float,
+    interval_hours: float,
+    min_idle_hours: float,
+    idle_for_s: float,
+) -> bool:
+    """PURE gate: True iff the curator should run this cycle.
+
+    Opens only when ALL hold:
+      - not paused
+      - at least ``interval_hours`` have elapsed since ``state.last_run_at``
+      - the host has been idle for at least ``min_idle_hours``
+    """
+    if getattr(state, "paused", False):
+        return False
+    if (now - state.last_run_at) < interval_hours * 3600.0:
+        return False
+    if idle_for_s < min_idle_hours * 3600.0:
+        return False
+    return True
