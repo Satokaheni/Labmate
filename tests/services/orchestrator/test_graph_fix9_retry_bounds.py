@@ -264,8 +264,8 @@ async def test_execute_node_marks_nonretryable_failure_exhausted_and_check_final
     assert "final_answer" in d_check
     assert "error" in d_check
     state_final = {**state_after, **d_check}
-    from langgraph.graph import END
-    assert router(state_final) == END  # finalized -> END, never "reflect"
+    # finalized -> revise (the gate), never "reflect"
+    assert router(state_final) == "revise"
 
 
 # ---------------------------------------------------------------------------

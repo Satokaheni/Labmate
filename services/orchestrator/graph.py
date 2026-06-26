@@ -793,9 +793,11 @@ def router(state: State) -> str:
     Finalization (final_answer set) is the terminal signal.
     (FIX #2: make finalization terminal so failed FAILED root doesn't loop)
     """
-    # If final_answer is set, check node finalized the tree — end execution
+    # If final_answer is set, check node finalized the tree — run the opt-in
+    # revise-before-deliver gate before ending. The revise node is a pass-through
+    # (returns {}) when the feature is disabled, so delivery is identical to today.
     if state.get("final_answer"):
-        return END
+        return "revise"
 
     gid = state.get("current_goal_id")
     if gid is None:
@@ -898,7 +900,8 @@ def build_graph(
     b.add_conditional_edges("plan", clarification_router, ["execute", END])
     b.add_edge("execute", "verify")
     b.add_conditional_edges("verify", verify_router, ["reflect", "check"])
-    b.add_conditional_edges("check", router, ["execute", "reflect", "approval", END])
+    b.add_conditional_edges("check", router, ["execute", "reflect", "approval", "revise", END])
+    b.add_edge("revise", END)
     b.add_edge("reflect", "execute")
     b.add_edge("approval", "execute")
 

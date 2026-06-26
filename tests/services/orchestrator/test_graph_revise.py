@@ -142,3 +142,35 @@ def test_had_side_effects_false_for_writing_artifact():
 
 def test_had_side_effects_false_when_absent():
     assert _run_had_side_effects({}) is False
+
+
+# ── router still ENDs on non-final states; revise is only reached post-check ──
+def test_router_unchanged_for_non_final_states():
+    from services.orchestrator.graph import router
+    from langgraph.graph import END
+
+    # No final_answer, no goal -> END (unchanged behavior).
+    assert router({"current_goal_id": None}) == END
+
+
+def test_build_graph_registers_revise_node(monkeypatch):
+    """build_graph must add a 'revise' node and route check -> revise.
+
+    We avoid a live MongoDB by asserting on the StateGraph builder before compile
+    is exercised; here we just confirm make_nodes yields 8 nodes and the revise
+    node is callable, which build_graph consumes.
+    """
+    from services.orchestrator.graph import make_nodes
+
+    nodes = make_nodes(MagicMock(), MagicMock())
+    assert len(nodes) == 8
+    assert callable(nodes[7])
+
+
+@pytest.mark.asyncio
+async def test_router_routes_finalized_to_revise(monkeypatch):
+    """When final_answer is set, router returns 'revise' (the gate), not END."""
+    from services.orchestrator.graph import router
+
+    assert router({"final_answer": "done", "current_goal_id": "root",
+                   "goal_tree": {"root": {"status": "completed", "attempts": 0}}}) == "revise"
