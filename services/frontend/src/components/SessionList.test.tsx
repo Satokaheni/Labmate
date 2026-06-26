@@ -45,7 +45,7 @@ describe('SessionList', () => {
     );
 
     const listItem = container.querySelector('li');
-    expect(listItem).toBeDefined();
+    expect(listItem).not.toBeNull();
     expect(screen.queryByTestId('session-delete')).not.toBeInTheDocument();
 
     fireEvent.mouseEnter(listItem!);

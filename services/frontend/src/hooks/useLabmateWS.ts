@@ -347,7 +347,8 @@ export function useLabmateWS(url: string, token: string | null, reconnectKey = 0
   }, []);
 
   const deleteSession = useCallback((sessionId: string) => {
-    wsRef.current?.send(JSON.stringify({ type: 'session.delete', sessionId }));
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: 'session.delete', sessionId }));
     dispatch({ type: 'SESSION_DELETED', sessionId });
   }, []);
 
