@@ -496,7 +496,7 @@ class TestCheckNodeEvents:
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
-        _, _, check_node, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
+        _, _, check_node, _, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
 
         state = _make_state()
         create_goal(state["goal_tree"], "task1", "root", "Task 1")
@@ -522,7 +522,7 @@ class TestCheckNodeEvents:
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
-        _, _, check_node, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
+        _, _, check_node, _, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
 
         state = _make_state()
         create_goal(state["goal_tree"], "task1", "root", "Task 1")
@@ -552,7 +552,7 @@ class TestCheckNode:
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
-        _, _, check_node, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
+        _, _, check_node, _, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
 
         state = _make_state()
         # Root has no children
@@ -568,7 +568,7 @@ class TestCheckNode:
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
-        _, _, check_node, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
+        _, _, check_node, _, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
 
         state = _make_state()
         # Add two children: one completed, one failed with attempts < 3
@@ -596,7 +596,7 @@ class TestCheckNode:
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
-        _, _, check_node, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
+        _, _, check_node, _, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
 
         state = _make_state()
         # One completed, one failed with exhausted attempts
@@ -623,7 +623,7 @@ class TestCheckNode:
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
-        _, _, check_node, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
+        _, _, check_node, _, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
 
         state = _make_state()
         create_goal(state["goal_tree"], "task1", "root", "Task 1")
@@ -652,7 +652,7 @@ class TestCheckNode:
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
-        _, _, check_node, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
+        _, _, check_node, _, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
 
         state = _make_state()
         # Add children to root
@@ -674,7 +674,7 @@ class TestCheckNode:
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
-        _, _, check_node, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
+        _, _, check_node, _, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
 
         state = _make_state()
         # Add completed children
@@ -707,7 +707,7 @@ class TestCheckNode:
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
-        _, _, check_node, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
+        _, _, check_node, _, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
 
         state = _make_state()
         create_goal(state["goal_tree"], "task1", "root", "Task 1")
@@ -733,7 +733,7 @@ class TestCheckNode:
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
-        _, _, check_node, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
+        _, _, check_node, _, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
 
         state = _make_state()
         create_goal(state["goal_tree"], "task1", "root", "Task 1")
@@ -757,7 +757,7 @@ class TestReflectNode:
         mock_orch.architect = AsyncMock(return_value="do it differently next time")
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
-        _, _, _, reflect_node, _, _, _ = make_nodes(mock_orch, mock_async_orch)
+        _, _, _, reflect_node, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
 
         state = _make_state()
         update_status(state["goal_tree"], "root", Status.FAILED, error="syntax error")
@@ -778,7 +778,7 @@ class TestReflectNode:
         mock_orch.architect = AsyncMock(return_value="Try a different approach: check for edge cases")
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
-        _, _, _, reflect_node, _, _, _ = make_nodes(mock_orch, mock_async_orch)
+        _, _, _, reflect_node, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
 
         state = _make_state()
         update_status(state["goal_tree"], "root", Status.FAILED, error="assertion failed")
@@ -912,7 +912,7 @@ class TestApprovalNode:
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
-        _, _, _, _, approval_node, _, _ = make_nodes(mock_orch, mock_async_orch)
+        _, _, _, _, approval_node, _, _, _ = make_nodes(mock_orch, mock_async_orch)
 
         state = _make_state()
         update_status(state["goal_tree"], "root", Status.AWAITING_APPROVAL)

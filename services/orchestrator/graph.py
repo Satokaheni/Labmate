@@ -93,6 +93,24 @@ from .error_classifier import classify_error, ErrorClass, is_terminal
 MAX_RATE_LIMIT_RETRIES = int(os.getenv("MAX_RATE_LIMIT_RETRIES", "1"))
 RATE_LIMIT_BACKOFF_SECONDS = float(os.getenv("RATE_LIMIT_BACKOFF_SECONDS", "2.0"))
 
+# Revise-before-deliver (opt-in). A lightweight single-pass gate that re-reads the
+# final answer against the task and may produce ONE revised answer before delivery.
+# OFF by default — like the critique auto-gate — so it never adds latency to every
+# answer. ORTHOGONAL to the heavy critique verify-gate (verify node); this is the
+# general-purpose lightweight pass for all task types.
+ENABLE_FINALIZE_REVISION = os.getenv("ENABLE_FINALIZE_REVISION", "0") not in (
+    "0",
+    "false",
+    "False",
+    "",
+)
+MAX_FINALIZE_REVISIONS = int(os.getenv("MAX_FINALIZE_REVISIONS", "1"))
+FINALIZE_REVISION_THINKING_BUDGET = int(
+    os.getenv("FINALIZE_REVISION_THINKING_BUDGET", "1024")
+)
+
+from .finalize_revision import should_revise, build_revision_prompt
+
 
 def classify_artifact(text: str) -> str:
     """Cheap heuristic artifact classifier for the A2 verify gate."""
@@ -139,6 +157,20 @@ def collect_prior_reflections(
     if cap <= 0:
         return []
     return matches[-cap:]
+
+
+def _run_had_side_effects(state: "State") -> bool:
+    """Conservative heuristic: did this run execute a side-effecting tool/skill?
+
+    Revising after side effects is unsafe (the answer describes actions already
+    taken), so the revise gate must skip in that case. We approximate "had side
+    effects" from the LAST artifact's type: 'code' artifacts come from skills that
+    write/edit files or run code in the sandbox (a side effect); 'writing' and
+    'other' are read-only prose answers. This is intentionally conservative — when
+    unsure, prefer NOT revising. Pure: reads only state['last_artifact'].
+    """
+    artifact = state.get("last_artifact") or {}
+    return artifact.get("type") == "code"
 
 
 def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
@@ -689,7 +721,69 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             result["verify_retries"] = prior_retries + 1
         return result
 
-    return plan, execute_node, check, reflect, approval, assess_ambiguity, verify
+    async def revise(state: State) -> dict:
+        """Opt-in lightweight revise-before-deliver gate.
+
+        After `check` finalized the answer (final_answer set) and BEFORE delivery,
+        make at most MAX_FINALIZE_REVISIONS bounded model calls to re-read the
+        answer against the task and optionally replace it. Pass-through (returns {})
+        when disabled or when should_revise() says it is unsafe/unnecessary, so the
+        delivered answer is identical to today.
+        """
+        import copy
+
+        if not ENABLE_FINALIZE_REVISION:
+            return {}
+
+        final_answer = state.get("final_answer") or ""
+        errored = state.get("error") is not None
+        attempts = int(state.get("finalize_revisions", 0))
+        had_side_effects = _run_had_side_effects(state)
+
+        if not should_revise(
+            final_answer,
+            had_side_effects=had_side_effects,
+            attempts=attempts,
+            max_attempts=MAX_FINALIZE_REVISIONS,
+            errored=errored,
+        ):
+            return {}
+
+        task = state.get("root_goal") or final_answer
+        prompt = build_revision_prompt(task, final_answer)
+        revised = await orch.architect(
+            prompt, thinking_budget=FINALIZE_REVISION_THINKING_BUDGET
+        )
+        revised = (revised or "").strip()
+        # A blank revision is a model glitch — keep the original answer but still
+        # spend the attempt so the gate stays bounded/idempotent.
+        out_answer = revised if revised else final_answer
+
+        await events.emit(
+            "reasoning",
+            node="revise",
+            summary="revised final answer" if revised and revised != final_answer
+            else "kept final answer unchanged",
+            text=out_answer[:500],
+        )
+
+        # Mirror final_answer onto the root goal's result so every delivery path
+        # (stream_final_answer reads final_answer; clarification/direct paths read
+        # final_answer) sees the revised text.
+        tree = copy.deepcopy(state["goal_tree"]) if state.get("goal_tree") else None
+        if tree is not None and "root" in tree:
+            update_status(tree, "root", Status(tree["root"]["status"]), result=out_answer)
+
+        result: dict = {
+            "final_answer": out_answer,
+            "finalize_revisions": attempts + 1,
+            "revised": bool(revised and revised != final_answer),
+        }
+        if tree is not None:
+            result["goal_tree"] = tree
+        return result
+
+    return plan, execute_node, check, reflect, approval, assess_ambiguity, verify, revise
 
 
 def router(state: State) -> str:
@@ -785,7 +879,7 @@ def build_graph(
     """
     from langgraph.checkpoint.mongodb import MongoDBSaver
 
-    plan_node, execute_node, check_node, reflect_node, approval_node, assess_node, verify_node = make_nodes(
+    plan_node, execute_node, check_node, reflect_node, approval_node, assess_node, verify_node, revise_node = make_nodes(
         orch, async_orch
     )
 
@@ -797,6 +891,7 @@ def build_graph(
     b.add_node("reflect", reflect_node)
     b.add_node("approval", approval_node)
     b.add_node("assess_ambiguity", assess_node)
+    b.add_node("revise", revise_node)
 
     b.add_edge(START, "assess_ambiguity")
     b.add_conditional_edges("assess_ambiguity", ambiguity_router, ["plan", END])

@@ -204,11 +204,11 @@ def test_make_nodes_returns_seven_nodes_in_order():
     from services.orchestrator.graph import make_nodes
 
     nodes = make_nodes(_make_orch(), _make_async_orch())
-    assert len(nodes) == 7
+    assert len(nodes) == 8
     names = [n.__name__ for n in nodes]
     assert names == [
         "plan", "execute_node", "check", "reflect",
-        "approval", "assess_ambiguity", "verify",
+        "approval", "assess_ambiguity", "verify", "revise",
     ]
 
 
@@ -224,7 +224,7 @@ async def test_assess_ambiguity_still_clarifies_high_ambiguity():
         architect_return='{"assumptions": [], "ambiguity": 0.9, '
         '"blocking_question": "What should I improve?"}'
     )
-    _, _, _, _, _, assess_node, _ = graph_mod.make_nodes(orch, _make_async_orch())
+    _, _, _, _, _, assess_node, _, _ = graph_mod.make_nodes(orch, _make_async_orch())
 
     state = _plan_state("make it better")
     state["root_goal"] = "make it better"
@@ -245,7 +245,7 @@ async def test_assess_ambiguity_proceeds_on_low_ambiguity():
     orch = _make_orch(
         architect_return='{"assumptions": [], "ambiguity": 0.1, "blocking_question": ""}'
     )
-    _, _, _, _, _, assess_node, _ = graph_mod.make_nodes(orch, _make_async_orch())
+    _, _, _, _, _, assess_node, _, _ = graph_mod.make_nodes(orch, _make_async_orch())
 
     state = _plan_state("reverse a string in python")
     state["root_goal"] = "reverse a string in python"
