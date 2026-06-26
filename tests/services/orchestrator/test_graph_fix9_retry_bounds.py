@@ -5,7 +5,7 @@ FIX 9 — bound reflect/verify-gate latency with env-configurable knobs.
 Covers:
   (a) verify gate caps verify->reflect at MAX_VERIFY_RETRIES, then accepts (routes to check);
       with MAX_VERIFY_RETRIES=0 it never reflects.
-  (b) _is_nonretryable_error classifies environmental failures True, ordinary failures False.
+  (b) classify_error + is_terminal classifies environmental failures as terminal, others as retryable.
   (c) execute_node marks a non-retryable FAILED goal as exhausted (attempts == MAX_GOAL_ATTEMPTS)
       so check() finalizes with the error and does NOT route to reflect.
   (d) a retryable FAILED goal still increments attempts by 1 and is reflect-retried while
@@ -152,7 +152,7 @@ async def test_verify_gate_above_threshold_routes_to_check(fake_event_emitter):
 
 
 # ---------------------------------------------------------------------------
-# (b) _is_nonretryable_error
+# (b) classify_error + is_terminal (replaces _is_nonretryable_error)
 # ---------------------------------------------------------------------------
 @pytest.mark.mocked
 @pytest.mark.parametrize(
@@ -162,18 +162,50 @@ async def test_verify_gate_above_threshold_routes_to_check(fake_event_emitter):
         "Docker is not running",
         "error: connection refused",
         "network unreachable",
-        "request timed out after 30s",
         "Missing API key for Semantic Scholar",
         "permission denied (EPERM)",
-        "Rate limit exceeded (429)",
         "no such file or directory (ENOENT)",
         "skill not found in registry",
     ],
 )
-def test_is_nonretryable_error_true_for_environmental(err):
-    from services.orchestrator.graph import _is_nonretryable_error
+def test_classify_error_marks_environmental_as_terminal(err):
+    from services.orchestrator.error_classifier import classify_error, is_terminal
 
-    assert _is_nonretryable_error(err) is True
+    cls = classify_error(err)
+    assert is_terminal(cls) is True
+
+
+@pytest.mark.mocked
+@pytest.mark.parametrize(
+    "err",
+    [
+        "request timed out after 30s",
+        "Request timed out after 60s",
+    ],
+)
+def test_classify_error_marks_timeout_as_transient(err):
+    from services.orchestrator.error_classifier import classify_error, is_terminal
+    from services.orchestrator.error_classifier import ErrorClass
+
+    cls = classify_error(err)
+    assert cls == ErrorClass.TRANSIENT
+    assert is_terminal(cls) is False
+
+
+@pytest.mark.mocked
+@pytest.mark.parametrize(
+    "err",
+    [
+        "Rate limit exceeded (429)",
+        "HTTP 429 Too Many Requests",
+    ],
+)
+def test_classify_error_marks_rate_limit_as_rate_limited(err):
+    from services.orchestrator.error_classifier import classify_error
+    from services.orchestrator.error_classifier import ErrorClass
+
+    cls = classify_error(err)
+    assert cls == ErrorClass.RATE_LIMITED
 
 
 @pytest.mark.mocked
@@ -188,10 +220,13 @@ def test_is_nonretryable_error_true_for_environmental(err):
         None,
     ],
 )
-def test_is_nonretryable_error_false_for_ordinary(err):
-    from services.orchestrator.graph import _is_nonretryable_error
+def test_classify_error_marks_unknown_as_retryable(err):
+    from services.orchestrator.error_classifier import classify_error, is_terminal
+    from services.orchestrator.error_classifier import ErrorClass
 
-    assert _is_nonretryable_error(err) is False
+    cls = classify_error(err or "")
+    assert cls == ErrorClass.RETRYABLE
+    assert is_terminal(cls) is False
 
 
 # ---------------------------------------------------------------------------

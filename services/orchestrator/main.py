@@ -73,6 +73,11 @@ CTX_TOKENS   = int(os.getenv("CTX_WINDOW", "131072"))
 MICRO_THRESH = int(CTX_TOKENS * 0.70)
 FULL_THRESH  = int(CTX_TOKENS * 0.85)
 
+# Background proactive compaction: how often the sweeper wakes, and the cap on
+# sessions inspected per sweep (newest-active first) so one sweep stays bounded.
+BG_COMPACT_INTERVAL_S = int(os.getenv("BG_COMPACT_INTERVAL_S", "120"))
+BG_COMPACT_MAX_SESSIONS = int(os.getenv("BG_COMPACT_MAX_SESSIONS", "20"))
+
 
 def _worker_id() -> str:
     return f"{socket.gethostname()}-{os.getpid()}"
@@ -187,7 +192,18 @@ class OrchestratorProcess:
             orch.graph = graph
 
             _log.info("orchestrator %s ready", self._worker_id)
-            await self._loop(orch, _sm)
+
+            bg_compactor = asyncio.create_task(
+                self._background_compactor(orch, _sm), name="background-compactor",
+            )
+            try:
+                await self._loop(orch, _sm)
+            finally:
+                bg_compactor.cancel()
+                try:
+                    await bg_compactor
+                except asyncio.CancelledError:
+                    pass
 
         if self._mcp:
             await self._mcp.shutdown()
@@ -228,6 +244,58 @@ class OrchestratorProcess:
             for _stream, entries in raw:
                 for msg_id, fields in entries:
                     await self._handle(msg_id, fields, orch, storage)
+
+    async def _background_compactor(
+        self,
+        orch: CodingOrchestrator,
+        storage: StorageManager,
+    ) -> None:
+        """Periodically compact idle, high-fill sessions so the next message has room.
+
+        Runs as its own asyncio task next to the goal loop. Each gate (idle + fill)
+        lives in ContextManager.maybe_background_compact; this method only finds
+        candidate sessions and dispatches. Best-effort: one session's failure never
+        stops the sweep, and the sweep never blocks goal handling.
+        """
+        async def _bg_llm(p: str) -> str:
+            import litellm as _litellm
+            r = await _litellm.acompletion(
+                model="openai/gemma-4-31b",
+                api_base=orch._gemma_base,
+                api_key="not-needed",
+                messages=[{"role": "user", "content": p}],
+                extra_body={"thinking_budget_tokens": 0},
+            )
+            return r.choices[0].message.content
+
+        while not self._shutdown.is_set():
+            try:
+                await asyncio.sleep(BG_COMPACT_INTERVAL_S)
+                if self._shutdown.is_set():
+                    break
+
+                session_ids = await storage._db["messages"].distinct("session_id")
+                for session_id in session_ids[:BG_COMPACT_MAX_SESSIONS]:
+                    if self._shutdown.is_set():
+                        break
+                    if not session_id:
+                        continue
+                    result = await storage.context_manager.maybe_background_compact(
+                        session_id, _bg_llm,
+                    )
+                    if result and result.get("reflections"):
+                        asyncio.create_task(storage.consolidator.write_reflections(
+                            session_id, result["reflections"]
+                        ))
+                    if result:
+                        _log.info(
+                            "background compact: session %s pruned %d messages",
+                            session_id, result.get("pruned_messages", 0),
+                        )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _log.warning("background compactor sweep failed (non-fatal)", exc_info=True)
 
     async def _handle(
         self,
@@ -276,6 +344,11 @@ class OrchestratorProcess:
                     session_id,
                     llm_fn=_compact_llm,
                 )
+                # Write reflections extracted during compaction to semantic memory
+                if result.get("reflections"):
+                    asyncio.create_task(storage.consolidator.write_reflections(
+                        session_id, result["reflections"]
+                    ))
                 await self._write_result(task_id, {"ok": True, **result})
                 return
 
@@ -349,6 +422,10 @@ class OrchestratorProcess:
                     )
                     await events.emit("compact.auto", freed=compact_result["pruned_messages"])
                     _log.info("task %s: auto full-compact freed %d messages", task_id, compact_result["pruned_messages"])
+                    if compact_result.get("reflections"):
+                        asyncio.create_task(storage.consolidator.write_reflections(
+                            session_id, compact_result["reflections"]
+                        ))
                 elif ctx_check.total_tokens >= MICRO_THRESH:
                     freed = await storage.context_manager.microcompact(session_id)
                     if freed:
@@ -356,6 +433,14 @@ class OrchestratorProcess:
                         _log.info("task %s: microcompact freed %d chars", task_id, freed)
             except Exception as exc:
                 _log.warning("auto-compact check failed (non-fatal): %s", exc)
+
+            # Importance-based decay sweep (at most once/hour per session)
+            try:
+                if await storage.cache_get(f"decay_swept:{session_id}") is None:
+                    asyncio.create_task(storage.decay_expired_memories(session_id))
+                    await storage.cache_set(f"decay_swept:{session_id}", "1", ttl=3600)
+            except Exception:
+                pass  # decay is best-effort; never block task execution
 
             _log.info("task %s: %.80s", task_id, task_text)
             final_state = await orch.run_task(
@@ -401,6 +486,16 @@ class OrchestratorProcess:
                 "llm_calls": call_counter.get_count(),
             })
             _log.info("task %s complete", task_id)
+            # Task-boundary reflection: write to semantic memory asynchronously
+            _final_answer = (
+                final_state.get("final_answer", "") if isinstance(final_state, dict) else ""
+            )
+            asyncio.create_task(storage.consolidator.on_task_complete(
+                session_id=session_id,
+                goal=task_text[:500],
+                success=ok_flag,
+                summary=_final_answer[:1_000],
+            ))
 
         except Exception:
             _log.exception("task %s failed", task_id)
@@ -409,6 +504,13 @@ class OrchestratorProcess:
                 "error": "task_failed",
                 "llm_calls": call_counter.get_count(),
             })
+            # Failure reflection: always write — highest signal for learning
+            asyncio.create_task(storage.consolidator.on_task_complete(
+                session_id=session_id,
+                goal=task_text[:500],
+                success=False,
+                summary="Task raised an unhandled exception.",
+            ))
         finally:
             # Fix 2: Complete session in finally block
             if user_id and workspace_id:

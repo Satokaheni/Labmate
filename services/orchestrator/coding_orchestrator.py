@@ -13,27 +13,29 @@ from aiolimiter import AsyncLimiter
 
 from .types import Goal, State, Status, get_ready_goals, update_status, now_iso
 from . import events
+from .model_client import acompletion_with_failover, resolve_bases
+from .prompt_assembler import PromptAssembler
 from .local_tools import LOCAL_TOOL_NAMES, request_local_tool
+from .loop_detection import LoopDetector, call_signature
+from .iteration_budget import IterationBudget, CHEAP_TOOLS
 
 # Sequencing strategy for react_execute (A/B knob — see eval/seq_ab):
-#   skill_first (default): a confidently-matched skill runs deterministically and
-#       returns — ONE skill per goal, no multi-skill sequencing.
+#   skill_first (DEFAULT): a confidently-matched skill runs deterministically and
+#       returns — ONE skill per goal, no multi-skill sequencing. This is the
+#       well-tested harness path and the one the loop-mechanics tests exercise.
 #   react: skip the skill-first fast-path and run the multi-tool ReAct loop, which
 #       can chain multiple skills (test-gen -> code-review -> fix) within one goal,
 #       at the cost of the loop occasionally bypassing a matching skill.
-#   replan (option A, DEFAULT): an explicit planner-driven continuation loop. Each
-#       step the planner inspects the original goal + the history of completed
-#       sub-steps and returns the SINGLE next sub-goal (or done=true). Each sub-goal
-#       runs via the deterministic skill-first path, falling back to a bounded ReAct
-#       loop when no skill matches (so file edits / fixes still execute). This gives
-#       honest completion (the planner only declares done when history supports it)
-#       and bounded multi-skill sequencing without the free loop's thrash. A compound
-#       gate (REPLAN_COMPOUND_GATE) runs single-step goals once, so simple tasks pay
-#       no sequencing tax. Chosen over skill_first after a live A/B: non-inferior on
-#       single-step controls, ~4x honest-completion on compound tasks, and it removes
-#       skill_first's hallucinated-completion defect (claiming code was fixed when
-#       only a read-only skill like test-gen/code-review ran). See eval/seq_ab.
-SEQUENCING_MODE = os.getenv("SEQUENCING_MODE", "replan")
+#   replan (opt-in, set SEQUENCING_MODE=replan): an explicit planner-driven
+#       continuation loop. Each step the planner inspects the original goal + the
+#       history of completed sub-steps and returns the SINGLE next sub-goal (or
+#       done=true). Each sub-goal runs via the deterministic skill-first path,
+#       falling back to a bounded ReAct loop when no skill matches. Gives honest
+#       completion + bounded multi-skill sequencing. In a live A/B it was
+#       non-inferior on single-step controls and ~4x honest-completion on compound
+#       tasks, BUT it has a known mid-chain load_skill activation-cap bug (see
+#       CLAUDE.md) — kept opt-in for A/B evaluation until that is fixed. See eval/seq_ab.
+SEQUENCING_MODE = os.getenv("SEQUENCING_MODE", "skill_first")
 # Max sub-goals the replan continuation loop will execute before forcing a finish.
 MAX_SEQ_STEPS = int(os.getenv("MAX_SEQ_STEPS", "5"))
 # When 1, replan first classifies whether the goal is genuinely multi-step. Single-
@@ -152,6 +154,9 @@ class AsyncOrchestrator:
         self.results: dict[str, Result] = {}
         self._qwen_base = qwen_api_base
         self._gemma_base = gemma_api_base
+        # Ordered endpoint list for failover (primary + LABMATE_FALLBACK_BASES).
+        self._bases = resolve_bases(gemma_api_base)
+        self._editor_bases = resolve_bases(qwen_api_base)
         self.skill_router = skill_router
         self.mcp = mcp
         self.codegraph_mcp = None  # set after construction if codegraph-embedder is running
@@ -319,158 +324,50 @@ class AsyncOrchestrator:
         """
         import json
 
-        # Build tool list
-        tools = []
-        if self.skill_router is not None:
-            tools.append(self.skill_router.runner.tool_schema())
-            # Only include call_skill_tool when skill_router is available
-            tools.append({
-                "type": "function",
-                "function": {
-                    "name": "call_skill_tool",
-                    "description": "Execute a tool within a loaded skill.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "skill": {"type": "string", "description": "Skill name"},
-                            "tool": {"type": "string", "description": "Tool name"},
-                            "arguments": {"type": "object", "description": "Tool arguments"},
-                        },
-                        "required": ["skill", "tool", "arguments"],
-                    },
-                },
-            })
-
-        # Semantic code search — available when the codegraph-embedder MCP server is running
-        if self.codegraph_mcp is not None:
-            tools.append({
-                "type": "function",
-                "function": {
-                    "name": "code_semantic_search",
-                    "description": (
-                        "Search the codebase by meaning. Returns the top-k symbols "
-                        "(functions, classes, methods) most semantically relevant to the query. "
-                        "Use when you need to find code by what it DOES rather than what it's named."
-                    ),
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {"type": "string", "description": "Natural language description of what to find"},
-                            "k":     {"type": "integer", "description": "Number of results (max 20)", "default": 8},
-                        },
-                        "required": ["query"],
-                    },
-                },
-            })
-
-        # Always include run_bash and finish
-        tools.extend([
-            {
-                "type": "function",
-                "function": {
-                    "name": "read_file",
-                    "description": "Read a UTF-8 text file from the user's local workspace.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "description": "Workspace-relative file path"},
-                        },
-                        "required": ["path"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "write_file",
-                    "description": "Write (create or overwrite) a UTF-8 text file in the user's local workspace.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "description": "Workspace-relative file path"},
-                            "content": {"type": "string", "description": "Full file contents to write"},
-                        },
-                        "required": ["path", "content"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "list_dir",
-                    "description": "List entries of a directory in the user's local workspace.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "description": "Workspace-relative directory path"},
-                        },
-                        "required": ["path"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "run_bash",
-                    "description": "Run a bash command in the workspace.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "command": {"type": "string", "description": "Bash command"},
-                        },
-                        "required": ["command"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "finish",
-                    "description": "Finish the task and return the summary.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "summary": {"type": "string", "description": "Task summary"},
-                        },
-                        "required": ["summary"],
-                    },
-                },
-            },
-        ])
-
-        # Build system prompt with catalog
-        catalog = ""
-        if self.skill_router is not None:
-            catalog = self.skill_router.runner.catalog_prompt()
-
-        system = (
-            "You are an execution agent with access to specialized SKILLS plus a generic shell. "
-            "CRITICAL RULE: if ANY available skill matches the task, you MUST accomplish it with "
-            "that skill — call load_skill(name) to read its instructions, then "
-            "call_skill_tool(skill, tool, arguments) to run the right tool. Do NOT use run_bash to "
-            "hand-replicate what a skill already does (e.g. do not grep/sed/write files yourself "
-            "when a code-search, test-generation, parsing, audit, or documentation skill exists). "
-            "Use run_bash ONLY when no available skill fits the task. "
-            "Do NOT call finish until the work is actually done — and when a matching skill exists, "
-            "finish only AFTER call_skill_tool has returned its result. Call finish(summary) to end. "
-            "SANDBOX RULE: run_bash is for read-only inspection (ls, cat, grep, git status) only. "
-            "Any code you author or execute — Python, Node, shell scripts, pytest — MUST go through "
-            "the code-sandbox skill (load_skill('code-sandbox') then call_skill_tool), NEVER run_bash."
+        # Build the prefix ONCE per goal. The same frozen system message and tools
+        # list are reused on every ReAct step below, so llama-server's longest-common-
+        # prefix prompt cache hits and only the appended tail is recomputed.
+        assembler = PromptAssembler(
+            skill_router=self.skill_router,
+            codegraph_enabled=self.codegraph_mcp is not None,
         )
-        if catalog:
-            system += f"\n\n{catalog}"
-
+        tools = assembler.tools()                 # frozen list — never rebuilt per step
         messages = [
-            {"role": "system", "content": system},
+            assembler.system_message(),           # frozen system dict at index 0
             {"role": "user", "content": goal},
         ]
 
-        # ReAct loop
+        # Per-goal tool-loop detector — halt early if the model repeats the same
+        # tool call or cycles a tiny set of calls and would otherwise burn the budget.
+        loop_detector = LoopDetector()
+
+        # ReAct loop — bounded by an IterationBudget (replaces the bare
+        # range(max_steps) cap). The budget grants ONE grace turn after
+        # exhaustion and refunds cheap read-only iterations (CHEAP_TOOLS).
+        # Additionally, record_turn() enforces a hard absolute turn ceiling that
+        # cannot be refunded, preventing infinite loops from distinct cheap reads.
+        cap = int(os.getenv("LABMATE_MAX_ITERATIONS", str(self.max_steps)))
+        budget = IterationBudget(max_total=cap)
         try:
-            for step in range(max_steps):
-                r = await litellm.acompletion(
+            while True:
+                # Hard absolute ceiling (prevents infinite loops of distinct cheap reads).
+                if not budget.record_turn():
+                    return {"ok": False, "summary": "absolute turn limit exceeded"}
+
+                # Consume one unit; on exhaustion take the single grace turn,
+                # else stop with a clear "budget exhausted" outcome.
+                if not budget.consume():
+                    if not budget.grace():
+                        return {"ok": False, "summary": "budget exhausted"}
+                    # grace turn: fall through and run one more iteration.
+
+                # Track tools used this turn so a cheap-only turn can be refunded.
+                _turn_tools: list[str] = []
+
+                step = budget.used - 1  # for logging (0-indexed)
+                r = await acompletion_with_failover(
                     model="openai/gemma-4-31b",
-                    api_base=self._gemma_base,
+                    bases=self._bases,
                     api_key="not-needed",
                     messages=messages,
                     tools=tools,
@@ -527,6 +424,7 @@ class AsyncOrchestrator:
                 # Process each tool call
                 for tc in tool_calls:
                     name = tc.function.name
+                    _turn_tools.append(name)
                     try:
                         args = json.loads(tc.function.arguments or "{}")
                     except (json.JSONDecodeError, ValueError):
@@ -538,6 +436,30 @@ class AsyncOrchestrator:
                         return {
                             "ok": True,
                             "summary": str(args.get("summary", ""))[:2000],
+                        }
+
+                    # No-progress / tool-loop detection. finish already returned
+                    # above, so only genuinely dispatched tools reach here.
+                    if loop_detector.record(call_signature(name, args)):
+                        _reason = loop_detector.reason()
+                        await events.emit(
+                            "loop.detected",
+                            tool=name,
+                            reason=_reason,
+                            signature=call_signature(name, args),
+                            steps=step + 1,
+                        )
+                        import logging as _logging
+                        _logging.getLogger("orchestrator").warning(
+                            "tool-loop detected (%s) on '%s' at step %d — halting",
+                            _reason, name, step + 1,
+                        )
+                        return {
+                            "ok": False,
+                            "summary": (
+                                f"loop detected ({_reason}): repeated tool "
+                                f"'{name}' — halting to avoid burning steps"
+                            ),
                         }
 
                     # Emit tool.start for all non-finish tools
@@ -663,8 +585,12 @@ class AsyncOrchestrator:
                         "content": content,
                     })
 
-            # Max steps reached
-            return {"ok": False, "summary": "max_steps reached"}
+                # Refund this turn if EVERY tool call it made was a cheap read.
+                # Pure inspection (read_file / list_dir / code_semantic_search)
+                # must not starve genuine work. A turn with no tool calls already
+                # returned above, so _turn_tools is non-empty here.
+                if _turn_tools and all(t in CHEAP_TOOLS for t in _turn_tools):
+                    budget.refund()
 
         except Exception as exc:
             return {"ok": False, "summary": f"error: {str(exc)[:1000]}"}
@@ -926,9 +852,9 @@ class AsyncOrchestrator:
             f"Task: {task}\n\nCandidate results:\n{candidates}\n\n"
             "Synthesize the best unified result."
         )
-        r = await litellm.acompletion(
+        r = await acompletion_with_failover(
             model="openai/gemma-4-31b",
-            api_base=self._gemma_base,
+            bases=self._bases,
             api_key="not-needed",
             messages=[{"role": "user", "content": prompt}],
             extra_body={"thinking_budget_tokens": 2000},
@@ -969,6 +895,9 @@ class CodingOrchestrator:
         self.container = docker_container
         self._gemma_base = gemma_api_base
         self._qwen_base = qwen_api_base
+        # Ordered endpoint lists for failover (primary + LABMATE_FALLBACK_BASES).
+        self._bases = resolve_bases(gemma_api_base)
+        self._editor_bases = resolve_bases(qwen_api_base)
         self.max_iter = max_iter
         self.stuck_n = stuck_n
         self.mcp = mcp          # MCPClientManager | None
@@ -1037,9 +966,9 @@ class CodingOrchestrator:
         thinking_budget_tokens field (only honored when server started without
         --reasoning-budget flag). Pass thinking_budget=0 for fast tool-dispatch nodes.
         """
-        r = await litellm.acompletion(
+        r = await acompletion_with_failover(
             model="openai/gemma-4-31b",
-            api_base=self._gemma_base,
+            bases=self._bases,
             api_key="not-needed",
             messages=self._build_messages(prompt),
             extra_body={"thinking_budget_tokens": thinking_budget},
@@ -1052,9 +981,9 @@ class CodingOrchestrator:
         thinking_budget must always be set: post-April-2026 llama.cpp builds default
         to INT_MAX if omitted, which can cause non-deterministic hangs.
         """
-        r = await litellm.acompletion(
+        r = await acompletion_with_failover(
             model="openai/qwen2.5-coder-32b",
-            api_base=self._qwen_base,
+            bases=self._editor_bases,
             api_key="not-needed",
             messages=self._build_messages(prompt),
             extra_body={"thinking_budget_tokens": thinking_budget},
@@ -1141,9 +1070,9 @@ class CodingOrchestrator:
         )
         acc = ""
         try:
-            stream = await litellm.acompletion(
+            stream = await acompletion_with_failover(
                 model="openai/gemma-4-31b",
-                api_base=self._gemma_base,
+                bases=self._bases,
                 api_key="not-needed",
                 messages=[{"role": "user", "content": prompt}],
                 stream=True,

@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 import chromadb
@@ -13,6 +13,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 from .db_indexes import ensure_indexes
 from .workspace_manager import WorkspaceManager
+from .memory_consolidator import MemoryConsolidator
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,24 @@ TASKS_STREAM = "tasks"
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# Importance -> days-until-expiry. importance >= 5 never expires.
+_TTL_DAYS = {1: 30, 2: 90, 3: 365, 4: 1095}
+
+
+def _expires_at(importance, now: datetime | None = None) -> datetime | None:
+    """Compute expiry from importance. Returns None for never-expiring (>=5)."""
+    try:
+        imp = int(round(float(importance)))
+    except (TypeError, ValueError):
+        imp = 3
+    days = _TTL_DAYS.get(imp)
+    if days is None:  # importance >= 5 (or <1 clamped); 5 = permanent
+        if imp >= 5:
+            return None
+        days = _TTL_DAYS[1]  # clamp anything below 1 to the shortest TTL
+    return (now or _utcnow()) + timedelta(days=days)
 
 
 class StorageManager:
@@ -86,6 +105,39 @@ class StorageManager:
         self._mongo.close()
 
     @property
+    def context_manager(self):
+        """Lazy ContextManager wired to this StorageManager's MongoDB and Redis.
+
+        chroma_cols is empty — RAG retrieval is skipped (hybrid_retrieve returns
+        nothing when no collections are present), which is fine for compaction
+        operations. If full RAG is needed, populate chroma_cols after setup.
+        """
+        if not hasattr(self, "_context_manager"):
+            from services.memory.context_manager import ContextManager
+            from services.memory.embedder import embed as _embed_fn
+            _redis = self._redis
+
+            async def _embedder(texts: list[str]) -> list[list[float]]:
+                return await _embed_fn(texts, redis=_redis)
+
+            self._context_manager = ContextManager(
+                redis=self._redis,
+                mongo_db=self._db,
+                chroma_cols={},
+                embedder=_embedder,
+            )
+        return self._context_manager
+
+    @property
+    def consolidator(self) -> MemoryConsolidator:
+        if not hasattr(self, "_consolidator"):
+            self._consolidator = MemoryConsolidator(
+                storage=self,
+                lm_base_url=os.getenv("GEMMA_BASE", "http://localhost:8000/v1"),
+            )
+        return self._consolidator
+
+    @property
     def workspaces(self) -> WorkspaceManager:
         return self._workspaces
 
@@ -121,16 +173,19 @@ class StorageManager:
     async def store_memory(self, memory: dict) -> str:
         """Insert one semantic fact + outbox marker in a single Mongo write.
 
-        memory: {session_id, fact, valid_from?, valid_to?, supersedes?}
+        memory: {session_id, fact, importance?, source?, valid_from?, valid_to?, supersedes?}
         """
         doc = {
             "session_id": memory["session_id"],
             "fact": memory["fact"],
             "embedding_text": memory.get("embedding_text", memory["fact"]),
+            "importance": memory.get("importance", 3),
+            "source": memory.get("source", "agent_generated"),
             "valid_from": memory.get("valid_from") or _utcnow(),
             "valid_to": memory.get("valid_to"),
             "supersedes": memory.get("supersedes"),
             "created_at": _utcnow(),
+            "expires_at": _expires_at(memory.get("importance", 3)),
             "outbox": {
                 "kind": "memory_vector",
                 "processed": False,
@@ -155,6 +210,60 @@ class StorageManager:
             }},
         )
 
+    async def boost_memory_importance(self, memory_id: str, delta: float = 0.1) -> None:
+        """Increment a memory's importance (capped at 5.0) and re-project to Chroma.
+
+        Called when a memory is retrieved into context: frequently-used memories
+        become more durable. Best-effort — bad/missing ids are ignored. Re-opens
+        the outbox so the OutboxWorker refreshes Chroma metadata + the TTL on the
+        next sweep (see decay task).
+        """
+        from bson import ObjectId
+        try:
+            oid = ObjectId(memory_id)
+        except Exception:
+            return
+        doc = await self._db[MEMORIES].find_one({"_id": oid}, {"importance": 1})
+        if not doc:
+            return
+        current = doc.get("importance", 3)
+        try:
+            new_importance = min(5.0, float(current) + float(delta))
+        except (TypeError, ValueError):
+            return
+        await self._db[MEMORIES].update_one(
+            {"_id": oid},
+            {"$set": {
+                "importance": new_importance,
+                "expires_at": _expires_at(new_importance),
+                "outbox.processed": False,
+                "outbox.processed_at": None,
+            }},
+        )
+
+    async def decay_expired_memories(self, session_id: str, now: datetime | None = None) -> int:
+        """Close all currently-valid memories for a session whose expires_at is past.
+
+        Returns the number of memories closed. Calls close_memory() per hit so the
+        outbox re-projection marks them closed in Chroma. Idempotent: already-closed
+        memories (valid_to set) are excluded by the query.
+        """
+        cutoff = now or _utcnow()
+        cursor = self._db[MEMORIES].find(
+            {
+                "session_id": session_id,
+                "valid_to": None,
+                "expires_at": {"$ne": None, "$lte": cutoff},
+            },
+            {"_id": 1},
+        )
+        ids = [doc["_id"] async for doc in cursor]
+        for _id in ids:
+            await self.close_memory(str(_id), valid_to=cutoff)
+        if ids:
+            logger.info("decayed %d expired memories for session=%s", len(ids), session_id)
+        return len(ids)
+
     # --- search ----------------------------------------------------------
     async def search_memories(self, query: str, top_k: int = 5) -> list[dict]:
         """Vector search over the `semantic` Chroma collection.
@@ -173,9 +282,13 @@ class StorageManager:
             meta = metas[i] if i < len(metas) else {}
             if meta.get("valid_to"):  # skip closed facts
                 continue
+            src = meta.get("source")
+            fact_text = docs[i] if i < len(docs) else ""
+            display = f"[{src}] {fact_text}" if src else fact_text
             out.append({
                 "id": _id,
-                "fact": docs[i] if i < len(docs) else "",
+                "fact": display,
+                "raw_fact": fact_text,
                 "metadata": meta,
                 "distance": dists[i] if i < len(dists) else None,
             })

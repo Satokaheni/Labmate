@@ -14,4 +14,5 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db["sessions"].create_index([("user_id", 1), ("workspace_id", 1), ("created_at", -1)])
     await db["episodes"].create_index([("session_id", 1), ("seq", 1)])
     await db["memories"].create_index([("session_id", 1), ("valid_to", 1)])
+    await db["memories"].create_index([("session_id", 1), ("valid_to", 1), ("expires_at", 1)])
     logger.info("MongoDB indexes ensured")

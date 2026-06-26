@@ -96,6 +96,9 @@ async def test_handle_emits_agent_status_active_and_idle():
     mock_storage.workspaces.record_session = AsyncMock()
     mock_storage.workspaces.upsert_workspace = AsyncMock()
     mock_storage.workspaces.complete_session = AsyncMock()
+    mock_storage.consolidator = MagicMock()
+    mock_storage.consolidator.on_task_complete = AsyncMock()
+    mock_storage.consolidator.write_reflections = AsyncMock()
 
     proc = OrchestratorProcess()
     proc._redis = r
