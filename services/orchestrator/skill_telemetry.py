@@ -16,9 +16,18 @@ import logging
 import os
 import tempfile
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 
 log = logging.getLogger("skill_telemetry")  # -> stderr via host handlers
+
+
+class SkillState(str, Enum):
+    """Skill lifecycle state."""
+    ACTIVE = "active"
+    STALE = "stale"
+    ARCHIVED = "archived"
+
 
 STATE_ACTIVE = "active"
 STATE_STALE = "stale"
@@ -70,23 +79,57 @@ def _idle_days(entry: dict, now: datetime) -> float:
 
 
 def compute_state(
-    entry: dict,
-    now: datetime,
-    stale_after_days: int = 30,
-    archive_after_days: int = 90,
-) -> str:
-    """PURE: the state this entry SHOULD have given its idle time.
+    entry: dict | None = None,
+    now: datetime | float | None = None,
+    stale_after_days: int | None = None,
+    archive_after_days: int | None = None,
+    *,
+    last_used_at: float | None = None,
+    success_count: int | None = None,
+    stale_after_s: float | None = None,
+    archive_after_s: float | None = None,
+) -> SkillState | str:
+    """PURE: compute lifecycle state from usage telemetry.
 
-    Pinned entries bypass all transitions and stay active. Thresholds are
-    inclusive: idle >= archive_after_days -> archived; idle >= stale_after_days
-    -> stale; otherwise active.
+    Supports two interfaces:
+    1. OLD (entry dict): compute_state(entry, now, stale_after_days=30, archive_after_days=90)
+       Returns str ("active"|"stale"|"archived")
+    2. NEW (raw params): compute_state(last_used_at=..., success_count=..., now=...,
+       stale_after_s=..., archive_after_s=...)
+       Returns SkillState enum
     """
+    # NEW interface: raw parameters (keyword-only)
+    if last_used_at is not None or success_count is not None:
+        if now is None or not isinstance(now, (int, float)):
+            raise TypeError("NEW interface: now must be a float")
+        now_float: float = float(now)
+        stale_s = stale_after_s if stale_after_s is not None else 14 * 24 * 3600.0
+        archive_s = archive_after_s if archive_after_s is not None else 60 * 24 * 3600.0
+
+        if last_used_at is None:
+            return SkillState.ACTIVE
+        idle_s = now_float - last_used_at
+        if idle_s >= archive_s:
+            return SkillState.ARCHIVED
+        if idle_s >= stale_s:
+            return SkillState.STALE
+        return SkillState.ACTIVE
+
+    # OLD interface: entry dict (positional)
+    if entry is None:
+        raise TypeError("compute_state() requires either entry dict or keyword args")
+    if not isinstance(now, datetime):
+        raise TypeError("OLD interface: now must be datetime")
+
+    stale_days = stale_after_days if stale_after_days is not None else 30
+    archive_days = archive_after_days if archive_after_days is not None else 90
+
     if entry.get("pinned"):
         return STATE_ACTIVE
     idle = _idle_days(entry, now)
-    if idle >= archive_after_days:
+    if idle >= archive_days:
         return STATE_ARCHIVED
-    if idle >= stale_after_days:
+    if idle >= stale_days:
         return STATE_STALE
     return STATE_ACTIVE
 

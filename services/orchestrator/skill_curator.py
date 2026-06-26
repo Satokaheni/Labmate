@@ -19,6 +19,8 @@ from collections import deque
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
+from services.orchestrator.skill_telemetry import SkillState, compute_state
+
 log = logging.getLogger("skill_curator")  # -> stderr via host handlers
 
 
@@ -121,3 +123,41 @@ def save_state(path: Path, state: CuratorState) -> None:
     tmp = p.with_suffix(p.suffix + ".tmp")
     tmp.write_text(json.dumps(asdict(state)), encoding="utf-8")
     os.replace(tmp, p)
+
+
+_STALE_AFTER_S = 14 * 24 * 3600.0
+_ARCHIVE_AFTER_S = 60 * 24 * 3600.0
+
+
+@dataclass(frozen=True)
+class SkillUsage:
+    """Per-skill usage telemetry the sweep reads (sourced from the telemetry store)."""
+    name: str
+    last_used_at: float | None
+    success_count: int
+
+
+def sweep_transitions(
+    usages: list[SkillUsage],
+    now: float,
+    *,
+    stale_after_s: float = _STALE_AFTER_S,
+    archive_after_s: float = _ARCHIVE_AFTER_S,
+) -> dict[str, str]:
+    """PURE lifecycle sweep: name -> SkillState value ("active"|"stale"|"archived").
+
+    Delegates the per-skill decision to the telemetry plan's compute_state. Returns
+    advisory verdicts only — it performs NO disk writes and NEVER mutates the active
+    catalog (proposal-only invariant).
+    """
+    verdicts: dict[str, str] = {}
+    for u in usages:
+        state: SkillState = compute_state(
+            last_used_at=u.last_used_at,
+            success_count=u.success_count,
+            now=now,
+            stale_after_s=stale_after_s,
+            archive_after_s=archive_after_s,
+        )
+        verdicts[u.name] = state.value
+    return verdicts

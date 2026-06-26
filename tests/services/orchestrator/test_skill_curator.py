@@ -48,3 +48,25 @@ def test_gate_closed_when_paused():
     st = _state(last_run_at=0.0, paused=True)
     assert sc.should_run_now(st, now=200 * HOUR, interval_hours=168,
                              min_idle_hours=2, idle_for_s=9999) is False
+
+
+DAY = 86400.0
+
+
+def test_sweep_archives_long_unused_skill():
+    usages = [sc.SkillUsage("old-tool", last_used_at=0.0, success_count=3)]
+    verdicts = sc.sweep_transitions(usages, now=100 * DAY)
+    assert verdicts["old-tool"] == "archived"
+
+
+def test_sweep_keeps_recent_skill_active():
+    usages = [sc.SkillUsage("calc", last_used_at=100 * DAY - 10, success_count=5)]
+    verdicts = sc.sweep_transitions(usages, now=100 * DAY)
+    assert verdicts["calc"] == "active"
+
+
+def test_sweep_marks_idle_skill_stale():
+    # idle 20 days: past the 14-day stale line, short of the 60-day archive line
+    usages = [sc.SkillUsage("rusty", last_used_at=80 * DAY, success_count=2)]
+    verdicts = sc.sweep_transitions(usages, now=100 * DAY)
+    assert verdicts["rusty"] == "stale"
