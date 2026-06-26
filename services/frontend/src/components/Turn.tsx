@@ -5,9 +5,10 @@ import type { Artifact, Turn as TurnT } from '@/types/events';
 export interface TurnProps {
   turn: TurnT;
   onPreviewArtifact?: (artifact: Artifact) => void;
+  hideToolCalls?: boolean;
 }
 
-export function Turn({ turn, onPreviewArtifact }: TurnProps) {
+export function Turn({ turn, onPreviewArtifact, hideToolCalls }: TurnProps) {
   if (turn.role === 'user') {
     return (
       <div data-testid="user-turn" className="flex justify-end py-3">
@@ -17,5 +18,5 @@ export function Turn({ turn, onPreviewArtifact }: TurnProps) {
       </div>
     );
   }
-  return <AssistantTurn turn={turn} onPreviewArtifact={onPreviewArtifact} />;
+  return <AssistantTurn turn={turn} onPreviewArtifact={onPreviewArtifact} hideToolCalls={hideToolCalls} />;
 }
