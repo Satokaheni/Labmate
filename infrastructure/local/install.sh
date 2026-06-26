@@ -94,10 +94,18 @@ if ! have redis-server; then
 fi
 log "redis $(redis-server --version | grep -oE 'v=[0-9.]+')"
 
-# ─── 2. Node deps (mcp-bridge) ────────────────────────────────────────────────
+# ─── 2. Node deps + build (mcp-bridge) ────────────────────────────────────────
+# dist/ is gitignored (build output), so a fresh clone has NO dist/index.js until
+# it is compiled here. The orchestrator spawns the bridge from dist/index.js, so
+# it must exist before the stack runs. (start.sh also rebuilds a missing/stale
+# dist as a safety net, but building at install time surfaces TS errors during
+# setup instead of as an opaque "MCP bridge did not become ready" at first start.)
 if [[ -f "${REPO_ROOT}/services/mcp-bridge/package.json" ]]; then
-  log "npm install (mcp-bridge) ..."
-  ( cd "${REPO_ROOT}/services/mcp-bridge" && npm install --no-audit --no-fund >/dev/null 2>&1 )
+  log "npm install + build (mcp-bridge) ..."
+  ( cd "${REPO_ROOT}/services/mcp-bridge" \
+      && npm install --no-audit --no-fund >/dev/null 2>&1 \
+      && npm run build >"${REPO_ROOT}/.data/logs/mcp-bridge-build.log" 2>&1 ) \
+    || log "  WARN: mcp-bridge install/build failed — see .data/logs/mcp-bridge-build.log (start.sh will retry)"
 fi
 
 # ─── 3. Python deps ───────────────────────────────────────────────────────────
