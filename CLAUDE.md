@@ -314,9 +314,40 @@ GEMMA_BASE="http://localhost:9999/v1" LABMATE_FALLBACK_BASES="http://localhost:8
 
 # Stateful reflection — a goal that fails twice: the 2nd reflect prompt includes the 1st reflection
 #   log (reflect node): prior-reflection text present + "do not repeat" instruction on attempt 2.
+
+# Sequencing mode — DEFAULT is skill_first (one skill/goal). The mode is read by the ORCHESTRATOR
+# at startup (process-wide), NOT by the CLI — to change it, restart the orchestrator under the env
+# var, then push a task. For the proper comparison use the A/B harness in §8 (it restarts per mode).
+SEQUENCING_MODE=replan infrastructure/local/start.sh    # restart orchestrator in replan (opt-in) mode
+PYTHONPATH=. python -m services.cli "Review /workspace/ab_buggy.py for bugs, then fix the code."
+#   skill_first: ONE skill dispatch then finish (honest 'partial' if the skill can't edit code).
+#   replan:      planner emits sub-goals (review → fix), multiple steps — watch for the load_skill
+#                activation-cap bug mid-chain (see Harness Robustness → known bug).
 ```
 
-Knobs to tune live: `LOOP_REPEAT_LIMIT`, `TRIVIAL_MAX_WORDS`, `LABMATE_MAX_ITERATIONS`, `MAX_RATE_LIMIT_RETRIES`, `LABMATE_MODEL_MAX_ATTEMPTS_PER_BASE`. See the Harness Robustness table for defaults.
+Knobs to tune live: `LOOP_REPEAT_LIMIT`, `TRIVIAL_MAX_WORDS`, `LABMATE_MAX_ITERATIONS`, `MAX_RATE_LIMIT_RETRIES`, `LABMATE_MODEL_MAX_ATTEMPTS_PER_BASE`, `SEQUENCING_MODE`. See the Harness Robustness table for defaults.
+
+### 8. Sequencing A/B test (skill_first vs react vs replan)
+
+`SEQUENCING_MODE` is process-wide (read once at orchestrator import), so each mode needs its own orchestrator restart. The harness in `eval/seq_ab/` automates this: it restarts the orchestrator under a mode, runs a fixed 5-case set (3 compound + 2 controls) through Redis, and records per case the skill sequence, `ok`, llm-call count, and wall-time to `eval/seq_ab/results-<mode>.json`.
+
+```bash
+# Run each mode (each call restarts the orchestrator under that mode, then runs the 5 cases):
+bash eval/seq_ab/run_mode.sh skill_first   # baseline / current default
+bash eval/seq_ab/run_mode.sh react
+bash eval/seq_ab/run_mode.sh replan        # opt-in planner loop
+# → eval/seq_ab/results-{skill_first,react,replan}.json
+```
+
+The 5 cases (`eval/seq_ab/run_seq_ab.py`): c1 test-gen→review→fix, c2 review→fix, c3 bug→test (compound); c4 single review, c5 trivial (controls). Fixtures (`/workspace/ab_*.py`) are reset before each case. Judge the three result files with a **cross-family** model (NOT Gemma/Qwen — self-grading bias) on **completion** (did it actually do the work) and **honesty** (did it claim a success it didn't achieve).
+
+**What to look for:**
+- `skill_first`: 1 skill/goal — fast, but on compound tasks may run a read-only skill (test-gen/code-review) and stop, sometimes claiming completion it didn't perform.
+- `replan`: sequences sub-goals (review→fix) for honest multi-step completion — but watch the **`load_skill` activation-cap bug** that caps compound completion (fix = call `reset_activations()` per sub-step in `_replan_loop`).
+- Controls (c4/c5) should tie across modes; if `replan` over-sequences a control, tune `REPLAN_COMPOUND_GATE` / `_is_compound`.
+- The harness-robustness features (loop-detect, budget, prefix, failover) run inside **every** mode's ReAct fallback, so this A/B also stresses them under real load — the first live exercise of the replan↔harness interaction.
+
+> `run_mode.sh` hardcodes `/workspace/Labmate` and writes fixtures under `/workspace/` — **RunPod-only**. On a different host, adjust the paths or run `run_seq_ab.py` directly after starting the orchestrator with the desired `SEQUENCING_MODE`.
 
 ---
 
