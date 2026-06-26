@@ -63,20 +63,94 @@ def _drop_orphan_tool_results(messages: list[dict]) -> list[dict]:
     return out
 
 
+def _content_str(m: dict) -> str:
+    c = m.get("content")
+    return c if isinstance(c, str) else ("" if c is None else str(c))
+
+
+def _is_mergeable_assistant(m: dict) -> bool:
+    """An assistant message with NO tool_calls is plain text and may merge."""
+    return m.get("role") == "assistant" and not (m.get("tool_calls"))
+
+
+def _merge_adjacent_same_role(messages: list[dict]) -> list[dict]:
+    """Collapse illegal adjacent same-role runs.
+
+    Merges two adjacent ``user`` messages, or two adjacent ``assistant``
+    messages that BOTH carry no tool_calls, by joining content with '\\n'.
+    ``tool`` messages are never merged (multiple tool results for one assistant
+    turn are legal). An assistant-with-tool_calls is never merged.
+    """
+    out: list[dict] = []
+    for m in messages:
+        if not out:
+            out.append(dict(m))
+            continue
+        prev = out[-1]
+        role = m.get("role")
+        if role == "user" and prev.get("role") == "user":
+            merged = dict(prev)
+            merged["content"] = _content_str(prev) + "\n" + _content_str(m)
+            out[-1] = merged
+            continue
+        if (
+            role == "assistant"
+            and _is_mergeable_assistant(prev)
+            and _is_mergeable_assistant(m)
+        ):
+            merged = dict(prev)
+            merged["content"] = _content_str(prev) + "\n" + _content_str(m)
+            out[-1] = merged
+            continue
+        out.append(dict(m))
+    return out
+
+
 def sanitize_messages(messages: list[dict]) -> list[dict]:
     """Return a NEW, repaired copy of ``messages`` (see module docstring).
 
-    Stub: filled in by later tasks. For now, a shallow copy so callers already
-    get a new list (purity contract) without behavior change.
+    Order of passes:
+      1. Drop orphaned tool results (running-declared-id check).
+      2. Merge illegal adjacent same-role runs.
+    The system message at index 0 and the leading system+user prefix are never
+    reordered: the merge pass only ever folds a LATER adjacent message into an
+    EARLIER one of the same role, preserving the prefix anchor's position.
     """
     if not messages:
         return []
-    return _drop_orphan_tool_results(messages)
+    stage1 = _drop_orphan_tool_results(messages)
+    stage2 = _merge_adjacent_same_role(stage1)
+    return stage2
 
 
 def validate_messages(messages: list[dict]) -> list[str]:
-    """Return a list of human-readable problems found in ``messages``.
-
-    Stub: filled in by a later task. Used by tests and (optionally) logging.
-    """
-    return []
+    """Return human-readable problems (for tests / logging). Does not repair."""
+    problems: list[str] = []
+    declared_so_far: set[str] = set()
+    answered: set[str] = set()
+    prev_role: str | None = None
+    for idx, m in enumerate(messages):
+        role = m.get("role")
+        if role == "assistant":
+            for tc in m.get("tool_calls") or []:
+                tid = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+                if tid is not None:
+                    declared_so_far.add(tid)
+            if prev_role == "assistant" and _is_mergeable_assistant(m) and not (
+                messages[idx - 1].get("tool_calls")
+            ):
+                problems.append(f"adjacent assistant messages at index {idx}")
+        elif role == "tool":
+            tid = m.get("tool_call_id")
+            if tid not in declared_so_far:
+                problems.append(f"orphaned tool result tool_call_id={tid!r} at index {idx}")
+            else:
+                answered.add(tid)
+        elif role == "user":
+            if prev_role == "user":
+                problems.append(f"adjacent user messages at index {idx}")
+        prev_role = role
+    dangling = declared_so_far - answered
+    for tid in sorted(dangling):
+        problems.append(f"dangling unanswered assistant tool_call id={tid!r}")
+    return problems
