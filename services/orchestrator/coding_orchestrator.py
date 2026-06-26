@@ -20,6 +20,7 @@ from .local_tools import (
     request_local_tool,
     build_run_tests_command,
     shape_run_tests_result,
+    verify_written_content,
 )
 from .loop_detection import LoopDetector, call_signature
 from .iteration_budget import IterationBudget, CHEAP_TOOLS
@@ -523,7 +524,31 @@ class AsyncOrchestrator:
                                 result = await request_local_tool(
                                     self.redis, name, args
                                 )
-                                content = json.dumps({"result": result}, default=str)
+                                # Reliable write: after a write_file the client may
+                                # report success without the bytes landing. Read the
+                                # file back and confirm it matches what we asked to
+                                # write; surface an explicit error to the model on
+                                # mismatch so it cannot claim "code updated" falsely.
+                                if name == "write_file":
+                                    requested = str(args.get("content", ""))
+                                    try:
+                                        readback = await request_local_tool(
+                                            self.redis,
+                                            "read_file",
+                                            {"path": args.get("path", "")},
+                                        )
+                                    except Exception as exc:
+                                        readback = f"<read-back failed: {exc}>"
+                                    verify_err = verify_written_content(requested, readback)
+                                    if verify_err is not None:
+                                        content = json.dumps({"error": verify_err})
+                                    else:
+                                        content = json.dumps(
+                                            {"result": result, "verified": True},
+                                            default=str,
+                                        )
+                                else:
+                                    content = json.dumps({"result": result}, default=str)
                             except Exception as exc:
                                 content = json.dumps({"error": str(exc)})
                         else:
