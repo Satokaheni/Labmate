@@ -291,10 +291,16 @@ class AsyncOrchestrator:
         # ReAct loop — bounded by an IterationBudget (replaces the bare
         # range(max_steps) cap). The budget grants ONE grace turn after
         # exhaustion and refunds cheap read-only iterations (CHEAP_TOOLS).
+        # Additionally, record_turn() enforces a hard absolute turn ceiling that
+        # cannot be refunded, preventing infinite loops from distinct cheap reads.
         cap = int(os.getenv("LABMATE_MAX_ITERATIONS", str(self.max_steps)))
         budget = IterationBudget(max_total=cap)
         try:
             while True:
+                # Hard absolute ceiling (prevents infinite loops of distinct cheap reads).
+                if not budget.record_turn():
+                    return {"ok": False, "summary": "absolute turn limit exceeded"}
+
                 # Consume one unit; on exhaustion take the single grace turn,
                 # else stop with a clear "budget exhausted" outcome.
                 if not budget.consume():

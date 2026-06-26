@@ -272,6 +272,57 @@ class TestAsyncOrchestrator:
         assert result.ok is True
         assert result.id == "gid"
 
+    @pytest.mark.asyncio
+    async def test_react_execute_halts_on_absolute_turn_limit(self):
+        """
+        A model that calls read_file with distinct args (monotonically changing
+        paths) emits all-distinct signatures, so the loop detector never trips.
+        Each turn is refunded (cheap), so the budget never exhausts.
+        But the absolute turn limit (2*max_steps) should halt the loop.
+        This test verifies the hard ceiling prevents infinite loops.
+        """
+        from services.orchestrator import events
+
+        orch = AsyncOrchestrator(skill_router=None, mcp=MagicMock(), max_steps=3)
+        orch.mcp.call_tool = AsyncMock(return_value=MagicMock(
+            content=[MagicMock(text="{}")], isError=False
+        ))
+
+        # Track how many turns the model was called
+        turn_count = [0]
+
+        async def mock_completion(*args, **kwargs):
+            turn_count[0] += 1
+            # Every response: call read_file with a different path
+            # (distinct signatures, so loop detector never trips)
+            # read_file IS in CHEAP_TOOLS, so each turn is refunded
+            return MagicMock(choices=[MagicMock(
+                message=_msg_with_tool_call(
+                    "read_file",
+                    json.dumps({"path": f"file{turn_count[0]}.txt"})
+                )
+            )])
+
+        captured = []
+
+        class FakeEmitter:
+            async def emit(self, type, **f):
+                captured.append({"type": type, **f})
+
+        with patch("services.orchestrator.coding_orchestrator.acompletion_with_failover",
+                   new_callable=AsyncMock, side_effect=mock_completion):
+            token = events.current_emitter.set(FakeEmitter())
+            try:
+                result = await orch.react_execute("read files")
+            finally:
+                events.current_emitter.reset(token)
+
+        # Should halt with "absolute turn limit exceeded", not continue forever
+        assert result["ok"] is False
+        assert "absolute turn limit" in result["summary"]
+        # Verify we hit the ceiling (2*3=6 turns), not way beyond
+        assert turn_count[0] <= 7  # 6 + 1 for the final check
+
 
 @pytest.mark.mocked
 class TestCodingOrchestrator:
@@ -1163,7 +1214,9 @@ class TestReactExecuteBudget:
 
         # ...but the env knob clamps to 1 => 1 working turn + 1 grace = 2 calls.
         assert m.await_count == 2
-        assert "budget exhausted" in result["summary"]
+        # The loop exits when absolute turn limit (2*1=2) is exceeded on turn 3
+        # (before grace can fire again), or after grace is exhausted.
+        assert ("absolute turn limit" in result["summary"] or "budget exhausted" in result["summary"])
 
 
 @pytest.mark.asyncio

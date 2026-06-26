@@ -36,12 +36,17 @@ class IterationBudget:
     final turn. ``refund()`` returns one unit (used for cheap read-only
     turns) but never lets ``used`` go below zero and never raises ``used``
     above ``max_total``.
+
+    Additionally, ``record_turn()`` increments an absolute turn counter that
+    cannot be refunded. This hard ceiling ensures that even a stream of
+    distinct cheap reads with no progress eventually halts.
     """
 
     def __init__(self, max_total: int):
         self.max_total = max_total
         self._used = 0
         self._grace_used = False
+        self._absolute_turns = 0  # hard ceiling: increments per turn, no refunds
         self._lock = threading.Lock()
 
     def consume(self) -> bool:
@@ -88,6 +93,27 @@ class IterationBudget:
     def grace_used(self) -> bool:
         with self._lock:
             return self._grace_used
+
+    def record_turn(self) -> bool:
+        """Record an absolute turn (refund-independent counter).
+
+        Returns True if the turn count is still within the hard ceiling.
+        Once ``absolute_turns`` reaches ``2 * max_total``, returns False.
+
+        This hard limit ensures that even a stream of distinct cheap reads
+        (which are refunded and never exhaust the budget) eventually halts.
+        The 2x multiplier allows for interleaving of cheap and expensive turns.
+        """
+        with self._lock:
+            if self._absolute_turns >= 2 * self.max_total:
+                return False
+            self._absolute_turns += 1
+            return True
+
+    @property
+    def absolute_turns(self) -> int:
+        with self._lock:
+            return self._absolute_turns
 
 
 __all__ = ["IterationBudget", "CHEAP_TOOLS"]

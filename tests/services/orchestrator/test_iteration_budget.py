@@ -112,3 +112,64 @@ class TestIterationBudgetGrace:
         assert b.used == 2
         b.grace()
         assert b.used == 2  # grace is orthogonal to the consume counter
+
+
+@pytest.mark.mocked
+class TestIterationBudgetAbsoluteTurnLimit:
+    def test_record_turn_starts_at_zero(self):
+        b = IterationBudget(max_total=6)
+        assert b.absolute_turns == 0
+
+    def test_record_turn_increments_on_each_call(self):
+        b = IterationBudget(max_total=6)
+        assert b.record_turn() is True
+        assert b.absolute_turns == 1
+        assert b.record_turn() is True
+        assert b.absolute_turns == 2
+
+    def test_record_turn_returns_false_at_ceiling(self):
+        # Ceiling is 2 * max_total, e.g. 2 * 6 = 12
+        b = IterationBudget(max_total=6)
+        for i in range(12):
+            assert b.record_turn() is True
+        # 13th turn exceeds the ceiling
+        assert b.record_turn() is False
+        assert b.absolute_turns == 12
+
+    def test_record_turn_independent_of_refunds(self):
+        # Even if cheap turns are refunded (budget-wise), absolute turn
+        # counter increments and cannot be refunded.
+        b = IterationBudget(max_total=3)
+        # Consume and immediately refund 3 times
+        b.consume()
+        b.refund()
+        b.consume()
+        b.refund()
+        b.consume()
+        b.refund()
+        # Budget looks fully refunded
+        assert b.used == 0
+        assert b.remaining == 3
+        # But absolute turns count is still 3
+        assert b.record_turn() is True
+        assert b.record_turn() is True
+        assert b.record_turn() is True
+        assert b.record_turn() is True
+        assert b.record_turn() is True
+        assert b.record_turn() is True
+        # Now at ceiling (2*3=6), next fails
+        assert b.record_turn() is False
+
+    def test_record_turn_prevents_infinite_loop_of_distinct_cheap_reads(self):
+        # Simulate a model that calls read_file with monotonically different args.
+        # Each turn is refunded (cheap), but absolute turns increment.
+        b = IterationBudget(max_total=5)
+        step_count = 0
+        while b.record_turn():
+            # Simulate a cheap turn: consume then refund
+            b.consume()
+            b.refund()
+            step_count += 1
+        # Should halt after 2*5=10 absolute turns, not infinite
+        assert step_count == 10
+        assert b.absolute_turns == 10
