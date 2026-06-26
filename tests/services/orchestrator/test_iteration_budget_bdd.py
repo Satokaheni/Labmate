@@ -107,10 +107,10 @@ def _ensure_len(ctx, turn):
 
 @when(parsers.parse('react_execute runs the goal "{goal}"'))
 def _run(ctx, goal):
+    import asyncio
     with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
                new_callable=AsyncMock, side_effect=ctx["responses"]) as mock:
-        import asyncio
-        ctx["result"] = asyncio.get_event_loop().run_until_complete(
+        ctx["result"] = asyncio.run(
             ctx["orch"].react_execute(goal)
         )
         ctx["mock"] = mock
