@@ -97,6 +97,9 @@ export function App({
   // Boolean dep: only re-run center when compact goes from undefined ↔ defined.
   const compactEnabled = onCompact !== undefined;
 
+  // Boolean dep: only re-run center when tools panel opens/closes.
+  const toolsOpen = rightPanel === 'tools';
+
   const topBar = useMemo(() => (
     <div className="flex w-full items-center gap-3">
       <LabmateMark size={18} variant="tile" spin="none" />
@@ -185,7 +188,7 @@ export function App({
     <>
       <div aria-live="polite" aria-label="Conversation" className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
         {turns.map((t) => (
-          <Turn key={t.id} turn={t} onPreviewArtifact={handlePreviewArtifact} hideToolCalls={rightPanel === 'tools'} />
+          <Turn key={t.id} turn={t} onPreviewArtifact={handlePreviewArtifact} hideToolCalls={toolsOpen} />
         ))}
       </div>
       <Composer
@@ -213,7 +216,7 @@ export function App({
         <ContextBar window={context} onCompact={compactEnabled ? () => { onCompactRef.current?.(); } : undefined} compacting={compacting} />
       </div>
     </>
-  ), [turns, context, compactEnabled, compacting, agentStatus, activeSessionId, mode, sessions, rightPanel]);
+  ), [turns, context, compactEnabled, compacting, agentStatus, activeSessionId, mode, sessions, toolsOpen]);
 
   const right = useMemo(() => {
     if (debug) {
