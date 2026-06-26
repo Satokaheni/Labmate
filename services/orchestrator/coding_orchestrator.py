@@ -565,6 +565,17 @@ class AsyncOrchestrator:
                                 nudge=verify_nudges_used,
                                 max_nudges=max_verify_nudges,
                             )
+                            # Append synthetic tool result for the finish tool_call
+                            # before re-entering the loop, so the message sequence
+                            # is valid: assistant(finish) -> tool(finish) -> user(nudge)
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": json.dumps({
+                                    "finish_deferred": True,
+                                    "reason": "verification required before completion"
+                                }),
+                            })
                             messages.append({
                                 "role": "user",
                                 "content": build_verify_nudge(edited_files),
