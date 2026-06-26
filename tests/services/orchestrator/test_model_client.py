@@ -268,3 +268,35 @@ async def test_respx_primary_503_then_secondary_200(respx_mock):
             assert secondary.call_count == 1
         finally:
             litellm.aclient_session = original_session
+
+
+from unittest.mock import AsyncMock, patch
+from services.orchestrator.coding_orchestrator import CodingOrchestrator
+
+
+@pytest.mark.mocked
+@pytest.mark.asyncio
+async def test_architect_routes_through_failover_wrapper(monkeypatch):
+    monkeypatch.delenv("LABMATE_FALLBACK_BASES", raising=False)
+    orch = CodingOrchestrator(
+        graph=None, workspace_path=".", docker_container="",
+        gemma_api_base="http://primary:8000/v1",
+    )
+    seen = {}
+
+    async def fake_failover(*, model, bases, **kwargs):
+        seen["model"] = model
+        seen["bases"] = bases
+        seen["extra_body"] = kwargs.get("extra_body")
+        return _ok("planned")
+
+    with patch(
+        "services.orchestrator.coding_orchestrator.acompletion_with_failover",
+        new=AsyncMock(side_effect=fake_failover),
+    ):
+        out = await orch.architect("plan this", thinking_budget=3000)
+
+    assert out == "planned"
+    assert seen["model"] == "openai/gemma-4-31b"
+    assert seen["bases"] == ["http://primary:8000/v1"]
+    assert seen["extra_body"] == {"thinking_budget_tokens": 3000}

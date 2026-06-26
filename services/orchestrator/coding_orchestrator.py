@@ -12,6 +12,7 @@ from aiolimiter import AsyncLimiter
 
 from .types import Goal, State, Status, get_ready_goals, update_status, now_iso
 from . import events
+from .model_client import acompletion_with_failover, resolve_bases
 from .prompt_assembler import PromptAssembler
 from .local_tools import LOCAL_TOOL_NAMES, request_local_tool
 from .loop_detection import LoopDetector, call_signature
@@ -129,6 +130,9 @@ class AsyncOrchestrator:
         self.results: dict[str, Result] = {}
         self._qwen_base = qwen_api_base
         self._gemma_base = gemma_api_base
+        # Ordered endpoint list for failover (primary + LABMATE_FALLBACK_BASES).
+        self._bases = resolve_bases(gemma_api_base)
+        self._editor_bases = resolve_bases(qwen_api_base)
         self.skill_router = skill_router
         self.mcp = mcp
         self.codegraph_mcp = None  # set after construction if codegraph-embedder is running
@@ -302,9 +306,9 @@ class AsyncOrchestrator:
                 _turn_tools: list[str] = []
 
                 step = budget.used - 1  # for logging (0-indexed)
-                r = await litellm.acompletion(
+                r = await acompletion_with_failover(
                     model="openai/gemma-4-31b",
-                    api_base=self._gemma_base,
+                    bases=self._bases,
                     api_key="not-needed",
                     messages=messages,
                     tools=tools,
@@ -602,9 +606,9 @@ class AsyncOrchestrator:
             f"Task: {task}\n\nCandidate results:\n{candidates}\n\n"
             "Synthesize the best unified result."
         )
-        r = await litellm.acompletion(
+        r = await acompletion_with_failover(
             model="openai/gemma-4-31b",
-            api_base=self._gemma_base,
+            bases=self._bases,
             api_key="not-needed",
             messages=[{"role": "user", "content": prompt}],
             extra_body={"thinking_budget_tokens": 2000},
@@ -645,6 +649,9 @@ class CodingOrchestrator:
         self.container = docker_container
         self._gemma_base = gemma_api_base
         self._qwen_base = qwen_api_base
+        # Ordered endpoint lists for failover (primary + LABMATE_FALLBACK_BASES).
+        self._bases = resolve_bases(gemma_api_base)
+        self._editor_bases = resolve_bases(qwen_api_base)
         self.max_iter = max_iter
         self.stuck_n = stuck_n
         self.mcp = mcp          # MCPClientManager | None
@@ -713,9 +720,9 @@ class CodingOrchestrator:
         thinking_budget_tokens field (only honored when server started without
         --reasoning-budget flag). Pass thinking_budget=0 for fast tool-dispatch nodes.
         """
-        r = await litellm.acompletion(
+        r = await acompletion_with_failover(
             model="openai/gemma-4-31b",
-            api_base=self._gemma_base,
+            bases=self._bases,
             api_key="not-needed",
             messages=self._build_messages(prompt),
             extra_body={"thinking_budget_tokens": thinking_budget},
@@ -728,9 +735,9 @@ class CodingOrchestrator:
         thinking_budget must always be set: post-April-2026 llama.cpp builds default
         to INT_MAX if omitted, which can cause non-deterministic hangs.
         """
-        r = await litellm.acompletion(
+        r = await acompletion_with_failover(
             model="openai/qwen2.5-coder-32b",
-            api_base=self._qwen_base,
+            bases=self._editor_bases,
             api_key="not-needed",
             messages=self._build_messages(prompt),
             extra_body={"thinking_budget_tokens": thinking_budget},
@@ -817,9 +824,9 @@ class CodingOrchestrator:
         )
         acc = ""
         try:
-            stream = await litellm.acompletion(
+            stream = await acompletion_with_failover(
                 model="openai/gemma-4-31b",
-                api_base=self._gemma_base,
+                bases=self._bases,
                 api_key="not-needed",
                 messages=[{"role": "user", "content": prompt}],
                 stream=True,
