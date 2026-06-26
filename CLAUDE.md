@@ -235,11 +235,37 @@ python eval/run_routing_eval.py \
 ```
 Acceptance: new skill ≥ 0.80, no existing skill drops > 0.05. If a skill mis-routes, improve its `SKILL.md` description — that's the routing signal. Never modify `eval/routing_eval.seed.jsonl`.
 
-### 6. Log locations
+### 6. Semantic codegraph search (run when `services/codegraph_embedder/` is changed)
+
+The orchestrator spawns the codegraph MCP server automatically — no separate start needed.
+
+```bash
+# Confirm orchestrator picked up the tool at startup
+grep "codegraph semantic search ready" .data/logs/orchestrator.log
+
+# Check Chroma collection is populated (~2794 nodes for current codebase)
+curl -s http://localhost:8765/api/v1/collections/code_symbols | python3 -c \
+  "import sys,json; d=json.load(sys.stdin); print(d.get('count', d))"
+
+# Semantic query via agent (golden-path test)
+redis-cli XADD labmate:goals '*' payload \
+  '{"task_id":"cg-test","task":"Find the function that handles WebSocket authentication","session_id":"cg-test"}'
+# Expected: result references ws_gateway/server.py near the auth handshake
+
+# Incremental update — touch a file, wait 5 s, check the log
+touch services/orchestrator/main.py
+sleep 6
+grep "incremental_update" .data/logs/codegraph-embedder.log | tail -3
 ```
-.data/logs/orchestrator.log   ← task complete/failed, exceptions
-.data/logs/llama-server.log   ← model load, VRAM, 5xx
-.data/logs/ws-gateway.log     ← auth failures, event relay errors
+
+`full_index` is skipped on restart if `code_symbols` already has documents. To force a full re-index, delete the collection from Chroma first.
+
+### 7. Log locations
+```
+.data/logs/orchestrator.log        ← task complete/failed, exceptions
+.data/logs/llama-server.log        ← model load, VRAM, 5xx
+.data/logs/ws-gateway.log          ← auth failures, event relay errors
+.data/logs/codegraph-embedder.log  ← indexer startup, incremental updates
 ```
 
 | Log pattern | Likely cause |
@@ -248,6 +274,7 @@ Acceptance: new skill ≥ 0.80, no existing skill drops > 0.05. If a skill mis-r
 | `xreadgroup error` | Redis not running or stream not created |
 | No `goal received` after XADD | Orchestrator not running or consumer group missing |
 | `MCP bridge did not become ready` | Bridge crash or missing `dist/index.js` — run `npm run build` in `services/mcp-bridge/` |
+| `codegraph MCP did not become ready` | `.codegraph/codegraph.db` missing or embed model not loaded — check codegraph-embedder.log |
 | `llama-server` 5xx / timeout | Model not loaded or VRAM OOM |
 | ws_gateway `auth_failed` | JWT credentials wrong or `ADMIN_EMAIL`/`ADMIN_PASSWORD` not seeded |
 
