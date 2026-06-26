@@ -15,6 +15,7 @@ from .types import Goal, State, Status, get_ready_goals, update_status, now_iso
 from . import events
 from .model_client import acompletion_with_failover, resolve_bases
 from .prompt_assembler import PromptAssembler
+from .memory_search import MemorySearch
 from .local_tools import (
     LOCAL_TOOL_NAMES,
     request_local_tool,
@@ -249,6 +250,7 @@ class AsyncOrchestrator:
         self.skill_router = skill_router
         self.mcp = mcp
         self.codegraph_mcp = None  # set after construction if codegraph-embedder is running
+        self.memory_search: MemorySearch | None = None  # set after construction when a memory store is wired
         self.workspace = workspace
         self.max_steps = max_steps
         self.redis = redis
@@ -450,6 +452,7 @@ class AsyncOrchestrator:
         assembler = PromptAssembler(
             skill_router=self.skill_router,
             codegraph_enabled=self.codegraph_mcp is not None,
+            memory_enabled=self.memory_search is not None,
         )
         tools = assembler.tools()                 # frozen list — never rebuilt per step
         messages = [
@@ -815,6 +818,17 @@ class AsyncOrchestrator:
                                 content = json.dumps({"error": str(exc)})
                         else:
                             content = json.dumps({"error": "codegraph semantic search not available"})
+
+                    elif name == "memory_search":
+                        if self.memory_search is not None:
+                            try:
+                                content = await self.memory_search.search(
+                                    args.get("query", ""), args.get("k"),
+                                )
+                            except Exception as exc:
+                                content = json.dumps({"error": str(exc)})
+                        else:
+                            content = json.dumps({"error": "memory search not available"})
 
                     else:
                         content = json.dumps({"error": f"unknown tool: {name}"})
