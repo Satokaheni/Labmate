@@ -491,18 +491,23 @@ class AsyncOrchestrator:
                         "role": "assistant",
                         "content": msg.content or "",
                     }
-                    if tool_calls:
-                        msg_dict["tool_calls"] = [
-                            {
-                                "id": tc.id,
-                                "type": "function",
-                                "function": {
-                                    "name": tc.function.name,
-                                    "arguments": tc.function.arguments,
-                                },
-                            }
-                            for tc in tool_calls
-                        ]
+
+                # Ensure tool_calls from the actual message are always included in the dict,
+                # in case model_dump() returned an empty or missing tool_calls list.
+                # This is critical for the sanitizer to correctly identify tool_call_ids
+                # and not drop legitimate tool results as orphaned.
+                if tool_calls:
+                    msg_dict["tool_calls"] = [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            },
+                        }
+                        for tc in tool_calls
+                    ]
                 messages.append(msg_dict)
 
                 # Check for tool calls (already extracted above)
