@@ -24,6 +24,7 @@ from .local_tools import (
 )
 from .loop_detection import LoopDetector, call_signature
 from .iteration_budget import IterationBudget, CHEAP_TOOLS
+from .progress_breaker import ProgressBreaker, ProgressStep
 from .message_repair import sanitize_messages, message_repair_enabled
 from .tool_grounding import ground_tool_result, DEFAULT_TOOL_RESULT_BUDGET
 from .edit_intent import requires_editing
@@ -401,6 +402,14 @@ class AsyncOrchestrator:
             return sanitize_messages(messages)
         return messages
 
+    @staticmethod
+    def _turn_made_progress(*, has_tool_calls: bool, content: str | None, is_finish: bool) -> bool:
+        """A ReAct turn made progress if it produced real output: a tool call,
+        new non-empty assistant content, or a finish. Used by the no-progress
+        breaker to decide whether to increment or reset its idle counter.
+        """
+        return bool(is_finish or has_tool_calls or (content or "").strip())
+
     async def _run_react_loop(self, goal: str, max_steps: int) -> dict:
         """Multi-tool ReAct loop bounded by ``max_steps``.
 
@@ -444,6 +453,8 @@ class AsyncOrchestrator:
         budget = IterationBudget(max_total=cap)
         # Wall-clock deadline (guard layered on top of step counting). 0 disables.
         deadline_s = float(os.getenv("LABMATE_GOAL_DEADLINE_S", "600"))
+        noprogress_limit = int(os.getenv("LABMATE_NOPROGRESS_LIMIT", "5"))
+        breaker = ProgressBreaker(default_cap=noprogress_limit)
         start = self._now()
         try:
             while True:
@@ -799,6 +810,23 @@ class AsyncOrchestrator:
                 # returned above, so _turn_tools is non-empty here.
                 if _turn_tools and all(t in CHEAP_TOOLS for t in _turn_tools):
                     budget.refund()
+
+                # No-progress breaker (after the turn's work). Compute whether
+                # this turn advanced; a stalled turn increments the idle count.
+                made_progress = self._turn_made_progress(
+                    has_tool_calls=bool(tool_calls),
+                    content=msg.content,
+                    is_finish=False,  # finish already returned above
+                )
+                pstep: ProgressStep = breaker.step(made_progress, cap=noprogress_limit)
+                if pstep.tripped:
+                    return {
+                        "ok": False,
+                        "summary": (
+                            f"no-progress breaker tripped "
+                            f"({pstep.consecutive} consecutive idle turns)"
+                        ),
+                    }
 
         except Exception as exc:
             return {"ok": False, "summary": f"error: {str(exc)[:1000]}"}
