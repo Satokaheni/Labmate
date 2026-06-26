@@ -144,9 +144,6 @@ export function App({
           <Turn key={t.id} turn={t} onPreviewArtifact={setPreviewed} />
         ))}
       </div>
-      <div className="px-6">
-        <ContextBar window={context} onCompact={compactEnabled ? () => { onCompactRef.current?.(); } : undefined} compacting={compacting} />
-      </div>
       <Composer
         onSend={(t) => {
           if (activeSessionId) {
@@ -162,6 +159,9 @@ export function App({
         thinkingBudget={agentStatus.brain.thinkingBudget}
         contextPct={context.max > 0 ? Math.round((context.used / context.max) * 100) : 0}
       />
+      <div className="flex justify-end px-4 pb-2">
+        <ContextBar window={context} onCompact={compactEnabled ? () => { onCompactRef.current?.(); } : undefined} compacting={compacting} />
+      </div>
     </>
   ), [turns, context, compactEnabled, compacting, agentStatus, activeSessionId, mode]);
 
