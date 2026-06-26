@@ -58,3 +58,64 @@ def test_record_use_does_not_mutate_input_store():
     store = {"version": 1, "skills": {}}
     st.record_use(store, "web-search", ok=True, now=T0)
     assert store["skills"] == {}  # original untouched
+
+
+def _entry_last_used(days_ago: int, *, pinned: bool = False) -> dict:
+    e = st.new_entry(T0 - timedelta(days=days_ago))
+    e["last_used_at"] = (T0 - timedelta(days=days_ago)).isoformat()
+    e["pinned"] = pinned
+    return e
+
+
+def test_compute_state_recent_is_active():
+    e = _entry_last_used(5)
+    assert st.compute_state(e, now=T0) == st.STATE_ACTIVE
+
+
+def test_compute_state_stale_at_threshold():
+    e = _entry_last_used(30)  # exactly stale_after_days
+    assert st.compute_state(e, now=T0) == st.STATE_STALE
+
+
+def test_compute_state_just_below_stale_is_active():
+    e = _entry_last_used(29)
+    assert st.compute_state(e, now=T0) == st.STATE_ACTIVE
+
+
+def test_compute_state_archived_at_threshold():
+    e = _entry_last_used(90)  # exactly archive_after_days
+    assert st.compute_state(e, now=T0) == st.STATE_ARCHIVED
+
+
+def test_compute_state_between_thresholds_is_stale():
+    e = _entry_last_used(60)
+    assert st.compute_state(e, now=T0) == st.STATE_STALE
+
+
+def test_pinned_skill_never_transitions():
+    e = _entry_last_used(365, pinned=True)
+    assert st.compute_state(e, now=T0) == st.STATE_ACTIVE
+
+
+def test_never_used_entry_measures_idle_from_created_at():
+    e = st.new_entry(T0 - timedelta(days=100))  # last_used_at is None
+    assert st.compute_state(e, now=T0) == st.STATE_ARCHIVED
+
+
+def test_custom_thresholds_are_honored():
+    e = _entry_last_used(10)
+    assert st.compute_state(e, now=T0, stale_after_days=7, archive_after_days=20) == st.STATE_STALE
+
+
+def test_apply_transitions_updates_all_entries():
+    store = {"version": 1, "skills": {
+        "fresh": _entry_last_used(1),
+        "old": _entry_last_used(45),
+        "ancient": _entry_last_used(120),
+    }}
+    out = st.apply_transitions(store, now=T0)
+    assert out["skills"]["fresh"]["state"] == st.STATE_ACTIVE
+    assert out["skills"]["old"]["state"] == st.STATE_STALE
+    assert out["skills"]["ancient"]["state"] == st.STATE_ARCHIVED
+    # input store untouched
+    assert store["skills"]["old"]["state"] == st.STATE_ACTIVE

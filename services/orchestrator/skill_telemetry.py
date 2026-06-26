@@ -51,3 +51,52 @@ def record_use(store: dict, name: str, ok: bool, now: datetime) -> dict:
     entry["last_used_at"] = now.isoformat()
     skills[name] = entry
     return {"version": store.get("version", 1), "skills": skills}
+
+
+def _idle_days(entry: dict, now: datetime) -> float:
+    """Days since the entry was last used, or since created_at if never used."""
+    ref = entry.get("last_used_at") or entry.get("created_at")
+    if not ref:
+        return 0.0
+    try:
+        ref_dt = datetime.fromisoformat(ref)
+    except (TypeError, ValueError):
+        return 0.0
+    return (now - ref_dt).total_seconds() / 86400.0
+
+
+def compute_state(
+    entry: dict,
+    now: datetime,
+    stale_after_days: int = 30,
+    archive_after_days: int = 90,
+) -> str:
+    """PURE: the state this entry SHOULD have given its idle time.
+
+    Pinned entries bypass all transitions and stay active. Thresholds are
+    inclusive: idle >= archive_after_days -> archived; idle >= stale_after_days
+    -> stale; otherwise active.
+    """
+    if entry.get("pinned"):
+        return STATE_ACTIVE
+    idle = _idle_days(entry, now)
+    if idle >= archive_after_days:
+        return STATE_ARCHIVED
+    if idle >= stale_after_days:
+        return STATE_STALE
+    return STATE_ACTIVE
+
+
+def apply_transitions(
+    store: dict,
+    now: datetime,
+    stale_after_days: int = 30,
+    archive_after_days: int = 90,
+) -> dict:
+    """Return a NEW store with each entry's `state` recomputed."""
+    skills = {}
+    for name, entry in store.get("skills", {}).items():
+        new = dict(entry)
+        new["state"] = compute_state(new, now, stale_after_days, archive_after_days)
+        skills[name] = new
+    return {"version": store.get("version", 1), "skills": skills}
