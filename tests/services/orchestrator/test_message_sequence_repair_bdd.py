@@ -123,7 +123,8 @@ def _identical(ctx):
 # ── loop-boundary scenario ───────────────────────────────────────────────────
 
 @given("an AsyncOrchestrator with no skill router and a stub mcp")
-def _orch(ctx):
+def _orch(ctx, monkeypatch):
+    monkeypatch.setenv("ENABLE_MESSAGE_REPAIR", "1")
     orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
     mcp = AsyncMock()
     res = MagicMock()

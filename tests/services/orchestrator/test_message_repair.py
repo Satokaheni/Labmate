@@ -9,9 +9,9 @@ from services.orchestrator.message_repair import (
 )
 
 
-def test_enabled_defaults_on(monkeypatch):
+def test_enabled_defaults_off(monkeypatch):
     monkeypatch.delenv("ENABLE_MESSAGE_REPAIR", raising=False)
-    assert message_repair_enabled() is True
+    assert message_repair_enabled() is False
 
 
 @pytest.mark.parametrize("val", ["0", "false", "no", "off", "", "FALSE", " Off "])

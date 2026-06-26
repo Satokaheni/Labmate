@@ -20,11 +20,11 @@ _FALSEY = {"0", "false", "no", "off", ""}
 
 
 def message_repair_enabled() -> bool:
-    """True unless ENABLE_MESSAGE_REPAIR is an explicit falsey value.
+    """True when ENABLE_MESSAGE_REPAIR is an explicit truthy value.
 
-    Default ON. Mirrors task_complexity.conditional_gates_enabled.
+    Default OFF. Mirrors conditional_gates_enabled() and finalize_revision_enabled().
     """
-    return os.getenv("ENABLE_MESSAGE_REPAIR", "1").strip().lower() not in _FALSEY
+    return os.getenv("ENABLE_MESSAGE_REPAIR", "0").strip().lower() not in _FALSEY
 
 
 def _declared_tool_call_ids(messages: list[dict]) -> set[str]:

@@ -38,9 +38,10 @@ def _stub_mcp():
 
 
 @pytest.mark.asyncio
-async def test_orphan_tool_result_repaired_before_failover_call():
+async def test_orphan_tool_result_repaired_before_failover_call(monkeypatch):
     """An orphaned tool result injected into the loop's message list must be
     dropped by the sanitizer before the failover call sees it."""
+    monkeypatch.setenv("ENABLE_MESSAGE_REPAIR", "1")
     orch = AsyncOrchestrator(skill_router=None, mcp=_stub_mcp(), workspace="/tmp")
 
     captured = []
