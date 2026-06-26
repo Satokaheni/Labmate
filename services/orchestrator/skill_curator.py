@@ -12,10 +12,12 @@ into goal execution.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
+from pathlib import Path
 
 log = logging.getLogger("skill_curator")  # -> stderr via host handlers
 
@@ -86,3 +88,36 @@ def should_run_now(
     if idle_for_s < min_idle_hours * 3600.0:
         return False
     return True
+
+
+@dataclass
+class CuratorState:
+    """Persisted curator run state (sidecar JSON)."""
+    last_run_at: float = 0.0
+    paused: bool = False
+    run_count: int = 0
+
+
+def load_state(path: Path) -> CuratorState:
+    """Read the sidecar; return a default state on missing/corrupt file (best-effort)."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        return CuratorState(
+            last_run_at=float(data.get("last_run_at", 0.0)),
+            paused=bool(data.get("paused", False)),
+            run_count=int(data.get("run_count", 0)),
+        )
+    except FileNotFoundError:
+        return CuratorState()
+    except Exception as exc:  # corrupt JSON / bad types — never crash the loop
+        log.debug("curator sidecar unreadable (%s): %s", path, exc)
+        return CuratorState()
+
+
+def save_state(path: Path, state: CuratorState) -> None:
+    """Atomically persist the sidecar (temp file + os.replace)."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text(json.dumps(asdict(state)), encoding="utf-8")
+    os.replace(tmp, p)
