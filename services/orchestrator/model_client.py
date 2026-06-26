@@ -57,3 +57,15 @@ def resolve_bases(primary: str, fallbacks_env: str | None = None) -> list[str]:
         if url and url not in out:
             out.append(url)
     return out
+
+
+def backoff_delay(attempt: int, base_s: float, max_s: float, rng) -> float:
+    """Exponential backoff with a [0.5, 1.0] jitter factor.
+
+    attempt is 0-based. Raw delay = min(base_s * 2**attempt, max_s); the returned
+    delay is that raw value scaled by (0.5 + 0.5*rng()), so jitter never drops the
+    delay below half the curve. rng is a zero-arg callable returning a float in [0, 1).
+    """
+    raw = min(base_s * (2 ** attempt), max_s)
+    jitter = 0.5 + 0.5 * rng()
+    return raw * jitter
