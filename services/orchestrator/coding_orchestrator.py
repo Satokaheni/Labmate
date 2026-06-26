@@ -26,6 +26,7 @@ from .loop_detection import LoopDetector, call_signature
 from .iteration_budget import IterationBudget, CHEAP_TOOLS
 from .tool_grounding import ground_tool_result, DEFAULT_TOOL_RESULT_BUDGET
 from .edit_intent import requires_editing
+from .verification_stop import needs_verification, build_verify_nudge
 
 # Max chars of RAW tool output (test results, file contents, bash stdout/stderr,
 # skill results) fed back into the ReAct context per tool call. Generous on
@@ -82,6 +83,47 @@ def _infer_mime(path: str) -> str:
         "js": "application/javascript", "md": "text/markdown",
         "json": "application/json", "sh": "text/x-sh",
     }.get(ext, "text/plain")
+
+
+def _run_tests_passed(content: str) -> bool:
+    """True if a run_tests tool result indicates a pass.
+
+    The run_tests tool returns {"ok": bool, "exit_code": int, "raw_output": str}.
+    A result whose JSON has ok True or exit_code 0 is a pass. Non-JSON or an
+    error result is treated as NOT passed (the guard stays armed).
+    """
+    import json as _json
+    try:
+        data = _json.loads(content)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    if "error" in data:
+        return False
+    if data.get("ok") is True:
+        return True
+    return data.get("exit_code") == 0
+
+
+def _run_bash_passed(content: str) -> bool:
+    """Best-effort: did a pytest run_bash invocation pass?
+
+    run_bash returns raw stdout/stderr text (or an error JSON blob on
+    failure). Treat an error JSON as failed. Otherwise treat the output
+    as passing UNLESS it shows a pytest failure marker.
+    """
+    import json as _json
+    try:
+        data = _json.loads(content)
+        if isinstance(data, dict) and "error" in data:
+            return False
+    except (TypeError, ValueError):
+        pass
+    lowered = str(content).lower()
+    if "failed" in lowered or "traceback" in lowered or " error" in lowered:
+        return False
+    return "passed" in lowered or "ok" in lowered
 
 
 # ---------------------------------------------------------------------------
@@ -370,6 +412,15 @@ class AsyncOrchestrator:
         # tool call or cycles a tiny set of calls and would otherwise burn the budget.
         loop_detector = LoopDetector()
 
+        # Verification-stop guard (hermes pattern). Track which files this run
+        # edited and whether a passing verification has been observed. The guard
+        # fires ONLY when the model tries to finish after editing without a
+        # passing test run, and is capped at MAX_VERIFY_NUDGES.
+        edited_files: set[str] = set()
+        tests_passed: bool = False
+        verify_nudges_used: int = 0
+        max_verify_nudges = int(os.getenv("MAX_VERIFY_NUDGES", "2"))
+
         # ReAct loop — bounded by an IterationBudget (replaces the bare
         # range(max_steps) cap). The budget grants ONE grace turn after
         # exhaustion and refunds cheap read-only iterations (CHEAP_TOOLS).
@@ -462,10 +513,34 @@ class AsyncOrchestrator:
                     content = ""
 
                     if name == "finish":
-                        return {
-                            "ok": True,
-                            "summary": str(args.get("summary", ""))[:2000],
-                        }
+                        summary = str(args.get("summary", ""))[:2000]
+                        if needs_verification(
+                            edited_files, tests_passed,
+                            verify_nudges_used, max_verify_nudges,
+                        ):
+                            verify_nudges_used += 1
+                            await events.emit(
+                                "verify.nudge",
+                                files=sorted(edited_files),
+                                nudge=verify_nudges_used,
+                                max_nudges=max_verify_nudges,
+                            )
+                            messages.append({
+                                "role": "user",
+                                "content": build_verify_nudge(edited_files),
+                            })
+                            # Re-enter the loop: do not return, do not run the
+                            # remaining tool calls in this assistant turn.
+                            break
+                        # Either no verification was owed, or the nudge cap was
+                        # reached. If we edited without ever verifying, annotate
+                        # the summary honestly rather than claiming a pass.
+                        if edited_files and not tests_passed:
+                            summary = (
+                                summary + " [verification-stop: tests were NOT "
+                                "verified to pass within the nudge budget]"
+                            )[:2000]
+                        return {"ok": True, "summary": summary}
 
                     # No-progress / tool-loop detection. finish already returned
                     # above, so only genuinely dispatched tools reach here.
@@ -572,6 +647,10 @@ class AsyncOrchestrator:
                                             {"result": result, "verified": True},
                                             default=str,
                                         )
+                                        # Verification-stop: record a successful edit.
+                                        _path = str(args.get("path", "")).strip()
+                                        if _path:
+                                            edited_files.add(_path)
                                 else:
                                     content = ground_tool_result(
                                         json.dumps({"result": result}, default=str),
@@ -601,6 +680,10 @@ class AsyncOrchestrator:
                                     ),
                                     LABMATE_TOOL_RESULT_BUDGET,
                                 )
+                                # Verification-stop: a passing pytest via run_bash also
+                                # counts as a verification (secondary signal).
+                                if "pytest" in str(args.get("command", "")) and _run_bash_passed(content):
+                                    tests_passed = True
                             except Exception as exc:
                                 content = json.dumps({"error": str(exc)})
                         else:
@@ -629,6 +712,10 @@ class AsyncOrchestrator:
                                 content = json.dumps(
                                     shape_run_tests_result(exit_code, raw)
                                 )
+                                # Verification-stop: a passing run_tests result clears the guard.
+                                passed = _run_tests_passed(content)
+                                if passed:
+                                    tests_passed = True
                             except Exception as exc:
                                 content = json.dumps({"error": str(exc)})
                         else:

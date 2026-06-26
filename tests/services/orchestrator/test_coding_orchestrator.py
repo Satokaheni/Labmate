@@ -1557,3 +1557,144 @@ class TestEditIntentRouting:
             result = await orch.react_execute("Fix the bug in factorial")
         assert not loop_spy.called, "flag off must preserve today's skill_first path"
         assert "read-only review output" in result["summary"]
+
+
+def _vt_tool_msg(name, arguments):
+    """A litellm-style assistant message that calls a single tool (verify-stop tests)."""
+    tc = MagicMock()
+    tc.id = f"call-{name}"
+    tc.function = MagicMock()
+    tc.function.name = name
+    tc.function.arguments = json.dumps(arguments)
+    msg = MagicMock()
+    msg.tool_calls = [tc]
+    msg.content = ""
+    msg.reasoning_content = ""
+    msg.model_dump = lambda: {"role": "assistant", "content": "", "tool_calls": []}
+    return MagicMock(choices=[MagicMock(message=msg)])
+
+
+@pytest.mark.asyncio
+async def test_verification_stop_nudges_then_accepts_after_tests_pass(monkeypatch):
+    """Edit then finish without tests must be nudged, not accepted."""
+    from services.orchestrator import events
+
+    monkeypatch.setenv("MAX_VERIFY_NUDGES", "2")
+    # Ensure we're exercising the ReAct loop, not skill-first
+    monkeypatch.setattr("services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "react")
+    orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
+
+    # Stub redis so write_file succeeds through request_local_tool.
+    # For write_file calls, return success. For read_file (verification), return the content.
+    async def _fake_local_tool(redis, name, args):
+        if name == "read_file":
+            # Return the content for verification
+            return "x = 1"
+        return {"path": args.get("path"), "written": True}
+    monkeypatch.setattr(
+        "services.orchestrator.coding_orchestrator.request_local_tool",
+        AsyncMock(side_effect=_fake_local_tool),
+    )
+    orch.redis = MagicMock()  # truthy so the write_file branch is taken
+
+    # Stub mcp so run_tests returns a passing result.
+    mcp = AsyncMock()
+    mcp_result = MagicMock()
+    mcp_result.content = [MagicMock(text=json.dumps({"ok": True, "exit_code": 0, "raw_output": "1 passed"}))]
+    mcp.call_tool.return_value = mcp_result
+    orch.mcp = mcp
+
+    responses = [
+        _vt_tool_msg("write_file", {"path": "src/app.py", "content": "x = 1"}),
+        _vt_tool_msg("finish", {"summary": "I fixed the bug and all tests pass"}),
+        _vt_tool_msg("run_tests", {"path": "tests/"}),
+        _vt_tool_msg("finish", {"summary": "tests pass"}),
+        # Provide extra responses in case of additional loops
+        _vt_tool_msg("finish", {"summary": "all verified"}),
+    ]
+
+    class FakeEmitter:
+        async def emit(self, type, **f):
+            pass
+
+    with patch("services.orchestrator.coding_orchestrator.acompletion_with_failover",
+               new_callable=AsyncMock, side_effect=responses) as mock:
+        token = events.current_emitter.set(FakeEmitter())
+        try:
+            result = await orch.react_execute("fix the bug in src/app.py")
+        finally:
+            events.current_emitter.reset(token)
+
+    assert result["ok"] is True
+    # The summary should mention tests
+    assert any(x in result["summary"].lower() for x in ["test", "pass"])
+    # Should make at least 4 calls (write, finish1, run_tests, finish2)
+    assert mock.call_count >= 4
+
+
+@pytest.mark.asyncio
+async def test_verification_stop_no_edits_finishes_immediately(monkeypatch):
+    """A goal that edits nothing finishes on the first finish."""
+    from services.orchestrator import events
+
+    monkeypatch.setenv("MAX_VERIFY_NUDGES", "2")
+    monkeypatch.setattr("services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "react")
+    orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
+    responses = [_vt_tool_msg("finish", {"summary": "2 + 2 = 4"})]
+
+    class FakeEmitter:
+        async def emit(self, type, **f):
+            pass
+
+    with patch("services.orchestrator.coding_orchestrator.acompletion_with_failover",
+               new_callable=AsyncMock, side_effect=responses) as mock:
+        token = events.current_emitter.set(FakeEmitter())
+        try:
+            result = await orch.react_execute("what is 2 plus 2")
+        finally:
+            events.current_emitter.reset(token)
+    assert result["ok"] is True
+    assert result["summary"] == "2 + 2 = 4"
+    assert mock.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_verification_stop_cap_accepts_finish_honestly(monkeypatch):
+    """After MAX_VERIFY_NUDGES the finish is accepted but annotated honestly."""
+    from services.orchestrator import events
+
+    monkeypatch.setenv("MAX_VERIFY_NUDGES", "1")
+    monkeypatch.setattr("services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "react")
+    orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
+
+    async def _fake_local_tool(redis, name, args):
+        if name == "read_file":
+            return "x = 1"
+        return {"path": args.get("path"), "written": True}
+    monkeypatch.setattr(
+        "services.orchestrator.coding_orchestrator.request_local_tool",
+        AsyncMock(side_effect=_fake_local_tool),
+    )
+    orch.redis = MagicMock()
+
+    responses = [
+        _vt_tool_msg("write_file", {"path": "src/app.py", "content": "x = 1"}),
+        _vt_tool_msg("finish", {"summary": "all done"}),     # nudged (1/1)
+        _vt_tool_msg("finish", {"summary": "still done"}),   # cap reached -> accepted
+    ]
+
+    class FakeEmitter:
+        async def emit(self, type, **f):
+            pass
+
+    with patch("services.orchestrator.coding_orchestrator.acompletion_with_failover",
+               new_callable=AsyncMock, side_effect=responses) as mock:
+        token = events.current_emitter.set(FakeEmitter())
+        try:
+            result = await orch.react_execute("fix src/app.py")
+        finally:
+            events.current_emitter.reset(token)
+
+    assert result["ok"] is True
+    assert "not verified" in result["summary"].lower()
+    assert mock.call_count == 3
