@@ -190,3 +190,81 @@ async def test_single_endpoint_transient_blip_recovers_within_budget():
     )
     assert r.choices[0].message.content == "recovered"
     assert calls == ["http://a/v1", "http://a/v1"]
+
+
+import respx
+import httpx
+
+
+@pytest.mark.mocked
+@pytest.mark.asyncio
+async def test_single_endpoint_no_failures_matches_direct_call(respx_mock):
+    # llama.cpp OpenAI-compatible chat completions endpoint.
+    # Set up httpx client in litellm to be intercepted by respx
+    async with httpx.AsyncClient() as client:
+        original_session = getattr(litellm, "aclient_session", None)
+        litellm.aclient_session = client
+        try:
+            route = respx_mock.post("http://a:8000/v1/chat/completions").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "id": "x",
+                        "object": "chat.completion",
+                        "choices": [
+                            {"index": 0, "message": {"role": "assistant", "content": "pong"},
+                             "finish_reason": "stop"}
+                        ],
+                    },
+                )
+            )
+            r = await acompletion_with_failover(
+                model="openai/gemma-4-31b",
+                bases=["http://a:8000/v1"],
+                sleep=lambda _ : None,   # not used; one base, one success
+                rng=lambda: 0.0,
+                messages=[{"role": "user", "content": "ping"}],
+                extra_body={"thinking_budget_tokens": 0},
+            )
+            assert r.choices[0].message.content == "pong"
+            assert route.call_count == 1
+        finally:
+            litellm.aclient_session = original_session
+
+
+@pytest.mark.mocked
+@pytest.mark.asyncio
+async def test_respx_primary_503_then_secondary_200(respx_mock):
+    # Set up httpx client in litellm to be intercepted by respx
+    async with httpx.AsyncClient() as client:
+        original_session = getattr(litellm, "aclient_session", None)
+        litellm.aclient_session = client
+        try:
+            respx_mock.post("http://a:8000/v1/chat/completions").mock(
+                return_value=httpx.Response(503, json={"error": {"message": "down"}})
+            )
+            secondary = respx_mock.post("http://b:8000/v1/chat/completions").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"choices": [{"index": 0,
+                                       "message": {"role": "assistant", "content": "from-b"},
+                                       "finish_reason": "stop"}]},
+                )
+            )
+
+            async def _noop(_):
+                return None
+
+            r = await acompletion_with_failover(
+                model="openai/gemma-4-31b",
+                bases=["http://a:8000/v1", "http://b:8000/v1"],
+                max_attempts_per_base=1,
+                sleep=_noop,
+                rng=lambda: 0.0,
+                messages=[{"role": "user", "content": "hi"}],
+                extra_body={"thinking_budget_tokens": 0},
+            )
+            assert r.choices[0].message.content == "from-b"
+            assert secondary.call_count == 1
+        finally:
+            litellm.aclient_session = original_session
