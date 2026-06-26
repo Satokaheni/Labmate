@@ -11,6 +11,7 @@ from langgraph.types import interrupt
 from .types import State, Status, Goal, get_ready_goals, update_status, now_iso, create_goal
 from .coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 from . import events
+from .task_complexity import classify_complexity, conditional_gates_enabled
 
 _log = logging.getLogger("graph")
 
@@ -481,6 +482,36 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
 
     async def assess_ambiguity(state: State) -> dict:
         goal = state.get("root_goal") or state["goal_tree"][state["current_goal_id"]]["description"]
+
+        # Conditional gates: a cheap deterministic classifier decides whether this
+        # task is trivial enough to skip the (LLM) ambiguity gate and/or the verify
+        # gate. OFF by default; conservative when on. When it certifies the task
+        # trivial-and-clear (skip_ambiguity), we skip the architect() ambiguity call
+        # entirely and proceed straight to plan. The skip flags are committed on the
+        # delta so ambiguity_router / verify_router can short-circuit downstream.
+        cx = classify_complexity(goal, enabled=conditional_gates_enabled())
+        cx_dict = {
+            "skip_ambiguity": cx.skip_ambiguity,
+            "skip_verify": cx.skip_verify,
+            "reason": cx.reason,
+        }
+        if cx.skip_ambiguity:
+            await events.emit(
+                "reasoning",
+                node="assess_ambiguity",
+                summary=f"ambiguity gate skipped (trivial); {cx.reason}",
+                text="",
+            )
+            return {
+                "root_goal": goal,
+                "assumptions": [],
+                "ambiguity": 0.0,
+                "blocking_question": "",
+                "complexity": cx_dict,
+                "skip_ambiguity": True,
+                "skip_verify": cx.skip_verify,
+            }
+
         prompt = (
             "You are triaging a task before an autonomous agent executes it.\n"
             f"TASK: {goal}\n\n"
@@ -564,6 +595,9 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             "assumptions": assumptions,
             "ambiguity": ambiguity,
             "blocking_question": blocking_question,
+            "complexity": cx_dict,
+            "skip_ambiguity": cx.skip_ambiguity,  # False here (skip path returned early)
+            "skip_verify": cx.skip_verify,
         }
 
         # On high ambiguity, HALT and ask the user a clarifying question rather than
@@ -687,7 +721,14 @@ def router(state: State) -> str:
 
 def ambiguity_router(state: State) -> str:
     """A1: route after assess_ambiguity. On high ambiguity, HALT (END) so the agent
-    asks the user a clarifying question instead of guessing; otherwise plan."""
+    asks the user a clarifying question instead of guessing; otherwise plan.
+
+    Conditional gates: when the complexity classifier certified this task as
+    trivial-and-clear (skip_ambiguity), proceed straight to plan regardless of the
+    ambiguity score — the assess node skipped the LLM gate and left ambiguity at
+    its 0.0 default, so this is belt-and-suspenders for any externally-set state."""
+    if state.get("skip_ambiguity"):
+        return "plan"
     if float(state.get("ambiguity", 0.0)) >= AMBIGUITY_THRESHOLD:
         return END
     return "plan"
@@ -700,8 +741,14 @@ def verify_router(state: State) -> str:
     have been taken. This router is a pure function of that committed flag, so the
     verify<->reflect loop is bounded (it cannot loop forever).
 
+    Conditional gates: when the complexity classifier certified this task as low-risk
+    (skip_verify), proceed straight to check — never reflect-loop on a trivial task even
+    if the local Q4 critic under-scored it.
+
     Backward-compat: if `_verify_reflect` was never set by the verify node (e.g. a hand-built
     state in older tests), fall back to the original threshold comparison."""
+    if state.get("skip_verify"):
+        return "check"
     if "_verify_reflect" in state:
         return "reflect" if state.get("_verify_reflect") else "check"
     if float(state.get("critique_score", 1.0)) < CRITIQUE_THRESHOLD:
