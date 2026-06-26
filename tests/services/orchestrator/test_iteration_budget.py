@@ -84,3 +84,31 @@ class TestIterationBudgetRefund:
         assert b.consume() is True   # work 2
         assert b.consume() is False  # now exhausted
         assert b.used == 2
+
+
+@pytest.mark.mocked
+class TestIterationBudgetGrace:
+    def test_grace_fires_once_then_never_again(self):
+        b = IterationBudget(max_total=1)
+        b.consume()                 # cap reached
+        assert b.consume() is False
+        assert b.grace_used is False
+        assert b.grace() is True    # first grace allowed
+        assert b.grace_used is True
+        assert b.grace() is False   # second grace denied
+        assert b.grace() is False   # still denied
+
+    def test_grace_available_even_before_exhaustion(self):
+        # grace() is a one-shot flag independent of used count; the LOOP is
+        # responsible for only calling it after consume() returns False.
+        b = IterationBudget(max_total=5)
+        assert b.grace() is True
+        assert b.grace() is False
+
+    def test_grace_does_not_change_used_count(self):
+        b = IterationBudget(max_total=2)
+        b.consume()
+        b.consume()
+        assert b.used == 2
+        b.grace()
+        assert b.used == 2  # grace is orthogonal to the consume counter
