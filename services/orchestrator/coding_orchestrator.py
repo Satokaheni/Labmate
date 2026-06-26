@@ -14,6 +14,8 @@ from .types import Goal, State, Status, get_ready_goals, update_status, now_iso
 from . import events
 from .local_tools import LOCAL_TOOL_NAMES, request_local_tool
 from .loop_detection import LoopDetector, call_signature
+import os
+from .iteration_budget import IterationBudget, CHEAP_TOOLS
 
 
 # ---------------------------------------------------------------------------
@@ -414,9 +416,24 @@ class AsyncOrchestrator:
             {"role": "user", "content": goal},
         ]
 
-        # ReAct loop
+        # ReAct loop — bounded by an IterationBudget (replaces the bare
+        # range(max_steps) cap). The budget grants ONE grace turn after
+        # exhaustion and refunds cheap read-only iterations (CHEAP_TOOLS).
+        cap = int(os.getenv("LABMATE_MAX_ITERATIONS", str(self.max_steps)))
+        budget = IterationBudget(max_total=cap)
         try:
-            for step in range(self.max_steps):
+            while True:
+                # Consume one unit; on exhaustion take the single grace turn,
+                # else stop with a clear "budget exhausted" outcome.
+                if not budget.consume():
+                    if not budget.grace():
+                        return {"ok": False, "summary": "budget exhausted"}
+                    # grace turn: fall through and run one more iteration.
+
+                # Track tools used this turn so a cheap-only turn can be refunded.
+                _turn_tools: list[str] = []
+
+                step = budget.used - 1  # for logging (0-indexed)
                 r = await litellm.acompletion(
                     model="openai/gemma-4-31b",
                     api_base=self._gemma_base,
@@ -476,6 +493,7 @@ class AsyncOrchestrator:
                 # Process each tool call
                 for tc in tool_calls:
                     name = tc.function.name
+                    _turn_tools.append(name)
                     try:
                         args = json.loads(tc.function.arguments or "{}")
                     except (json.JSONDecodeError, ValueError):
@@ -636,8 +654,12 @@ class AsyncOrchestrator:
                         "content": content,
                     })
 
-            # Max steps reached
-            return {"ok": False, "summary": "max_steps reached"}
+                # Refund this turn if EVERY tool call it made was a cheap read.
+                # Pure inspection (read_file / list_dir / code_semantic_search)
+                # must not starve genuine work. A turn with no tool calls already
+                # returned above, so _turn_tools is non-empty here.
+                if _turn_tools and all(t in CHEAP_TOOLS for t in _turn_tools):
+                    budget.refund()
 
         except Exception as exc:
             return {"ok": False, "summary": f"error: {str(exc)[:1000]}"}

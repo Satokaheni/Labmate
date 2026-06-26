@@ -576,17 +576,17 @@ class TestReactExecute:
             assert "42" in result["summary"]
 
     @pytest.mark.asyncio
-    async def test_react_execute_max_steps_exhausted(self):
-        """Loop exhausts max_steps without finish — return ok=False."""
+    async def test_react_execute_budget_exhausted(self):
+        """Loop exhausts the budget (incl. the grace turn) without finish — ok=False."""
         orch = self._make_orch(max_steps=2)
 
-        # First call: tool call to run_bash
+        # cap=2 working turns + 1 grace turn = 3 model calls before stopping.
         r1 = self._make_tool_call_response("run_bash", {"command": "ls"})
-        # Second call: tool call to run_bash again
         r2 = self._make_tool_call_response("run_bash", {"command": "pwd"})
+        r3 = self._make_tool_call_response("run_bash", {"command": "whoami"})
 
         with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
-                   new_callable=AsyncMock, side_effect=[r1, r2]):
+                   new_callable=AsyncMock, side_effect=[r1, r2, r3]):
             # Mock MCP to return bash result
             mcp = AsyncMock()
             mcp_result = MagicMock()
@@ -597,7 +597,7 @@ class TestReactExecute:
 
             result = await orch.react_execute("do something")
             assert result["ok"] is False
-            assert "max_steps" in result["summary"]
+            assert "budget exhausted" in result["summary"]
 
     @pytest.mark.asyncio
     async def test_react_execute_with_skill_router_load_skill(self):
@@ -1047,6 +1047,123 @@ class TestAsyncOrchestratorInit:
         assert orch.mcp is None
         assert orch.workspace == "."
         assert orch.max_steps == 6
+
+
+@pytest.mark.mocked
+class TestReactExecuteBudget:
+    """IterationBudget wire-in: grace call on exhaustion + cheap-call refund."""
+
+    def _make_orch(self, max_steps=6):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator
+        return AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp",
+                                 max_steps=max_steps)
+
+    def _bash_resp(self, command):
+        return _msg_with_tool_call("run_bash", json.dumps({"command": command}))
+
+    def _list_dir_resp(self, path):
+        return _msg_with_tool_call("list_dir", json.dumps({"path": path}))
+
+    def _finish_resp(self, summary):
+        return _msg_with_tool_call("finish", json.dumps({"summary": summary}))
+
+    @pytest.mark.asyncio
+    async def test_exhaustion_grants_exactly_one_grace_call(self):
+        """Cap 2 + always-run_bash => model is called cap+1 (=3) times, then stops."""
+        orch = self._make_orch(max_steps=2)
+        mcp = AsyncMock()
+        mcp_result = MagicMock()
+        mcp_result.content = [MagicMock(text="output")]
+        mcp_result.isError = False
+        mcp.call_tool.return_value = mcp_result
+        orch.mcp = mcp
+
+        # Different commands to avoid loop detector (each call has different args)
+        responses = [
+            MagicMock(choices=[MagicMock(message=self._bash_resp(f"echo {i}"))])
+            for i in range(10)
+        ]
+
+        with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
+                   new_callable=AsyncMock, side_effect=responses) as m:
+            result = await orch.react_execute("loop forever")
+
+        assert m.await_count == 3  # cap (2) + one grace turn
+        assert result["ok"] is False
+        assert "budget exhausted" in result["summary"]
+
+    @pytest.mark.asyncio
+    async def test_grace_call_that_finishes_succeeds(self):
+        """Cap 1: one working turn exhausts the budget, the grace turn calls finish."""
+        orch = self._make_orch(max_steps=1)
+        mcp = AsyncMock()
+        mcp_result = MagicMock()
+        mcp_result.content = [MagicMock(text="output")]
+        mcp_result.isError = False
+        mcp.call_tool.return_value = mcp_result
+        orch.mcp = mcp
+
+        r1 = MagicMock(choices=[MagicMock(message=self._bash_resp("echo work"))])
+        r2 = MagicMock(choices=[MagicMock(message=self._finish_resp("finished on grace"))])
+
+        with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
+                   new_callable=AsyncMock, side_effect=[r1, r2]) as m:
+            result = await orch.react_execute("needs one more step")
+
+        assert m.await_count == 2
+        assert result["ok"] is True
+        assert "finished on grace" in result["summary"]
+
+    @pytest.mark.asyncio
+    async def test_read_only_iteration_is_refunded(self):
+        """Cap 2: a list_dir turn is refunded, so two run_bash turns + finish fit."""
+        orch = self._make_orch(max_steps=2)
+        mcp = AsyncMock()
+        mcp_result = MagicMock()
+        mcp_result.content = [MagicMock(text="output")]
+        mcp_result.isError = False
+        mcp.call_tool.return_value = mcp_result
+        orch.mcp = mcp
+
+        r1 = MagicMock(choices=[MagicMock(message=self._list_dir_resp("."))])
+        r2 = MagicMock(choices=[MagicMock(message=self._bash_resp("echo a"))])
+        r3 = MagicMock(choices=[MagicMock(message=self._bash_resp("echo b"))])
+        r4 = MagicMock(choices=[MagicMock(message=self._finish_resp("done after refund"))])
+
+        # list_dir routes through local tools; with redis=None it returns a
+        # structured error but still counts as a cheap (refunded) read turn.
+        with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
+                   new_callable=AsyncMock, side_effect=[r1, r2, r3, r4]) as m:
+            result = await orch.react_execute("inspect then work twice")
+
+        assert m.await_count == 4  # refund of the list_dir turn buys the 4th call
+        assert result["ok"] is True
+        assert "done after refund" in result["summary"]
+
+    @pytest.mark.asyncio
+    async def test_env_var_overrides_max_steps(self, monkeypatch):
+        """LABMATE_MAX_ITERATIONS overrides the constructor max_steps default."""
+        monkeypatch.setenv("LABMATE_MAX_ITERATIONS", "1")
+        orch = self._make_orch(max_steps=6)  # constructor says 6...
+        mcp = AsyncMock()
+        mcp_result = MagicMock()
+        mcp_result.content = [MagicMock(text="output")]
+        mcp_result.isError = False
+        mcp.call_tool.return_value = mcp_result
+        orch.mcp = mcp
+
+        # Different commands to avoid loop detector
+        responses = [
+            MagicMock(choices=[MagicMock(message=self._bash_resp(f"echo {i}"))])
+            for i in range(10)
+        ]
+        with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
+                   new_callable=AsyncMock, side_effect=responses) as m:
+            result = await orch.react_execute("loop")
+
+        # ...but the env knob clamps to 1 => 1 working turn + 1 grace = 2 calls.
+        assert m.await_count == 2
+        assert "budget exhausted" in result["summary"]
 
 
 @pytest.mark.asyncio
