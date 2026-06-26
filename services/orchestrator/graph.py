@@ -11,6 +11,7 @@ from langgraph.types import interrupt
 from .types import State, Status, Goal, get_ready_goals, update_status, now_iso, create_goal
 from .coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 from . import events
+from .task_complexity import classify_complexity, conditional_gates_enabled
 
 _log = logging.getLogger("graph")
 
@@ -65,40 +66,14 @@ MAX_GOAL_ATTEMPTS = int(os.getenv("MAX_GOAL_ATTEMPTS", "2"))
 #   (was hardcoded 3000; lower is faster on the local Q4 model).
 REFLECT_THINKING_BUDGET = int(os.getenv("REFLECT_THINKING_BUDGET", "1500"))
 
-# FIX 9: substrings (case-insensitive) that mark a failure as deterministic / environmental,
-# so reflect-retrying it can never help. Conservative on purpose — these are unambiguous
-# "this will fail identically every time" signals (missing tool/dep, no network, no creds).
-_NONRETRYABLE_ERROR_MARKERS = (
-    "skillunavailable",
-    "not available",
-    "unavailable",
-    "no such",
-    "not found",
-    "missing",
-    "docker",
-    "permission denied",
-    "eperm",
-    "enoent",
-    "connection refused",
-    "network",
-    "timed out",
-    "timeout",
-    "api key",
-    "apikey",
-    "credential",
-    "rate limit",
-    "429",
-)
+# Task 3: import the error classifier and add rate-limit knobs
+from .error_classifier import classify_error, ErrorClass, is_terminal
 
-
-def _is_nonretryable_error(err: str) -> bool:
-    """FIX 9: True when an error string clearly describes a deterministic/environmental
-    failure that a reflect-retry cannot fix (missing tool/dep, no network/creds, etc.).
-    Case-insensitive conservative substring match."""
-    if not err:
-        return False
-    low = err.lower()
-    return any(marker in low for marker in _NONRETRYABLE_ERROR_MARKERS)
+# RATE_LIMITED handling: a 429 may be retried a bounded number of times with a
+# short backoff before being treated as exhausted. Keep these small — on the
+# local pod a sustained 429 (e.g. Semantic Scholar without a key) will recur.
+MAX_RATE_LIMIT_RETRIES = int(os.getenv("MAX_RATE_LIMIT_RETRIES", "1"))
+RATE_LIMIT_BACKOFF_SECONDS = float(os.getenv("RATE_LIMIT_BACKOFF_SECONDS", "2.0"))
 
 
 def classify_artifact(text: str) -> str:
@@ -111,6 +86,41 @@ def classify_artifact(text: str) -> str:
     if len(text.strip()) > 200:
         return "writing"
     return "other"
+
+
+# Maximum number of prior reflections (most-recent) fed back into a retry's
+# diagnosis prompt. Bounded so the prompt cannot grow unboundedly across
+# many retries; deterministic ordering (chronological) for reproducibility.
+MAX_PRIOR_REFLECTIONS = 3
+
+
+def collect_prior_reflections(
+    state: "State",
+    goal_id: str,
+    cap: int = MAX_PRIOR_REFLECTIONS,
+) -> list[str]:
+    """Return prior reflection texts recorded for `goal_id`, in chronological
+    order, keeping only the last `cap`.
+
+    Pure: reads only `state["messages"]`. Reflection messages are the dicts
+    appended by the reflect node, shaped
+    ``{"role": "reflection", "goal_id": <id>, "content": <text>}``.
+    Entries that are not reflections, or that lack a matching ``goal_id``
+    (e.g. legacy pre-change reflections, or reflections for other goals),
+    are ignored. ``cap <= 0`` yields an empty list.
+    """
+    messages = state.get("messages") or []
+    matches = [
+        m["content"]
+        for m in messages
+        if isinstance(m, dict)
+        and m.get("role") == "reflection"
+        and m.get("goal_id") == goal_id
+        and "content" in m
+    ]
+    if cap <= 0:
+        return []
+    return matches[-cap:]
 
 
 def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
@@ -225,41 +235,60 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
 
         results = await async_orch.plan_and_dispatch(ready)
         last_artifact = {"type": "other", "payload": ""}
+        error_class_seen: str | None = None
         for r in results:
             gid = r.id
             # Idempotency guard (FIX #4): mark per-GOAL-ID only when COMPLETED.
-            # FAILED goals are NOT marked, so they stay retryable and increment attempts each time.
-            # This prevents the deadlock where a retry with the same summary was skipped.
             if markers.get(gid) == "completed":
-                continue  # idempotency guard: already applied for this goal
+                continue
             new_status = Status.COMPLETED if r.ok else Status.FAILED
-            # Increment attempts on FAILED (needed for router's reflect branch to trigger)
             if not r.ok:
-                # FIX 9: a deterministic/environmental failure (no Docker / no network /
-                # missing API key, etc.) will fail IDENTICALLY on every retry, so mark it
-                # EXHAUSTED immediately (attempts = MAX_GOAL_ATTEMPTS) instead of paying a
-                # reflect(budget)+re-execute for each of MAX_GOAL_ATTEMPTS identical failures.
-                # check()/router() then finalize with the error rather than reflect-retrying.
-                if _is_nonretryable_error(r.summary or ""):
+                # Classify the failure to decide retry vs. terminal. Replaces the
+                # crude _NONRETRYABLE_ERROR_MARKERS substring test (FIX 9).
+                cls = classify_error(r.summary or "")
+                error_class_seen = cls.value
+                tree[gid]["error_class"] = cls.value
+                if is_terminal(cls):
+                    # Environmental/deterministic: will fail identically on every
+                    # retry -> mark EXHAUSTED so check()/router() finalize with the
+                    # honest error instead of paying reflect()+re-execute per attempt.
                     tree[gid]["attempts"] = MAX_GOAL_ATTEMPTS
+                elif cls == ErrorClass.RATE_LIMITED:
+                    # Bounded backoff + capped retries. Cap is the SMALLER of the
+                    # rate-limit cap and the goal cap so a 429 never out-retries a
+                    # normal failure.
+                    prior = tree[gid].get("attempts", 0)
+                    rl_cap = min(MAX_RATE_LIMIT_RETRIES, MAX_GOAL_ATTEMPTS)
+                    if prior >= rl_cap:
+                        tree[gid]["attempts"] = MAX_GOAL_ATTEMPTS  # exhausted
+                    else:
+                        if RATE_LIMIT_BACKOFF_SECONDS > 0:
+                            import asyncio
+                            await asyncio.sleep(RATE_LIMIT_BACKOFF_SECONDS)
+                        tree[gid]["attempts"] = prior + 1
                 else:
+                    # TRANSIENT or RETRYABLE (unknown) -> normal increment.
                     tree[gid]["attempts"] = tree[gid].get("attempts", 0) + 1
-            # Set both result and error on failure so reflect/check can surface the error
             if r.ok:
                 update_status(tree, gid, new_status, result=r.summary)
             else:
                 update_status(tree, gid, new_status, result=r.summary, error=r.summary)
-            # Mark as completed only if succeeded; FAILED goals stay retryable
             if r.ok:
                 markers[gid] = "completed"
-            # Track last artifact for A2 verify gate
             if r.ok and r.summary:
                 last_artifact = {
                     "type": classify_artifact(r.summary),
                     "payload": r.summary,
                 }
 
-        return {"goal_tree": tree, "step_markers": markers, "last_artifact": last_artifact}
+        out: dict = {
+            "goal_tree": tree,
+            "step_markers": markers,
+            "last_artifact": last_artifact,
+        }
+        if error_class_seen is not None:
+            out["error_class"] = error_class_seen
+        return out
 
     async def check(state: State) -> dict:
         """
@@ -391,15 +420,29 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
     async def reflect(state: State) -> dict:
         """
         Reflexion: write a natural-language diagnosis to episodic memory.
-        Conditions the next execute attempt on the stored reflection.
+        Conditions the next execute attempt on the stored reflection AND on
+        any prior reflections for THIS goal, so retries escalate strategy
+        instead of repeating the same diagnosis.
         """
         import copy
         gid = state["current_goal_id"]
         goal = state["goal_tree"][gid]
+
+        priors = collect_prior_reflections(state, gid)
+        prior_section = ""
+        if priors:
+            numbered = "\n".join(f"  {i}. {p}" for i, p in enumerate(priors, 1))
+            prior_section = (
+                "\nPreviously tried (do NOT repeat these fixes — they already failed):\n"
+                f"{numbered}\n"
+                "Propose a DIFFERENT approach and escalate your strategy.\n"
+            )
+
         reflection = await orch.architect(
             f"The following subtask failed (attempt {goal['attempts']}):\n"
             f"Goal: {goal['description']}\n"
             f"Error: {goal['error']}\n"
+            f"{prior_section}"
             "Write a concise diagnosis and what to do differently on the next attempt.",
             thinking_budget=REFLECT_THINKING_BUDGET,  # FIX 9: was 3000
         )
@@ -414,7 +457,9 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         update_status(tree, gid, Status.PENDING)
         return {
             "goal_tree": tree,
-            "messages": [{"role": "reflection", "content": reflection}],
+            # Tag with goal_id so collect_prior_reflections can attribute this
+            # reflection on the next retry of the same goal.
+            "messages": [{"role": "reflection", "goal_id": gid, "content": reflection}],
         }
 
     async def approval(state: State) -> dict:
@@ -437,6 +482,36 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
 
     async def assess_ambiguity(state: State) -> dict:
         goal = state.get("root_goal") or state["goal_tree"][state["current_goal_id"]]["description"]
+
+        # Conditional gates: a cheap deterministic classifier decides whether this
+        # task is trivial enough to skip the (LLM) ambiguity gate and/or the verify
+        # gate. OFF by default; conservative when on. When it certifies the task
+        # trivial-and-clear (skip_ambiguity), we skip the architect() ambiguity call
+        # entirely and proceed straight to plan. The skip flags are committed on the
+        # delta so ambiguity_router / verify_router can short-circuit downstream.
+        cx = classify_complexity(goal, enabled=conditional_gates_enabled())
+        cx_dict = {
+            "skip_ambiguity": cx.skip_ambiguity,
+            "skip_verify": cx.skip_verify,
+            "reason": cx.reason,
+        }
+        if cx.skip_ambiguity:
+            await events.emit(
+                "reasoning",
+                node="assess_ambiguity",
+                summary=f"ambiguity gate skipped (trivial); {cx.reason}",
+                text="",
+            )
+            return {
+                "root_goal": goal,
+                "assumptions": [],
+                "ambiguity": 0.0,
+                "blocking_question": "",
+                "complexity": cx_dict,
+                "skip_ambiguity": True,
+                "skip_verify": cx.skip_verify,
+            }
+
         prompt = (
             "You are triaging a task before an autonomous agent executes it.\n"
             f"TASK: {goal}\n\n"
@@ -520,6 +595,9 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             "assumptions": assumptions,
             "ambiguity": ambiguity,
             "blocking_question": blocking_question,
+            "complexity": cx_dict,
+            "skip_ambiguity": cx.skip_ambiguity,  # False here (skip path returned early)
+            "skip_verify": cx.skip_verify,
         }
 
         # On high ambiguity, HALT and ask the user a clarifying question rather than
@@ -643,7 +721,14 @@ def router(state: State) -> str:
 
 def ambiguity_router(state: State) -> str:
     """A1: route after assess_ambiguity. On high ambiguity, HALT (END) so the agent
-    asks the user a clarifying question instead of guessing; otherwise plan."""
+    asks the user a clarifying question instead of guessing; otherwise plan.
+
+    Conditional gates: when the complexity classifier certified this task as
+    trivial-and-clear (skip_ambiguity), proceed straight to plan regardless of the
+    ambiguity score — the assess node skipped the LLM gate and left ambiguity at
+    its 0.0 default, so this is belt-and-suspenders for any externally-set state."""
+    if state.get("skip_ambiguity"):
+        return "plan"
     if float(state.get("ambiguity", 0.0)) >= AMBIGUITY_THRESHOLD:
         return END
     return "plan"
@@ -656,8 +741,14 @@ def verify_router(state: State) -> str:
     have been taken. This router is a pure function of that committed flag, so the
     verify<->reflect loop is bounded (it cannot loop forever).
 
+    Conditional gates: when the complexity classifier certified this task as low-risk
+    (skip_verify), proceed straight to check — never reflect-loop on a trivial task even
+    if the local Q4 critic under-scored it.
+
     Backward-compat: if `_verify_reflect` was never set by the verify node (e.g. a hand-built
     state in older tests), fall back to the original threshold comparison."""
+    if state.get("skip_verify"):
+        return "check"
     if "_verify_reflect" in state:
         return "reflect" if state.get("_verify_reflect") else "check"
     if float(state.get("critique_score", 1.0)) < CRITIQUE_THRESHOLD:

@@ -13,6 +13,7 @@ from aiolimiter import AsyncLimiter
 from .types import Goal, State, Status, get_ready_goals, update_status, now_iso
 from . import events
 from .local_tools import LOCAL_TOOL_NAMES, request_local_tool
+from .loop_detection import LoopDetector, call_signature
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +201,10 @@ class AsyncOrchestrator:
                 self.skill_router.runner.reset_activations()
             except Exception:
                 pass
+
+        # Per-goal tool-loop detector. A weak model can repeat the same tool call
+        # or cycle a tiny set of calls and burn every step. Detect and halt early.
+        loop_detector = LoopDetector()
 
         # ── Skill-first deterministic routing ────────────────────────────────
         # The selector (SkillRouter.select) is highly reliable at picking the
@@ -482,6 +487,30 @@ class AsyncOrchestrator:
                         return {
                             "ok": True,
                             "summary": str(args.get("summary", ""))[:2000],
+                        }
+
+                    # No-progress / tool-loop detection. finish already returned
+                    # above, so only genuinely dispatched tools reach here.
+                    if loop_detector.record(call_signature(name, args)):
+                        _reason = loop_detector.reason()
+                        await events.emit(
+                            "loop.detected",
+                            tool=name,
+                            reason=_reason,
+                            signature=call_signature(name, args),
+                            steps=step + 1,
+                        )
+                        import logging as _logging
+                        _logging.getLogger("orchestrator").warning(
+                            "tool-loop detected (%s) on '%s' at step %d — halting",
+                            _reason, name, step + 1,
+                        )
+                        return {
+                            "ok": False,
+                            "summary": (
+                                f"loop detected ({_reason}): repeated tool "
+                                f"'{name}' — halting to avoid burning steps"
+                            ),
                         }
 
                     # Emit tool.start for all non-finish tools

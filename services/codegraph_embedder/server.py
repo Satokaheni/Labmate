@@ -44,7 +44,9 @@ async def list_tools() -> list[Tool]:
                 "k": {
                     "type": "integer",
                     "default": 8,
-                    "description": "Number of results (max 20)",
+                    "minimum": 1,
+                    "maximum": 20,
+                    "description": "Number of results",
                 },
             },
             "required": ["query"],
@@ -79,7 +81,9 @@ async def main() -> None:
 
     server.state = {"col": col}
 
-    await indexer.full_index()
+    # Background both tasks so stdio handshake starts immediately.
+    # full_index is a no-op if collection is already populated.
+    server.state["index_task"] = asyncio.create_task(indexer.full_index())
     server.state["watch_task"] = asyncio.create_task(indexer.watch())
 
     async with stdio_server() as (r, w):

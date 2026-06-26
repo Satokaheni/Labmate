@@ -85,24 +85,32 @@ class CodeGraphIndexer:
         log.info("full_index: %d nodes embedded", count)
         return count
 
-    async def _changed_files(self) -> list[str]:
+    async def _changed_files(self) -> tuple[list[str], dict[str, object]]:
+        """Return (changed_paths, new_seen) without mutating self._seen_files.
+
+        Caller must assign self._seen_files = new_seen AFTER a successful
+        incremental_update so a failed update retries on the next poll.
+        """
         db_path = _db_path()
         if not db_path.exists():
-            return []
+            return [], dict(self._seen_files)
         async with aiosqlite.connect(db_path) as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute("SELECT path, indexed_at FROM files")
             rows = [dict(r) for r in await cur.fetchall()]
 
+        new_seen = dict(self._seen_files)
         changed = []
         for r in rows:
             prev = self._seen_files.get(r["path"])
             if prev is None or r["indexed_at"] != prev:
-                self._seen_files[r["path"]] = r["indexed_at"]
+                new_seen[r["path"]] = r["indexed_at"]
                 changed.append(r["path"])
-        return changed
+        return changed, new_seen
 
     async def incremental_update(self, changed_paths: list[str]) -> None:
+        if not changed_paths:
+            return
         async with aiosqlite.connect(_db_path()) as db:
             db.row_factory = aiosqlite.Row
             placeholders = ",".join("?" * len(changed_paths))
@@ -149,8 +157,9 @@ class CodeGraphIndexer:
         while True:
             await asyncio.sleep(POLL_SECS)
             try:
-                changed = await self._changed_files()
+                changed, new_seen = await self._changed_files()
                 if changed:
                     await self.incremental_update(changed)
+                    self._seen_files = new_seen
             except Exception as exc:
                 log.warning("poll error (non-fatal): %s", exc)

@@ -1,2 +1,5 @@
+mcp>=1.0
 aiosqlite>=0.20
 rank_bm25>=0.2.2
+chromadb>=0.5
+aiohttp>=3.9
