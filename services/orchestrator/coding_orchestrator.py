@@ -496,6 +496,7 @@ class AsyncOrchestrator:
                     _task_id = events.current_task_id()
                 except AttributeError:
                     _task_id = None  # FakeEmitter in tests lacks _task_id
+                _steer_to_inject = None
                 if _task_id is not None and self.redis is not None:
                     # (1) Cancel — honest partial halt (this is the in-loop cancel
                     #     check that was previously MISSING entirely).
@@ -512,10 +513,9 @@ class AsyncOrchestrator:
                     #     inject it as a marked out-of-band user message on the LAST
                     #     tool message (or a standalone user turn if none yet), so
                     #     the next model call treats it as a genuine user steer.
-                    _steer = await events.read_and_clear_steer(self.redis, _task_id)
-                    if _steer:
-                        messages = inject_steer(messages, _steer)
-                        await events.emit("steer.injected", task_id=_task_id, text=_steer)
+                    _steer_to_inject = await events.read_and_clear_steer(self.redis, _task_id)
+                    if _steer_to_inject:
+                        await events.emit("steer.injected", task_id=_task_id, text=_steer_to_inject)
 
                 # Wall-clock guard: stop if this goal has run past its deadline.
                 if deadline_s > 0 and (self._now() - start) > deadline_s:
@@ -539,11 +539,17 @@ class AsyncOrchestrator:
                 _turn_tools: list[str] = []
 
                 step = budget.used - 1  # for logging (0-indexed)
+                # Inject steer only for this model call, without modifying the
+                # persistent messages list, so it appears exactly once.
+                _messages_for_model = messages
+                if _steer_to_inject:
+                    _messages_for_model = inject_steer(messages, _steer_to_inject)
+
                 r = await acompletion_with_failover(
                     model="openai/gemma-4-31b",
                     bases=self._bases,
                     api_key="not-needed",
-                    messages=self._maybe_repair(messages),
+                    messages=self._maybe_repair(_messages_for_model),
                     tools=tools,
                     tool_choice="auto",
                     extra_body={"thinking_budget_tokens": 2048},

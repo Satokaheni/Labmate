@@ -107,7 +107,7 @@ def _run_goal(ctx, goal):
     async def _model(*a, **k):
         turn["n"] += 1
         # Capture the messages this call saw (deep copy of the relevant shape).
-        ctx["captured"].append(json.dumps(k["messages"], default=str))
+        ctx["captured"].append(json.dumps(k["messages"], default=str, ensure_ascii=False))
         # Fire the scheduled steer/cancel BEFORE producing this turn's response,
         # so it is visible at the TOP of the NEXT turn.
         if ctx["steer_before_turn"] == turn["n"] + 1 and ctx["steer_text"]:
