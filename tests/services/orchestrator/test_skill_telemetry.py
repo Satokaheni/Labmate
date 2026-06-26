@@ -1,7 +1,11 @@
 """Unit tests for the pure skill-telemetry store (no I/O unless noted)."""
 from __future__ import annotations
 
+import json
+import os
+import threading
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -119,3 +123,74 @@ def test_apply_transitions_updates_all_entries():
     assert out["skills"]["ancient"]["state"] == st.STATE_ARCHIVED
     # input store untouched
     assert store["skills"]["old"]["state"] == st.STATE_ACTIVE
+
+
+def test_default_store_path_env_override(monkeypatch, tmp_path):
+    target = tmp_path / "tele.json"
+    monkeypatch.setenv("LABMATE_TELEMETRY_PATH", str(target))
+    assert st.default_store_path() == target
+
+
+def test_default_store_path_falls_back_to_skills_dir(monkeypatch):
+    monkeypatch.delenv("LABMATE_TELEMETRY_PATH", raising=False)
+    p = st.default_store_path()
+    assert p.name == ".skill_telemetry.json"
+    assert p.parent.name == "skills"
+
+
+def test_load_missing_file_returns_empty_store(tmp_path):
+    store = st.load(tmp_path / "nope.json")
+    assert store == {"version": 1, "skills": {}}
+
+
+def test_load_corrupt_file_returns_empty_store(tmp_path):
+    p = tmp_path / "bad.json"
+    p.write_text("{ this is not json", encoding="utf-8")
+    assert st.load(p) == {"version": 1, "skills": {}}
+
+
+def test_save_then_load_roundtrip(tmp_path):
+    p = tmp_path / "sub" / "tele.json"  # parent dir does not exist yet
+    store = st.record_use({"version": 1, "skills": {}}, "web-search", ok=True, now=T0)
+    st.save(store, p)
+    assert p.exists()
+    assert st.load(p)["skills"]["web-search"]["use_count"] == 1
+
+
+def test_save_is_atomic_no_tmp_left_behind(tmp_path):
+    p = tmp_path / "tele.json"
+    st.save({"version": 1, "skills": {}}, p)
+    leftovers = [f for f in os.listdir(tmp_path) if f != "tele.json"]
+    assert leftovers == []  # temp file was renamed, not orphaned
+
+
+def test_concurrent_writers_leave_valid_json(tmp_path):
+    """Many threads saving concurrently must never leave a torn file.
+
+    os.replace is atomic, so every load() in the race sees a fully-written
+    document — never a half-written one.
+    """
+    p = tmp_path / "tele.json"
+    st.save({"version": 1, "skills": {}}, p)
+    errors: list[Exception] = []
+
+    def worker(i: int):
+        try:
+            store = st.load(p)
+            store = st.record_use(store, f"skill-{i}", ok=True, now=T0)
+            st.save(store, p)
+        except Exception as exc:  # pragma: no cover - failure path
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    # File is always parseable (atomicity guarantee); a last-writer-wins
+    # race may drop some skills, but the document is never corrupt.
+    final = st.load(p)
+    assert isinstance(final["skills"], dict)
+    json.loads(p.read_text(encoding="utf-8"))  # parses cleanly

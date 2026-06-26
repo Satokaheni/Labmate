@@ -11,8 +11,12 @@ CRITICAL: never write to stdout. All logging goes to stderr.
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
+import tempfile
 from datetime import datetime
+from pathlib import Path
 
 log = logging.getLogger("skill_telemetry")  # -> stderr via host handlers
 
@@ -100,3 +104,51 @@ def apply_transitions(
         new["state"] = compute_state(new, now, stale_after_days, archive_after_days)
         skills[name] = new
     return {"version": store.get("version", 1), "skills": skills}
+
+
+def default_store_path() -> Path:
+    """Central sidecar location: env override or services/skills/.skill_telemetry.json."""
+    override = os.getenv("LABMATE_TELEMETRY_PATH")
+    if override:
+        return Path(override)
+    return Path(__file__).resolve().parent.parent / "skills" / ".skill_telemetry.json"
+
+
+def load(path: Path) -> dict:
+    """Read the store; return an empty store on missing/empty/corrupt file."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return {"version": 1, "skills": {}}
+    if not text.strip():
+        return {"version": 1, "skills": {}}
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        log.warning("corrupt telemetry store at %s, starting empty", path)
+        return {"version": 1, "skills": {}}
+    if not isinstance(data, dict) or not isinstance(data.get("skills"), dict):
+        return {"version": 1, "skills": {}}
+    data.setdefault("version", 1)
+    return data
+
+
+def save(store: dict, path: Path) -> None:
+    """Atomically persist the store (temp file in same dir + os.replace)."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(
+        dir=str(path.parent), prefix=path.name + ".", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(store, fh, indent=2, sort_keys=True)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)  # atomic on POSIX
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
