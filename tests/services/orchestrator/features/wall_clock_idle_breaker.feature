@@ -9,9 +9,9 @@ Feature: Wall-clock deadline and no-progress breaker for the ReAct loop
   Scenario: a loop that exceeds the wall-clock deadline stops
     Given an AsyncOrchestrator with no skill router and no mcp
     And the iteration budget cap is 10
-    And the wall-clock deadline is 5 seconds
+    And the wall-clock deadline is 4 seconds
     And the no-progress limit is 0
-    And the fake clock advances 4 seconds per turn
+    And the fake clock advances 2 seconds per turn
     And the model calls run_bash with command "echo 1" on turn 1
     And the model calls run_bash with command "echo 2" on turn 2
     And the model calls run_bash with command "echo 3" on turn 3
