@@ -7,6 +7,7 @@ trigger failover — they are surfaced immediately.
 """
 from __future__ import annotations
 
+import os
 import litellm
 
 # Transient transport errors → retry / fail over to the next endpoint.
@@ -39,3 +40,20 @@ def is_retryable(exc: Exception) -> bool:
     if isinstance(exc, _TERMINAL):
         return False
     return isinstance(exc, _RETRYABLE)
+
+
+def resolve_bases(primary: str, fallbacks_env: str | None = None) -> list[str]:
+    """Build the ordered endpoint list: [primary, *fallbacks].
+
+    fallbacks come from `fallbacks_env` (comma-separated). When None, reads
+    LABMATE_FALLBACK_BASES. Blanks are dropped; exact duplicates are removed
+    preserving first-seen order so the primary always leads.
+    """
+    if fallbacks_env is None:
+        fallbacks_env = os.getenv("LABMATE_FALLBACK_BASES", "")
+    raw = [primary, *(p.strip() for p in fallbacks_env.split(","))]
+    out: list[str] = []
+    for url in raw:
+        if url and url not in out:
+            out.append(url)
+    return out
