@@ -191,6 +191,19 @@ Branch `feat/harness-robustness` (off `994df92`). Eight features added to harden
 - Error-classification (skill-failure retry policy) and endpoint-failover (transport-error retry) deliberately use **separate** classifiers — the whole-branch review confirmed they are distinct concerns, not a duplication to consolidate.
 - BDD step defs run async orchestrator code via a shared async-run helper in `tests/conftest.py`; pytest-bdd scenarios are tagged `@mocked` and use the `fake_model` fixture (no GPU).
 
+### Sequencing & latency (merged from `perf/latency-reduction`, PR #11)
+
+`react_execute` is now a **dispatcher** keyed on `SEQUENCING_MODE`; the harness features above (LoopDetector, PromptAssembler, IterationBudget, failover) live in the extracted **`_run_react_loop`** (so the table rows that say "`react_execute`" now mean `_run_react_loop`). Modes:
+- `_run_skill_first(goal)` — deterministic single-skill fast-path; returns `None` when no skill matches.
+- `_run_react_loop(goal, max_steps)` — the bounded multi-tool ReAct loop (carries all the harness-robustness features).
+- `_replan_loop(goal)` — **opt-in** (`SEQUENCING_MODE=replan`): a planner emits the single next sub-goal (or `done`) and runs each via skill-first with a `_run_react_loop` fallback; the planner owns the completion decision (honest completion). A compound gate (`_is_compound`) runs single-step goals once so simple tasks pay no sequencing tax. Kept opt-in for A/B until its activation-cap bug (below) is fixed.
+
+**Default is `skill_first`** (the well-tested harness path); `replan` and `react` are opt-in via `SEQUENCING_MODE` for A/B evaluation (`eval/seq_ab/`).
+
+Latency/sequencing knobs (defaults): `SEQUENCING_MODE=skill_first`, `MAX_SEQ_STEPS=5`, `REPLAN_COMPOUND_GATE=1`, `ASSESS_THINKING_BUDGET=384` (lighter ambiguity judgement), `CRITIQUE_ARTIFACT_TYPES=""` (auto critique-gate **OFF**; set `writing` or `code,writing` to re-enable), `SKILL_CALL_TIMEOUT=135` (must exceed the worker's `CALL_TIMEOUT`). `test-gen` gained a `run_tests` tool (run an existing suite — do not call `generate` to re-run tests). A/B harness: `bash eval/seq_ab/run_mode.sh <skill_first|react|replan>`.
+
+**Known bug to chase (from the perf branch):** in `replan` mode, `SkillRunner.load_skill` can hit its `max_chain` activation cap mid-chain because `reset_activations()` runs once per goal, not per sub-step — replan runs many sub-steps. Fix candidate: call `reset_activations()` per sub-step inside `_replan_loop`. `skill_first` is unaffected (≤1 skill/goal).
+
 ---
 
 ## Live E2E Verification

@@ -9,6 +9,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from services.orchestrator.coding_orchestrator import TokenBudget, AsyncOrchestrator, Result, SubTask, CodingOrchestrator
 
 
+@pytest.fixture(autouse=True)
+def _pin_skill_first_sequencing(monkeypatch):
+    """These tests exercise the react_execute loop mechanics (skill-first fast-path,
+    ReAct dispatch, run_bash, finish), not the production mode selection. The module
+    default is now ``replan`` (planner-driven), so pin the dispatcher to ``skill_first``
+    here. Tests that specifically target ``replan``/``react`` set the mode themselves.
+    """
+    monkeypatch.setattr(
+        "services.orchestrator.coding_orchestrator.SEQUENCING_MODE",
+        "skill_first",
+        raising=False,
+    )
+
+
 def _chunk(text):
     return MagicMock(choices=[MagicMock(delta=MagicMock(content=text))])
 
@@ -1045,6 +1059,74 @@ class TestReactExecute:
 
         assert result["ok"] is True
         assert result["summary"] == "all read"
+
+
+@pytest.mark.mocked
+class TestReplanSequencing:
+    """Tests for the replan dispatch + compound gate (SEQUENCING_MODE=replan)."""
+
+    def _make_orch(self, max_steps=6):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator
+        return AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp", max_steps=max_steps)
+
+    @pytest.mark.asyncio
+    async def test_replan_dispatches_to_replan_loop(self, monkeypatch):
+        """In replan mode, react_execute routes to _replan_loop."""
+        monkeypatch.setattr("services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "replan")
+        orch = self._make_orch()
+        with patch.object(orch, "_replan_loop", new_callable=AsyncMock,
+                          return_value={"ok": True, "summary": "planned"}) as rl:
+            result = await orch.react_execute("do a compound thing")
+        rl.assert_awaited_once()
+        assert result["summary"] == "planned"
+
+    @pytest.mark.asyncio
+    async def test_compound_gate_single_step_skips_planner(self, monkeypatch):
+        """Gate ON + non-compound goal: run once via skill-first, never enter the planner loop."""
+        monkeypatch.setattr("services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "replan")
+        monkeypatch.setattr("services.orchestrator.coding_orchestrator.REPLAN_COMPOUND_GATE", True)
+        orch = self._make_orch()
+        with patch.object(orch, "_is_compound", new_callable=AsyncMock, return_value=False), \
+             patch.object(orch, "_run_skill_first", new_callable=AsyncMock,
+                          return_value={"ok": True, "summary": "one shot"}) as sf:
+            result = await orch.react_execute("review this file")
+        sf.assert_awaited_once()
+        assert result == {"ok": True, "summary": "one shot"}
+
+    @pytest.mark.asyncio
+    async def test_compound_gate_single_step_falls_back_to_react(self, monkeypatch):
+        """Gate ON + non-compound + no matching skill: fall back to the ReAct loop once."""
+        monkeypatch.setattr("services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "replan")
+        monkeypatch.setattr("services.orchestrator.coding_orchestrator.REPLAN_COMPOUND_GATE", True)
+        orch = self._make_orch()
+        with patch.object(orch, "_is_compound", new_callable=AsyncMock, return_value=False), \
+             patch.object(orch, "_run_skill_first", new_callable=AsyncMock, return_value=None), \
+             patch.object(orch, "_run_react_loop", new_callable=AsyncMock,
+                          return_value={"ok": True, "summary": "react"}) as rr:
+            result = await orch.react_execute("answer something with no skill")
+        rr.assert_awaited_once()
+        assert result["summary"] == "react"
+
+    @pytest.mark.asyncio
+    async def test_is_compound_defaults_true_on_parse_failure(self, monkeypatch):
+        """A malformed classifier response defaults to compound=True (never under-handle)."""
+        monkeypatch.setattr("services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "replan")
+        orch = self._make_orch()
+        r = MagicMock()
+        r.choices = [MagicMock(message=MagicMock(content="not json at all"))]
+        with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
+                   new_callable=AsyncMock, return_value=r):
+            assert await orch._is_compound("ambiguous goal") is True
+
+    @pytest.mark.asyncio
+    async def test_is_compound_reads_bool(self, monkeypatch):
+        """Classifier returns {compound: false} -> False."""
+        orch = self._make_orch()
+        r = MagicMock()
+        r.choices = [MagicMock(message=MagicMock(content='{"compound": false}'))]
+        with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
+                   new_callable=AsyncMock, return_value=r):
+            assert await orch._is_compound("review this file") is False
 
 
 @pytest.mark.mocked

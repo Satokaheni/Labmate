@@ -19,12 +19,21 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from services.orchestrator import events
+import services.orchestrator.graph as _graph_mod
 from services.orchestrator.types import Status, create_goal, update_status
 from services.orchestrator.coding_orchestrator import (
     CodingOrchestrator,
     AsyncOrchestrator,
     Result,
 )
+
+
+@pytest.fixture(autouse=True)
+def _enable_verify_gate(monkeypatch):
+    """The verify-gate auto-critique is OFF by default in production
+    (CRITIQUE_ARTIFACT_TYPES=""). These tests exercise that gate's bounding logic with a
+    'code' artifact, so enable it for the duration of each test (auto-restored)."""
+    monkeypatch.setattr(_graph_mod, "CRITIQUE_ARTIFACT_TYPES", ("code", "writing"))
 
 
 @pytest.fixture

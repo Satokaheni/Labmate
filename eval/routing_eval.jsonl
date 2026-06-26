@@ -75,3 +75,14 @@
 {"id": "neg_4", "task": "What is 17 times 23?", "expected": "none", "cluster": "negative", "source": "seed"}
 {"id": "neg_5", "task": "Tell me a joke about machine learning.", "expected": "none", "cluster": "negative", "source": "seed"}
 {"id": "neg_6", "task": "Explain what a Turing machine is in plain language.", "expected": "none", "cluster": "negative", "source": "seed"}
+{"id": "review_code_review_gen_1", "task": "Can you look at this PR diff and tell me if I missed any edge cases in the logic?", "expected": "code-review", "cluster": "review", "source": "generated"}
+{"id": "review_code_review_gen_2", "task": "I'm worried about SQL injection in this database handler file. Can you audit it for security flaws?", "expected": "code-review", "cluster": "review", "source": "generated"}
+{"id": "review_code_review_gen_3", "task": "My python script is crashing occasionally. Please review the source code and find the bug.", "expected": "code-review", "cluster": "review", "source": "generated"}
+{"id": "review_code_review_gen_4", "task": "I just ported this to C++. Could you check for any memory leaks or undefined behavior in these files?", "expected": "code-review", "cluster": "review", "source": "generated"}
+{"id": "review_code_review_gen_5", "task": "Does this regex implementation actually handle all the requirements? Please review the code for correctness.", "expected": "code-review", "cluster": "review", "source": "generated"}
+{"id": "review_code_review_gen_6", "task": "I refactored the auth module. Can you check the diff to make sure I didn't accidentally remove any critical validation logic?", "expected": "code-review", "cluster": "review", "source": "generated"}
+{"id": "review_code_review_disambig_7", "task": "Review this PR diff for any security flaws or logic bugs in the backend implementation.", "expected": "code-review", "cluster": "review", "source": "generated"}
+{"id": "review_code_review_disambig_8", "task": "Audit this React component's internal state logic to see if there are any race conditions in the useEffect hook.", "expected": "code-review", "cluster": "review", "source": "generated"}
+{"id": "review_code_review_disambig_9", "task": "I've attached a Python file; please perform a multi-angle review to find any language pitfalls or correctness issues.", "expected": "code-review", "cluster": "review", "source": "generated"}
+{"id": "review_code_review_disambig_10", "task": "Run the test suite against this function and iteratively improve the code based on the failure logs until it passes.", "expected": "critique", "cluster": "review", "source": "generated", "acceptable": ["code-review"]}
+{"id": "review_code_review_disambig_11", "task": "Perform a full static analysis of my React codebase to identify architecture anti-patterns and performance bottlenecks.", "expected": "react-doctor", "cluster": "review", "source": "generated", "acceptable": ["code-review"]}

@@ -8,6 +8,7 @@ description: >
 trigger: "Use when generating or improving unit tests for Python code"
 tools:
   - generate
+  - run_tests
   - run_mutations
   - improve
 version: "0.1.0"
@@ -39,6 +40,26 @@ Generate an initial unit test suite for a source file.
 
 Returns JSON: `{"test_code": "...", "explanation": "..."}`.
 
+### `run_tests`
+
+Re-run an **existing** pytest suite as-is (plain `pytest`), without regenerating
+anything. Use this when the test file already exists and the source under test
+has not changed — e.g. to re-verify after fixing a bug, or simply to run the
+suite again.
+
+```json
+{ "test_file": "tests/test_calc.py" }
+```
+
+Returns JSON: `{"passed": true, "passed_count": 12, "failed_count": 0,
+"summary": "12 passed in 0.05s", "raw_output": "..."}`.
+
+**RULE — do NOT regenerate to re-run.** If a test suite already exists and no new
+code needs covering (you only want to run the existing tests, e.g. after a fix),
+call `run_tests` (or run a plain `pytest <test_file>` via the code-sandbox skill)
+instead of calling `generate` again. Only call `generate`/`improve` when tests are
+missing or new/changed source needs additional coverage.
+
 ### `run_mutations`
 
 Run mutation testing (mutmut) on a source file with a test file. Executes
@@ -68,6 +89,10 @@ Returns JSON: `{"additional_test_code": "..."}`.
 
 ## Workflow (the brain orchestrates this loop)
 
+0. If a test suite for this source **already exists** and you only need to run it
+   (e.g. re-verify after a fix, or no new code needs covering), call `run_tests`
+   on the existing test file and stop — do NOT call `generate`. Only proceed to
+   step 1 when tests are missing or new/changed source needs additional coverage.
 1. Call `generate` to produce an initial test suite. Write `test_code` to a file.
 2. Call `run_mutations` on the source + test file. Read `mutation_score` and
    `surviving_mutants`.
