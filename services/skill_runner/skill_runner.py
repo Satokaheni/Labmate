@@ -55,9 +55,15 @@ class SkillRunner:
             if not root.is_dir():
                 continue
             for skill_md in sorted(root.rglob("SKILL.md")):
-                # Skip vendored paths (node_modules, .git, dist)
+                # Skip vendored + staged-proposal paths.
+                # `.proposed` is the curator's HUMAN-REVIEW staging tier
+                # (services/skills/.proposed/<name>/) — drafts there must NEVER
+                # be cataloged or activated until a human moves them out.
                 parts = skill_md.parts
-                if any(p in ("node_modules", ".git", "dist") for p in parts):
+                if any(
+                    p in ("node_modules", ".git", "dist", ".proposed")
+                    for p in parts
+                ):
                     continue
                 self._index(skill_md, tier, root)
         log.info("cataloged %d skills", len(self.catalog))  # -> stderr
