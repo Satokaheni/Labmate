@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChatLayout } from '@/layouts/ChatLayout';
 import { LabmateMark } from '@/components/LabmateMark';
 import { SessionList } from '@/components/SessionList';
@@ -62,6 +62,11 @@ export function App({
   const [rightPanel, setRightPanel] = useState<'file' | 'tools' | null>(null);
   const pendingSendRef = useRef<string | null>(null);
 
+  const handlePreviewArtifact = useCallback((artifact: Artifact) => {
+    setPreviewed(artifact);
+    setRightPanel('file');
+  }, []);
+
   // When a new session is auto-created in response to the user sending with no active session,
   // fire the buffered message as soon as activeSessionId becomes available.
   useEffect(() => {
@@ -87,11 +92,6 @@ export function App({
   onRenameSessionRef.current = onRenameSession;
   const onCompactRef = useRef(onCompact);
   onCompactRef.current = onCompact;
-  const handlePreviewArtifactRef = useRef<(artifact: Artifact) => void>(() => {});
-  handlePreviewArtifactRef.current = (artifact) => {
-    setPreviewed(artifact);
-    setRightPanel('file');
-  };
 
   // Boolean dep: only re-run center when compact goes from undefined ↔ defined.
   const compactEnabled = onCompact !== undefined;
@@ -111,6 +111,7 @@ export function App({
             type="button"
             data-testid="file-preview-btn"
             aria-pressed={rightPanel === 'file'}
+            aria-label={`Toggle file preview: ${previewed.name}`}
             onClick={() => setRightPanel((p) => (p === 'file' ? null : 'file'))}
             title={previewed.name}
             className={[
@@ -170,7 +171,7 @@ export function App({
     <>
       <div aria-live="polite" aria-label="Conversation" className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
         {turns.map((t) => (
-          <Turn key={t.id} turn={t} onPreviewArtifact={(a) => handlePreviewArtifactRef.current(a)} />
+          <Turn key={t.id} turn={t} onPreviewArtifact={handlePreviewArtifact} />
         ))}
       </div>
       <Composer
