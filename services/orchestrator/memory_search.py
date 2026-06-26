@@ -18,7 +18,10 @@ from typing import Any
 
 _logger = logging.getLogger("orchestrator")
 
-# Generous caps (no shared tool_grounding helper exists in this repo).
+# Budget-aware caps: per-snippet and total limits. A budget-aware ground_tool_result
+# helper exists in tool_grounding.py, but memory_search uses its own ranked-snippet caps
+# (per-snippet 600 / total 4000) rather than ground_tool_result's head+tail budget (16000)
+# because memory_search output shape is a ranked list, not raw test/bash output.
 _MAX_SNIPPET_CHARS = 600
 _MAX_TOTAL_CHARS = 4000
 _MAX_K = 20  # matches the code_semantic_search "max 20 results" contract
