@@ -8,9 +8,9 @@ Feature: Iteration budget with grace and cheap-call refund
   Scenario: exhaustion grants exactly one grace turn
     Given an AsyncOrchestrator with no skill router and no mcp
     And the iteration budget cap is 2
-    And the model calls run_bash with command "echo 1" on turn 1
-    And the model calls run_bash with command "echo 2" on turn 2
-    And the model calls run_bash with command "echo 3" on turn 3
+    And the model calls write_file with path "file1.txt" and content "1" on turn 1
+    And the model calls write_file with path "file2.txt" and content "2" on turn 2
+    And the model calls write_file with path "file3.txt" and content "3" on turn 3
     When react_execute runs the goal "loop forever"
     Then the result ok is False
     And the result summary contains "budget exhausted"
