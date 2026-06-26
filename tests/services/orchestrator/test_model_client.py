@@ -73,3 +73,120 @@ def test_backoff_applies_jitter_floor_of_half():
     # rng() == 0.0 -> jitter factor 0.5 (half delay).
     zero = lambda: 0.0
     assert backoff_delay(1, base_s=0.5, max_s=4.0, rng=zero) == pytest.approx(0.5)
+
+
+import asyncio
+from types import SimpleNamespace
+
+from services.orchestrator.model_client import (
+    acompletion_with_failover,
+    AllEndpointsExhausted,
+)
+
+
+def _ok(content="hi"):
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+    )
+
+
+async def _noop_sleep(_):  # never actually wait in tests
+    return None
+
+
+@pytest.mark.mocked
+@pytest.mark.asyncio
+async def test_failover_primary_down_secondary_succeeds():
+    calls = []
+
+    async def fake(*, model, api_base, api_key, **kw):
+        calls.append(api_base)
+        if api_base == "http://a/v1":
+            raise litellm.APIConnectionError(message="refused", llm_provider="openai", model=model)
+        return _ok("from-b")
+
+    r = await acompletion_with_failover(
+        model="openai/gemma-4-31b",
+        bases=["http://a/v1", "http://b/v1"],
+        max_attempts_per_base=1,
+        sleep=_noop_sleep,
+        rng=lambda: 0.0,
+        _acompletion=fake,
+        messages=[{"role": "user", "content": "hi"}],
+        extra_body={"thinking_budget_tokens": 0},
+    )
+    assert r.choices[0].message.content == "from-b"
+    assert calls == ["http://a/v1", "http://b/v1"]
+
+
+@pytest.mark.mocked
+@pytest.mark.asyncio
+async def test_all_endpoints_exhausted_raises_terminal_after_bounded_attempts():
+    calls = []
+
+    async def fake(*, model, api_base, api_key, **kw):
+        calls.append(api_base)
+        raise litellm.ServiceUnavailableError(message="503", llm_provider="openai", model=model)
+
+    with pytest.raises(AllEndpointsExhausted) as ei:
+        await acompletion_with_failover(
+            model="openai/gemma-4-31b",
+            bases=["http://a/v1", "http://b/v1"],
+            max_attempts_per_base=2,
+            sleep=_noop_sleep,
+            rng=lambda: 0.0,
+            _acompletion=fake,
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"thinking_budget_tokens": 0},
+        )
+    # 2 attempts per base × 2 bases == 4 total calls
+    assert calls == ["http://a/v1", "http://a/v1", "http://b/v1", "http://b/v1"]
+    assert len(ei.value.attempts) == 4
+
+
+@pytest.mark.mocked
+@pytest.mark.asyncio
+async def test_4xx_is_terminal_no_failover():
+    calls = []
+
+    async def fake(*, model, api_base, api_key, **kw):
+        calls.append(api_base)
+        raise litellm.BadRequestError(message="400", llm_provider="openai", model=model)
+
+    with pytest.raises(litellm.BadRequestError):
+        await acompletion_with_failover(
+            model="openai/gemma-4-31b",
+            bases=["http://a/v1", "http://b/v1"],
+            max_attempts_per_base=2,
+            sleep=_noop_sleep,
+            rng=lambda: 0.0,
+            _acompletion=fake,
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"thinking_budget_tokens": 0},
+        )
+    assert calls == ["http://a/v1"]  # secondary never touched
+
+
+@pytest.mark.mocked
+@pytest.mark.asyncio
+async def test_single_endpoint_transient_blip_recovers_within_budget():
+    calls = []
+
+    async def fake(*, model, api_base, api_key, **kw):
+        calls.append(api_base)
+        if len(calls) == 1:
+            raise litellm.ServiceUnavailableError(message="503", llm_provider="openai", model=model)
+        return _ok("recovered")
+
+    r = await acompletion_with_failover(
+        model="openai/gemma-4-31b",
+        bases=["http://a/v1"],
+        max_attempts_per_base=2,
+        sleep=_noop_sleep,
+        rng=lambda: 0.0,
+        _acompletion=fake,
+        messages=[{"role": "user", "content": "hi"}],
+        extra_body={"thinking_budget_tokens": 0},
+    )
+    assert r.choices[0].message.content == "recovered"
+    assert calls == ["http://a/v1", "http://a/v1"]
