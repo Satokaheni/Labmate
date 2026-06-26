@@ -1488,3 +1488,72 @@ async def test_react_loop_grounds_huge_bash_output_with_marker_and_tail():
     assert "truncated" in content          # marker present
     assert "TAILSENTINEL" in content       # end-of-output evidence survived
     assert len(content) < len(huge)        # genuinely truncated
+
+
+@pytest.mark.mocked
+class TestEditIntentRouting:
+    """react_execute routes edit-intent goals to the ReAct loop, not single-skill."""
+
+    def _make_orch(self):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator
+        # A skill_router whose .run() would succeed with a read-only result, so if
+        # the fast-path were taken we'd see THAT summary (and never reach the loop).
+        router = MagicMock()
+        router.runner = MagicMock()
+        router.runner.reset_activations = MagicMock()
+        router.run = AsyncMock(return_value={"ok": True, "result": "read-only review output"})
+        return AsyncOrchestrator(skill_router=router, mcp=AsyncMock(), workspace="/tmp", max_steps=4)
+
+    @pytest.mark.asyncio
+    async def test_edit_goal_enters_react_loop_not_skill_first(self):
+        """An edit-intent goal must bypass _run_skill_first and run the ReAct loop."""
+        orch = self._make_orch()
+
+        skill_first_calls = {"n": 0}
+
+        async def _spy_skill_first(goal):
+            skill_first_calls["n"] += 1
+            return {"ok": True, "summary": "SHOULD NOT BE CALLED"}
+
+        # Fake model: finish immediately so the loop returns ok=True quickly.
+        finish_msg = MagicMock()
+        finish_msg.content = None
+        tc = MagicMock()
+        tc.id = "c1"
+        tc.function.name = "finish"
+        tc.function.arguments = json.dumps({"summary": "fixed the bug"})
+        finish_msg.tool_calls = [tc]
+        resp = MagicMock(choices=[MagicMock(message=finish_msg)])
+
+        with patch.object(orch, "_run_skill_first", side_effect=_spy_skill_first), \
+             patch.object(orch, "_run_react_loop", wraps=orch._run_react_loop) as loop_spy, \
+             patch("services.orchestrator.coding_orchestrator.acompletion_with_failover",
+                   new_callable=AsyncMock, return_value=resp):
+            result = await orch.react_execute("Review the code then fix the bug", )
+
+        assert skill_first_calls["n"] == 0, "skill-first fast-path must be skipped for edit goals"
+        assert loop_spy.called, "the multi-tool ReAct loop must run for edit goals"
+        assert result["ok"] is True
+        assert "fixed the bug" in result["summary"]
+
+    @pytest.mark.asyncio
+    async def test_read_goal_stays_on_skill_first(self):
+        """A pure read/answer goal keeps the existing single-skill fast-path."""
+        orch = self._make_orch()
+        with patch.object(orch, "_run_react_loop",
+                          new_callable=AsyncMock) as loop_spy:
+            result = await orch.react_execute("Summarize what this module does")
+        assert not loop_spy.called, "read goals must NOT enter the ReAct loop via the edit branch"
+        assert result["ok"] is True
+        assert "read-only review output" in result["summary"]
+
+    @pytest.mark.asyncio
+    async def test_flag_off_keeps_skill_first_for_edit_goal(self, monkeypatch):
+        """ROUTE_EDIT_TO_REACT=0 -> edit goals keep today's skill_first behavior."""
+        monkeypatch.setenv("ROUTE_EDIT_TO_REACT", "0")
+        orch = self._make_orch()
+        with patch.object(orch, "_run_react_loop",
+                          new_callable=AsyncMock) as loop_spy:
+            result = await orch.react_execute("Fix the bug in factorial")
+        assert not loop_spy.called, "flag off must preserve today's skill_first path"
+        assert "read-only review output" in result["summary"]

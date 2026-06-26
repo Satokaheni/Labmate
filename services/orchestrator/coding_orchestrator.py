@@ -25,6 +25,7 @@ from .local_tools import (
 from .loop_detection import LoopDetector, call_signature
 from .iteration_budget import IterationBudget, CHEAP_TOOLS
 from .tool_grounding import ground_tool_result, DEFAULT_TOOL_RESULT_BUDGET
+from .edit_intent import requires_editing
 
 # Max chars of RAW tool output (test results, file contents, bash stdout/stderr,
 # skill results) fed back into the ReAct context per tool call. Generous on
@@ -257,6 +258,17 @@ class AsyncOrchestrator:
         #                 matches (baseline; current production default).
         if SEQUENCING_MODE == "replan":
             return await self._replan_loop(goal)
+
+        # Find-and-fix routing: a goal that needs file edits / verification
+        # ("fix", "make the tests pass", "review then fix the code") cannot be
+        # served by a single read-only skill dispatch — it must enter the
+        # multi-tool ReAct loop so the model can interleave read + edit + run
+        # (skills stay callable inside the loop via call_skill_tool). Gated by
+        # ROUTE_EDIT_TO_REACT (default ON); when off, behavior is identical to
+        # before. No effect in 'react' mode (already runs the loop).
+        if SEQUENCING_MODE != "react" and requires_editing(goal):
+            return await self._run_react_loop(goal, self.max_steps)
+
         if SEQUENCING_MODE != "react":
             skilled = await self._run_skill_first(goal)
             if skilled is not None:
