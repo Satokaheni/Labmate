@@ -107,9 +107,17 @@ fi
 # runtime (e.g. skill-worker dies with ModuleNotFoundError: 'frontmatter').
 log "python deps (core services) ..."
 PIP="pip install --break-system-packages -q"
-for svc in memory mcp-bridge orchestrator skill_runner skill_worker cli ws_gateway; do
-  req="${REPO_ROOT}/services/${svc}/requirements.txt"
-  [[ -f "$req" ]] && { log "  pip: services/${svc}"; $PIP -r "$req"; }
+# Auto-discover every top-level service's requirements.txt (services/<name>/requirements.txt)
+# rather than hardcoding a list — a hardcoded list silently misses newly-added services
+# (e.g. codegraph_embedder), whose absence only surfaces later as a runtime
+# ModuleNotFoundError. The glob matches DIRECT children only, so per-skill deps
+# (services/skills/<name>/, handled in §3b) and the DEFERRED Discord connector
+# (services/connectors/deferred/) are intentionally NOT matched.
+for req in "${REPO_ROOT}"/services/*/requirements.txt; do
+  [[ -f "$req" ]] || continue
+  svc="$(basename "$(dirname "$req")")"
+  log "  pip: services/${svc}"
+  $PIP -r "$req"
 done
 # NOTE: We deliberately do NOT install vllm here (CUDA-13 incompatibility above).
 

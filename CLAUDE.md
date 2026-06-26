@@ -170,6 +170,42 @@ This workflow applies to every implementation task in this repo. Never deviate f
 
 ---
 
+## Harness Robustness — Single-Intent Hardening (2026-06-25)
+
+Branch `feat/harness-robustness` (off `994df92`). Eight features added to harden the single-intent ReAct harness, derived from a comparison with the `hermes-agent` and `openclaw` harnesses. All built TDD/BDD via the Implementation Workflow above (39 tasks, haiku-implement → opus-judge, then per-plan + whole-branch opus review). Suite: orchestrator + memory **684 passed**. Plans live in `docs/superpowers/plans/2026-06-25-*.md`.
+
+| Feature | New module | Wires into | Env knobs (default) |
+|---|---|---|---|
+| Error classification | `services/orchestrator/error_classifier.py` (`ErrorClass`, `classify_error`) | `graph.py` `execute_node` — replaced the `_NONRETRYABLE_ERROR_MARKERS` substring test; terminal classes skip retry, rate-limited gets bounded backoff | `MAX_RATE_LIMIT_RETRIES=1`, `RATE_LIMIT_BACKOFF_SECONDS=2.0` |
+| Tool-loop detection | `services/orchestrator/loop_detection.py` (`LoopDetector`) | `coding_orchestrator.py` `react_execute` — breaks early on repeated/cycling tool calls; emits `loop.detected` | `LOOP_REPEAT_LIMIT=2` |
+| Stateful reflection | `collect_prior_reflections()` in `graph.py` | `reflect` node — feeds prior per-goal reflections into the diagnosis prompt (reflection messages now tagged with `goal_id`) | — (uses `REFLECT_THINKING_BUDGET`) |
+| Conditional gates | `services/orchestrator/task_complexity.py` (`classify_complexity`, `conditional_gates_enabled`) | `graph.py` `assess_ambiguity` + `ambiguity_router` + `verify_router` — skips ambiguity/verify gates for trivial tasks | `ENABLE_CONDITIONAL_GATES=0` (**OFF by default**), `TRIVIAL_MAX_WORDS=12` |
+| Iteration budget | `services/orchestrator/iteration_budget.py` (`IterationBudget`) | `coding_orchestrator.py` `react_execute` — replaced the `range(max_steps)` cap with consume/refund + one-shot grace call + absolute turn cap | `LABMATE_MAX_ITERATIONS` (default = `max_steps`, 6) |
+| Prefix-cache stability | `services/orchestrator/prompt_assembler.py` (`PromptAssembler`) | `coding_orchestrator.py` `react_execute` — builds a byte-stable system+tools prefix once per goal so llama.cpp reuses the cached prefix | — |
+| Endpoint failover | `services/orchestrator/model_client.py` (`acompletion_with_failover`, `AllEndpointsExhausted`, `resolve_bases`) | `coding_orchestrator.py` — routes architect/editor/react/aggregate/stream model calls; fails over on 5xx/conn/timeout, 4xx is terminal | `LABMATE_FALLBACK_BASES=""`, `LABMATE_MODEL_MAX_ATTEMPTS_PER_BASE=2`, `LABMATE_MODEL_BACKOFF_BASE_S=0.5`, `LABMATE_MODEL_BACKOFF_MAX_S=4.0` |
+| BDD foundation | `tests/conftest.py` `fake_model` (respx HTTP-seam mock) | pytest-bdd layer: `tests/services/orchestrator/features/*.feature` + `test_*_bdd.py`; `bdd` marker in `pytest.ini` | — |
+
+**Notes for testing:**
+- **Conditional gates are OFF by default** — export `ENABLE_CONDITIONAL_GATES=1` to exercise them.
+- New additive `State` fields: `error_class` (error-classification); `complexity`, `skip_ambiguity`, `skip_verify` (conditional-gates). No removals.
+- Error-classification (skill-failure retry policy) and endpoint-failover (transport-error retry) deliberately use **separate** classifiers — the whole-branch review confirmed they are distinct concerns, not a duplication to consolidate.
+- BDD step defs run async orchestrator code via a shared async-run helper in `tests/conftest.py`; pytest-bdd scenarios are tagged `@mocked` and use the `fake_model` fixture (no GPU).
+
+### Sequencing & latency (merged from `perf/latency-reduction`, PR #11)
+
+`react_execute` is now a **dispatcher** keyed on `SEQUENCING_MODE`; the harness features above (LoopDetector, PromptAssembler, IterationBudget, failover) live in the extracted **`_run_react_loop`** (so the table rows that say "`react_execute`" now mean `_run_react_loop`). Modes:
+- `_run_skill_first(goal)` — deterministic single-skill fast-path; returns `None` when no skill matches.
+- `_run_react_loop(goal, max_steps)` — the bounded multi-tool ReAct loop (carries all the harness-robustness features).
+- `_replan_loop(goal)` — **opt-in** (`SEQUENCING_MODE=replan`): a planner emits the single next sub-goal (or `done`) and runs each via skill-first with a `_run_react_loop` fallback; the planner owns the completion decision (honest completion). A compound gate (`_is_compound`) runs single-step goals once so simple tasks pay no sequencing tax. Kept opt-in for A/B until its activation-cap bug (below) is fixed.
+
+**Default is `skill_first`** (the well-tested harness path); `replan` and `react` are opt-in via `SEQUENCING_MODE` for A/B evaluation (`eval/seq_ab/`).
+
+Latency/sequencing knobs (defaults): `SEQUENCING_MODE=skill_first`, `MAX_SEQ_STEPS=5`, `REPLAN_COMPOUND_GATE=1`, `ASSESS_THINKING_BUDGET=384` (lighter ambiguity judgement), `CRITIQUE_ARTIFACT_TYPES=""` (auto critique-gate **OFF**; set `writing` or `code,writing` to re-enable), `SKILL_CALL_TIMEOUT=135` (must exceed the worker's `CALL_TIMEOUT`). `test-gen` gained a `run_tests` tool (run an existing suite — do not call `generate` to re-run tests). A/B harness: `bash eval/seq_ab/run_mode.sh <skill_first|react|replan>`.
+
+**Known bug to chase (from the perf branch):** in `replan` mode, `SkillRunner.load_skill` can hit its `max_chain` activation cap mid-chain because `reset_activations()` runs once per goal, not per sub-step — replan runs many sub-steps. Fix candidate: call `reset_activations()` per sub-step inside `_replan_loop`. `skill_first` is unaffected (≤1 skill/goal).
+
+---
+
 ## Live E2E Verification
 
 Run these after any change to confirm the stack still works. Start services in order:
@@ -277,6 +313,68 @@ grep "incremental_update" .data/logs/codegraph-embedder.log | tail -3
 | `codegraph MCP did not become ready` | `.codegraph/codegraph.db` missing or embed model not loaded — check codegraph-embedder.log |
 | `llama-server` 5xx / timeout | Model not loaded or VRAM OOM |
 | ws_gateway `auth_failed` | JWT credentials wrong or `ADMIN_EMAIL`/`ADMIN_PASSWORD` not seeded |
+
+### 7. Harness-robustness feature checks (the 8 features above)
+
+These are unit/BDD-covered (`PYTHONPATH=. python -m pytest tests/services/orchestrator/ -q` → all green). To exercise them **live** on RunPod, watch `.data/logs/orchestrator.log` while pushing tasks:
+
+```bash
+# Conditional gates — OFF by default; enable, then a trivial task should skip the ambiguity + verify gates
+ENABLE_CONDITIONAL_GATES=1 infrastructure/local/start.sh   # (or export before starting the orchestrator)
+PYTHONPATH=. python -m services.cli "What is 2+2? Reply in one sentence."
+#   log: assess_ambiguity skipped (trivial) + verify skipped → faster turn. An ambiguous task ("improve it") still gates.
+
+# Error classification — a skill failing for an environmental/terminal reason must NOT retry to exhaustion
+PYTHONPATH=. python -m services.cli "Run this code in the sandbox: print(1)"   # if Docker absent → TERMINAL_DEPENDENCY
+#   log: classify_error → terminal class → finalized WITHOUT MAX_GOAL_ATTEMPTS retry loop (fast fail, not 2x reflect).
+
+# Endpoint failover — point primary at a dead port with a working fallback; confirm failover, not a hard error
+GEMMA_BASE="http://localhost:9999/v1" LABMATE_FALLBACK_BASES="http://localhost:8000/v1" \
+  PYTHONPATH=. python -m services.cli "Say hello."
+#   log: primary endpoint conn-refused → failover to fallback → success. All-dead → AllEndpointsExhausted (terminal).
+
+# Iteration budget — a long multi-step task should get a grace call near the cap, not a hard mid-step cut
+#   log: "budget exhausted" with a final grace turn; cheap read-only tool turns are refunded.
+
+# Tool-loop detection — if the Q4 model repeats the same tool+args, the loop breaks early
+#   log: loop.detected (reason=repeat|cycle) instead of thrashing to the iteration cap.
+
+# Stateful reflection — a goal that fails twice: the 2nd reflect prompt includes the 1st reflection
+#   log (reflect node): prior-reflection text present + "do not repeat" instruction on attempt 2.
+
+# Sequencing mode — DEFAULT is skill_first (one skill/goal). The mode is read by the ORCHESTRATOR
+# at startup (process-wide), NOT by the CLI — to change it, restart the orchestrator under the env
+# var, then push a task. For the proper comparison use the A/B harness in §8 (it restarts per mode).
+SEQUENCING_MODE=replan infrastructure/local/start.sh    # restart orchestrator in replan (opt-in) mode
+PYTHONPATH=. python -m services.cli "Review /workspace/ab_buggy.py for bugs, then fix the code."
+#   skill_first: ONE skill dispatch then finish (honest 'partial' if the skill can't edit code).
+#   replan:      planner emits sub-goals (review → fix), multiple steps — watch for the load_skill
+#                activation-cap bug mid-chain (see Harness Robustness → known bug).
+```
+
+Knobs to tune live: `LOOP_REPEAT_LIMIT`, `TRIVIAL_MAX_WORDS`, `LABMATE_MAX_ITERATIONS`, `MAX_RATE_LIMIT_RETRIES`, `LABMATE_MODEL_MAX_ATTEMPTS_PER_BASE`, `SEQUENCING_MODE`. See the Harness Robustness table for defaults.
+
+### 8. Sequencing A/B test (skill_first vs react vs replan)
+
+`SEQUENCING_MODE` is process-wide (read once at orchestrator import), so each mode needs its own orchestrator restart. The harness in `eval/seq_ab/` automates this: it restarts the orchestrator under a mode, runs a fixed 5-case set (3 compound + 2 controls) through Redis, and records per case the skill sequence, `ok`, llm-call count, and wall-time to `eval/seq_ab/results-<mode>.json`.
+
+```bash
+# Run each mode (each call restarts the orchestrator under that mode, then runs the 5 cases):
+bash eval/seq_ab/run_mode.sh skill_first   # baseline / current default
+bash eval/seq_ab/run_mode.sh react
+bash eval/seq_ab/run_mode.sh replan        # opt-in planner loop
+# → eval/seq_ab/results-{skill_first,react,replan}.json
+```
+
+The 5 cases (`eval/seq_ab/run_seq_ab.py`): c1 test-gen→review→fix, c2 review→fix, c3 bug→test (compound); c4 single review, c5 trivial (controls). Fixtures (`/workspace/ab_*.py`) are reset before each case. Judge the three result files with a **cross-family** model (NOT Gemma/Qwen — self-grading bias) on **completion** (did it actually do the work) and **honesty** (did it claim a success it didn't achieve).
+
+**What to look for:**
+- `skill_first`: 1 skill/goal — fast, but on compound tasks may run a read-only skill (test-gen/code-review) and stop, sometimes claiming completion it didn't perform.
+- `replan`: sequences sub-goals (review→fix) for honest multi-step completion — but watch the **`load_skill` activation-cap bug** that caps compound completion (fix = call `reset_activations()` per sub-step in `_replan_loop`).
+- Controls (c4/c5) should tie across modes; if `replan` over-sequences a control, tune `REPLAN_COMPOUND_GATE` / `_is_compound`.
+- The harness-robustness features (loop-detect, budget, prefix, failover) run inside **every** mode's ReAct fallback, so this A/B also stresses them under real load — the first live exercise of the replan↔harness interaction.
+
+> `run_mode.sh` hardcodes `/workspace/Labmate` and writes fixtures under `/workspace/` — **RunPod-only**. On a different host, adjust the paths or run `run_seq_ab.py` directly after starting the orchestrator with the desired `SEQUENCING_MODE`.
 
 ---
 

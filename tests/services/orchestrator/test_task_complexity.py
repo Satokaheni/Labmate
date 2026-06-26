@@ -1,122 +1,289 @@
-"""Unit tests for the pure, deterministic complexity classifier.
+"""Task complexity classifier (deterministic heuristics).
 
-No LLM, no graph, no env mutation beyond monkeypatched os.getenv. The classifier
-is the ONLY place the skip decision is made, so these tests pin every branch.
+Pure module for classifying task complexity to enable conditional gates
+(skip ambiguity/verify for trivial tasks).
+
+Tests verify:
+  - Complexity dataclass structure
+  - conditional_gates_enabled() reads env
+  - classify_complexity() applies deterministic heuristics
+  - Feature can be disabled entirely (returns Complexity(False, False, "feature disabled"))
 """
 from __future__ import annotations
 
+import os
 import pytest
 
 from services.orchestrator.task_complexity import (
     Complexity,
-    classify_complexity,
     conditional_gates_enabled,
+    classify_complexity,
 )
 
 
-@pytest.mark.mocked
 class TestComplexityDataclass:
-    def test_is_frozen_and_has_fields(self):
-        c = Complexity(skip_ambiguity=True, skip_verify=True, reason="trivial")
+    """Complexity dataclass exists and is frozen."""
+
+    def test_complexity_has_required_fields(self):
+        """Complexity has skip_ambiguity, skip_verify, reason."""
+        c = Complexity(skip_ambiguity=True, skip_verify=False, reason="simple query")
         assert c.skip_ambiguity is True
-        assert c.skip_verify is True
-        assert c.reason == "trivial"
-        with pytest.raises(Exception):
-            c.skip_ambiguity = False  # frozen
-
-
-@pytest.mark.mocked
-class TestFeatureFlag:
-    def test_disabled_by_default(self, monkeypatch):
-        monkeypatch.delenv("ENABLE_CONDITIONAL_GATES", raising=False)
-        assert conditional_gates_enabled() is False
-
-    @pytest.mark.parametrize("val", ["0", "false", "False", ""])
-    def test_falsey_values_are_off(self, monkeypatch, val):
-        monkeypatch.setenv("ENABLE_CONDITIONAL_GATES", val)
-        assert conditional_gates_enabled() is False
-
-    @pytest.mark.parametrize("val", ["1", "true", "True", "yes"])
-    def test_truthy_values_are_on(self, monkeypatch, val):
-        monkeypatch.setenv("ENABLE_CONDITIONAL_GATES", val)
-        assert conditional_gates_enabled() is True
-
-
-@pytest.mark.mocked
-class TestClassifyDisabled:
-    def test_disabled_never_skips(self, monkeypatch):
-        monkeypatch.delenv("ENABLE_CONDITIONAL_GATES", raising=False)
-        c = classify_complexity("What is 2+2?")
-        assert c == Complexity(skip_ambiguity=False, skip_verify=False, reason="feature disabled")
-
-    def test_explicit_enabled_false_overrides_env(self, monkeypatch):
-        monkeypatch.setenv("ENABLE_CONDITIONAL_GATES", "1")
-        c = classify_complexity("What is 2+2?", enabled=False)
-        assert c.skip_ambiguity is False
         assert c.skip_verify is False
+        assert c.reason == "simple query"
+
+    def test_complexity_is_frozen(self):
+        """Complexity is immutable (dataclass frozen=True)."""
+        c = Complexity(skip_ambiguity=True, skip_verify=True, reason="test")
+        with pytest.raises(Exception):  # FrozenInstanceError or AttributeError
+            c.skip_ambiguity = False
 
 
-@pytest.mark.mocked
-class TestClassifyTrivial:
-    """When enabled, clearly trivial tasks skip both gates."""
+class TestConditionalGatesEnabled:
+    """conditional_gates_enabled() reads ENABLE_CONDITIONAL_GATES env."""
+
+    def test_defaults_to_false(self):
+        """Env OFF by default."""
+        # Save the original env var
+        original = os.environ.pop("ENABLE_CONDITIONAL_GATES", None)
+        try:
+            # Make sure it's not set
+            assert conditional_gates_enabled() is False
+        finally:
+            if original is not None:
+                os.environ["ENABLE_CONDITIONAL_GATES"] = original
 
     @pytest.mark.parametrize(
-        "task",
-        [
-            "What is 2+2?",
-            "what is the capital of France",
-            "Who wrote Hamlet?",
-            "Define entropy.",
-            "Convert 10 km to miles",
-        ],
+        "falsey_value",
+        ["", "0", "false", "False", "FALSE", "no", "No", "off", "Off", "OFF"],
     )
-    def test_trivial_question_skips_both(self, task):
-        c = classify_complexity(task, enabled=True)
-        assert c.skip_ambiguity is True
-        assert c.skip_verify is True
-        assert c.reason  # non-empty explanation
-
-
-@pytest.mark.mocked
-class TestClassifyAmbiguous:
-    """Underspecified phrasings must NEVER be classified trivial."""
+    def test_false_for_explicit_falsey_values(self, falsey_value):
+        """Env var set to falsey values (0, false, no, off) → False."""
+        original = os.environ.get("ENABLE_CONDITIONAL_GATES")
+        try:
+            os.environ["ENABLE_CONDITIONAL_GATES"] = falsey_value
+            assert conditional_gates_enabled() is False, f"Failed for value: {falsey_value!r}"
+        finally:
+            if original is not None:
+                os.environ["ENABLE_CONDITIONAL_GATES"] = original
+            else:
+                os.environ.pop("ENABLE_CONDITIONAL_GATES", None)
 
     @pytest.mark.parametrize(
-        "task",
-        ["make it better", "fix the thing", "improve this", "do that", "handle it"],
+        "truthy_value",
+        ["1", "true", "True", "TRUE", "yes", "Yes", "on", "On", "ON"],
     )
-    def test_ambiguous_does_not_skip_ambiguity(self, task):
-        c = classify_complexity(task, enabled=True)
-        assert c.skip_ambiguity is False
+    def test_true_for_explicit_truthy_values(self, truthy_value):
+        """Env var set to truthy values (1, true, yes, on) → True."""
+        original = os.environ.get("ENABLE_CONDITIONAL_GATES")
+        try:
+            os.environ["ENABLE_CONDITIONAL_GATES"] = truthy_value
+            assert conditional_gates_enabled() is True, f"Failed for value: {truthy_value!r}"
+        finally:
+            if original is not None:
+                os.environ["ENABLE_CONDITIONAL_GATES"] = original
+            else:
+                os.environ.pop("ENABLE_CONDITIONAL_GATES", None)
 
 
-@pytest.mark.mocked
-class TestClassifyNonTrivial:
-    """Long / multi-clause / build-y tasks keep both gates."""
+class TestClassifyComplexity:
+    """classify_complexity() applies deterministic heuristics."""
 
-    @pytest.mark.parametrize(
-        "task",
-        [
-            "Implement a rate limiter with a sliding window and tests",
-            "Write a Python module that parses CSV, validates rows, and writes JSON",
-            "Refactor the auth layer to support OAuth and add integration tests",
-            "Build a REST API with three endpoints and a Postgres schema",
-        ],
-    )
-    def test_nontrivial_keeps_both_gates(self, task):
-        c = classify_complexity(task, enabled=True)
-        assert c.skip_ambiguity is False
-        assert c.skip_verify is False
+    def test_disabled_feature_returns_skip_both(self):
+        """Feature disabled → Complexity(False, False, "feature disabled")."""
+        result = classify_complexity("What is 2+2?", enabled=False)
+        assert result.skip_ambiguity is False
+        assert result.skip_verify is False
+        assert result.reason == "feature disabled"
 
+    def test_enabled_false_at_runtime(self):
+        """enabled=False overrides env; returns feature disabled."""
+        result = classify_complexity("Write code", enabled=False)
+        assert result.skip_ambiguity is False
+        assert result.skip_verify is False
 
-@pytest.mark.mocked
-class TestDeterminism:
-    def test_same_input_same_output(self):
-        a = classify_complexity("What is 2+2?", enabled=True)
-        b = classify_complexity("What is 2+2?", enabled=True)
-        assert a == b
+    def test_simple_arithmetic_skips_both_gates(self):
+        """Simple arithmetic → skip_ambiguity=True, skip_verify=True."""
+        result = classify_complexity("What is 2+2?", enabled=True)
+        assert result.skip_ambiguity is True
+        assert result.skip_verify is True
+        assert "arithmetic" in result.reason.lower()
 
-    def test_empty_string_is_safe_no_skip(self):
-        c = classify_complexity("", enabled=True)
-        assert c.skip_ambiguity is False
-        assert c.skip_verify is False
+    def test_simple_fact_query_skips_both_gates(self):
+        """Simple fact lookup → skip both."""
+        result = classify_complexity("What is the capital of France?", enabled=True)
+        assert result.skip_ambiguity is True
+        assert result.skip_verify is True
+
+    def test_code_writing_skips_ambiguity_not_verify(self):
+        """Code/writing tasks → skip_ambiguity=True, skip_verify=False (need critique)."""
+        result = classify_complexity("Write a Python function to reverse a list.", enabled=True)
+        assert result.skip_ambiguity is True
+        assert result.skip_verify is False
+
+    def test_search_query_skips_ambiguity(self):
+        """Web search / lookup → skip ambiguity, but not verify."""
+        result = classify_complexity("Find research papers about machine learning.", enabled=True)
+        assert result.skip_ambiguity is True
+        assert result.skip_verify is False
+
+    def test_complex_task_does_not_skip(self):
+        """Complex, multi-step, ambiguous → skip neither gate."""
+        result = classify_complexity(
+            "Design a system for collaborative document editing with real-time updates, "
+            "version control, and offline support.",
+            enabled=True,
+        )
+        assert result.skip_ambiguity is False
+        assert result.skip_verify is False
+
+    def test_none_enabled_consults_env(self):
+        """enabled=None → consults conditional_gates_enabled()."""
+        original = os.environ.get("ENABLE_CONDITIONAL_GATES")
+        try:
+            # Test with feature OFF
+            os.environ.pop("ENABLE_CONDITIONAL_GATES", None)
+            result = classify_complexity("What is 2+2?", enabled=None)
+            assert result.reason == "feature disabled"
+
+            # Test with feature ON
+            os.environ["ENABLE_CONDITIONAL_GATES"] = "1"
+            result = classify_complexity("What is 2+2?", enabled=None)
+            assert result.skip_ambiguity is True
+        finally:
+            if original is not None:
+                os.environ["ENABLE_CONDITIONAL_GATES"] = original
+            else:
+                os.environ.pop("ENABLE_CONDITIONAL_GATES", None)
+
+    def test_heuristic_is_deterministic(self):
+        """Same task always produces same result."""
+        task = "Write a function to compute Fibonacci numbers."
+        result1 = classify_complexity(task, enabled=True)
+        result2 = classify_complexity(task, enabled=True)
+        assert result1.skip_ambiguity == result2.skip_ambiguity
+        assert result1.skip_verify == result2.skip_verify
+        assert result1.reason == result2.reason
+
+    def test_case_insensitivity(self):
+        """Heuristic is case-insensitive."""
+        result1 = classify_complexity("WRITE A PYTHON FUNCTION", enabled=True)
+        result2 = classify_complexity("write a python function", enabled=True)
+        assert result1.skip_ambiguity == result2.skip_ambiguity
+        assert result1.skip_verify == result2.skip_verify
+
+    def test_multiline_task_handled(self):
+        """Multiline task text is handled gracefully."""
+        task = """Write a Python function that:
+        - Takes a list of numbers
+        - Returns the sum
+        - Handles empty lists gracefully"""
+        result = classify_complexity(task, enabled=True)
+        assert isinstance(result.skip_ambiguity, bool)
+        assert isinstance(result.skip_verify, bool)
+        assert isinstance(result.reason, str)
+
+    def test_pure_function_no_side_effects(self):
+        """Function is pure — no state mutations, same task same output."""
+        task = "What is the weather today?"
+        result_before = classify_complexity(task, enabled=True)
+        # Call it again; environment unchanged.
+        result_after = classify_complexity(task, enabled=True)
+        assert result_before == result_after
+
+    def test_long_what_is_query_does_not_skip_ambiguity(self):
+        """A 'what is' query >12 words should NOT skip ambiguity gate.
+
+        This test verifies that the TRIVIAL_MAX_WORDS guard is enforced.
+        The query 'What is the best way to architect a distributed multi-tenant
+        streaming pipeline with exactly-once semantics...' is 22 words and should
+        NOT be classified as a trivial fact lookup.
+        """
+        # A long "what is" query (22 words)
+        task = (
+            "What is the best way to architect a distributed multi-tenant "
+            "streaming pipeline with exactly-once semantics and fault tolerance?"
+        )
+        result = classify_complexity(task, enabled=True)
+        # Should NOT skip ambiguity because it exceeds the default 12-word limit
+        assert result.skip_ambiguity is False
+        assert result.skip_verify is False
+        assert "complex" in result.reason.lower()
+
+    def test_trivial_max_words_env_var_respected(self):
+        """TRIVIAL_MAX_WORDS env var limits when tasks skip ambiguity.
+
+        With TRIVIAL_MAX_WORDS=5, a 6-word 'What is X?' should NOT skip.
+        """
+        original = os.environ.get("TRIVIAL_MAX_WORDS")
+        try:
+            os.environ["TRIVIAL_MAX_WORDS"] = "5"
+            # 6-word task
+            task = "What is the capital of France today?"
+            result = classify_complexity(task, enabled=True)
+            # Should NOT skip because 6 words > 5 word limit
+            assert result.skip_ambiguity is False
+        finally:
+            if original is not None:
+                os.environ["TRIVIAL_MAX_WORDS"] = original
+            else:
+                os.environ.pop("TRIVIAL_MAX_WORDS", None)
+
+    def test_simple_fact_within_limit_skips(self):
+        """A simple fact query within the word limit DOES skip ambiguity."""
+        original = os.environ.get("TRIVIAL_MAX_WORDS")
+        try:
+            os.environ["TRIVIAL_MAX_WORDS"] = "10"
+            # 5-word task (well within 10-word limit)
+            task = "What is the capital of France?"
+            result = classify_complexity(task, enabled=True)
+            # Should skip ambiguity because 5 words <= 10 word limit
+            assert result.skip_ambiguity is True
+            assert result.skip_verify is True
+        finally:
+            if original is not None:
+                os.environ["TRIVIAL_MAX_WORDS"] = original
+            else:
+                os.environ.pop("TRIVIAL_MAX_WORDS", None)
+
+    def test_ambiguous_pattern_fix_the_thing(self):
+        """'Fix the thing' is ambiguous despite matching fact_pattern → must NOT skip."""
+        result = classify_complexity("Fix the thing.", enabled=True)
+        assert result.skip_ambiguity is False
+        assert result.skip_verify is False
+        assert "ambiguous" in result.reason.lower()
+
+    def test_ambiguous_pattern_make_it_better(self):
+        """'Make it better' is vague ambiguity → must NOT skip."""
+        result = classify_complexity("Make it better.", enabled=True)
+        assert result.skip_ambiguity is False
+        assert result.skip_verify is False
+        assert "ambiguous" in result.reason.lower()
+
+    def test_ambiguous_pattern_improve_this(self):
+        """'Improve this' is inherently vague → must NOT skip."""
+        result = classify_complexity("Improve this.", enabled=True)
+        assert result.skip_ambiguity is False
+        assert result.skip_verify is False
+        assert "ambiguous" in result.reason.lower()
+
+    def test_ambiguous_pattern_enhance_code(self):
+        """'Enhance the code' matches ambiguous pattern → must NOT skip."""
+        result = classify_complexity("Enhance the code faster.", enabled=True)
+        assert result.skip_ambiguity is False
+        assert result.skip_verify is False
+        assert "ambiguous" in result.reason.lower()
+
+    def test_ambiguous_pattern_modify_that_cleaner(self):
+        """'Modify that cleaner' matches ambiguous pattern → must NOT skip."""
+        result = classify_complexity("Modify that cleaner.", enabled=True)
+        assert result.skip_ambiguity is False
+        assert result.skip_verify is False
+        assert "ambiguous" in result.reason.lower()
+
+    def test_clear_code_task_not_blocked_by_ambiguous_guard(self):
+        """A clear code task like 'Write a Python function' still skips ambiguity."""
+        result = classify_complexity("Write a Python function to sum numbers.", enabled=True)
+        assert result.skip_ambiguity is True
+        assert result.skip_verify is False
+        # Reason should be about code/writing, not ambiguous
+        assert "code or writing" in result.reason.lower()

@@ -20,7 +20,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("test-gen.server")
 
-from mutation_runner import MutationRunner  # noqa: E402
+from mutation_runner import MutationRunner, run_pytest  # noqa: E402
 from test_generator import TestGenerator    # noqa: E402
 
 app: Server = Server("test-gen")
@@ -44,6 +44,25 @@ async def list_tools() -> list[Tool]:
                     "existing_tests": {"type": "string", "description": "Existing test code to extend, optional.", "default": ""},
                 },
                 "required": ["source_file"],
+            },
+        ),
+        Tool(
+            name="run_tests",
+            description=(
+                "Re-run an EXISTING pytest test file as-is (plain `pytest`), WITHOUT "
+                "regenerating tests. Use this when the test suite already exists and "
+                "the source under test has not changed — to re-verify after a fix or "
+                "just re-run the suite. Returns JSON with passed (bool), passed_count, "
+                "failed_count, summary, raw_output. Do NOT call `generate` to re-run "
+                "tests that already exist."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "test_file": {"type": "string", "description": "Path to the existing pytest test file (or tests dir)."},
+                    "cwd": {"type": "string", "description": "Working directory to run pytest from, optional.", "default": ""},
+                },
+                "required": ["test_file"],
             },
         ),
         Tool(
@@ -99,6 +118,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             payload = _generator.generate(
                 source_file=arguments["source_file"],
                 existing_tests=arguments.get("existing_tests", ""),
+            )
+        elif name == "run_tests":
+            payload = run_pytest(
+                test_file=arguments["test_file"],
+                cwd=arguments.get("cwd") or None,
             )
         elif name == "run_mutations":
             result = _runner.run(

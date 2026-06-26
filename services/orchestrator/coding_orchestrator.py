@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import litellm
+import os
 import subprocess
 import time
 import uuid
@@ -12,8 +13,35 @@ from aiolimiter import AsyncLimiter
 
 from .types import Goal, State, Status, get_ready_goals, update_status, now_iso
 from . import events
+from .model_client import acompletion_with_failover, resolve_bases
+from .prompt_assembler import PromptAssembler
 from .local_tools import LOCAL_TOOL_NAMES, request_local_tool
 from .loop_detection import LoopDetector, call_signature
+from .iteration_budget import IterationBudget, CHEAP_TOOLS
+
+# Sequencing strategy for react_execute (A/B knob — see eval/seq_ab):
+#   skill_first (DEFAULT): a confidently-matched skill runs deterministically and
+#       returns — ONE skill per goal, no multi-skill sequencing. This is the
+#       well-tested harness path and the one the loop-mechanics tests exercise.
+#   react: skip the skill-first fast-path and run the multi-tool ReAct loop, which
+#       can chain multiple skills (test-gen -> code-review -> fix) within one goal,
+#       at the cost of the loop occasionally bypassing a matching skill.
+#   replan (opt-in, set SEQUENCING_MODE=replan): an explicit planner-driven
+#       continuation loop. Each step the planner inspects the original goal + the
+#       history of completed sub-steps and returns the SINGLE next sub-goal (or
+#       done=true). Each sub-goal runs via the deterministic skill-first path,
+#       falling back to a bounded ReAct loop when no skill matches. Gives honest
+#       completion + bounded multi-skill sequencing. In a live A/B it was
+#       non-inferior on single-step controls and ~4x honest-completion on compound
+#       tasks, BUT it has a known mid-chain load_skill activation-cap bug (see
+#       CLAUDE.md) — kept opt-in for A/B evaluation until that is fixed. See eval/seq_ab.
+SEQUENCING_MODE = os.getenv("SEQUENCING_MODE", "skill_first")
+# Max sub-goals the replan continuation loop will execute before forcing a finish.
+MAX_SEQ_STEPS = int(os.getenv("MAX_SEQ_STEPS", "5"))
+# When 1, replan first classifies whether the goal is genuinely multi-step. Single-
+# step goals skip the planner loop entirely (run once via skill-first / ReAct) so a
+# simple "review this file" doesn't pay the planner-sequencing tax (over-sequencing).
+REPLAN_COMPOUND_GATE = os.getenv("REPLAN_COMPOUND_GATE", "1") == "1"
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +154,9 @@ class AsyncOrchestrator:
         self.results: dict[str, Result] = {}
         self._qwen_base = qwen_api_base
         self._gemma_base = gemma_api_base
+        # Ordered endpoint list for failover (primary + LABMATE_FALLBACK_BASES).
+        self._bases = resolve_bases(gemma_api_base)
+        self._editor_bases = resolve_bases(qwen_api_base)
         self.skill_router = skill_router
         self.mcp = mcp
         self.codegraph_mcp = None  # set after construction if codegraph-embedder is running
@@ -189,8 +220,6 @@ class AsyncOrchestrator:
         - run_bash (always)
         - finish (always)
         """
-        import json
-
         # Reset the per-task skill-activation budget. SkillRunner.load_skill caps
         # activations at max_chain PER TASK; without a reset the counter accrues
         # across the process lifetime and load_skill starts failing after ~8 goals
@@ -202,224 +231,143 @@ class AsyncOrchestrator:
             except Exception:
                 pass
 
-        # Per-goal tool-loop detector. A weak model can repeat the same tool call
-        # or cycle a tiny set of calls and burn every step. Detect and halt early.
-        loop_detector = LoopDetector()
+        # Dispatch by sequencing mode (A/B):
+        #   replan      — planner-driven continuation loop (option A): one skill per
+        #                 step, an explicit planner decides the next sub-goal and when
+        #                 the goal is complete (honest completion, bounded sequencing).
+        #   react       — pure multi-tool ReAct loop, no skill-first fast-path (option B).
+        #   skill_first — deterministic single-skill fast-path, ReAct only when no skill
+        #                 matches (baseline; current production default).
+        if SEQUENCING_MODE == "replan":
+            return await self._replan_loop(goal)
+        if SEQUENCING_MODE != "react":
+            skilled = await self._run_skill_first(goal)
+            if skilled is not None:
+                return skilled
+        return await self._run_react_loop(goal, self.max_steps)
 
-        # ── Skill-first deterministic routing ────────────────────────────────
-        # The selector (SkillRouter.select) is highly reliable at picking the
-        # correct skill (18/18 in live smoke tests), whereas the free ReAct loop
-        # below sometimes bypasses a matching skill via run_bash/finish. So when a
-        # skill clearly matches the goal, run it deterministically — select →
-        # load body (progressive disclosure) → tool call → dispatch — and return.
-        # Fall through to the ReAct loop only when NO skill matches (run() is None).
-        if self.skill_router is not None:
-            try:
-                skill_result = await self.skill_router.run(goal)
-            except Exception:
-                skill_result = None
-            if isinstance(skill_result, dict):
-                ok = bool(skill_result.get("ok"))
-                # When a skill fails (ok=False), prefer the error message.
-                # If ok=True, extract the result payload and format it.
-                if not ok:
-                    # Skill failed: surface the MOST SPECIFIC error available, not just the
-                    # generic discriminator. Worker failure shapes:
-                    #   tool_error        -> real text in result (MCP content list)
-                    #   skill_unavailable -> human message in detail
-                    #   dispatch_failed   -> human message in detail
-                    # Never the literal "null"; never crash on a None error value.
-                    err = skill_result.get("error") or "skill failed"
-                    detail = skill_result.get("detail")
-                    res = skill_result.get("result")
-                    if err == "tool_error" and res is not None:
-                        if isinstance(res, dict) and isinstance(res.get("content"), list):
-                            inner = "\n".join(
-                                c.get("text", "") for c in res["content"]
-                                if isinstance(c, dict) and c.get("text")
-                            )
-                        else:
-                            inner = json.dumps(res, default=str)
-                        text = f"{err}: {inner}" if inner else err
-                    elif detail:
-                        text = f"{err}: {detail}"
-                    else:
-                        text = err
-                    text = str(text)[:2000]
+    async def _run_skill_first(self, goal: str) -> dict | None:
+        """Deterministic single-skill execution.
+
+        The selector (SkillRouter.select) is highly reliable at picking the correct
+        skill, whereas the free ReAct loop sometimes bypasses a matching skill via
+        run_bash/finish. So when a skill clearly matches the goal, run it
+        deterministically — select → load body → tool call → dispatch — and return
+        the formatted result. Returns None when NO skill matched, so the caller can
+        fall through to the ReAct loop.
+        """
+        import json
+
+        if self.skill_router is None:
+            return None
+        try:
+            skill_result = await self.skill_router.run(goal)
+        except Exception:
+            skill_result = None
+        if not isinstance(skill_result, dict):
+            return None
+
+        ok = bool(skill_result.get("ok"))
+        # When a skill fails (ok=False), prefer the error message.
+        # If ok=True, extract the result payload and format it.
+        if not ok:
+            # Skill failed: surface the MOST SPECIFIC error available, not just the
+            # generic discriminator. Worker failure shapes:
+            #   tool_error        -> real text in result (MCP content list)
+            #   skill_unavailable -> human message in detail
+            #   dispatch_failed   -> human message in detail
+            # Never the literal "null"; never crash on a None error value.
+            err = skill_result.get("error") or "skill failed"
+            detail = skill_result.get("detail")
+            res = skill_result.get("result")
+            if err == "tool_error" and res is not None:
+                if isinstance(res, dict) and isinstance(res.get("content"), list):
+                    inner = "\n".join(
+                        c.get("text", "") for c in res["content"]
+                        if isinstance(c, dict) and c.get("text")
+                    )
                 else:
-                    # Skill succeeded: extract and format the result
-                    res = skill_result.get("result")
-                    if isinstance(res, dict) and isinstance(res.get("content"), list):
-                        # Extract text from content list items
-                        text_parts = [
-                            c.get("text", "") for c in res["content"]
-                            if isinstance(c, dict) and c.get("text")
-                        ]
-                        # If content list had items but no text fields, use placeholder
-                        text = "\n".join(text_parts) if text_parts else "(no output)"
-                    elif isinstance(res, str):
-                        # Use placeholder for empty strings
-                        text = res if res else "(no output)"
-                    elif res is None or res is False:
-                        # None/missing/empty result: use neutral placeholder
-                        text = "(no output)"
-                    else:
-                        # Structured result: serialize to JSON
-                        text = json.dumps(res, default=str)
-                return {"ok": ok, "summary": text[:2000]}
+                    inner = json.dumps(res, default=str)
+                text = f"{err}: {inner}" if inner else err
+            elif detail:
+                text = f"{err}: {detail}"
+            else:
+                text = err
+            text = str(text)[:2000]
+        else:
+            # Skill succeeded: extract and format the result
+            res = skill_result.get("result")
+            if isinstance(res, dict) and isinstance(res.get("content"), list):
+                # Extract text from content list items
+                text_parts = [
+                    c.get("text", "") for c in res["content"]
+                    if isinstance(c, dict) and c.get("text")
+                ]
+                # If content list had items but no text fields, use placeholder
+                text = "\n".join(text_parts) if text_parts else "(no output)"
+            elif isinstance(res, str):
+                # Use placeholder for empty strings
+                text = res if res else "(no output)"
+            elif res is None or res is False:
+                # None/missing/empty result: use neutral placeholder
+                text = "(no output)"
+            else:
+                # Structured result: serialize to JSON
+                text = json.dumps(res, default=str)
+        return {"ok": ok, "summary": text[:2000]}
 
-        # Build tool list
-        tools = []
-        if self.skill_router is not None:
-            tools.append(self.skill_router.runner.tool_schema())
-            # Only include call_skill_tool when skill_router is available
-            tools.append({
-                "type": "function",
-                "function": {
-                    "name": "call_skill_tool",
-                    "description": "Execute a tool within a loaded skill.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "skill": {"type": "string", "description": "Skill name"},
-                            "tool": {"type": "string", "description": "Tool name"},
-                            "arguments": {"type": "object", "description": "Tool arguments"},
-                        },
-                        "required": ["skill", "tool", "arguments"],
-                    },
-                },
-            })
+    async def _run_react_loop(self, goal: str, max_steps: int) -> dict:
+        """Multi-tool ReAct loop bounded by ``max_steps``.
 
-        # Semantic code search — available when the codegraph-embedder MCP server is running
-        if self.codegraph_mcp is not None:
-            tools.append({
-                "type": "function",
-                "function": {
-                    "name": "code_semantic_search",
-                    "description": (
-                        "Search the codebase by meaning. Returns the top-k symbols "
-                        "(functions, classes, methods) most semantically relevant to the query. "
-                        "Use when you need to find code by what it DOES rather than what it's named."
-                    ),
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {"type": "string", "description": "Natural language description of what to find"},
-                            "k":     {"type": "integer", "description": "Number of results (max 20)", "default": 8},
-                        },
-                        "required": ["query"],
-                    },
-                },
-            })
+        Returns {"ok": bool, "summary": str}. Activation budget is reset by the
+        caller (react_execute), so this can be invoked per sub-goal in replan mode.
+        """
+        import json
 
-        # Always include run_bash and finish
-        tools.extend([
-            {
-                "type": "function",
-                "function": {
-                    "name": "read_file",
-                    "description": "Read a UTF-8 text file from the user's local workspace.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "description": "Workspace-relative file path"},
-                        },
-                        "required": ["path"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "write_file",
-                    "description": "Write (create or overwrite) a UTF-8 text file in the user's local workspace.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "description": "Workspace-relative file path"},
-                            "content": {"type": "string", "description": "Full file contents to write"},
-                        },
-                        "required": ["path", "content"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "list_dir",
-                    "description": "List entries of a directory in the user's local workspace.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {"type": "string", "description": "Workspace-relative directory path"},
-                        },
-                        "required": ["path"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "run_bash",
-                    "description": "Run a bash command in the workspace.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "command": {"type": "string", "description": "Bash command"},
-                        },
-                        "required": ["command"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "finish",
-                    "description": "Finish the task and return the summary.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "summary": {"type": "string", "description": "Task summary"},
-                        },
-                        "required": ["summary"],
-                    },
-                },
-            },
-        ])
-
-        # Build system prompt with catalog
-        catalog = ""
-        if self.skill_router is not None:
-            catalog = self.skill_router.runner.catalog_prompt()
-
-        system = (
-            "You are an execution agent with access to specialized SKILLS plus a generic shell. "
-            "CRITICAL RULE: if ANY available skill matches the task, you MUST accomplish it with "
-            "that skill — call load_skill(name) to read its instructions, then "
-            "call_skill_tool(skill, tool, arguments) to run the right tool. Do NOT use run_bash to "
-            "hand-replicate what a skill already does (e.g. do not grep/sed/write files yourself "
-            "when a code-search, test-generation, parsing, audit, or documentation skill exists). "
-            "Use run_bash ONLY when no available skill fits the task. "
-            "Do NOT call finish until the work is actually done — and when a matching skill exists, "
-            "finish only AFTER call_skill_tool has returned its result. Call finish(summary) to end. "
-            "SANDBOX RULE: run_bash is for read-only inspection (ls, cat, grep, git status) only. "
-            "Any code you author or execute — Python, Node, shell scripts, pytest — MUST go through "
-            "the code-sandbox skill (load_skill('code-sandbox') then call_skill_tool), NEVER run_bash."
+        # Build the prefix ONCE per goal. The same frozen system message and tools
+        # list are reused on every ReAct step below, so llama-server's longest-common-
+        # prefix prompt cache hits and only the appended tail is recomputed.
+        assembler = PromptAssembler(
+            skill_router=self.skill_router,
+            codegraph_enabled=self.codegraph_mcp is not None,
         )
-        if catalog:
-            system += f"\n\n{catalog}"
-
+        tools = assembler.tools()                 # frozen list — never rebuilt per step
         messages = [
-            {"role": "system", "content": system},
+            assembler.system_message(),           # frozen system dict at index 0
             {"role": "user", "content": goal},
         ]
 
-        # ReAct loop
+        # Per-goal tool-loop detector — halt early if the model repeats the same
+        # tool call or cycles a tiny set of calls and would otherwise burn the budget.
+        loop_detector = LoopDetector()
+
+        # ReAct loop — bounded by an IterationBudget (replaces the bare
+        # range(max_steps) cap). The budget grants ONE grace turn after
+        # exhaustion and refunds cheap read-only iterations (CHEAP_TOOLS).
+        # Additionally, record_turn() enforces a hard absolute turn ceiling that
+        # cannot be refunded, preventing infinite loops from distinct cheap reads.
+        cap = int(os.getenv("LABMATE_MAX_ITERATIONS", str(self.max_steps)))
+        budget = IterationBudget(max_total=cap)
         try:
-            for step in range(self.max_steps):
-                r = await litellm.acompletion(
+            while True:
+                # Hard absolute ceiling (prevents infinite loops of distinct cheap reads).
+                if not budget.record_turn():
+                    return {"ok": False, "summary": "absolute turn limit exceeded"}
+
+                # Consume one unit; on exhaustion take the single grace turn,
+                # else stop with a clear "budget exhausted" outcome.
+                if not budget.consume():
+                    if not budget.grace():
+                        return {"ok": False, "summary": "budget exhausted"}
+                    # grace turn: fall through and run one more iteration.
+
+                # Track tools used this turn so a cheap-only turn can be refunded.
+                _turn_tools: list[str] = []
+
+                step = budget.used - 1  # for logging (0-indexed)
+                r = await acompletion_with_failover(
                     model="openai/gemma-4-31b",
-                    api_base=self._gemma_base,
+                    bases=self._bases,
                     api_key="not-needed",
                     messages=messages,
                     tools=tools,
@@ -476,6 +424,7 @@ class AsyncOrchestrator:
                 # Process each tool call
                 for tc in tool_calls:
                     name = tc.function.name
+                    _turn_tools.append(name)
                     try:
                         args = json.loads(tc.function.arguments or "{}")
                     except (json.JSONDecodeError, ValueError):
@@ -636,11 +585,202 @@ class AsyncOrchestrator:
                         "content": content,
                     })
 
-            # Max steps reached
-            return {"ok": False, "summary": "max_steps reached"}
+                # Refund this turn if EVERY tool call it made was a cheap read.
+                # Pure inspection (read_file / list_dir / code_semantic_search)
+                # must not starve genuine work. A turn with no tool calls already
+                # returned above, so _turn_tools is non-empty here.
+                if _turn_tools and all(t in CHEAP_TOOLS for t in _turn_tools):
+                    budget.refund()
 
         except Exception as exc:
             return {"ok": False, "summary": f"error: {str(exc)[:1000]}"}
+
+    async def _is_compound(self, goal: str) -> bool:
+        """Classify whether a goal genuinely requires multiple DISTINCT sequential
+        steps (e.g. generate tests AND fix code) vs a single operation (review a
+        file, find bugs, answer a question). One cheap call; defaults to True
+        (run the full planner loop) on any parse/transport failure, so a compound
+        task is never under-handled.
+        """
+        import json
+        import re
+
+        try:
+            r = await litellm.acompletion(
+                model="openai/gemma-4-31b",
+                api_base=self._gemma_base,
+                api_key="not-needed",
+                messages=[
+                    {"role": "system", "content": (
+                        "You classify whether a user goal needs MULTIPLE distinct "
+                        "sequential operations or just ONE. Multi-step examples: "
+                        "'generate tests AND fix the failing code', 'review this file "
+                        "THEN refactor it', 'find the bug and write a test that exposes "
+                        "it'. Single-step examples: 'review this file for bugs', 'find "
+                        "bugs in X', 'generate unit tests for Y', 'what is 2+2'. "
+                        "A single operation that a tool runs to completion (even if the "
+                        "tool internally loops) is NOT compound. "
+                        "Respond with ONLY a JSON object: {\"compound\": <bool>}"
+                    )},
+                    {"role": "user", "content": goal},
+                ],
+                extra_body={"thinking_budget_tokens": 128},
+            )
+            text = r.choices[0].message.content or ""
+            m = re.search(r"\{.*\}", text, re.S)
+            if not m:
+                return True
+            return bool(json.loads(m.group(0)).get("compound", True))
+        except Exception:
+            return True
+
+    async def _replan_loop(self, goal: str) -> dict:
+        """Planner-driven continuation loop (sequencing option A).
+
+        Each iteration an explicit planner inspects the original goal plus the
+        history of completed sub-steps and returns the SINGLE next sub-goal (or
+        done=true). Each sub-goal executes via the deterministic skill-first path,
+        falling back to a bounded ReAct loop when no skill matches (so file edits /
+        fixes still run). The planner — not the executor — owns the completion
+        decision, so the agent never claims a goal is done unless the history
+        actually supports it (fixes skill_first's hallucinated-completion defect),
+        and the loop is hard-bounded by MAX_SEQ_STEPS (no ReAct thrash).
+
+        A compound gate (REPLAN_COMPOUND_GATE) runs first: single-step goals skip the
+        planner loop and execute once (skill-first, ReAct fallback), so simple tasks
+        like "review this file" aren't over-sequenced into multiple skill calls.
+        """
+        import json
+        import re
+
+        # ── Compound gate ────────────────────────────────────────────────────
+        # Only pay the planner-sequencing cost when the goal is genuinely multi-step.
+        if REPLAN_COMPOUND_GATE and not await self._is_compound(goal):
+            skilled = await self._run_skill_first(goal)
+            if skilled is not None:
+                return skilled
+            return await self._run_react_loop(goal, self.max_steps)
+
+        catalog = ""
+        if self.skill_router is not None:
+            try:
+                catalog = self.skill_router.runner.catalog_prompt()
+            except Exception:
+                catalog = ""
+
+        planner_system = (
+            "You are a planning controller that sequences a single user goal into "
+            "concrete sub-steps. You are given the ORIGINAL goal and a HISTORY of "
+            "sub-steps already completed (each with its result summary). Decide the "
+            "SINGLE next concrete sub-step required to advance the goal, or declare "
+            "the goal complete.\n"
+            "Rules:\n"
+            "- Return done=true ONLY when the HISTORY shows every part of the goal is "
+            "actually accomplished. NEVER claim completion for work that is not "
+            "present in the history.\n"
+            "- 'next' must be ONE concrete imperative sub-step (e.g. 'Generate and run "
+            "unit tests for the factorial function', then later 'Fix the off-by-one "
+            "bug in factorial so the tests pass'). Do not bundle multiple steps.\n"
+            "- Prefer using an available skill when one fits the sub-step.\n"
+            "- If a previous step failed, the next step should address that failure.\n"
+            "Respond with ONLY a JSON object and nothing else:\n"
+            '{"done": <bool>, "next": "<one sub-step, empty if done>", "reason": "<short>"}'
+        )
+        if catalog:
+            planner_system += f"\n\nAvailable skills:\n{catalog}"
+
+        history: list[dict] = []
+
+        def render_history() -> str:
+            if not history:
+                return "(no steps completed yet)"
+            lines = []
+            for i, h in enumerate(history, 1):
+                status = "ok" if h["ok"] else "FAILED"
+                lines.append(f"{i}. [{status}] {h['step']}\n   result: {h['summary']}")
+            return "\n".join(lines)
+
+        try:
+            for step in range(MAX_SEQ_STEPS):
+                planner_user = (
+                    f"ORIGINAL GOAL:\n{goal}\n\n"
+                    f"HISTORY ({len(history)} step(s) done):\n{render_history()}\n\n"
+                    "What is the single next sub-step, or is the goal complete?"
+                )
+                pr = await litellm.acompletion(
+                    model="openai/gemma-4-31b",
+                    api_base=self._gemma_base,
+                    api_key="not-needed",
+                    messages=[
+                        {"role": "system", "content": planner_system},
+                        {"role": "user", "content": planner_user},
+                    ],
+                    extra_body={"thinking_budget_tokens": 512},
+                )
+                ptext = pr.choices[0].message.content or ""
+                m = re.search(r"\{.*\}", ptext, re.S)
+                try:
+                    decision = json.loads(m.group(0)) if m else {}
+                except (json.JSONDecodeError, ValueError):
+                    decision = {}
+
+                done = bool(decision.get("done"))
+                nxt = str(decision.get("next") or "").strip()
+                reason = str(decision.get("reason") or "").strip()
+
+                await events.emit(
+                    "reasoning", node="plan",
+                    summary=(f"done" if done else f"next: {nxt}")[:200],
+                    text=reason or nxt,
+                )
+
+                if done or not nxt:
+                    break
+
+                # Execute the sub-step: skill-first, then bounded ReAct fallback so
+                # non-skill steps (file edits / fixes) still execute.
+                skilled = await self._run_skill_first(nxt)
+                if skilled is not None:
+                    step_res = skilled
+                else:
+                    step_res = await self._run_react_loop(nxt, max(2, min(self.max_steps, 3)))
+
+                history.append({
+                    "step": nxt,
+                    "ok": bool(step_res.get("ok")),
+                    "summary": str(step_res.get("summary", ""))[:600],
+                })
+        except Exception as exc:
+            return {"ok": False, "summary": f"error: {str(exc)[:1000]}"}
+
+        if not history:
+            return {"ok": False, "summary": "planner produced no actionable sub-steps"}
+
+        # Synthesize an honest final answer from the step history.
+        synth_user = (
+            f"ORIGINAL GOAL:\n{goal}\n\n"
+            f"COMPLETED STEPS:\n{render_history()}\n\n"
+            "Write a concise final answer for the user summarizing what was actually "
+            "accomplished. Be honest: if a step failed or part of the goal was not "
+            "completed, say so plainly. Do NOT claim work that is not in the steps above."
+        )
+        try:
+            sr = await litellm.acompletion(
+                model="openai/gemma-4-31b",
+                api_base=self._gemma_base,
+                api_key="not-needed",
+                messages=[
+                    {"role": "system", "content": "You summarize completed work honestly."},
+                    {"role": "user", "content": synth_user},
+                ],
+                extra_body={"thinking_budget_tokens": 256},
+            )
+            summary = (sr.choices[0].message.content or "").strip()
+        except Exception:
+            summary = render_history()
+
+        all_ok = all(h["ok"] for h in history)
+        return {"ok": all_ok, "summary": summary[:2000] or render_history()[:2000]}
 
     async def _run_worker(self, t: SubTask) -> str:
         """
@@ -712,9 +852,9 @@ class AsyncOrchestrator:
             f"Task: {task}\n\nCandidate results:\n{candidates}\n\n"
             "Synthesize the best unified result."
         )
-        r = await litellm.acompletion(
+        r = await acompletion_with_failover(
             model="openai/gemma-4-31b",
-            api_base=self._gemma_base,
+            bases=self._bases,
             api_key="not-needed",
             messages=[{"role": "user", "content": prompt}],
             extra_body={"thinking_budget_tokens": 2000},
@@ -755,6 +895,9 @@ class CodingOrchestrator:
         self.container = docker_container
         self._gemma_base = gemma_api_base
         self._qwen_base = qwen_api_base
+        # Ordered endpoint lists for failover (primary + LABMATE_FALLBACK_BASES).
+        self._bases = resolve_bases(gemma_api_base)
+        self._editor_bases = resolve_bases(qwen_api_base)
         self.max_iter = max_iter
         self.stuck_n = stuck_n
         self.mcp = mcp          # MCPClientManager | None
@@ -823,9 +966,9 @@ class CodingOrchestrator:
         thinking_budget_tokens field (only honored when server started without
         --reasoning-budget flag). Pass thinking_budget=0 for fast tool-dispatch nodes.
         """
-        r = await litellm.acompletion(
+        r = await acompletion_with_failover(
             model="openai/gemma-4-31b",
-            api_base=self._gemma_base,
+            bases=self._bases,
             api_key="not-needed",
             messages=self._build_messages(prompt),
             extra_body={"thinking_budget_tokens": thinking_budget},
@@ -838,9 +981,9 @@ class CodingOrchestrator:
         thinking_budget must always be set: post-April-2026 llama.cpp builds default
         to INT_MAX if omitted, which can cause non-deterministic hangs.
         """
-        r = await litellm.acompletion(
+        r = await acompletion_with_failover(
             model="openai/qwen2.5-coder-32b",
-            api_base=self._qwen_base,
+            bases=self._editor_bases,
             api_key="not-needed",
             messages=self._build_messages(prompt),
             extra_body={"thinking_budget_tokens": thinking_budget},
@@ -927,9 +1070,9 @@ class CodingOrchestrator:
         )
         acc = ""
         try:
-            stream = await litellm.acompletion(
+            stream = await acompletion_with_failover(
                 model="openai/gemma-4-31b",
-                api_base=self._gemma_base,
+                bases=self._bases,
                 api_key="not-needed",
                 messages=[{"role": "user", "content": prompt}],
                 stream=True,

@@ -1,23 +1,10 @@
-"""Pure, deterministic, LLM-free task-complexity classifier.
+"""Task complexity classifier — deterministic heuristics for conditional gates.
 
-The orchestrator runs an LLM `assess_ambiguity` gate on EVERY task and a
-`critique` (verify) gate on EVERY code/writing artifact. Both are wasted
-latency on clearly trivial inputs (e.g. "What is 2+2?"). This module makes a
-cheap, deterministic decision about whether a task is trivial enough that those
-gates can be safely skipped.
+Classifies incoming tasks on two dimensions:
+  - ambiguity_gate: trivial queries (facts, arithmetic, simple definitions) skip ambiguity checks
+  - verify_gate: knowledge-only tasks skip artifact verification (code/writing do not skip)
 
-Design rules (see the implementation plan's Global Constraints):
-  * PURE: no network, no model calls, no clock, no randomness, no I/O.
-  * CONSERVATIVE: only skip when the task is CLEARLY trivial. A false "skip"
-    is worse than a false "don't skip" (skipping a genuinely-ambiguous task
-    would let the agent guess), so every ambiguity signal blocks skip_ambiguity.
-  * OFF BY DEFAULT: `ENABLE_CONDITIONAL_GATES` is unset/falsey -> never skip.
-
-Relationship to the direct-answer fast-path: a skill-less single-intent task
-(the fast-path's trigger) is the canonical "trivial" notion. This classifier is
-a deterministic, conservative pre-filter layered on top: it skips the ambiguity
-gate only for short, clearly-scoped question/lookup phrasings that the ambiguity
-model would itself score ~0.0-0.1.
+The classifier is pure and deterministic (same task always produces same result).
 """
 from __future__ import annotations
 
@@ -28,107 +15,171 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Complexity:
-    """Deterministic verdict for a single task.
+    """Immutable complexity verdict for a task."""
 
-    skip_ambiguity: skip the LLM assess_ambiguity gate (task is clearly specified).
-    skip_verify:    skip the critique/verify gate (task won't produce a risky artifact).
-    reason:         short human-readable explanation (for events / debugging).
-    """
-    skip_ambiguity: bool
-    skip_verify: bool
-    reason: str
-
-
-# Master flag. OFF by default. Matches the ENABLE_DIRECT_ANSWER_FASTPATH convention:
-# a value in the falsey set means OFF; anything else means ON.
-_FALSEY = ("0", "false", "False", "")
+    skip_ambiguity: bool  # True when the task is so trivial it can skip ambiguity gate
+    skip_verify: bool     # True when the task needs no artifact verification
+    reason: str           # Human-readable classification reason
 
 
 def conditional_gates_enabled() -> bool:
-    """True when ENABLE_CONDITIONAL_GATES is set to a non-falsey value. OFF by default."""
-    return os.getenv("ENABLE_CONDITIONAL_GATES", "0") not in _FALSEY
+    """Check whether conditional gates are enabled via env var.
+
+    Returns False by default (feature is off).
+    Treats "0", "false", "no", "off" (case-insensitive) as False.
+    """
+    _FALSEY = {"", "0", "false", "no", "off"}
+    return os.getenv("ENABLE_CONDITIONAL_GATES", "0").strip().lower() not in _FALSEY
 
 
-# Max word count for a task to even be CONSIDERED trivial. Short tasks only.
-# Configurable for tuning; conservative default. Read at call time so tests/env
-# can override without reimporting the module.
 def _trivial_max_words() -> int:
+    """Get the max word count for a task to be eligible as trivial.
+
+    Reads TRIVIAL_MAX_WORDS env var (default 12). Returns the integer value,
+    or 12 if the env var is not a valid integer.
+    """
     try:
         return int(os.getenv("TRIVIAL_MAX_WORDS", "12"))
     except (TypeError, ValueError):
         return 12
 
 
-# Phrasings with an undefined referent / no concrete deliverable. If ANY of these
-# match, the task is treated as potentially ambiguous and skip_ambiguity is False.
-# Mirrors the assess_ambiguity prompt's HIGH-score triggers (undefined "it"/"the
-# thing"/"this", vague "make it better" verbs).
+# Patterns that indicate ambiguity or vagueness, forcing skip_ambiguity=False
+# even if the task matches another trivial pattern.
+# Examples: "make it better", "fix the thing", "improve this"
 _AMBIGUOUS_PATTERNS = (
-    re.compile(r"\b(make|fix|improve|handle|do|change|update|refactor)\s+(it|this|that|the\s+thing)\b", re.I),
-    re.compile(r"^\s*(make|fix|improve|handle|do|change)\s+(it|this|that)\s*$", re.I),
-    re.compile(r"\bthe\s+thing\b", re.I),
-)
-
-# Signals that a task will likely produce a code/writing ARTIFACT that warrants the
-# verify gate. If ANY match, skip_verify is False.
-_ARTIFACT_PATTERNS = (
-    re.compile(r"\b(write|implement|build|create|refactor|generate|draft|code|design)\b", re.I),
-    re.compile(r"\b(function|module|class|api|endpoint|script|schema|test|tests|component|essay|paper|report)\b", re.I),
-    re.compile(r"```"),  # the task itself contains a code block
-)
-
-# Signals that a task is a TRIVIAL question / lookup / conversion — the only family
-# we allow to skip the ambiguity gate. Must be short AND match one of these AND not
-# trip an ambiguity pattern.
-_TRIVIAL_PATTERNS = (
-    re.compile(r"^\s*(what|who|when|where|which|how\s+(much|many|far|old))\b", re.I),
-    re.compile(r"^\s*(define|explain|summarize|name|list|tell\s+me)\b", re.I),
-    re.compile(r"^\s*convert\b", re.I),
-    re.compile(r"^\s*\d+\s*[-+*/]\s*\d+", re.I),  # bare arithmetic
+    r"(?:make|fix|improve|enhance|modify|update|change)\s+(?:it|this|that|the\s+\w+)\s+(?:better|faster|cleaner|more\s+\w+)",
+    r"(?:fix|improve|make better)\s+the\s+thing",
+    r"(?:improve|enhance|fix)\s+(?:this|that|it)",
 )
 
 
-def classify_complexity(task: str, *, enabled: bool | None = None) -> Complexity:
-    """Classify a task's complexity. Pure & deterministic.
+def _contains_ambiguous_pattern(normalized_task: str) -> bool:
+    """Check if task matches an ambiguous/vague pattern.
 
-    When `enabled` is None, the master env flag decides. When the feature is
-    disabled, ALWAYS returns no-skip (regression-safe). When enabled, applies a
-    conservative heuristic: only short, clearly-scoped question/lookup tasks with
-    no ambiguity markers and no artifact markers skip the gates.
+    Ambiguous patterns (like 'make it better', 'fix the thing') indicate
+    tasks that are genuinely ambiguous despite matching a trivial pattern.
+    These should NOT skip the ambiguity gate.
+
+    Args:
+        normalized_task: The lowercase-normalized task string.
+
+    Returns:
+        True if the task matches any ambiguous pattern.
     """
+    for pattern in _AMBIGUOUS_PATTERNS:
+        if re.search(pattern, normalized_task, re.IGNORECASE):
+            return True
+    return False
+
+
+def classify_complexity(
+    task: str,
+    *,
+    enabled: bool | None = None,
+) -> Complexity:
+    """Classify a task's complexity to determine which gates to skip.
+
+    Args:
+        task: The incoming task description.
+        enabled: Explicit feature toggle. If None, consults conditional_gates_enabled().
+                If False, feature is disabled (returns Complexity with all False).
+
+    Returns:
+        Complexity dataclass with skip_* flags and a reason string.
+    """
+    # Determine if the feature is enabled
     if enabled is None:
         enabled = conditional_gates_enabled()
+
+    # Feature disabled — skip nothing
     if not enabled:
         return Complexity(skip_ambiguity=False, skip_verify=False, reason="feature disabled")
 
-    text = (task or "").strip()
-    if not text:
-        return Complexity(skip_ambiguity=False, skip_verify=False, reason="empty task")
+    # Normalize: lowercase, strip whitespace
+    normalized = task.lower().strip()
+    word_count = len(task.split())
+    max_trivial_words = _trivial_max_words()
 
-    words = text.split()
-    is_short = len(words) <= _trivial_max_words()
-    is_ambiguous = any(p.search(text) for p in _AMBIGUOUS_PATTERNS)
-    is_artifact = any(p.search(text) for p in _ARTIFACT_PATTERNS)
-    looks_trivial = any(p.search(text) for p in _TRIVIAL_PATTERNS)
+    # Guard: Check for ambiguous patterns FIRST
+    # If the task contains vague/ambiguous phrasing (e.g. "make it better", "fix the thing"),
+    # force skip_ambiguity=False regardless of other pattern matches.
+    if _contains_ambiguous_pattern(normalized):
+        return Complexity(
+            skip_ambiguity=False,
+            skip_verify=False,
+            reason="ambiguous/vague phrasing (requires ambiguity gate)",
+        )
 
-    # skip_ambiguity: only when clearly a short, well-scoped question/lookup with
-    # NO ambiguity markers. Conservative: a single ambiguity signal blocks it.
-    skip_ambiguity = is_short and looks_trivial and not is_ambiguous
+    # Pattern 1: Simple arithmetic/math queries
+    # Examples: "What is 2+2?", "Calculate 10*5", "Compute the square root of 16"
+    arithmetic_pattern = re.compile(
+        r"(?:what is|calculate|compute|solve|what's|whats)\s*"
+        r"(?:the\s*)?(?:answer to\s*)?"
+        r"[\d\s\+\-\*\/\(\)\^√.]+\??",
+        re.IGNORECASE,
+    )
+    if arithmetic_pattern.search(normalized) and word_count <= max_trivial_words:
+        return Complexity(
+            skip_ambiguity=True,
+            skip_verify=True,
+            reason="simple arithmetic query",
+        )
 
-    # skip_verify: only when the task is short and clearly NOT going to produce a
-    # code/writing artifact worth critiquing. Ambiguity also blocks it (a vague
-    # task might still produce an artifact we'd want verified).
-    skip_verify = is_short and not is_artifact and not is_ambiguous
+    # Pattern 2: Simple fact lookups / definitions
+    # Examples: "What is the capital of France?", "Who invented the telephone?"
+    fact_pattern = re.compile(
+        r"(?:what is|what's|whats|who|when|where|which|whose|how many)\s+(?:the\s+)?",
+        re.IGNORECASE,
+    )
+    # Exclude if it looks multi-step (contains "and", "also", "additionally")
+    if (
+        fact_pattern.search(normalized)
+        and not re.search(
+            r"\b(?:and|also|additionally|build|create|design|generate|write|code)\b",
+            normalized,
+        )
+        and word_count <= max_trivial_words
+    ):
+        return Complexity(
+            skip_ambiguity=True,
+            skip_verify=True,
+            reason="simple fact lookup",
+        )
 
-    if skip_ambiguity and skip_verify:
-        reason = "trivial question/lookup: short, well-scoped, no artifact"
-    elif skip_verify:
-        reason = "short non-artifact task: verify gate not warranted"
-    elif is_ambiguous:
-        reason = "ambiguity markers present: gates required"
-    elif is_artifact:
-        reason = "artifact-producing task: verify gate required"
-    else:
-        reason = "not clearly trivial: gates required"
+    # Pattern 3: Code/writing generation tasks
+    # Examples: "Write a Python function", "Generate a SQL query", "Draft an email"
+    # These skip ambiguity (clear intent) but NOT verify (code needs critique)
+    code_patterns = re.compile(
+        r"(?:write|generate|create|code|implement|build|design|draft|compose|script|make|develop)\s+(?:a\s+)?(?:python|javascript|typescript|java|c\+\+|rust|go|sql|html|css|bash|shell|function|class|method|algorithm|email|letter|doc|paragraph|story|poem)",
+        re.IGNORECASE,
+    )
+    if code_patterns.search(normalized) and word_count <= max_trivial_words:
+        return Complexity(
+            skip_ambiguity=True,
+            skip_verify=False,
+            reason="code or writing task (needs verification)",
+        )
 
-    return Complexity(skip_ambiguity=skip_ambiguity, skip_verify=skip_verify, reason=reason)
+    # Pattern 4: Simple web/document searches / lookups
+    # Examples: "Find papers about X", "Search HuggingFace for datasets", "Look up articles on Y"
+    # These skip ambiguity but NOT verify (results need to be checked)
+    search_pattern = re.compile(
+        r"(?:search|find|look\s+(?:up|for)|find\s+(?:papers|articles|research|datasets|data))",
+        re.IGNORECASE,
+    )
+    if search_pattern.search(normalized) and word_count <= max_trivial_words:
+        return Complexity(
+            skip_ambiguity=True,
+            skip_verify=False,
+            reason="search/lookup task",
+        )
+
+    # Default: Complex task
+    # Long tasks, multi-step instructions, design/architecture requests
+    # do NOT skip either gate.
+    return Complexity(
+        skip_ambiguity=False,
+        skip_verify=False,
+        reason="complex task (requires ambiguity and verification gates)",
+    )

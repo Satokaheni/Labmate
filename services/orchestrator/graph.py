@@ -11,7 +11,7 @@ from langgraph.types import interrupt
 from .types import State, Status, Goal, get_ready_goals, update_status, now_iso, create_goal
 from .coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 from . import events
-from .task_complexity import classify_complexity, conditional_gates_enabled
+from .task_complexity import classify_complexity
 
 _log = logging.getLogger("graph")
 
@@ -39,7 +39,11 @@ CRITIQUE_DISPATCH_TIMEOUT = float(os.getenv("CRITIQUE_DISPATCH_TIMEOUT", "110"))
 
 # FIX 10 (A3): thinking budget for the assess_ambiguity node's architect() call
 #   (was hardcoded 1024; a lower default is faster on the local Q4 model).
-ASSESS_THINKING_BUDGET = int(os.getenv("ASSESS_THINKING_BUDGET", "768"))
+# PERF: 768 thinking tokens ≈ 25s of decode on the Q4 host for a single yes/no-ish
+# ambiguity judgement that runs on EVERY request. 384 roughly halves that with
+# negligible effect on the binary "is this ambiguous" call; raise via env if the
+# gate starts missing genuinely ambiguous prompts.
+ASSESS_THINKING_BUDGET = int(os.getenv("ASSESS_THINKING_BUDGET", "384"))
 
 # FIX 10 (B2): direct-answer fast-path. When route() reports a skill-less SINGLE intent
 # (e.g. "What is 2+2?"), the plan node answers directly via architect() and HALTS the
@@ -59,6 +63,20 @@ DIRECT_ANSWER_THINKING_BUDGET = int(os.getenv("DIRECT_ANSWER_THINKING_BUDGET", "
 #   before the artifact is ACCEPTED and we proceed to check. 1 -> at most one reflect pass;
 #   0 -> verify is advisory and never loops.
 MAX_VERIFY_RETRIES = int(os.getenv("MAX_VERIFY_RETRIES", "1"))
+# PERF/FIT: which artifact types run the automatic critique verify-gate. The critique
+# skill scores output against an academic-paper constitution (C1 citations, C4 "no new
+# numbers", IMRaD section structure) via a slow Q4 evaluator call. That rubric fits a
+# paper draft — but NOT chat answers and NOT code (code isn't IMRaD-structured, and the
+# gate runs with no tests/lint signals, so on code it's just an LLM second-guessing
+# itself against a citation rubric). It also adds ~50-70s/request and "routinely scores
+# a correct artifact < 0.90" before the gate accepts it anyway. So the automatic gate is
+# OFF by default (empty set → verify always skips). Paper critique is still available
+# on demand: an explicit "critique this draft" request routes to the critique skill
+# directly. To re-enable the auto-gate for a type set CRITIQUE_ARTIFACT_TYPES=writing
+# (or code,writing).
+CRITIQUE_ARTIFACT_TYPES = tuple(
+    t.strip() for t in os.getenv("CRITIQUE_ARTIFACT_TYPES", "").split(",") if t.strip()
+)
 # MAX_GOAL_ATTEMPTS: how many times a FAILED goal may be reflect-retried (replaces the old
 #   hardcoded cap of 3). A goal with attempts >= MAX_GOAL_ATTEMPTS is considered exhausted.
 MAX_GOAL_ATTEMPTS = int(os.getenv("MAX_GOAL_ATTEMPTS", "2"))
@@ -482,36 +500,6 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
 
     async def assess_ambiguity(state: State) -> dict:
         goal = state.get("root_goal") or state["goal_tree"][state["current_goal_id"]]["description"]
-
-        # Conditional gates: a cheap deterministic classifier decides whether this
-        # task is trivial enough to skip the (LLM) ambiguity gate and/or the verify
-        # gate. OFF by default; conservative when on. When it certifies the task
-        # trivial-and-clear (skip_ambiguity), we skip the architect() ambiguity call
-        # entirely and proceed straight to plan. The skip flags are committed on the
-        # delta so ambiguity_router / verify_router can short-circuit downstream.
-        cx = classify_complexity(goal, enabled=conditional_gates_enabled())
-        cx_dict = {
-            "skip_ambiguity": cx.skip_ambiguity,
-            "skip_verify": cx.skip_verify,
-            "reason": cx.reason,
-        }
-        if cx.skip_ambiguity:
-            await events.emit(
-                "reasoning",
-                node="assess_ambiguity",
-                summary=f"ambiguity gate skipped (trivial); {cx.reason}",
-                text="",
-            )
-            return {
-                "root_goal": goal,
-                "assumptions": [],
-                "ambiguity": 0.0,
-                "blocking_question": "",
-                "complexity": cx_dict,
-                "skip_ambiguity": True,
-                "skip_verify": cx.skip_verify,
-            }
-
         prompt = (
             "You are triaging a task before an autonomous agent executes it.\n"
             f"TASK: {goal}\n\n"
@@ -595,17 +583,30 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             "assumptions": assumptions,
             "ambiguity": ambiguity,
             "blocking_question": blocking_question,
-            "complexity": cx_dict,
-            "skip_ambiguity": cx.skip_ambiguity,  # False here (skip path returned early)
-            "skip_verify": cx.skip_verify,
         }
+
+        # Task 3: Call complexity classifier to determine skip flags (if feature enabled).
+        # The classifier is pure and deterministic, always returns the same result for
+        # a given task. Stash both the classifier verdict and the committed skip flags
+        # in the result dict so StateGraph commits them to the session state.
+        complexity = classify_complexity(goal)
+        result["complexity"] = {
+            "skip_ambiguity": complexity.skip_ambiguity,
+            "skip_verify": complexity.skip_verify,
+            "reason": complexity.reason,
+        }
+        # Stash the skip flags as top-level state keys so the routers can read them.
+        result["skip_ambiguity"] = complexity.skip_ambiguity
+        result["skip_verify"] = complexity.skip_verify
 
         # On high ambiguity, HALT and ask the user a clarifying question rather than
         # guessing. ambiguity_router sends this node's output to END; main._handle /
         # coding_orchestrator.stream surface clarification_question as the answer and
         # suppress any guess. Reuse the same clarification_request event the plan node
         # emits so downstream consumers see one consistent shape.
-        if ambiguity >= AMBIGUITY_THRESHOLD:
+        # HOWEVER: if skip_ambiguity is True (trivial task), honor that decision and
+        # never halt for clarification even if the LLM scores the task ambiguous.
+        if ambiguity >= AMBIGUITY_THRESHOLD and not complexity.skip_ambiguity:
             question = blocking_question or "Could you clarify what you'd like me to do?"
             await events.emit(
                 "clarification_request",
@@ -627,11 +628,11 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         artifact = state.get("last_artifact") or {"type": "other", "payload": ""}
         atype = artifact.get("type")
         router_obj = getattr(orch, "skill_router", None)
-        if atype not in ("code", "writing") or router_obj is None:
+        if atype not in CRITIQUE_ARTIFACT_TYPES or router_obj is None:
             await events.emit(
                 "reasoning",
                 node="verify",
-                summary="skipped (no code/writing artifact)",
+                summary=f"skipped (artifact type '{atype}' not in critique set)",
                 text="",
             )
             # FIX 9: nothing to critique -> never reflect.
@@ -720,13 +721,10 @@ def router(state: State) -> str:
 
 
 def ambiguity_router(state: State) -> str:
-    """A1: route after assess_ambiguity. On high ambiguity, HALT (END) so the agent
-    asks the user a clarifying question instead of guessing; otherwise plan.
-
-    Conditional gates: when the complexity classifier certified this task as
-    trivial-and-clear (skip_ambiguity), proceed straight to plan regardless of the
-    ambiguity score — the assess node skipped the LLM gate and left ambiguity at
-    its 0.0 default, so this is belt-and-suspenders for any externally-set state."""
+    """A1: route after assess_ambiguity. Task 3: honors skip_ambiguity flag before
+    the threshold check. On high ambiguity, HALT (END) so the agent asks the user a
+    clarifying question instead of guessing; otherwise plan."""
+    # Task 3: If skip_ambiguity is True, short-circuit and proceed directly to plan
     if state.get("skip_ambiguity"):
         return "plan"
     if float(state.get("ambiguity", 0.0)) >= AMBIGUITY_THRESHOLD:
@@ -735,18 +733,16 @@ def ambiguity_router(state: State) -> str:
 
 
 def verify_router(state: State) -> str:
-    """A2 / FIX 9: route after verify. The verify node decides (and commits) whether a
-    reflect pass is warranted via `_verify_reflect`, which is True only when the artifact
-    scored below CRITIQUE_THRESHOLD AND fewer than MAX_VERIFY_RETRIES verify->reflect passes
-    have been taken. This router is a pure function of that committed flag, so the
-    verify<->reflect loop is bounded (it cannot loop forever).
-
-    Conditional gates: when the complexity classifier certified this task as low-risk
-    (skip_verify), proceed straight to check — never reflect-loop on a trivial task even
-    if the local Q4 critic under-scored it.
+    """A2 / FIX 9 / Task 3: route after verify. Task 3: honors skip_verify flag before
+    the threshold check. The verify node decides (and commits) whether a reflect pass is
+    warranted via `_verify_reflect`, which is True only when the artifact scored below
+    CRITIQUE_THRESHOLD AND fewer than MAX_VERIFY_RETRIES verify->reflect passes have been
+    taken. This router is a pure function of that committed flag, so the verify<->reflect
+    loop is bounded (it cannot loop forever).
 
     Backward-compat: if `_verify_reflect` was never set by the verify node (e.g. a hand-built
     state in older tests), fall back to the original threshold comparison."""
+    # Task 3: If skip_verify is True, short-circuit and proceed directly to check
     if state.get("skip_verify"):
         return "check"
     if "_verify_reflect" in state:

@@ -30,6 +30,15 @@ from services.orchestrator.coding_orchestrator import (
 )
 from services.orchestrator.types import Status, create_goal
 from langgraph.checkpoint.memory import MemorySaver
+import services.orchestrator.graph as _graph_mod
+
+
+@pytest.fixture(autouse=True)
+def _enable_verify_gate(monkeypatch):
+    """These tests exercise the verify->reflect gate mechanism with a 'code' artifact.
+    The auto-gate is OFF by default in production (CRITIQUE_ARTIFACT_TYPES=""), so
+    explicitly enable it here for the duration of each test (auto-restored)."""
+    monkeypatch.setattr(_graph_mod, "CRITIQUE_ARTIFACT_TYPES", ("code", "writing"))
 
 
 # --------------------------------------------------------------------------- #

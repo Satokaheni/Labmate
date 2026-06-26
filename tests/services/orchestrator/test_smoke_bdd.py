@@ -16,6 +16,8 @@ import litellm
 import pytest
 from pytest_bdd import scenarios, given, when, then, parsers
 
+from tests.conftest import run_async
+
 pytestmark = [pytest.mark.bdd, pytest.mark.mocked]
 
 # Bind every Scenario in smoke.feature to the step defs below.
@@ -42,8 +44,6 @@ def _program_tool_call(fake_model, tool: str, path: str) -> None:
 
 @when("the orchestrator asks the model a question")
 def _ask_model(reply_box: dict) -> None:
-    import asyncio
-
     async def _call():
         return await litellm.acompletion(
             model="openai/gemma-4-31b",
@@ -52,7 +52,7 @@ def _ask_model(reply_box: dict) -> None:
             messages=[{"role": "user", "content": "anything"}],
         )
 
-    reply_box["resp"] = asyncio.run(_call())
+    reply_box["resp"] = run_async(_call())
 
 
 @then(parsers.parse('the model reply is "{expected}"'))

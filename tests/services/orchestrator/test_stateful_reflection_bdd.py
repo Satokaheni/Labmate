@@ -13,6 +13,7 @@ from services.orchestrator.coding_orchestrator import (
     AsyncOrchestrator,
 )
 from services.orchestrator.types import Status, create_goal
+from tests.conftest import run_async
 
 pytestmark = pytest.mark.mocked
 
@@ -115,9 +116,8 @@ def five_prior_reflections(ctx, gid, first, last):
 
 @when("the reflect node runs", target_fixture="ran")
 def reflect_runs(ctx):
-    import asyncio
     reflect, mock_orch = _build_reflect()
-    out = asyncio.run(_run(reflect, _state(ctx)))
+    out = run_async(_run(reflect, _state(ctx)))
     ctx["node_output"] = out
     ctx["captured_prompt"] = mock_orch.architect.call_args.args[0]
     return True

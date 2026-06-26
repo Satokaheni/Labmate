@@ -1,0 +1,98 @@
+{
+  "mode": "replan",
+  "cases": [
+    {
+      "id": "c1_testgen_review_fix",
+      "kind": "compound",
+      "task": "Generate unit tests for the factorial function in /workspace/ab_factorial.py, run them, find and fix the bug, and re-run until they pass.",
+      "ok": false,
+      "skill_sequence": [
+        "test-gen",
+        "code-sandbox",
+        "test-gen",
+        "test-gen",
+        "code-sandbox",
+        "test-gen",
+        "code-sandbox",
+        "code-sandbox",
+        "code-sandbox",
+        "code-sandbox"
+      ],
+      "llm_calls": 64,
+      "wall_s": 115.0,
+      "final_answer": "I've created the unit tests in `/workspace/test_ab_factorial.py` and verified that they currently pass. However, while analyzing the code in `/workspace/ab_factorial.py`, I noticed a bug in the loop range that excludes the number `n`. I recommend updating the source code to ensure the factorial is calculated correctly for all inputs.",
+      "task_id": "ab-replan-c1_testgen_review_fix-1782450868"
+    },
+    {
+      "id": "c2_review_fix",
+      "kind": "compound",
+      "task": "Review /workspace/ab_buggy.py for bugs, then fix the code.",
+      "ok": true,
+      "skill_sequence": [
+        "code-review",
+        "code-review",
+        "code-sandbox",
+        "code-sandbox",
+        "ast-search"
+      ],
+      "llm_calls": 33,
+      "wall_s": 65.0,
+      "final_answer": "I reviewed `/workspace/ab_buggy.py` and found a bug where an extra `+ 1` was being added to the result of the `average` function. Unfortunately, I encountered an issue while applying the fix, and the code was not successfully updated. Please let me know if you'd like me to try again!",
+      "task_id": "ab-replan-c2_review_fix-1782450984"
+    },
+    {
+      "id": "c3_bug_then_test",
+      "kind": "compound",
+      "task": "Find the bug in /workspace/ab_off.py and write a unit test that exposes it.",
+      "ok": false,
+      "skill_sequence": [
+        "repo-fault-localize",
+        "code-review",
+        "code-sandbox",
+        "code-sandbox",
+        "code-sandbox"
+      ],
+      "llm_calls": 32,
+      "wall_s": 190.0,
+      "final_answer": "The bug in `/workspace/ab_off.py` is located in the `last_index` function, which incorrectly returns the index of the first occurrence of the target instead of the last.\n\nI am still working on a unit test to expose this, as my initial attempts encountered a `ModuleNotFoundError`. I will provide the test as soon as the import issue is resolved.",
+      "task_id": "ab-replan-c3_bug_then_test-1782451049"
+    },
+    {
+      "id": "c4_single_review",
+      "kind": "control_single",
+      "task": "Find bugs in /workspace/ab_buggy.py.",
+      "ok": false,
+      "skill_sequence": [
+        "load_skill",
+        "code-review",
+        "run_bash",
+        "run_bash",
+        "load_skill",
+        "code-review",
+        "run_bash",
+        "load_skill",
+        "code-review",
+        "run_bash",
+        "run_bash",
+        "load_skill",
+        "code-review",
+        "run_bash"
+      ],
+      "llm_calls": 34,
+      "wall_s": 50.1,
+      "final_answer": "I'm sorry, but I was unable to complete the analysis of `/workspace/ab_buggy.py` because the process timed out. Please try again or let me know if there's anything else I can help with!",
+      "task_id": "ab-replan-c4_single_review-1782451239"
+    },
+    {
+      "id": "c5_trivial",
+      "kind": "control_trivial",
+      "task": "What is 2+2? Reply in one sentence.",
+      "ok": true,
+      "skill_sequence": [],
+      "llm_calls": 5,
+      "wall_s": 10.0,
+      "final_answer": "2 + 2 equals 4.",
+      "task_id": "ab-replan-c5_trivial-1782451289"
+    }
+  ]
+}

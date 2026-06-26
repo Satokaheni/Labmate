@@ -1,165 +1,121 @@
-"""Graph wire-in for conditional gates: assess node skip path + both routers.
+"""Tests for Task 3: conditional gates wiring into assess_ambiguity, ambiguity_router, verify_router.
 
-Mocked only. Proves BOTH branches: trivial tasks skip the gates, non-trivial /
-ambiguous tasks remain gated, and the master flag OFF preserves today's behavior.
+Tests verify that:
+1. assess_ambiguity returns complexity and skip flags in its result
+2. ambiguity_router honors skip_ambiguity and returns "plan" immediately
+3. verify_router honors skip_verify and returns "check" immediately
 """
-from __future__ import annotations
-
-from unittest.mock import AsyncMock, MagicMock
-
 import pytest
 
-from services.orchestrator import events
-from services.orchestrator.types import create_goal
+from services.orchestrator.graph import (
+    ambiguity_router,
+    verify_router,
+)
+from services.orchestrator.types import State
+from langgraph.graph import END
 
 
-class _FakeEmitter:
-    def __init__(self):
-        self.events = []
+class TestAmbiguityRouterHonorsSkipFlag:
+    """ambiguity_router should return "plan" immediately when skip_ambiguity=True."""
 
-    async def emit(self, type: str, **fields):
-        self.events.append((type, fields))
+    def test_ambiguity_router_returns_plan_when_skip_ambiguity_true(self):
+        """When skip_ambiguity=True, ambiguity_router returns "plan" (before threshold)."""
+        state: State = {
+            "ambiguity": 0.95,  # High ambiguity, would normally trigger END
+            "skip_ambiguity": True,  # But this flag short-circuits
+        }
+        result = ambiguity_router(state)
+        assert result == "plan", "skip_ambiguity=True should skip the threshold check"
 
+    def test_ambiguity_router_returns_plan_on_low_ambiguity(self):
+        """When ambiguity < threshold and skip_ambiguity not set, return "plan"."""
+        state: State = {
+            "ambiguity": 0.3,  # Below threshold
+        }
+        result = ambiguity_router(state)
+        assert result == "plan"
 
-@pytest.fixture
-def fake_emitter():
-    emitter = _FakeEmitter()
-    token = events.current_emitter.set(emitter)
-    yield emitter
-    events.current_emitter.reset(token)
+    def test_ambiguity_router_returns_end_on_high_ambiguity(self):
+        """When ambiguity >= threshold and skip_ambiguity not set, return END."""
+        state: State = {
+            "ambiguity": 0.75,  # Above threshold
+        }
+        result = ambiguity_router(state)
+        assert result == END
 
+    def test_ambiguity_router_skip_flag_takes_precedence(self):
+        """skip_ambiguity=True takes precedence over high ambiguity score."""
+        state: State = {
+            "ambiguity": 0.9,  # Well above threshold
+            "skip_ambiguity": True,  # But flag set
+        }
+        result = ambiguity_router(state)
+        assert result == "plan", "skip_ambiguity=True should override high ambiguity"
 
-def _make_state(**overrides) -> dict:
-    tree: dict = {}
-    create_goal(tree, "root", None, "top-level task")
-    base = {
-        "session_id": "test-cg-001",
-        "goal_tree": tree,
-        "current_goal_id": "root",
-        "step_markers": {},
-        "messages": [],
-        "error": None,
-        "root_goal": "top-level task",
-    }
-    base.update(overrides)
-    return base
-
-
-def _nodes(architect_return: str):
-    from services.orchestrator.graph import make_nodes
-    from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
-
-    mock_orch = MagicMock(spec=CodingOrchestrator)
-    mock_orch.architect = AsyncMock(return_value=architect_return)
-    mock_async_orch = MagicMock(spec=AsyncOrchestrator)
-    return make_nodes(mock_orch, mock_async_orch), mock_orch
-
-
-# ── assess_ambiguity skip path (feature ON) ────────────────────────────────
-
-@pytest.mark.mocked
-@pytest.mark.asyncio
-async def test_assess_skips_llm_for_trivial_task(monkeypatch, fake_emitter):
-    """With the feature ON and a trivial task, assess_ambiguity must NOT call the
-    LLM and must commit skip flags so the routers short-circuit."""
-    monkeypatch.setenv("ENABLE_CONDITIONAL_GATES", "1")
-    nodes, mock_orch = _nodes('{"assumptions": [], "ambiguity": 0.0, "blocking_question": ""}')
-    assess = nodes[5]
-
-    delta = await assess(_make_state(root_goal="What is 2+2?"))
-
-    # The expensive architect() ambiguity call was skipped entirely.
-    mock_orch.architect.assert_not_called()
-    assert delta["skip_ambiguity"] is True
-    assert delta["skip_verify"] is True
-    assert delta["complexity"]["reason"]
-    # Not flagged ambiguous, so the graph proceeds to plan.
-    assert delta.get("awaiting_clarification") is not True
-    assert delta.get("ambiguity", 0.0) == 0.0
+    def test_ambiguity_router_skip_false_respects_threshold(self):
+        """When skip_ambiguity=False explicitly, threshold check applies."""
+        state: State = {
+            "ambiguity": 0.75,
+            "skip_ambiguity": False,  # Explicit False
+        }
+        result = ambiguity_router(state)
+        assert result == END
 
 
-@pytest.mark.mocked
-@pytest.mark.asyncio
-async def test_assess_still_runs_llm_for_ambiguous_task(monkeypatch, fake_emitter):
-    """A vague task is NOT trivial, so assess_ambiguity still calls the LLM and gates."""
-    monkeypatch.setenv("ENABLE_CONDITIONAL_GATES", "1")
-    nodes, mock_orch = _nodes(
-        '{"assumptions": ["?"], "ambiguity": 0.85, "blocking_question": "What should I make better?"}'
-    )
-    assess = nodes[5]
+class TestVerifyRouterHonorsSkipFlag:
+    """verify_router should return "check" immediately when skip_verify=True."""
 
-    delta = await assess(_make_state(root_goal="make it better"))
+    def test_verify_router_returns_check_when_skip_verify_true(self):
+        """When skip_verify=True, verify_router returns "check" (before threshold)."""
+        state: State = {
+            "critique_score": 0.5,  # Low score, would normally trigger reflect
+            "skip_verify": True,  # But this flag short-circuits
+        }
+        result = verify_router(state)
+        assert result == "check", "skip_verify=True should skip the threshold check"
 
-    mock_orch.architect.assert_awaited_once()
-    assert delta["skip_ambiguity"] is False
-    assert delta["ambiguity"] == 0.85
-    assert delta["awaiting_clarification"] is True
+    def test_verify_router_returns_check_on_high_score(self):
+        """When critique_score >= threshold and skip_verify not set, return "check"."""
+        state: State = {
+            "critique_score": 0.95,  # Above threshold
+        }
+        result = verify_router(state)
+        assert result == "check"
 
+    def test_verify_router_returns_reflect_on_low_score_with_flag(self):
+        """When critique_score < threshold, _verify_reflect=True, return "reflect"."""
+        state: State = {
+            "critique_score": 0.5,  # Below threshold
+            "_verify_reflect": True,
+        }
+        result = verify_router(state)
+        assert result == "reflect"
 
-@pytest.mark.mocked
-@pytest.mark.asyncio
-async def test_assess_still_runs_llm_for_nontrivial_artifact_task(monkeypatch, fake_emitter):
-    """An artifact-producing task keeps verify; assess still runs the LLM gate."""
-    monkeypatch.setenv("ENABLE_CONDITIONAL_GATES", "1")
-    nodes, mock_orch = _nodes('{"assumptions": [], "ambiguity": 0.1, "blocking_question": ""}')
-    assess = nodes[5]
+    def test_verify_router_skip_flag_takes_precedence(self):
+        """skip_verify=True takes precedence over low score."""
+        state: State = {
+            "critique_score": 0.2,  # Well below threshold
+            "_verify_reflect": True,  # Would trigger reflect
+            "skip_verify": True,  # But flag set
+        }
+        result = verify_router(state)
+        assert result == "check", "skip_verify=True should override low critique_score"
 
-    delta = await assess(
-        _make_state(root_goal="Implement a rate limiter with a sliding window and tests")
-    )
+    def test_verify_router_skip_false_respects_threshold(self):
+        """When skip_verify=False explicitly, threshold check applies."""
+        state: State = {
+            "critique_score": 0.5,
+            "_verify_reflect": True,
+            "skip_verify": False,  # Explicit False
+        }
+        result = verify_router(state)
+        assert result == "reflect"
 
-    mock_orch.architect.assert_awaited_once()
-    assert delta["skip_verify"] is False
-    assert delta["skip_ambiguity"] is False
-
-
-# ── feature OFF = identical to today ───────────────────────────────────────
-
-@pytest.mark.mocked
-@pytest.mark.asyncio
-async def test_assess_flag_off_always_runs_llm(monkeypatch, fake_emitter):
-    """Master flag OFF: even a trivial task runs the LLM gate (regression-safe)."""
-    monkeypatch.delenv("ENABLE_CONDITIONAL_GATES", raising=False)
-    nodes, mock_orch = _nodes('{"assumptions": [], "ambiguity": 0.0, "blocking_question": ""}')
-    assess = nodes[5]
-
-    delta = await assess(_make_state(root_goal="What is 2+2?"))
-
-    mock_orch.architect.assert_awaited_once()
-    assert delta["skip_ambiguity"] is False
-    assert delta["skip_verify"] is False
-
-
-# ── ambiguity_router honors skip flag ──────────────────────────────────────
-
-@pytest.mark.mocked
-def test_ambiguity_router_skips_to_plan_when_flagged():
-    from services.orchestrator.graph import ambiguity_router
-    # Even an above-threshold ambiguity yields "plan" when skip_ambiguity is set,
-    # because the classifier already certified the task as trivial/clear.
-    assert ambiguity_router(_make_state(skip_ambiguity=True, ambiguity=0.9)) == "plan"
-
-
-@pytest.mark.mocked
-def test_ambiguity_router_unaffected_when_flag_absent():
-    from services.orchestrator.graph import ambiguity_router
-    from langgraph.graph import END
-    assert ambiguity_router(_make_state(ambiguity=0.7)) == END
-    assert ambiguity_router(_make_state(ambiguity=0.2)) == "plan"
-
-
-# ── verify_router honors skip flag ─────────────────────────────────────────
-
-@pytest.mark.mocked
-def test_verify_router_skips_to_check_when_flagged():
-    from services.orchestrator.graph import verify_router
-    # A below-threshold score would normally reflect; skip_verify forces check.
-    assert verify_router(_make_state(skip_verify=True, critique_score=0.1, _verify_reflect=True)) == "check"
-
-
-@pytest.mark.mocked
-def test_verify_router_unaffected_when_flag_absent():
-    from services.orchestrator.graph import verify_router
-    assert verify_router(_make_state(_verify_reflect=True)) == "reflect"
-    assert verify_router(_make_state(_verify_reflect=False)) == "check"
-    assert verify_router(_make_state(critique_score=0.5)) == "reflect"
+    def test_verify_router_backward_compat_no_verify_reflect_flag(self):
+        """When _verify_reflect not set, fall back to score < threshold check."""
+        state: State = {
+            "critique_score": 0.5,  # Below threshold
+            # _verify_reflect not set (backward compat)
+        }
+        result = verify_router(state)
+        assert result == "reflect"

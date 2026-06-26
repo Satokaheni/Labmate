@@ -77,14 +77,18 @@ class SkillRouter:
         redis: aioredis.Redis,
         gemma_api_base: str,
         *,
-        call_timeout: float = 60.0,
+        call_timeout: float = float(os.getenv("SKILL_CALL_TIMEOUT", "135")),
     ) -> None:
         """
         Args:
             runner: SkillRunner instance with .discover() already called
             redis: redis.asyncio.Redis client for task dispatch and result polling
             gemma_api_base: base URL for Gemma 4 31B (e.g. http://localhost:8000/v1)
-            call_timeout: max seconds to wait for a result
+            call_timeout: max seconds to wait for a skill result. MUST exceed the
+                skill-worker's CALL_TIMEOUT (default 120s) so the router receives the
+                worker's own result/timeout instead of giving up first — a 60s router
+                budget cut off heavy skills (test-gen, code-review, critique) mid-run.
+                Override via SKILL_CALL_TIMEOUT.
         """
         self._runner = runner
         self._redis = redis
@@ -160,7 +164,13 @@ class SkillRouter:
         Returns:
             Skill name (str) if selected, None otherwise
         """
-        picks = [await self._sample_select(task, 0) for _ in range(SELECT_ATTEMPTS)]
+        # Run the SELECT_ATTEMPTS budget-0 samples concurrently. They share an
+        # identical ~3k-token catalog prompt, so sequential awaits re-prefill that
+        # prompt N times back-to-back (~6-7s each on the Q4 host). Firing them
+        # together overlaps the prefills across the model's parallel slots and lets
+        # the prompt cache serve the shared prefix — same samples, same unanimity
+        # logic, just without the serialized re-prefill.
+        picks = await asyncio.gather(*(self._sample_select(task, 0) for _ in range(SELECT_ATTEMPTS)))
         picks = [p for p in picks if p is not None]
         if not picks:
             return None
