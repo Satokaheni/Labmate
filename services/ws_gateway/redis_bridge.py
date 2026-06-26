@@ -169,3 +169,16 @@ async def write_cancel(redis: aioredis.Redis, task_id: str) -> None:
 async def check_cancel(redis: aioredis.Redis, task_id: str) -> bool:
     """Return True if a cancel signal exists for task_id."""
     return bool(await redis.exists(f"{CANCEL_PREFIX}{task_id}"))
+
+
+STEER_PREFIX = "labmate:steer:"
+STEER_TTL = 300  # seconds — a stale steer self-expires if the turn ends first
+
+
+async def write_steer(redis: aioredis.Redis, task_id: str, text: str) -> None:
+    """Queue an out-of-band steer message for a running task.
+
+    The orchestrator drains this at the top of its next ReAct turn (GETDEL) and
+    injects it as a marked user message. Latest write wins; TTL self-cleans.
+    """
+    await redis.set(f"{STEER_PREFIX}{task_id}", text, ex=STEER_TTL)
