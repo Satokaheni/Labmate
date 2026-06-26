@@ -80,3 +80,46 @@ def test_shape_run_tests_result_tail_truncates_huge_output():
     assert len(out["raw_output"]) == 8000
     # tail kept, not head
     assert out["raw_output"] == raw[-8000:]
+
+
+# ── prompt assembler: run_tests is in the frozen prefix ──────────────────────
+from services.orchestrator.prompt_assembler import PromptAssembler  # noqa: E402
+
+
+def _tool_names(assembler: PromptAssembler) -> list[str]:
+    return [t["function"]["name"] for t in assembler.tools()]
+
+
+def test_run_tests_tool_present_with_no_skill_router():
+    a = PromptAssembler(skill_router=None, codegraph_enabled=False)
+    assert "run_tests" in _tool_names(a)
+
+
+def test_run_tests_tool_present_with_codegraph():
+    a = PromptAssembler(skill_router=None, codegraph_enabled=True)
+    assert "run_tests" in _tool_names(a)
+
+
+def test_run_tests_tool_schema_shape():
+    a = PromptAssembler(skill_router=None)
+    schema = next(t for t in a.tools() if t["function"]["name"] == "run_tests")
+    props = schema["function"]["parameters"]["properties"]
+    assert "path" in props
+    assert "expr" in props
+    assert "timeout_ms" in props
+    # bare run_tests (whole suite) must be valid -> no required params
+    assert schema["function"]["parameters"].get("required", []) == []
+
+
+def test_run_tests_appears_before_finish_in_tail():
+    a = PromptAssembler(skill_router=None)
+    names = _tool_names(a)
+    assert names.index("run_tests") < names.index("finish")
+
+
+def test_prefix_is_byte_stable_with_run_tests():
+    # The frozen prefix must remain deterministic (prefix-cache stability).
+    a1 = PromptAssembler(skill_router=None)
+    a2 = PromptAssembler(skill_router=None)
+    assert a1.canonical_prefix() == a2.canonical_prefix()
+    assert a1.prefix_fingerprint() == a2.prefix_fingerprint()

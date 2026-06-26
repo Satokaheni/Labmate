@@ -121,6 +121,28 @@ def _static_tail_schemas() -> list[dict]:
         {
             "type": "function",
             "function": {
+                "name": "run_tests",
+                "description": (
+                    "Run the project's REAL test suite (pytest) and return the RAW "
+                    "pass/fail output. Use this to VERIFY a fix actually works — do not "
+                    "claim tests pass without calling this and reading its raw_output. "
+                    "Optional 'path' scopes to a file/dir/nodeid; optional 'expr' is a "
+                    "pytest -k expression. Returns {ok, exit_code, raw_output}."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "File, dir, or pytest nodeid to test. Omit to run the whole suite."},
+                        "expr": {"type": "string", "description": "pytest -k expression to select tests, optional."},
+                        "timeout_ms": {"type": "integer", "description": "Max run time in milliseconds, optional."},
+                    },
+                    "required": [],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "finish",
                 "description": "Finish the task and return the summary.",
                 "parameters": {
