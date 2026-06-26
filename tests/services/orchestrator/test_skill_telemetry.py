@@ -6,6 +6,7 @@ import os
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -194,3 +195,47 @@ def test_concurrent_writers_leave_valid_json(tmp_path):
     final = st.load(p)
     assert isinstance(final["skills"], dict)
     json.loads(p.read_text(encoding="utf-8"))  # parses cleanly
+
+
+def test_record_use_best_effort_persists(tmp_path):
+    p = tmp_path / "tele.json"
+    st.record_use_best_effort("web-search", ok=True, path=p, now=T0)
+    loaded = st.load(p)
+    assert loaded["skills"]["web-search"]["use_count"] == 1
+    assert loaded["skills"]["web-search"]["success_count"] == 1
+
+
+def test_record_use_best_effort_applies_state(tmp_path):
+    p = tmp_path / "tele.json"
+    old = T0 - timedelta(days=200)
+    # First use long ago...
+    st.record_use_best_effort("web-search", ok=True, path=p, now=old)
+    # ...inspected "now" (T0) with no further use -> should be archived.
+    store = st.load(p)
+    archived = st.apply_transitions(store, now=T0)
+    assert archived["skills"]["web-search"]["state"] == st.STATE_ARCHIVED
+
+
+def test_record_use_best_effort_reads_env_thresholds(tmp_path, monkeypatch):
+    monkeypatch.setenv("SKILL_STALE_AFTER_DAYS", "5")
+    monkeypatch.setenv("SKILL_ARCHIVE_AFTER_DAYS", "10")
+    p = tmp_path / "tele.json"
+    st.record_use_best_effort("web-search", ok=True, path=p, now=(T0 - timedelta(days=6)))
+    # re-record now to trigger apply_transitions with env thresholds, but
+    # keep last_used 6 days old by recording a *new* skill instead.
+    st.record_use_best_effort("other", ok=True, path=p, now=T0)
+    store = st.load(p)
+    # web-search last used 6 days ago, stale threshold = 5 -> stale.
+    assert store["skills"]["web-search"]["state"] == st.STATE_STALE
+
+
+def test_record_use_best_effort_swallows_save_failure():
+    # save() blows up; the call must NOT raise.
+    with patch.object(st, "save", side_effect=OSError("disk full")):
+        st.record_use_best_effort("web-search", ok=True, path=Path("/tmp/x.json"), now=T0)
+    # no assertion needed: reaching here without an exception is the contract.
+
+
+def test_record_use_best_effort_swallows_load_failure():
+    with patch.object(st, "load", side_effect=RuntimeError("boom")):
+        st.record_use_best_effort("web-search", ok=True, path=Path("/tmp/x.json"), now=T0)

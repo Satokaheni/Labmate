@@ -15,7 +15,7 @@ import json
 import logging
 import os
 import tempfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 log = logging.getLogger("skill_telemetry")  # -> stderr via host handlers
@@ -152,3 +152,42 @@ def save(store: dict, path: Path) -> None:
         except OSError:
             pass
         raise
+
+
+def _env_int(name: str, default: int) -> int:
+    """Read an env var as int; fall back to default on error."""
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def record_use_best_effort(
+    name: str,
+    ok: bool,
+    *,
+    path: "Path | None" = None,
+    now: "datetime | None" = None,
+    stale_after_days: "int | None" = None,
+    archive_after_days: "int | None" = None,
+) -> None:
+    """Best-effort: record one skill dispatch and recompute states.
+
+    NEVER raises — telemetry must never break a skill dispatch. Any failure
+    (load, record, save) is caught and logged to stderr.
+    """
+    try:
+        store_path = path if path is not None else default_store_path()
+        moment = now if now is not None else datetime.now(timezone.utc)
+        stale = stale_after_days if stale_after_days is not None else _env_int(
+            "SKILL_STALE_AFTER_DAYS", 30
+        )
+        archive = archive_after_days if archive_after_days is not None else _env_int(
+            "SKILL_ARCHIVE_AFTER_DAYS", 90
+        )
+        store = load(store_path)
+        store = record_use(store, name, ok, moment)
+        store = apply_transitions(store, moment, stale, archive)
+        save(store, store_path)
+    except Exception:  # pragma: no cover - defensive; telemetry is best-effort
+        log.warning("skill telemetry record_use failed for %s", name, exc_info=True)
