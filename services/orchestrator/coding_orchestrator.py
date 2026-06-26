@@ -740,7 +740,17 @@ class AsyncOrchestrator:
                                 summary + " [verification-stop: tests were NOT "
                                 "verified to pass within the nudge budget]"
                             )[:2000]
-                        return {"ok": True, "summary": summary, "tools_used": _tools_used}
+                        # Reconcile the final ok with the finish summary, reusing
+                        # the verification-stop guard's tests_passed signal so a
+                        # success CLAIM ("I fixed it / tests pass") that was NOT
+                        # backed by a passing run_tests this run is gated, and a
+                        # punt summary is never reported as a success (§4.5).
+                        recon_ok, note = reconcile_ok(
+                            True, summary, tests_passed=tests_passed
+                        )
+                        if note:
+                            summary = (summary + " " + note)[:2000]
+                        return {"ok": recon_ok, "summary": summary, "tools_used": _tools_used}
 
                     # No-progress / tool-loop detection. finish already returned
                     # above, so only genuinely dispatched tools reach here.

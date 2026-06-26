@@ -2023,3 +2023,72 @@ class TestSkillFirstPuntReconciliation:
         assert out is not None
         assert out["ok"] is True
         assert "completion-guard" not in out["summary"].lower()
+
+
+class TestReactFinishClaimGating:
+    """Wire-in (b): the finish branch downgrades an unverified 'I fixed it'
+    claim (no passing run_tests this run) to ok=False with a caveat, and
+    downgrades a punt summary to ok=False."""
+
+    @staticmethod
+    def _finish_msg(summary: str):
+        import json as _json
+        tc = MagicMock()
+        tc.id = "call-finish"
+        tc.function = MagicMock()
+        tc.function.name = "finish"
+        tc.function.arguments = _json.dumps({"summary": summary})
+        msg = MagicMock()
+        msg.tool_calls = [tc]
+        msg.content = ""
+        msg.reasoning_content = ""
+        msg.model_dump = lambda: {"role": "assistant", "content": "", "tool_calls": []}
+        return MagicMock(choices=[MagicMock(message=msg)])
+
+    @pytest.mark.asyncio
+    async def test_unverified_fix_claim_downgraded_with_caveat(self):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator
+
+        orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
+        # finish on turn 1 with a success claim; NO run_tests happened → tests_passed False.
+        with patch(
+            "services.orchestrator.coding_orchestrator.acompletion_with_failover",
+            new_callable=AsyncMock,
+            side_effect=[self._finish_msg("I fixed the off-by-one bug and all tests pass.")],
+        ):
+            out = await orch._run_react_loop("fix the factorial bug", 4)
+
+        assert out["ok"] is False
+        assert "completion-guard" in out["summary"].lower()
+
+    @pytest.mark.asyncio
+    async def test_punt_summary_downgraded(self):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator
+
+        orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
+        with patch(
+            "services.orchestrator.coding_orchestrator.acompletion_with_failover",
+            new_callable=AsyncMock,
+            side_effect=[self._finish_msg(
+                "I could not complete this; the file is too large, provide a smaller snippet."
+            )],
+        ):
+            out = await orch._run_react_loop("fix the file", 4)
+
+        assert out["ok"] is False
+        assert "too large" in out["summary"].lower()
+
+    @pytest.mark.asyncio
+    async def test_honest_neutral_finish_stays_ok_true(self):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator
+
+        orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
+        with patch(
+            "services.orchestrator.coding_orchestrator.acompletion_with_failover",
+            new_callable=AsyncMock,
+            side_effect=[self._finish_msg("Here is the square function you asked for.")],
+        ):
+            out = await orch._run_react_loop("write a square function", 4)
+
+        assert out["ok"] is True
+        assert "completion-guard" not in out["summary"].lower()
