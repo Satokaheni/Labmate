@@ -57,3 +57,39 @@ def test_build_verify_nudge_handles_empty_set():
     # Defensive: caller only invokes this when files exist, but it must not crash.
     msg = build_verify_nudge(set())
     assert isinstance(msg, str) and msg
+
+
+from services.orchestrator.verification_stop import (
+    MAX_VERIFY_INFRA_ERRORS,
+    build_infra_unverified_note,
+)
+
+
+def test_needs_verification_unchanged_without_infra_info():
+    # edited, not passed, budget left -> still nudge (old behavior preserved).
+    assert needs_verification({"a.py"}, False, 0, 2) is True
+
+
+def test_needs_verification_stops_on_infra_streak():
+    assert needs_verification(
+        {"a.py"}, False, 0, 2, infra_error_streak=2, max_infra_errors=2
+    ) is False
+
+
+def test_needs_verification_continues_below_infra_cap():
+    assert needs_verification(
+        {"a.py"}, False, 0, 2, infra_error_streak=1, max_infra_errors=2
+    ) is True
+
+
+def test_default_infra_cap_value():
+    assert MAX_VERIFY_INFRA_ERRORS == 2
+
+
+def test_build_infra_unverified_note_is_honest():
+    note = build_infra_unverified_note({"a.py", "b.py"}, "test toolchain error: skill_unavailable")
+    assert "could not" in note.lower() or "unable" in note.lower()
+    assert "skill_unavailable" in note
+    assert "a.py" in note and "b.py" in note
+    # Must NOT claim success.
+    assert "all tests pass" not in note.lower()
