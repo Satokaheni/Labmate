@@ -1127,6 +1127,19 @@ For every grep hit, record one of:
 
 - [ ] **Step 3: Record the audit** (no commit; the list goes into Task 7's commit body, or a standalone `docs/` note if the list is long). If the candidate set is empty, STOP Part 2 here and note "no provably-dead code found; graph is lean" — that is a valid completion.
 
+**AUDIT RESULT (2026-06-26):**
+
+| Symbol | File | Non-test Usages | Verdict | Reason |
+|--------|------|-----------------|---------|--------|
+| `awaiting_clarification`, `clarification_question` | types.py, graph.py, cli/ | Multiple | KEEP | Gate required for skill-less tasks (direct-answer fast-path) + CLI surface |
+| `_verify_reflect`, `verify_retries` | graph.py | Multiple | KEEP | OFF-by-default verify gate (conditional-gates feature) |
+| `critique_score`, `critique_notes`, `verified` | types.py, graph.py | Multiple | KEEP | OFF-by-default critique gate; score triggers verify retry |
+| `raw_plan`, `children_created`, `{root_id}_sub{i}` | graph.py | Multiple in `plan()` fallback | KEEP | Backward-compat fallback when `route()` raises/unavailable |
+| `descendants`, `deepest-first`, `stack.extend` | graph.py | Multiple in `check()` | KEEP | Still live for multi-child trees from fallback decompose |
+| `goal_tree`, `step_markers`, `direct_answer` | types.py, graph.py, cli/ | Multiple | KEEP | Core state fields for goal tree execution + fast-path |
+
+**Conclusion:** No provably-dead code found. Graph.py is lean; all identified symbols are load-bearing either as gates (off-by-default but kept for future re-enable) or as backward-compat fallbacks + direct-answer fast-path.
+
 ---
 
 ### Task 7: Remove candidates one at a time (only if Task 6 found any)
