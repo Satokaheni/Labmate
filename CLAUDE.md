@@ -475,7 +475,19 @@ Covers: code-sandbox really runs pytest; exec_run blocks pytest + enforces the
 install_packages and unknown tool names return an enumerated error. Run these
 GREEN before trusting an `eval/seq_ab` A/B run.
 
-### 11. Live skill contract suite (model-free, every-skill deterministic check)
+### 11. Live skill execution smoke tests (calls real tools on fixtures)
+
+Execution smoke (calls real tools on fixtures):
+
+    # model-free core (no GPU): ast-search, ast-repo-map, repo-graph
+    LIVE_TESTS=1 python -m pytest tests/live/test_skill_exec_modelfree_live.py -v
+    # inference-guarded (needs GEMMA_BASE up): repo-fault-localize, code-review, critique, test-gen
+    LIVE_TESTS=1 python -m pytest tests/live/test_skill_exec_inference_live.py -v
+
+The inference group SKIPS when GEMMA_BASE is unreachable. repo-fault-localize's
+test guards the "file too large on a tiny file" punt.
+
+### 12. Live skill contract suite (model-free, every-skill deterministic check)
 
 The live skill suite registers every runnable skill (no model/Redis/GPU) and
 checks its tool contract — advertised tools match SKILL.md, schemas are valid,
