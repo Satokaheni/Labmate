@@ -11,6 +11,7 @@ import redis
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 MODE = sys.argv[1] if len(sys.argv) > 1 else "unknown"
 OUT = f"eval/seq_ab/results-{MODE}.json"
+TRIALS = int(os.getenv("TRIALS", "3"))  # run each case N times; pass-rate scoring. TRIALS=1 == single-shot.
 
 # Fixtures are reset before each case so a prior mode's fix doesn't leak.
 FIXTURES = {
@@ -125,15 +126,32 @@ def run_case(r, case):
 
 def main():
     r = redis.from_url(REDIS_URL, decode_responses=True)
-    out = {"mode": MODE, "cases": []}
+    out = {"mode": MODE, "trials": TRIALS, "cases": []}
     for case in CASES:
-        print(f"[{MODE}] running {case['id']} ...", flush=True)
-        res = run_case(r, case)
-        print(f"    ok={res['ok']} seq={res['skill_sequence']} calls={res['llm_calls']} {res['wall_s']}s", flush=True)
-        out["cases"].append(res)
+        print(f"[{MODE}] running {case['id']} x{TRIALS} ...", flush=True)
+        trial_results = []
+        for t in range(TRIALS):
+            res = run_case(r, case)  # resets fixtures + runs one trial
+            print(
+                f"    trial {t + 1}/{TRIALS}: ok={res['ok']} seq={res['skill_sequence']} "
+                f"calls={res['llm_calls']} {res['wall_s']}s",
+                flush=True,
+            )
+            trial_results.append(res)
+        agg = aggregate_trials(trial_results)
+        # Case record: first trial's fields at top level (back-compat for single-shot
+        # readers) + the aggregates + the full per-trial list.
+        first = trial_results[0] if trial_results else {}
+        case_record = {**first, **agg}
+        out["cases"].append(case_record)
+        print("  " + summarize_line(MODE, case["id"], agg), flush=True)
     os.makedirs("eval/seq_ab", exist_ok=True)
     with open(OUT, "w") as f:
         json.dump(out, f, indent=2)
+    # Final pass-rate roll-up across all cases (quick read).
+    print(f"[{MODE}] pass-rate summary:", flush=True)
+    for c in out["cases"]:
+        print("  " + summarize_line(MODE, c["id"], c), flush=True)
     print(f"[{MODE}] wrote {OUT}", flush=True)
 
 if __name__ == "__main__":
