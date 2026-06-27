@@ -68,3 +68,83 @@ def test_replan_resets_activations_once_per_substep(monkeypatch):
     assert isinstance(result, dict)
     # one per-goal reset (react_execute) + one per sub-step (2 sub-steps) = >= 3
     assert runner.reset_activations.call_count >= 3
+
+
+def test_replan_stops_when_planner_repeats_same_skill_beyond_cap(monkeypatch):
+    """Planner keeps emitting 'run repo-fault-localize ...'; with cap=2 the loop
+    must stop after the 2nd use instead of running it a 3rd/4th time.
+    """
+    monkeypatch.setattr(
+        "services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "replan", raising=False
+    )
+    monkeypatch.setattr(
+        "services.orchestrator.coding_orchestrator.REPLAN_COMPOUND_GATE", False, raising=False
+    )
+    monkeypatch.setattr(
+        "services.orchestrator.coding_orchestrator.REPLAN_MAX_SKILL_REPEATS", 2, raising=False
+    )
+    monkeypatch.setattr(
+        "services.orchestrator.coding_orchestrator.MAX_SEQ_STEPS", 6, raising=False
+    )
+    orch, runner, skill_router = _make_orch_with_runner()
+
+    run_calls = {"n": 0}
+
+    async def _fake_run(subgoal):
+        run_calls["n"] += 1
+        return {"ok": True, "result": "located", "skill_name": "repo-fault-localize"}
+
+    skill_router.run = AsyncMock(side_effect=_fake_run)
+
+    # Planner ALWAYS asks to run repo-fault-localize again (never declares done).
+    same = {"done": False, "next": "Run repo-fault-localize on the module", "reason": ""}
+    side = [_planner_msg(same) for _ in range(6)] + [_planner_msg({"summary": "done"})]
+
+    async def _run():
+        with patch(
+            "services.orchestrator.coding_orchestrator.litellm.acompletion",
+            new_callable=AsyncMock, side_effect=side,
+        ):
+            return await orch.react_execute("Find and fix all faults in the module")
+
+    result = run_async(_run())
+    # Guard caps skill reuse at 2 -> skill_router.run invoked at most twice,
+    # NOT 4x (the live-A/B bug) and NOT MAX_SEQ_STEPS (6) times.
+    assert run_calls["n"] <= 2
+    assert isinstance(result, dict) and "summary" in result
+
+
+def test_replan_stops_on_duplicate_subgoal(monkeypatch):
+    """Planner emits the SAME sub-goal twice in a row -> loop finishes, does not
+    run the duplicate a second time."""
+    monkeypatch.setattr(
+        "services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "replan", raising=False
+    )
+    monkeypatch.setattr(
+        "services.orchestrator.coding_orchestrator.REPLAN_COMPOUND_GATE", False, raising=False
+    )
+    monkeypatch.setattr(
+        "services.orchestrator.coding_orchestrator.MAX_SEQ_STEPS", 6, raising=False
+    )
+    orch, runner, skill_router = _make_orch_with_runner()
+    run_calls = {"n": 0}
+
+    async def _fake_run(subgoal):
+        run_calls["n"] += 1
+        return {"ok": True, "result": "x", "skill_name": ""}  # no skill name -> dup path, not cap
+
+    skill_router.run = AsyncMock(side_effect=_fake_run)
+    dup = {"done": False, "next": "Review the module for bugs", "reason": ""}
+    side = [_planner_msg(dup) for _ in range(6)] + [_planner_msg({"summary": "done"})]
+
+    async def _run():
+        with patch(
+            "services.orchestrator.coding_orchestrator.litellm.acompletion",
+            new_callable=AsyncMock, side_effect=side,
+        ):
+            return await orch.react_execute("Review then review the module")
+
+    result = run_async(_run())
+    # First sub-goal runs once; the immediate repeat trips duplicate_subgoal -> stop.
+    assert run_calls["n"] == 1
+    assert isinstance(result, dict)

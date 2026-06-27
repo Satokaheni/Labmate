@@ -1224,6 +1224,20 @@ class AsyncOrchestrator:
                     except Exception:
                         pass
 
+                # No-progress / skill-repeat guard. If the planner is re-emitting
+                # a near-identical sub-goal or over-using one skill, stop instead of
+                # re-cycling (prevents the live-A/B 'repo-fault-localize 4x' thrash).
+                _stop = replan_should_stop(
+                    nxt, history, max_skill_repeats=REPLAN_MAX_SKILL_REPEATS,
+                )
+                if _stop.stop:
+                    await events.emit(
+                        "reasoning", node="plan",
+                        summary=f"replan stop: {_stop.reason}"[:200],
+                        text=_stop.reason,
+                    )
+                    break
+
                 # Execute the sub-step: skill-first, then bounded ReAct fallback so
                 # non-skill steps (file edits / fixes) still execute.
                 skilled = await self._run_skill_first(nxt)
@@ -1236,10 +1250,16 @@ class AsyncOrchestrator:
                 if "tools_used" in step_res and isinstance(step_res.get("tools_used"), list):
                     _all_tools_used.extend(step_res["tools_used"])
 
+                # Skills used this sub-step (skill-first returns the matched skill in
+                # tools_used; ReAct fallback returns its tool/skill list there too).
+                _step_skills = [
+                    t for t in (step_res.get("tools_used") or []) if isinstance(t, str) and t
+                ]
                 history.append({
                     "step": nxt,
                     "ok": bool(step_res.get("ok")),
                     "summary": str(step_res.get("summary", ""))[:600],
+                    "skills": _step_skills,
                 })
         except Exception as exc:
             return {"ok": False, "summary": f"error: {str(exc)[:1000]}", "tools_used": _all_tools_used}
