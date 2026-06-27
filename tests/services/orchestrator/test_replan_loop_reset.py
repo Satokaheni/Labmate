@@ -148,3 +148,78 @@ def test_replan_stops_on_duplicate_subgoal(monkeypatch):
     # First sub-goal runs once; the immediate repeat trips duplicate_subgoal -> stop.
     assert run_calls["n"] == 1
     assert isinstance(result, dict)
+
+
+def test_skill_first_mode_never_calls_replan_loop(monkeypatch):
+    """In skill_first mode, _replan_loop must NOT be invoked (the per-sub-step
+    reset/guard changes are inert for the default mode)."""
+    monkeypatch.setattr(
+        "services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "skill_first", raising=False
+    )
+    orch, runner, skill_router = _make_orch_with_runner()
+    skill_router.run = AsyncMock(return_value={"ok": True, "result": "done", "skill_name": "test-gen"})
+
+    called = {"replan": 0}
+
+    async def _spy(self_goal):
+        called["replan"] += 1
+        return {"ok": True, "summary": "", "tools_used": []}
+
+    async def _run():
+        with patch.object(AsyncOrchestrator, "_replan_loop", autospec=True, side_effect=lambda self, g: _spy(g)):
+            return await orch.react_execute("review this file for bugs")
+
+    run_async(_run())
+    assert called["replan"] == 0
+
+
+def test_react_mode_never_calls_replan_loop(monkeypatch):
+    monkeypatch.setattr(
+        "services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "react", raising=False
+    )
+    orch, runner, skill_router = _make_orch_with_runner()
+    called = {"replan": 0}
+
+    async def _spy(self_goal):
+        called["replan"] += 1
+        return {"ok": True, "summary": "", "tools_used": []}
+
+    # react mode goes straight to _run_react_loop; stub it so no model call is needed.
+    async def _fake_loop(goal, max_steps):
+        return {"ok": True, "summary": "done", "tools_used": []}
+
+    async def _run():
+        with patch.object(AsyncOrchestrator, "_replan_loop", autospec=True, side_effect=lambda self, g: _spy(g)), \
+             patch.object(AsyncOrchestrator, "_run_react_loop", autospec=True, side_effect=lambda self, g, m: _fake_loop(g, m)):
+            return await orch.react_execute("anything")
+
+    run_async(_run())
+    assert called["replan"] == 0
+
+
+def test_single_substep_reset_does_not_reload_loaded_skill(monkeypatch):
+    """The per-sub-step reset clears the activation COUNTER but preserves the
+    activation CACHE (runner.loaded). Resetting between sub-steps must not cause
+    runaway re-loading WITHIN a single sub-step: load_skill of an already-loaded
+    skill returns 'already_loaded' and does not re-read the body.
+
+    Uses a REAL SkillRunner to prove reset_activations() does not clear the cache.
+    """
+    from pathlib import Path
+    from services.skill_runner.skill_runner import SkillRunner
+
+    # Minimal on-disk skill so load_skill has a real body to load.
+    import tempfile, os as _os
+    d = tempfile.mkdtemp()
+    sk = Path(d) / "demo"
+    sk.mkdir()
+    (sk / "SKILL.md").write_text("---\nname: demo\ndescription: demo skill\n---\nbody\n")
+    runner = SkillRunner([Path(d)], max_chain=8)
+    runner.discover()
+
+    first = runner.load_skill("demo")
+    assert first["response"]["status"] == "loaded"
+    runner.reset_activations()  # simulate the per-sub-step reset
+    second = runner.load_skill("demo")
+    # Cache preserved -> already_loaded, NOT a fresh "loaded" body re-read.
+    assert second["response"]["status"] == "already_loaded"
