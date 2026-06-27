@@ -52,6 +52,7 @@ from services.orchestrator.storage_manager import StorageManager
 from services.orchestrator.mcp_client_manager import MCPClientManager
 from services.orchestrator.skill_router import SkillRouter
 from services.orchestrator.memory_search import MemorySearch
+from services.orchestrator.completion_guard import reconcile_final_answer
 from services.orchestrator import events
 from services.orchestrator import call_counter
 from services.orchestrator import skill_curator
@@ -575,6 +576,23 @@ class OrchestratorProcess:
                         final_state["final_answer"] = streamed
                 except Exception:
                     pass  # best-effort; never let streaming block the result
+            # Reconcile the RENDERED final answer (post-summarizer) with ok/error.
+            # The skill-first and ReAct seams reconcile their immediate outputs, but
+            # the user-facing punt wording is produced downstream by the summarizer /
+            # stream_final_answer and was never re-checked — so a "file too large /
+            # provide a snippet" answer slipped through as ok=True (A/B report §8.3).
+            # Setting final_state["error"] here propagates the downgrade to ok_flag
+            # below, the stored result payload, the finally-block status, and
+            # complete_session. Clarification states never reach here with a punt.
+            if isinstance(final_state, dict) and not final_state.get("awaiting_clarification"):
+                _rendered = final_state.get("final_answer", "") or ""
+                _recon_ok, _recon_err, _ = reconcile_final_answer(
+                    final_state.get("error") is None,
+                    final_state.get("error"),
+                    _rendered,
+                )
+                if not _recon_ok and final_state.get("error") is None:
+                    final_state["error"] = _recon_err
             # Derive ok from final_state.error (FIX #2: failed subtasks now finalize with error set, not exception)
             ok_flag = final_state.get("error") is None
             # A/B instrumentation: llm_calls is the approximate per-task count of
