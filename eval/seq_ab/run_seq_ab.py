@@ -7,6 +7,7 @@ Results are written to eval/seq_ab/results-<mode>.json for later comparison/judg
 """
 import json, sys, time, os
 import redis
+from eval.seq_ab.local_tool_responder import LocalToolResponder
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 MODE = sys.argv[1] if len(sys.argv) > 1 else "unknown"
@@ -92,37 +93,43 @@ def reset_fixtures():
 def run_case(r, case):
     reset_fixtures()
     task_id = f"ab-{MODE}-{case['id']}-{int(time.time())}"
-    payload = json.dumps({"task_id": task_id, "task": case["task"], "session_id": task_id})
-    t0 = time.time()
-    r.xadd("labmate:goals", {"payload": payload})
-    result = None
-    for _ in range(240):  # up to ~20 min hard cap
-        v = r.get(f"labmate:result:{task_id}")
-        if v:
-            result = json.loads(v)
-            break
-        time.sleep(5)
-    elapsed = time.time() - t0
-    # Collect the skill/tool sequence from the event stream
-    seq = []
-    entries = r.xrange(f"labmate:events:{task_id}")
-    for _id, fields in entries:
-        raw = fields.get("event")
-        if not raw:
-            continue
-        ev = json.loads(raw)
-        if ev.get("type") == "tool.start":
-            seq.append(ev.get("name", "?"))
-    state = (result or {}).get("state", {})
-    return {
-        "id": case["id"], "kind": case["kind"], "task": case["task"],
-        "ok": (result or {}).get("ok"),
-        "skill_sequence": seq,
-        "llm_calls": (result or {}).get("llm_calls"),
-        "wall_s": round(elapsed, 1),
-        "final_answer": (state.get("final_answer") or "")[:1200],
-        "task_id": task_id,
-    }
+    workspace = os.getenv("WORKSPACE_PATH", "/workspace")
+    responder = LocalToolResponder(r, task_id, workspace)
+    responder.start()
+    try:
+        payload = json.dumps({"task_id": task_id, "task": case["task"], "session_id": task_id})
+        t0 = time.time()
+        r.xadd("labmate:goals", {"payload": payload})
+        result = None
+        for _ in range(240):  # up to ~20 min hard cap
+            v = r.get(f"labmate:result:{task_id}")
+            if v:
+                result = json.loads(v)
+                break
+            time.sleep(5)
+        elapsed = time.time() - t0
+        # Collect the skill/tool sequence from the event stream
+        seq = []
+        entries = r.xrange(f"labmate:events:{task_id}")
+        for _id, fields in entries:
+            raw = fields.get("event")
+            if not raw:
+                continue
+            ev = json.loads(raw)
+            if ev.get("type") == "tool.start":
+                seq.append(ev.get("name", "?"))
+        state = (result or {}).get("state", {})
+        return {
+            "id": case["id"], "kind": case["kind"], "task": case["task"],
+            "ok": (result or {}).get("ok"),
+            "skill_sequence": seq,
+            "llm_calls": (result or {}).get("llm_calls"),
+            "wall_s": round(elapsed, 1),
+            "final_answer": (state.get("final_answer") or "")[:1200],
+            "task_id": task_id,
+        }
+    finally:
+        responder.stop()
 
 def main():
     r = redis.from_url(REDIS_URL, decode_responses=True)
