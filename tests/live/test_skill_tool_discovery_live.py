@@ -43,8 +43,9 @@ async def test_code_sandbox_advertises_expected_tools():
 async def test_unknown_tool_lists_valid_names():
     """Verify unknown tool error lists valid tool names (discoverability).
 
-    We verify that the error message format is correct by checking what the
-    registry would report for an unknown tool (without needing call_tool).
+    Exercise the production code path in SkillRegistry.call_tool by attempting
+    to call a non-existent tool, which raises SkillUnavailable with the enumerated
+    error message listing all valid tool names.
     """
     reg = SkillRegistry()
     try:
@@ -57,16 +58,12 @@ async def test_unknown_tool_lists_valid_names():
         require_service(lambda: False, f"code-sandbox registration ({exc})")
 
     try:
-        sp = reg._skills["code-sandbox"]
-
-        # Build the error message the way SkillRegistry.call_tool does
-        tool = "run_pytest"
-        valid = ", ".join(sorted(sp.tools)) or "(none advertised)"
-        error_msg = f"no tool {tool!r} in skill {'code-sandbox'!r}; valid tools: {valid}"
-
-        # Verify the message contains both the invalid tool and the valid ones
-        assert "run_pytest" in error_msg
-        assert "run_tests" in error_msg
+        # Call an invalid tool name and verify the error message enumerates valid ones
+        with pytest.raises(SkillUnavailable) as exc:
+            await reg.call_tool("code-sandbox.run_pytest", {"test_path": "x"})
+        msg = str(exc.value)
+        assert "run_pytest" in msg
+        assert "run_tests" in msg
     finally:
         # Clean up: cancel the background skill process
         for sp in reg._skills.values():
