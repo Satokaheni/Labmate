@@ -243,3 +243,33 @@ def test_final_inputs_not_mutated():
     answer = "All good, here is the result."
     ok, error, note = reconcile_final_answer(True, None, answer)
     assert (ok, error, note) == (True, None, "")
+
+
+# ── reconcile_cutoff ──────────────────────────────────────────────────────────
+
+from services.orchestrator.completion_guard import reconcile_cutoff
+
+
+def test_reconcile_cutoff_credits_verified_edit():
+    ok, summary = reconcile_cutoff(
+        "budget exhausted", edited_files={"a.py"}, tests_passed=True
+    )
+    assert ok is True
+    assert "budget exhausted" in summary
+    assert "tests passed" in summary.lower()
+
+
+def test_reconcile_cutoff_no_edits_stays_false():
+    ok, summary = reconcile_cutoff(
+        "budget exhausted", edited_files=set(), tests_passed=True
+    )
+    assert ok is False
+    assert summary == "budget exhausted"
+
+
+def test_reconcile_cutoff_unverified_edit_stays_false():
+    ok, summary = reconcile_cutoff(
+        "wall-clock deadline exceeded", edited_files={"a.py"}, tests_passed=False
+    )
+    assert ok is False
+    assert summary == "wall-clock deadline exceeded"

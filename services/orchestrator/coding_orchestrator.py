@@ -40,7 +40,7 @@ from .verification_stop import (
     build_infra_unverified_note,
     MAX_VERIFY_INFRA_ERRORS,
 )
-from .completion_guard import reconcile_ok
+from .completion_guard import reconcile_ok, reconcile_cutoff
 
 # Max chars of RAW tool output (test results, file contents, bash stdout/stderr,
 # skill results) fed back into the ReAct context per tool call. Generous on
@@ -660,21 +660,29 @@ class AsyncOrchestrator:
 
                 # Wall-clock guard: stop if this goal has run past its deadline.
                 if deadline_s > 0 and (self._now() - start) > deadline_s:
-                    return {
-                        "ok": False,
-                        "summary": "wall-clock deadline exceeded",
-                        "tools_used": _tools_used,
-                    }
+                    _ok, _sum = reconcile_cutoff(
+                        "wall-clock deadline exceeded",
+                        edited_files=edited_files, tests_passed=tests_passed,
+                    )
+                    return {"ok": _ok, "summary": _sum, "tools_used": _tools_used}
 
                 # Hard absolute ceiling (prevents infinite loops of distinct cheap reads).
                 if not budget.record_turn():
-                    return {"ok": False, "summary": "absolute turn limit exceeded", "tools_used": _tools_used}
+                    _ok, _sum = reconcile_cutoff(
+                        "absolute turn limit exceeded",
+                        edited_files=edited_files, tests_passed=tests_passed,
+                    )
+                    return {"ok": _ok, "summary": _sum, "tools_used": _tools_used}
 
                 # Consume one unit; on exhaustion take the single grace turn,
                 # else stop with a clear "budget exhausted" outcome.
                 if not budget.consume():
                     if not budget.grace():
-                        return {"ok": False, "summary": "budget exhausted", "tools_used": _tools_used}
+                        _ok, _sum = reconcile_cutoff(
+                            "budget exhausted",
+                            edited_files=edited_files, tests_passed=tests_passed,
+                        )
+                        return {"ok": _ok, "summary": _sum, "tools_used": _tools_used}
                     # grace turn: fall through and run one more iteration.
 
                 # Track tools used this turn so a cheap-only turn can be refunded.
@@ -1146,14 +1154,11 @@ class AsyncOrchestrator:
                 )
                 pstep: ProgressStep = breaker.step(made_progress, cap=noprogress_limit)
                 if pstep.tripped:
-                    return {
-                        "ok": False,
-                        "summary": (
-                            f"no-progress breaker tripped "
-                            f"({pstep.consecutive} consecutive idle turns)"
-                        ),
-                        "tools_used": _tools_used,
-                    }
+                    _ok, _sum = reconcile_cutoff(
+                        f"no-progress breaker tripped ({pstep.consecutive} consecutive idle turns)",
+                        edited_files=edited_files, tests_passed=tests_passed,
+                    )
+                    return {"ok": _ok, "summary": _sum, "tools_used": _tools_used}
 
                 # Update pending steer for next iteration (defer injection by one turn).
                 # For pre-written steers: already handled above (set on turn 1, used on turn 2).

@@ -158,3 +158,22 @@ def reconcile_final_answer(
     # original (more specific) error.
     new_error = error if error else (note or "final answer reconciled to not-success")
     return new_ok, new_error, note
+
+
+def reconcile_cutoff(
+    reason: str, *, edited_files: set[str], tests_passed: bool
+) -> tuple[bool, str]:
+    """Decide ok/summary for a loop exit that was NOT a clean finish.
+
+    Credit ok=True ONLY when the agent edited files AND a real verification
+    passed this run (tests_passed). Then the verification objective was met and
+    the work is on disk even though the loop was cut off before an explicit
+    finish. Otherwise preserve the original ok=False outcome and reason.
+    Never call this for a user cancel or an exception exit.
+    """
+    if edited_files and tests_passed:
+        return True, (
+            f"Completed: edits were applied and tests passed; the loop stopped "
+            f"on {reason} before an explicit finish."
+        )
+    return False, reason
