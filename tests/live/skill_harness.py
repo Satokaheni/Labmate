@@ -59,7 +59,10 @@ async def register_skill(
     manifest: SkillManifest, timeout: float = 30.0
 ) -> tuple[SkillRegistry, SkillProcess]:
     reg = SkillRegistry(call_timeout=timeout)
-    await reg.register(manifest)
+    try:
+        await reg.register(manifest)
+    except Exception as exc:  # noqa: BLE001
+        raise SkillRegisterError(f"{manifest.name}: registration failed ({exc})") from exc
     sp = reg._skills[manifest.name]
     deadline = asyncio.get_event_loop().time() + timeout
     while sp.state not in ("READY", "DEAD"):
