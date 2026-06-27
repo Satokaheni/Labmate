@@ -123,3 +123,12 @@ def _summary_unverified(ctx):
 def _no_pass_claim(ctx):
     summary = ctx["result"]["summary"].lower()
     assert "all tests pass" not in summary, f"Summary should not claim tests passed: {ctx['result']['summary']}"
+
+
+@then("the unverified note contains the specific infra reason")
+def _infra_reason_captured(ctx):
+    summary = ctx["result"]["summary"]
+    # The reason should be "test toolchain error: skill_unavailable" (from the mock error)
+    assert "skill_unavailable" in summary.lower(), (
+        f"Expected specific infra reason 'skill_unavailable' in summary, got: {summary}"
+    )

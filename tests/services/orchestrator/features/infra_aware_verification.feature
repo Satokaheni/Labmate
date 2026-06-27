@@ -9,3 +9,4 @@ Feature: Infra-error-aware verification stop
     When the agent attempts to finish
     Then the final summary marks the result as unverified
     And the final summary does not claim the tests passed
+    And the unverified note contains the specific infra reason

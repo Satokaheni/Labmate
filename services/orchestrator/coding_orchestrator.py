@@ -1038,6 +1038,7 @@ class AsyncOrchestrator:
                                     _bash_outcome = classify_test_attempt(content)
                                     if _bash_outcome.infra_error:
                                         infra_error_streak += 1
+                                        _last_infra_reason = _bash_outcome.reason
                                     elif _bash_outcome.ran:
                                         infra_error_streak = 0
                             except Exception as exc:
@@ -1069,9 +1070,9 @@ class AsyncOrchestrator:
                                 _outcome = classify_test_attempt(content)
                                 if _outcome.infra_error:
                                     infra_error_streak += 1
+                                    _last_infra_reason = _outcome.reason
                                 elif _outcome.ran:
                                     infra_error_streak = 0
-                                    _last_infra_reason = _outcome.reason
                             except Exception as exc:
                                 content = json.dumps({"error": str(exc)})
                         else:
