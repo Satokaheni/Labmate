@@ -185,12 +185,12 @@ def test_react_mode_never_calls_replan_loop(monkeypatch):
         return {"ok": True, "summary": "", "tools_used": []}
 
     # react mode goes straight to _run_react_loop; stub it so no model call is needed.
-    async def _fake_loop(goal, max_steps):
+    async def _stub_react_loop(self, goal, max_steps):
         return {"ok": True, "summary": "done", "tools_used": []}
 
     async def _run():
         with patch.object(AsyncOrchestrator, "_replan_loop", autospec=True, side_effect=lambda self, g: _spy(g)), \
-             patch.object(AsyncOrchestrator, "_run_react_loop", autospec=True, side_effect=lambda self, g, m: _fake_loop(g, m)):
+             patch.object(AsyncOrchestrator, "_run_react_loop", autospec=True, side_effect=_stub_react_loop):
             return await orch.react_execute("anything")
 
     run_async(_run())
