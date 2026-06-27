@@ -75,3 +75,39 @@ def test_read_only_redirect_not_a_write():
     assert detect_sandbox_writes(
         "code-sandbox", "run_shell", {"cmd": "cat < input.txt"}, _ok_env()
     ) == set()
+
+
+def test_greater_than_comparison_not_a_write():
+    # shell comparison operators (>, >=) must not be treated as writes
+    paths = detect_sandbox_writes(
+        "code-sandbox", "run_shell",
+        {"cmd": "if [ $a > b ]; then echo hi; fi"}, _ok_env(),
+    )
+    assert paths == set(), f"Expected empty set but got {paths}"
+
+
+def test_gte_comparison_not_a_write():
+    # >= comparison must not be treated as a write
+    paths = detect_sandbox_writes(
+        "code-sandbox", "run_shell",
+        {"cmd": "if [ $a >= b ]; then echo hi; fi"}, _ok_env(),
+    )
+    assert paths == set(), f"Expected empty set but got {paths}"
+
+
+def test_python_gte_comparison_not_a_write():
+    # Python >= comparison must not be treated as a write
+    paths = detect_sandbox_writes(
+        "code-sandbox", "run_python",
+        {"code": "x = 1 if a >= b else 2"}, _ok_env(),
+    )
+    assert paths == set(), f"Expected empty set but got {paths}"
+
+
+def test_process_substitution_not_a_write():
+    # process substitution >(cat) must not be treated as a write
+    paths = detect_sandbox_writes(
+        "code-sandbox", "run_shell",
+        {"cmd": "tee >(cat)"}, _ok_env(),
+    )
+    assert paths == set(), f"Expected empty set but got {paths}"

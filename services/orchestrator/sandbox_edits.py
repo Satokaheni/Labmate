@@ -12,9 +12,20 @@ from __future__ import annotations
 import json
 import re
 
-# shell: `> path`, `>> path` (but NOT `<`), and `tee [-a] path`
-_REDIRECT_RE = re.compile(r"(?<![0-9<])>>?\s*([^\s;|&>()]+)")
-_TEE_RE = re.compile(r"\btee\b\s+(?:-a\s+)?([^\s;|&()]+)")
+# shell: `> path`, `>> path` (but NOT `<`, `>=`, `>()` proc subst, or `>` comparison), and `tee [-a] path`
+# Matches: redirect operator not in comparison context, followed by a path-like target
+# The target must either contain / or be a multi-char name (not a single variable-like char)
+def _get_redirect_paths(text: str) -> list[str]:
+    """Extract redirect paths from shell command, avoiding false matches on comparison operators."""
+    paths = []
+    for m in re.compile(r"(?<![0-9<>=])>>?(?![=(])\s*([^\s;|&<>()=]+)").finditer(text):
+        target = m.group(1)
+        # Filter out single-letter operands that look like shell variables in comparisons
+        # Accept: paths with /, quoted strings, multi-char names, file descriptors (numbers)
+        if target.isdigit() or "/" in target or len(target) > 1 or target in ("dev/null", "dev/stdout", "dev/stderr"):
+            paths.append(target)
+    return paths
+_TEE_RE = re.compile(r"\btee\b\s+(?:-a\s+)?([^\s;|&<>()=]+)")
 # python: open('p', 'w'|'a'|'x'...) and Path('p').write_text/.write_bytes
 _OPEN_WRITE_RE = re.compile(
     r"open\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"][^'\"]*[wax][^'\"]*['\"]"
@@ -56,7 +67,13 @@ def detect_sandbox_writes(
         return set()
     text = str((arguments or {}).get("cmd") or (arguments or {}).get("code") or "")
     paths: set[str] = set()
-    for rx in (_REDIRECT_RE, _TEE_RE, _OPEN_WRITE_RE, _PATH_WRITE_RE):
+    # Handle shell redirects (with comparison filtering)
+    for p in _get_redirect_paths(text):
+        p = p.strip().strip("'\"")
+        if p and p not in ("/dev/null", "/dev/stdout", "/dev/stderr"):
+            paths.add(p)
+    # Handle other patterns
+    for rx in (_TEE_RE, _OPEN_WRITE_RE, _PATH_WRITE_RE):
         for m in rx.finditer(text):
             p = m.group(1).strip().strip("'\"")
             if p and p not in ("/dev/null", "/dev/stdout", "/dev/stderr"):
