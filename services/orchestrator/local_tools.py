@@ -182,9 +182,15 @@ def verify_written_content(requested: str, readback: Any) -> str | None:
     exactly (write confirmed applied). Otherwise returns an explicit error
     string the model will see in the tool result, so a write that silently
     did not apply (the "code was not successfully updated" failure) surfaces
-    as a hard, visible error instead of a phantom success. A non-string
-    read-back (dict/None/etc.) is treated as a mismatch.
+    as a hard, visible error instead of a phantom success.
+
+    read_file (execute_local_tool, used by both the live CLI client and the
+    A/B local-tool responder) returns the canonical shape ``{"content": str}``,
+    so unwrap that before comparing. Any other non-string read-back
+    (None/list/etc.) is treated as a mismatch.
     """
+    if isinstance(readback, dict) and isinstance(readback.get("content"), str):
+        readback = readback["content"]
     if isinstance(readback, str) and readback == requested:
         return None
     got_len = len(readback) if isinstance(readback, str) else "n/a (non-text read-back)"

@@ -209,6 +209,18 @@ def test_verify_written_content_flags_partial_write():
     assert "did not match" in err
 
 
+def test_verify_written_content_unwraps_content_dict_on_match():
+    # read_file (execute_local_tool / A/B responder) returns {"content": str};
+    # an exact match in that shape must verify as applied, not be flagged.
+    assert verify_written_content("hello\nworld\n", {"content": "hello\nworld\n"}) is None
+
+
+def test_verify_written_content_unwraps_content_dict_on_mismatch():
+    err = verify_written_content("NEW", {"content": "OLD"})
+    assert err is not None
+    assert "did not match" in err
+
+
 def test_verify_written_content_treats_non_string_readback_as_mismatch():
     err = verify_written_content("content", {"unexpected": "shape"})
     assert err is not None
