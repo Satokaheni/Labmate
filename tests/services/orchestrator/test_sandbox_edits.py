@@ -111,3 +111,48 @@ def test_process_substitution_not_a_write():
         {"cmd": "tee >(cat)"}, _ok_env(),
     )
     assert paths == set(), f"Expected empty set but got {paths}"
+
+
+def test_double_bracket_comparison_multichar_not_a_write():
+    # [[ $count > threshold ]] must not be treated as write to 'threshold'
+    paths = detect_sandbox_writes(
+        "code-sandbox", "run_shell",
+        {"cmd": "if [[ $count > threshold ]]; then echo hi; fi"}, _ok_env(),
+    )
+    assert paths == set(), f"Expected empty set but got {paths}"
+
+
+def test_single_bracket_comparison_multichar_not_a_write():
+    # [ $a > bb ] must not be treated as write to 'bb'
+    paths = detect_sandbox_writes(
+        "code-sandbox", "run_shell",
+        {"cmd": "if [ $a > bb ]; then echo hi; fi"}, _ok_env(),
+    )
+    assert paths == set(), f"Expected empty set but got {paths}"
+
+
+def test_arithmetic_comparison_multichar_not_a_write():
+    # (( a > bb )) must not be treated as write to 'bb'
+    paths = detect_sandbox_writes(
+        "code-sandbox", "run_shell",
+        {"cmd": "if (( a > bb )); then echo hi; fi"}, _ok_env(),
+    )
+    assert paths == set(), f"Expected empty set but got {paths}"
+
+
+def test_legitimate_redirect_with_multichar_name_detected():
+    # A legitimate redirect to a file with a dot (extension) should still be detected
+    paths = detect_sandbox_writes(
+        "code-sandbox", "run_shell",
+        {"cmd": "echo hi > output.txt"}, _ok_env(),
+    )
+    assert "output.txt" in paths, f"Expected output.txt in {paths}"
+
+
+def test_legitimate_redirect_with_path_detected():
+    # A redirect with a path separator should still be detected
+    paths = detect_sandbox_writes(
+        "code-sandbox", "run_shell",
+        {"cmd": "echo hi > /tmp/output.txt"}, _ok_env(),
+    )
+    assert "/tmp/output.txt" in paths, f"Expected /tmp/output.txt in {paths}"

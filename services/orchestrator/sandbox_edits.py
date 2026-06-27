@@ -14,16 +14,36 @@ import re
 
 # shell: `> path`, `>> path` (but NOT `<`, `>=`, `>()` proc subst, or `>` comparison), and `tee [-a] path`
 # Matches: redirect operator not in comparison context, followed by a path-like target
-# The target must either contain / or be a multi-char name (not a single variable-like char)
+# The target must look like a path (contains /, ., or is a file descriptor) and must NOT be inside test/arithmetic context
 def _get_redirect_paths(text: str) -> list[str]:
     """Extract redirect paths from shell command, avoiding false matches on comparison operators."""
     paths = []
+
+    # Find all test/arithmetic contexts to exclude matches from
+    # Matches: [[ ... ]], [ ... ], (( ... ))
+    test_contexts = []
+    # [[ ... ]]
+    for m in re.finditer(r"\[\[.*?\]\]", text):
+        test_contexts.append((m.start(), m.end()))
+    # [ ... ]
+    for m in re.finditer(r"\[.*?\]", text):
+        test_contexts.append((m.start(), m.end()))
+    # (( ... ))
+    for m in re.finditer(r"\(\(.*?\)\)", text):
+        test_contexts.append((m.start(), m.end()))
+
     for m in re.compile(r"(?<![0-9<>=])>>?(?![=(])\s*([^\s;|&<>()=]+)").finditer(text):
+        # Check if this match is inside a test/arithmetic context
+        match_pos = m.start()
+        inside_test = any(start <= match_pos < end for start, end in test_contexts)
+        if inside_test:
+            continue
+
         target = m.group(1)
-        # Filter out single-letter operands that look like shell variables in comparisons
-        # Accept: paths with /, quoted strings, multi-char names, file descriptors (numbers)
-        if target.isdigit() or "/" in target or len(target) > 1 or target in ("dev/null", "dev/stdout", "dev/stderr"):
+        # Accept only path-like targets: contains / or . (file extensions), or is a file descriptor number
+        if target.isdigit() or "/" in target or "." in target:
             paths.append(target)
+
     return paths
 _TEE_RE = re.compile(r"\btee\b\s+(?:-a\s+)?([^\s;|&<>()=]+)")
 # python: open('p', 'w'|'a'|'x'...) and Path('p').write_text/.write_bytes
