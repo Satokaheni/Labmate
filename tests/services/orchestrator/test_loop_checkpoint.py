@@ -152,3 +152,111 @@ async def test_store_errors_are_swallowed_never_raised():
     await store.save(_sample())          # must not raise
     assert await store.load("task-123") is None   # error -> None
     await store.clear("task-123")        # must not raise
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Wire-in tests (Insertion A/B/C + flag + _checkpoint_active + module reload)
+# ─────────────────────────────────────────────────────────────────────────
+
+import json as _json
+from unittest.mock import patch
+
+from services.orchestrator import events
+from services.orchestrator.coding_orchestrator import AsyncOrchestrator
+
+
+def _finish_response(summary: str):
+    msg = MagicMock()
+    msg.tool_calls = [MagicMock(
+        id="c1",
+        function=MagicMock(name="finish", arguments=_json.dumps({"summary": summary})),
+    )]
+    # MagicMock(name=...) sets the mock's repr name, not .name — set explicitly:
+    msg.tool_calls[0].function.name = "finish"
+    msg.content = ""
+    msg.reasoning_content = ""
+    msg.model_dump = lambda: {"role": "assistant", "content": "", "tool_calls": []}
+    return MagicMock(choices=[MagicMock(message=msg)])
+
+
+@pytest.mark.asyncio
+async def test_run_react_loop_resumes_from_preseeded_checkpoint(monkeypatch):
+    monkeypatch.setenv("ENABLE_LOOP_CHECKPOINT", "1")
+    # Reload the module-level flag computed at import time.
+    import importlib
+    import services.orchestrator.coding_orchestrator as co
+    importlib.reload(co)
+
+    store = FakeCheckpointStore()
+    # Pre-seed a checkpoint as if a prior process crashed after turn 2.
+    seeded = LoopCheckpoint(
+        task_id="task-resume",
+        goal="resume me",
+        messages=[
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "resume me"},
+            {"role": "assistant", "content": "prior work done"},
+        ],
+        used=2, absolute_turns=2, turn=2,
+        tools_used=["read_file"],
+    )
+    await store.save(seeded)
+
+    orch = co.AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
+    orch.checkpoint_store = store
+    orch.redis = MagicMock()
+
+    # Active emitter so current_task_id() returns our task id.
+    em = events.EventEmitter(MagicMock(), "task-resume")
+    token = events.current_emitter.set(em)
+    try:
+        with patch.object(co.events, "is_cancelled", new=AsyncMock(return_value=False)), \
+             patch.object(co.events, "read_and_clear_steer", new=AsyncMock(return_value=None)), \
+             patch("services.orchestrator.coding_orchestrator.acompletion_with_failover",
+                   new=AsyncMock(return_value=_finish_response("finished after resume"))):
+            result = await orch._run_react_loop("resume me", 6)
+    finally:
+        events.current_emitter.reset(token)
+        importlib.reload(co)  # restore default flag for other tests
+
+    # The seeded prior-work message must be present -> we resumed, not restarted.
+    assert result["ok"] is True
+    assert "finished after resume" in result["summary"]
+    # Checkpoint cleared on finish.
+    assert await store.load("task-resume") is None
+
+
+@pytest.mark.asyncio
+async def test_flag_off_performs_no_checkpoint_io(monkeypatch):
+    # Default flag (OFF) -> store is never touched even when wired.
+    # Ensure the flag is OFF by not setting the env var and reloading the module.
+    import importlib
+    import services.orchestrator.coding_orchestrator as co
+    # Clear the env var to ensure it defaults to OFF.
+    monkeypatch.delenv("ENABLE_LOOP_CHECKPOINT", raising=False)
+    importlib.reload(co)
+
+    store = FakeCheckpointStore()
+    store.load = AsyncMock(wraps=store.load)
+    store.save = AsyncMock(wraps=store.save)
+    store.clear = AsyncMock(wraps=store.clear)
+
+    orch = co.AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
+    orch.checkpoint_store = store
+    orch.redis = MagicMock()
+
+    em = events.EventEmitter(MagicMock(), "task-off")
+    token = events.current_emitter.set(em)
+    try:
+        with patch.object(co.events, "is_cancelled", new=AsyncMock(return_value=False)), \
+             patch.object(co.events, "read_and_clear_steer", new=AsyncMock(return_value=None)), \
+             patch("services.orchestrator.coding_orchestrator.acompletion_with_failover",
+                   new=AsyncMock(return_value=_finish_response("done"))):
+            await orch._run_react_loop("no checkpoint", 6)
+    finally:
+        events.current_emitter.reset(token)
+        importlib.reload(co)  # restore state for other tests
+
+    store.load.assert_not_awaited()
+    store.save.assert_not_awaited()
+    store.clear.assert_not_awaited()

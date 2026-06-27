@@ -80,6 +80,20 @@ REPLAN_MAX_SKILL_REPEATS = int(os.getenv("REPLAN_MAX_SKILL_REPEATS", "2"))
 # refunded (lets an operator A/B the refund half in isolation).
 REFUND_REPEAT_LOAD_SKILL = os.getenv("LABMATE_REFUND_REPEAT_LOAD_SKILL", "1") == "1"
 
+from .loop_checkpoint import (
+    LoopCheckpoint,
+    CheckpointStore,
+    from_dict as _cp_from_dict,
+)
+
+# Durable per-turn inner-loop checkpoint (Option A). OFF by default — the inner
+# loop was just stabilized, so this is regression-safe; flip ON after the
+# resilience A/B (sibling lite-orchestrator plan) validates it. When OFF,
+# _run_react_loop performs ZERO load/save/clear and is byte-identical to today.
+ENABLE_LOOP_CHECKPOINT = os.getenv("ENABLE_LOOP_CHECKPOINT", "0") not in (
+    "0", "false", "False", "",
+)
+
 
 # ---------------------------------------------------------------------------
 # Artifact helpers
@@ -270,6 +284,10 @@ class AsyncOrchestrator:
         self.workspace = workspace
         self.max_steps = max_steps
         self.redis = redis
+        # Injected post-construction by the orchestrator bootstrap when a Mongo
+        # handle is available (CheckpointStore over the loop_checkpoints
+        # collection). None in unit tests / when checkpointing is unwired.
+        self.checkpoint_store = None
         self._now: Callable[[], float] = now if now is not None else time.monotonic
 
     async def plan_and_dispatch(self, ready_goals: list[dict]) -> list[Result]:
@@ -465,6 +483,15 @@ class AsyncOrchestrator:
         """
         return bool(is_finish or has_tool_calls or (content or "").strip())
 
+    def _checkpoint_active(self, task_id: str | None) -> bool:
+        """Checkpointing runs only when the flag is ON, a store is wired, and a
+        task_id is available. All three absent in unit tests -> complete no-op."""
+        return bool(
+            ENABLE_LOOP_CHECKPOINT
+            and self.checkpoint_store is not None
+            and task_id is not None
+        )
+
     async def _run_react_loop(self, goal: str, max_steps: int) -> dict:
         """Multi-tool ReAct loop bounded by ``max_steps``.
 
@@ -543,6 +570,37 @@ class AsyncOrchestrator:
             _prewritten_steer = await events.read_and_clear_steer(self.redis, _task_id)
 
         _pending_steer: str | None = None
+
+        # ── Insertion A: durable inner-loop checkpoint — LOAD + rehydrate ──────
+        # Best-effort. On a crash+restart (same task_id), resume from the saved
+        # turn with the saved messages/counters instead of starting from turn 0.
+        try:
+            _cp_task_id = events.current_task_id()
+        except AttributeError:
+            _cp_task_id = None
+        if self._checkpoint_active(_cp_task_id):
+            _loaded = await self.checkpoint_store.load(_cp_task_id)
+            if _loaded is not None and _loaded.goal == goal:
+                messages = list(_loaded.messages)
+                budget._used = _loaded.used
+                budget._absolute_turns = _loaded.absolute_turns
+                budget._grace_used = _loaded.grace_used
+                loop_detector._sigs = list(_loaded.loop_signatures)
+                edited_files = set(_loaded.edited_files)
+                tests_passed = _loaded.tests_passed
+                verify_nudges_used = _loaded.verify_nudges_used
+                _tools_used = list(_loaded.tools_used)
+                # Rebase the wall-clock deadline: subtract elapsed-so-far from
+                # 'start' so deadline_s still measures total goal time across the
+                # restart (monotonic values are not comparable across processes).
+                start = self._now() - _loaded.start_monotonic_offset
+                await events.emit(
+                    "loop.checkpoint.resumed",
+                    task_id=_cp_task_id,
+                    turn=_loaded.turn,
+                    used=_loaded.used,
+                )
+
         try:
             while True:
                 # ── Live interrupt: cancel + steer (top of every turn) ──────────
@@ -1068,8 +1126,35 @@ class AsyncOrchestrator:
                 # For mid-loop steers: never deferred, injected immediately when read.
                 # (No update needed here since mid-loop steers are never put into _pending_steer)
 
+                # ── Insertion B: durable inner-loop checkpoint — SAVE turn ─────
+                # Best-effort end-of-turn snapshot. A crash before the next model
+                # call resumes here (Insertion A) on the next run_task().
+                if self._checkpoint_active(_cp_task_id):
+                    await self.checkpoint_store.save(LoopCheckpoint(
+                        task_id=_cp_task_id,
+                        goal=goal,
+                        messages=messages,
+                        used=budget.used,
+                        absolute_turns=budget.absolute_turns,
+                        grace_used=budget.grace_used,
+                        edited_files=sorted(edited_files),
+                        tests_passed=tests_passed,
+                        verify_nudges_used=verify_nudges_used,
+                        loop_signatures=list(loop_detector._sigs),
+                        tools_used=list(_tools_used),
+                        start_monotonic_offset=self._now() - start,
+                        turn=budget.used,
+                    ))
+
         except Exception as exc:
             return {"ok": False, "summary": f"error: {str(exc)[:1000]}", "tools_used": _tools_used}
+        finally:
+            # ── Insertion C: durable inner-loop checkpoint — CLEAR on exit ─────
+            # Every terminal path (return or exception) flows through here, so a
+            # finished/aborted goal never leaves a stale checkpoint to be wrongly
+            # resumed by a later same-task run.
+            if self._checkpoint_active(_cp_task_id):
+                await self.checkpoint_store.clear(_cp_task_id)
 
     async def _is_compound(self, goal: str) -> bool:
         """Classify whether a goal genuinely requires multiple DISTINCT sequential
