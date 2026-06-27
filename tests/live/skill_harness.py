@@ -31,6 +31,13 @@ def runnable_manifests() -> list[SkillManifest]:
     return discover_manifests(SKILLS_ROOT)
 
 
+def manifest_by_name(name: str):
+    for m in runnable_manifests():
+        if m.name == name:
+            return m
+    return None
+
+
 def declared_tools(skill_name: str) -> set[str]:
     """Parse the `tools:` list from a skill's SKILL.md frontmatter."""
     md = SKILLS_ROOT / skill_name / "SKILL.md"
