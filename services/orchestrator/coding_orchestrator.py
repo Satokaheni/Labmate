@@ -19,10 +19,8 @@ from .prompt_assembler import PromptAssembler
 from .memory_search import MemorySearch
 from .local_tools import (
     LOCAL_TOOL_NAMES,
-    build_run_tests_command,
     build_sandbox_test_args,
     request_local_tool,
-    shape_run_tests_result,
     shape_sandbox_test_result,
     verify_written_content,
 )
