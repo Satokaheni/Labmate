@@ -151,10 +151,13 @@ class DockerExecutor:
         test_path: str,
         framework: str = "pytest",
         timeout: int = cfg.DEFAULT_TEST_TIMEOUT,
+        expr: str | None = None,
     ) -> TestResult:
         if framework != "pytest":
             raise ValueError(f"unsupported framework: {framework}")
         cmd = ["python", "-m", "pytest", test_path, "-q", "--no-header"]
+        if expr:
+            cmd += ["-k", expr]
         exec_result = self._run_in_container(cmd, "", timeout)
         passed, failed, errors, no_tests_ran = _parse_pytest(exec_result.stdout + exec_result.stderr)
         # If pytest found no tests or the path was invalid, count it as an error.
@@ -415,6 +418,7 @@ class LocalSubprocessExecutor:
         test_path: str,
         framework: str = "pytest",
         timeout: int = cfg.DEFAULT_TEST_TIMEOUT,
+        expr: str | None = None,
     ) -> TestResult:
         """Run a test suite in a subprocess with resource limits.
 
@@ -422,6 +426,7 @@ class LocalSubprocessExecutor:
             test_path: path to test file or directory (can be relative; resolved from current cwd)
             framework: test framework (only "pytest" supported)
             timeout: wall-clock timeout in seconds
+            expr: optional pytest -k expression to select specific tests
 
         Returns:
             TestResult with passed, failed, errors counts, output, duration_ms, timed_out, backend="local", sandboxed=False.
@@ -438,6 +443,8 @@ class LocalSubprocessExecutor:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cmd = [sys.executable, "-m", "pytest", test_path, "-q", "--no-header"]
+            if expr:
+                cmd += ["-k", expr]
             exec_result = self._run_process(cmd, timeout, tmpdir)
             passed, failed, errors, no_tests_ran = _parse_pytest(
                 exec_result.stdout + exec_result.stderr
