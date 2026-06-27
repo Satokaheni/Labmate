@@ -1,5 +1,5 @@
 import pytest
-from tests.live.skill_harness import declared_tools, runnable_manifests
+from tests.live.skill_harness import declared_tools, runnable_manifests, result_text, result_is_error
 
 pytestmark = pytest.mark.live
 
@@ -18,3 +18,23 @@ def test_runnable_manifests_includes_code_sandbox():
     assert "code-sandbox" in names
     # instruction-only skills are excluded
     assert "academic-writing" not in names
+
+
+class _C:
+    def __init__(self, text): self.text = text
+
+
+class _R:
+    def __init__(self, content, is_error=False):
+        self.content = content
+        self.isError = is_error
+
+
+def test_result_text_joins_content():
+    r = _R([_C("hello"), _C("world")])
+    assert result_text(r) == "hello\nworld"
+
+
+def test_result_is_error_reads_flag():
+    assert result_is_error(_R([], is_error=True)) is True
+    assert result_is_error(_R([_C("ok")])) is False

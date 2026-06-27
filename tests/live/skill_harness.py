@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import urllib.request
 from pathlib import Path
 
 from services.skill_runner.skill_registry import (
@@ -82,3 +83,35 @@ async def teardown_skill(reg: SkillRegistry, sp: SkillProcess) -> None:
             await task
         except (asyncio.CancelledError, Exception):  # noqa: BLE001
             pass
+
+
+def result_text(result) -> str:
+    """Join the .text of an MCP CallToolResult's content."""
+    content = getattr(result, "content", None) or []
+    return "\n".join(c.text for c in content if hasattr(c, "text"))
+
+
+def result_is_error(result) -> bool:
+    """Check if an MCP CallToolResult is an error."""
+    return bool(getattr(result, "isError", False))
+
+
+async def call_skill_tool(manifest: SkillManifest, tool: str, arguments: dict, timeout: float = 60.0):
+    """Register a skill, call a tool, and teardown."""
+    reg, sp = await register_skill(manifest, timeout=timeout)
+    try:
+        return await reg.call_tool(f"{manifest.name}.{tool}", arguments)
+    finally:
+        await teardown_skill(reg, sp)
+
+
+def inference_available() -> bool:
+    """Check if the inference server is available."""
+    base = os.getenv("GEMMA_BASE", "http://localhost:8000/v1").rstrip("/")
+    if base.endswith("/v1"):
+        base = base[: -len("/v1")]
+    try:
+        with urllib.request.urlopen(f"{base}/health", timeout=2) as resp:
+            return 200 <= resp.status < 300
+    except Exception:  # noqa: BLE001
+        return False
