@@ -461,6 +461,20 @@ The 5 cases (`eval/seq_ab/run_seq_ab.py`): c1 test-gen→review→fix, c2 review
 
 > `run_mode.sh` hardcodes `/workspace/Labmate` and writes fixtures under `/workspace/` — **RunPod-only**. On a different host, adjust the paths or run `run_seq_ab.py` directly after starting the orchestrator with the desired `SEQUENCING_MODE`.
 
+### 10. Live real-seam smoke tests (run on the host before an A/B)
+
+These exercise the ACTUAL execution seams (not mocks), catching the
+"green in mocks, broken live" class that the unit suite cannot. Skipped
+unless `LIVE_TESTS=1`. No GPU / inference server needed.
+
+    cd services/mcp-bridge && npm run build && cd ../..   # exec_run contract test needs dist/
+    LIVE_TESTS=1 python -m pytest tests/live -v
+
+Covers: code-sandbox really runs pytest; exec_run blocks pytest + enforces the
+60000ms timeout cap; code-sandbox advertises run_python/run_shell/run_tests/
+install_packages and unknown tool names return an enumerated error. Run these
+GREEN before trusting an `eval/seq_ab` A/B run.
+
 ---
 
 ## What NOT to Do
