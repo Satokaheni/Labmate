@@ -475,6 +475,19 @@ Covers: code-sandbox really runs pytest; exec_run blocks pytest + enforces the
 install_packages and unknown tool names return an enumerated error. Run these
 GREEN before trusting an `eval/seq_ab` A/B run.
 
+### 11. Live skill contract suite (model-free, every-skill deterministic check)
+
+The live skill suite registers every runnable skill (no model/Redis/GPU) and
+checks its tool contract — advertised tools match SKILL.md, schemas are valid,
+unknown tools return an enumerated error:
+
+    LIVE_TESTS=1 python -m pytest tests/live/test_skill_contract_live.py \
+      tests/live/test_skill_unknown_tool_live.py -v
+
+A skill whose deps are absent SKIPS (not fails). Run this when adding/changing
+any skill — it's the deterministic tool-correctness check the model-driven A/B
+can't be (the A/B only exercises the few skills its cases happen to call).
+
 ---
 
 ## What NOT to Do
