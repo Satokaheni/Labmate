@@ -44,6 +44,45 @@ CASES = [
      "task": "What is 2+2? Reply in one sentence."},
 ]
 
+def median(values):
+    """Median of the non-None numeric values; None if there are none."""
+    nums = sorted(v for v in values if v is not None)
+    n = len(nums)
+    if n == 0:
+        return None
+    mid = n // 2
+    if n % 2 == 1:
+        return nums[mid]
+    return (nums[mid - 1] + nums[mid]) / 2
+
+
+def aggregate_trials(trial_results):
+    """Fold a list of per-trial result dicts into one aggregate record.
+
+    Pure: no Redis, no I/O. pass = trial['ok'] is True (None/False are not passes).
+    """
+    trials_run = len(trial_results)
+    pass_count = sum(1 for t in trial_results if t.get("ok") is True)
+    pass_rate = round(pass_count / trials_run, 2) if trials_run else 0.0
+    return {
+        "pass_count": pass_count,
+        "trials_run": trials_run,
+        "pass_rate": pass_rate,
+        "median_llm_calls": median([t.get("llm_calls") for t in trial_results]),
+        "median_wall_s": median([t.get("wall_s") for t in trial_results]),
+        "trials": trial_results,
+    }
+
+
+def summarize_line(mode, case_id, agg):
+    """One compact human-readable pass-rate line for a case."""
+    return (
+        f"[{mode}] {case_id}: {agg['pass_count']}/{agg['trials_run']} pass "
+        f"(rate={agg['pass_rate']}) "
+        f"median_calls={agg['median_llm_calls']} "
+        f"median_wall={agg['median_wall_s']}s"
+    )
+
 def reset_fixtures():
     for path, body in FIXTURES.items():
         with open(path, "w") as f:
