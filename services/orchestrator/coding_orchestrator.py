@@ -35,7 +35,13 @@ from .message_repair import sanitize_messages, message_repair_enabled
 from .tool_grounding import ground_tool_result, DEFAULT_TOOL_RESULT_BUDGET
 from .edit_intent import requires_editing
 from .replan_guard import replan_should_stop
-from .verification_stop import needs_verification, build_verify_nudge
+from .test_outcome import classify_test_attempt
+from .verification_stop import (
+    needs_verification,
+    build_verify_nudge,
+    build_infra_unverified_note,
+    MAX_VERIFY_INFRA_ERRORS,
+)
 from .completion_guard import reconcile_ok
 
 # Max chars of RAW tool output (test results, file contents, bash stdout/stderr,
@@ -536,6 +542,8 @@ class AsyncOrchestrator:
         tests_passed: bool = False
         verify_nudges_used: int = 0
         max_verify_nudges = int(os.getenv("MAX_VERIFY_NUDGES", "2"))
+        infra_error_streak: int = 0
+        _last_infra_reason: str = "test toolchain error"
 
         # Skills already loaded THIS goal. A repeat load_skill for a name in
         # this set is short-circuited + refunded (see load_skill dispatch below)
@@ -774,9 +782,15 @@ class AsyncOrchestrator:
 
                     if name == "finish":
                         summary = str(args.get("summary", ""))[:2000]
+                        _infra_blocked = (
+                            bool(edited_files)
+                            and not tests_passed
+                            and infra_error_streak >= MAX_VERIFY_INFRA_ERRORS
+                        )
                         if needs_verification(
                             edited_files, tests_passed,
                             verify_nudges_used, max_verify_nudges,
+                            infra_error_streak=infra_error_streak,
                         ):
                             verify_nudges_used += 1
                             await events.emit(
@@ -806,7 +820,13 @@ class AsyncOrchestrator:
                         # Either no verification was owed, or the nudge cap was
                         # reached. If we edited without ever verifying, annotate
                         # the summary honestly rather than claiming a pass.
-                        if edited_files and not tests_passed:
+                        if _infra_blocked:
+                            _summary = (args.get("summary") or "")
+                            summary = (
+                                _summary + "\n\n"
+                                + build_infra_unverified_note(edited_files, _last_infra_reason)
+                            ).strip()
+                        elif edited_files and not tests_passed:
                             summary = (
                                 summary + " [verification-stop: tests were NOT "
                                 "verified to pass within the nudge budget]"
@@ -1013,6 +1033,13 @@ class AsyncOrchestrator:
                                 # counts as a verification (secondary signal).
                                 if "pytest" in str(args.get("command", "")) and _run_bash_passed(content):
                                     tests_passed = True
+                                # Track infra errors only for pytest invocations
+                                if "pytest" in str(args.get("command", "")):
+                                    _bash_outcome = classify_test_attempt(content)
+                                    if _bash_outcome.infra_error:
+                                        infra_error_streak += 1
+                                    elif _bash_outcome.ran:
+                                        infra_error_streak = 0
                             except Exception as exc:
                                 content = json.dumps({"error": str(exc)})
                         else:
@@ -1039,6 +1066,12 @@ class AsyncOrchestrator:
                                 )
                                 if _run_tests_passed(content):
                                     tests_passed = True
+                                _outcome = classify_test_attempt(content)
+                                if _outcome.infra_error:
+                                    infra_error_streak += 1
+                                elif _outcome.ran:
+                                    infra_error_streak = 0
+                                    _last_infra_reason = _outcome.reason
                             except Exception as exc:
                                 content = json.dumps({"error": str(exc)})
                         else:
