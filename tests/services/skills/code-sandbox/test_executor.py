@@ -328,26 +328,78 @@ except Exception:
 
 
 @pytest.mark.mocked
-def test_run_tests_forwards_k_expression(local_executor):
+def test_run_tests_forwards_k_expression(local_executor, monkeypatch):
     """Test that run_tests accepts and forwards the expr (-k) parameter to pytest.
 
-    This test verifies that the expr parameter is accepted and wired through without
-    raising a TypeError. We use an existing test file to verify the parameter flows through
-    without the preexec_fn subprocess issues that occur with temp paths on macOS.
+    This test monkeypatches _run_process to capture the argv and verify that
+    the -k expression is correctly threaded through to the pytest command.
     """
-    # Call run_tests with expr parameter to verify it's accepted and threaded through.
-    # We don't assert on test counts since preexec_fn resource limit issues on macOS
-    # may prevent actual test execution, but we verify the parameter is accepted.
+    # Spy on _run_process to capture the argv
+    captured_cmd = []
+    from executor import ExecutionResult
+
+    original_run_process = local_executor._run_process
+
+    def spy_run_process(cmd, timeout, cwd):
+        captured_cmd.append(cmd)
+        # Return a fake result with no tests found (to avoid subprocess issues)
+        return ExecutionResult(
+            stdout="",
+            stderr="no tests ran",
+            exit_code=0,
+            duration_ms=0,
+            timed_out=False,
+            backend="local",
+            sandboxed=False,
+        )
+
+    monkeypatch.setattr(local_executor, "_run_process", spy_run_process)
+
+    # Call run_tests with expr parameter
     result = local_executor.run_tests(
-        "tests/services/skills/code-sandbox/test_executor.py",
-        expr="test_run_tests_forwards",
+        "/fake/test_sample.py",
+        expr="alpha",
         timeout=30
     )
-    # Verify the result has the expected structure
-    assert hasattr(result, "passed")
-    assert hasattr(result, "failed")
-    assert hasattr(result, "errors")
-    assert hasattr(result, "output")
-    # If tests ran, we should see this one test in the results
-    if result.passed > 0 or "test_run_tests_forwards" in result.output:
-        assert result.passed >= 1
+
+    # Verify that -k and the expr value are in the captured command
+    assert len(captured_cmd) == 1
+    cmd = captured_cmd[0]
+    assert "-k" in cmd, f"Expected '-k' in {cmd}"
+    assert "alpha" in cmd, f"Expected 'alpha' in {cmd}"
+    # Verify they're adjacent (proper pytest -k <expr> formatting)
+    k_index = cmd.index("-k")
+    assert k_index + 1 < len(cmd), "Expected -k to have an argument"
+    assert cmd[k_index + 1] == "alpha", f"Expected 'alpha' after '-k', got {cmd[k_index + 1]}"
+
+
+@pytest.mark.mocked
+def test_run_tests_without_expr_omits_k(local_executor, monkeypatch):
+    """Test that run_tests omits the -k flag when expr is None."""
+    captured_cmd = []
+    from executor import ExecutionResult
+
+    def spy_run_process(cmd, timeout, cwd):
+        captured_cmd.append(cmd)
+        return ExecutionResult(
+            stdout="",
+            stderr="no tests ran",
+            exit_code=0,
+            duration_ms=0,
+            timed_out=False,
+            backend="local",
+            sandboxed=False,
+        )
+
+    monkeypatch.setattr(local_executor, "_run_process", spy_run_process)
+
+    # Call run_tests WITHOUT expr parameter
+    result = local_executor.run_tests(
+        "/fake/test_sample.py",
+        timeout=30
+    )
+
+    # Verify that -k is NOT in the captured command
+    assert len(captured_cmd) == 1
+    cmd = captured_cmd[0]
+    assert "-k" not in cmd, f"Expected no '-k' in {cmd} when expr is None"
