@@ -40,7 +40,7 @@ from .verification_stop import (
     build_infra_unverified_note,
     MAX_VERIFY_INFRA_ERRORS,
 )
-from .completion_guard import reconcile_ok, reconcile_cutoff
+from .completion_guard import reconcile_ok, reconcile_cutoff, is_assertion_verification
 
 # Max chars of RAW tool output (test results, file contents, bash stdout/stderr,
 # skill results) fed back into the ReAct context per tool call. Generous on
@@ -972,6 +972,14 @@ class AsyncOrchestrator:
                                     )
                                 except Exception:
                                     pass  # artifact emission is best-effort
+                        # Verification-stop: an assertion-bearing code-sandbox run
+                        # that exits 0 is a real verification for tasks with no
+                        # test suite (so a correct fix is not downgraded to ok=False).
+                        if is_assertion_verification(
+                            args.get("skill", ""), args.get("tool", ""),
+                            args.get("arguments", {}), res,
+                        ):
+                            tests_passed = True
 
                     elif name in LOCAL_TOOL_NAMES:
                         if self.redis is not None:

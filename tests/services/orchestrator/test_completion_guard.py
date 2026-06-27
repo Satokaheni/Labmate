@@ -11,6 +11,7 @@ from services.orchestrator.completion_guard import (
     is_punt_answer,
     asserts_success,
     reconcile_ok,
+    is_assertion_verification,
 )
 
 
@@ -273,3 +274,54 @@ def test_reconcile_cutoff_unverified_edit_stays_false():
     )
     assert ok is False
     assert summary == "wall-clock deadline exceeded"
+
+
+# ── is_assertion_verification ────────────────────────────────────────────────────
+
+def _envelope(exit_code=0, ok=True):
+    return {
+        "ok": ok,
+        "result": {
+            "content": [{"type": "text", "text":
+                f'{{"stdout": "ok", "stderr": "", "exit_code": {exit_code}}}'}],
+            "isError": exit_code != 0,
+        },
+    }
+
+
+def test_assertion_run_python_pass_is_verification():
+    assert is_assertion_verification(
+        "code-sandbox", "run_python",
+        {"code": "from ab_buggy import average\nassert average([2,4]) == 3"},
+        _envelope(0),
+    ) is True
+
+
+def test_run_python_without_assert_is_not_verification():
+    assert is_assertion_verification(
+        "code-sandbox", "run_python",
+        {"code": "print(average([2,4]))"},
+        _envelope(0),
+    ) is False
+
+
+def test_assertion_run_python_nonzero_exit_is_not_verification():
+    assert is_assertion_verification(
+        "code-sandbox", "run_python",
+        {"code": "assert average([2,4]) == 3"},
+        _envelope(1, ok=False),
+    ) is False
+
+
+def test_other_skill_is_not_verification():
+    assert is_assertion_verification(
+        "test-gen", "generate", {"code": "assert True"}, _envelope(0)
+    ) is False
+
+
+def test_run_shell_with_assert_pass_is_verification():
+    assert is_assertion_verification(
+        "code-sandbox", "run_shell",
+        {"cmd": "python -c 'assert 1==1'"},
+        _envelope(0),
+    ) is True

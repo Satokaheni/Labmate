@@ -24,6 +24,7 @@ the input string is never mutated and nothing is logged or emitted here.
 """
 from __future__ import annotations
 
+import json
 import re
 
 # Terminal-punt phrases. A trailing-period/space variation is handled by the
@@ -177,3 +178,50 @@ def reconcile_cutoff(
             f"on {reason} before an explicit finish."
         )
     return False, reason
+
+
+_ASSERT_RE = re.compile(r"\bassert\b|\bunittest\b|\bpytest\b|self\.assert", re.IGNORECASE)
+
+
+def _sandbox_exit_zero(result: dict) -> bool:
+    """Extract a clean-exit signal from a skill_router code-sandbox envelope."""
+    if not isinstance(result, dict) or not result.get("ok", False):
+        return False
+    inner = result.get("result")
+    if isinstance(inner, dict):
+        if inner.get("isError") is True:
+            return False
+        content = inner.get("content")
+        if isinstance(content, list):
+            for piece in content:
+                text = piece.get("text") if isinstance(piece, dict) else None
+                if not text:
+                    continue
+                try:
+                    parsed = json.loads(text)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if isinstance(parsed, dict) and "exit_code" in parsed:
+                    return int(parsed.get("exit_code") or 0) == 0
+        # No structured exit_code but envelope ok and not isError -> treat as clean.
+        return inner.get("isError") is not True
+    return False
+
+
+def is_assertion_verification(
+    skill: str, tool: str, arguments: dict, result: dict
+) -> bool:
+    """True iff a code-sandbox run executed an assertion that PASSED.
+
+    Used to set tests_passed for fix-without-a-test-suite tasks: the model runs
+    the edited function with an `assert` via code-sandbox and it exits 0. A bare
+    exit-0 (no assertion) is NOT verification — it only means the code didn't
+    crash.
+    """
+    if skill != "code-sandbox" or tool not in ("run_python", "run_shell"):
+        return False
+    args = arguments or {}
+    code = str(args.get("code") or args.get("cmd") or "")
+    if not _ASSERT_RE.search(code):
+        return False
+    return _sandbox_exit_zero(result)
