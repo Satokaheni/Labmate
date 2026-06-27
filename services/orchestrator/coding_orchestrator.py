@@ -31,6 +31,7 @@ from .progress_breaker import ProgressBreaker, ProgressStep
 from .message_repair import sanitize_messages, message_repair_enabled
 from .tool_grounding import ground_tool_result, DEFAULT_TOOL_RESULT_BUDGET
 from .edit_intent import requires_editing
+from .replan_guard import replan_should_stop
 from .verification_stop import needs_verification, build_verify_nudge
 from .completion_guard import reconcile_ok
 
@@ -67,6 +68,10 @@ MAX_SEQ_STEPS = int(os.getenv("MAX_SEQ_STEPS", "5"))
 # step goals skip the planner loop entirely (run once via skill-first / ReAct) so a
 # simple "review this file" doesn't pay the planner-sequencing tax (over-sequencing).
 REPLAN_COMPOUND_GATE = os.getenv("REPLAN_COMPOUND_GATE", "1") == "1"
+# Max times the replan planner may re-target the SAME skill across sub-steps
+# before the no-progress guard (replan_guard.replan_should_stop) forces a finish.
+# Prevents the live-A/B "repo-fault-localize 4x" thrash. Per-loop, not per-process.
+REPLAN_MAX_SKILL_REPEATS = int(os.getenv("REPLAN_MAX_SKILL_REPEATS", "2"))
 
 # When 1 (default), a load_skill call for a skill ALREADY loaded this goal is
 # short-circuited (no real reload) AND the wasted iteration is refunded, so the
