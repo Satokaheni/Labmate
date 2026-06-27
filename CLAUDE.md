@@ -205,7 +205,7 @@ Branch `feat/harness-robustness` (off `994df92`). Eight features added to harden
 
 Latency/sequencing knobs (defaults): `SEQUENCING_MODE=skill_first`, `MAX_SEQ_STEPS=5`, `REPLAN_COMPOUND_GATE=1`, `ASSESS_THINKING_BUDGET=384` (lighter ambiguity judgement), `CRITIQUE_ARTIFACT_TYPES=""` (auto critique-gate **OFF**; set `writing` or `code,writing` to re-enable), `SKILL_CALL_TIMEOUT=135` (must exceed the worker's `CALL_TIMEOUT`). `test-gen` gained a `run_tests` tool (run an existing suite — do not call `generate` to re-run tests). A/B harness: `bash eval/seq_ab/run_mode.sh <skill_first|react|replan>`.
 
-**Known bug to chase (from the perf branch):** in `replan` mode, `SkillRunner.load_skill` can hit its `max_chain` activation cap mid-chain because `reset_activations()` runs once per goal, not per sub-step — replan runs many sub-steps. Fix candidate: call `reset_activations()` per sub-step inside `_replan_loop`. `skill_first` is unaffected (≤1 skill/goal).
+**Replan activation-cap bug — FIXED (2026-06-26, branch `feat/agentic-fix-loop`):** `_replan_loop` now calls `self.skill_router.runner.reset_activations()` at the START of each sub-step (each planner sub-goal is a fresh mini-task), so `SkillRunner.load_skill` no longer hits its `max_chain` cap mid-chain. A pure no-progress guard (`services/orchestrator/replan_guard.py::replan_should_stop`) additionally forces an honest finish when the planner re-emits a near-identical sub-goal or re-targets one skill beyond `REPLAN_MAX_SKILL_REPEATS` (default 2), preventing the live-A/B "repo-fault-localize 4x" thrash. `skill_first`/`react` never enter `_replan_loop`, so both are unaffected.
 
 ---
 
