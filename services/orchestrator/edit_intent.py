@@ -15,7 +15,10 @@ Rule (documented so it can be audited):
      -> requires edit.
   2. If a VERIFICATION phrase appears ("make the tests pass", "make it work",
      "get the tests green", "so the tests pass") -> requires edit.
-  3. Otherwise -> no edit (pure read/answer). "review", "find bugs", "summarize",
+  3. If a TEST-AUTHORING phrase appears ("write a test", "add tests", "create a test",
+     "author tests") -> requires edit. Narrow: an authoring verb followed by
+     "test"/"tests", not matching "testing"/"latest" due to word boundary.
+  4. Otherwise -> no edit (pure read/answer). "review", "find bugs", "summarize",
      "explain", "what/why/how" questions are read-only UNLESS an edit verb from
      rule 1 also appears later in the goal (e.g. "review then fix").
 """
@@ -82,6 +85,16 @@ _VERIFY_PHRASE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Rule 3: test-authoring — "write a unit test", "add tests", "create a test".
+# Narrow: an authoring verb immediately followed (optionally via a/an/some/new/
+# unit/integration) by the word "test"/"tests". "testing"/"latest" do NOT match
+# because \btests?\b requires a word boundary after "test".
+_TEST_AUTHOR_RE = re.compile(
+    r"\b(?:writ(?:e|es|ing)|add(?:s|ed|ing)?|creat(?:e|es|ing|ed)|author(?:s|ed|ing)?)\s+"
+    r"(?:a\s+|an\s+|some\s+|new\s+|unit\s+|integration\s+)*tests?\b",
+    re.IGNORECASE,
+)
+
 
 def classify_edit_intent(
     goal: str,
@@ -111,6 +124,9 @@ def classify_edit_intent(
 
     if _VERIFY_PHRASE_RE.search(text):
         return EditIntent(requires_edit=True, reason="verification phrase (make tests pass / make it work)")
+
+    if _TEST_AUTHOR_RE.search(text):
+        return EditIntent(requires_edit=True, reason="test-authoring (write/add a test)")
 
     return EditIntent(
         requires_edit=False,

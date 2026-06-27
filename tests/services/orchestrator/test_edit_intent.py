@@ -157,6 +157,33 @@ class TestRequiresEditing:
         assert requires_editing("Review app.py", enabled=True) is False
 
 
+class TestTestAuthoringIntent:
+    """Test-authoring goals (write/add/create a test) must route to ReAct loop."""
+
+    def test_write_a_unit_test_is_edit_intent(self):
+        assert requires_editing(
+            "Find the bug in /workspace/ab_off.py and write a unit test that exposes it.",
+            enabled=True,
+        ) is True
+
+    def test_add_tests_is_edit_intent(self):
+        assert requires_editing("Add tests for the parser module.", enabled=True) is True
+
+    def test_create_a_test_is_edit_intent(self):
+        assert requires_editing("Create a test that reproduces the crash.", enabled=True) is True
+
+    def test_find_bugs_only_stays_read_only(self):
+        # c4 control must NOT become edit-intent.
+        assert requires_editing("Find bugs in /workspace/ab_buggy.py.", enabled=True) is False
+
+    def test_review_only_stays_read_only(self):
+        assert requires_editing("Review the auth module for issues.", enabled=True) is False
+
+    def test_testing_word_does_not_falsely_trigger(self):
+        # "testing" / "latest" must not match the test-authoring rule.
+        assert requires_editing("Explain the latest testing strategy.", enabled=True) is False
+
+
 class TestClassifyEditIntent:
     def test_returns_editintent_with_reason(self):
         v = classify_edit_intent("Fix the bug", enabled=True)
