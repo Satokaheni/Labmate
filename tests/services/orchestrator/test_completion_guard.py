@@ -158,3 +158,88 @@ def test_reconcile_punt_when_ok_already_false_stays_false_no_double_note():
     assert ok is False
     # ok was already False; no downgrade was needed, so no note to append.
     assert note == ""
+
+
+# ── reconcile_final_answer (rendered-answer seam) ───────────────────────────────
+
+from services.orchestrator.completion_guard import reconcile_final_answer
+
+
+def test_final_punt_with_ok_true_and_no_error_downgrades_and_sets_error():
+    # The open A/B bug: skill returned ok=True (no error), but the RENDERED
+    # final answer is a punt -> must become ok=False with an error set.
+    ok, error, note = reconcile_final_answer(
+        True,
+        None,
+        "I couldn't analyze the file because it is too large. Please share a snippet.",
+    )
+    assert ok is False
+    assert error  # a non-empty error string is now set
+    assert "punt" in error.lower() or "could not" in error.lower()
+    assert note
+
+
+def test_final_genuine_success_answer_unchanged():
+    # Regression: a normal, non-punt success answer stays ok=True, no error added.
+    ok, error, note = reconcile_final_answer(
+        True,
+        None,
+        "Here is the square function you asked for.",
+    )
+    assert ok is True
+    assert error is None
+    assert note == ""
+
+
+def test_final_verified_fix_stays_ok():
+    # Regression: a verified fix ("tests pass") with tests_passed=True stays ok.
+    ok, error, note = reconcile_final_answer(
+        True,
+        None,
+        "I fixed the off-by-one bug and all tests pass.",
+        tests_passed=True,
+    )
+    assert ok is True
+    assert error is None
+    assert note == ""
+
+
+def test_final_unverified_success_claim_downgrades():
+    # An unverified "I fixed it / tests pass" claim (no passing run) -> ok=False.
+    ok, error, note = reconcile_final_answer(
+        True,
+        None,
+        "I fixed the off-by-one bug and all tests pass.",
+        tests_passed=False,
+    )
+    assert ok is False
+    assert error
+    assert note
+
+
+def test_final_preexisting_error_preserved_not_overwritten():
+    # If error was already set upstream, keep it (do not clobber the real cause).
+    ok, error, note = reconcile_final_answer(
+        False,
+        "2 subtask(s) failed: parse (error: boom)",
+        "I could not process the file, it is too large.",
+    )
+    assert ok is False
+    assert error == "2 subtask(s) failed: parse (error: boom)"
+    assert note == ""  # already-failed input -> no extra downgrade note
+
+
+def test_final_empty_answer_is_noop():
+    # No rendered answer -> nothing to reconcile; pass through unchanged.
+    ok, error, note = reconcile_final_answer(True, None, "")
+    assert ok is True
+    assert error is None
+    assert note == ""
+
+
+def test_final_inputs_not_mutated():
+    # Purity: the function returns new values; passing None error stays None
+    # on a clean answer.
+    answer = "All good, here is the result."
+    ok, error, note = reconcile_final_answer(True, None, answer)
+    assert (ok, error, note) == (True, None, "")

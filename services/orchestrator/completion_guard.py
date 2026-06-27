@@ -122,3 +122,39 @@ def reconcile_ok(ok: bool, answer: str, *, tests_passed: bool) -> tuple[bool, st
         return False, note
 
     return ok, ""
+
+
+def reconcile_final_answer(
+    ok: bool,
+    error: str | None,
+    answer: str,
+    *,
+    tests_passed: bool = False,
+) -> tuple[bool, str | None, str]:
+    """Reconcile the *rendered* final answer (post-summarizer) with ``ok``/``error``.
+
+    This is the THIRD reconciliation seam (after the skill-first raw-output and the
+    ReAct finish seams). The punt wording is produced downstream by the final-answer
+    summarizer / stream_final_answer, so the user-facing answer must be re-checked
+    before the result leaves the orchestrator.
+
+    Reuses ``reconcile_ok`` (no new phrase list). Returns
+    ``(corrected_ok, corrected_error, note)``:
+
+      * If ``reconcile_ok`` downgrades ``ok`` (a punt, or an unverified success
+        claim) -> ``corrected_ok=False``. An ``error`` is set so the downgrade
+        propagates through the result payload's ``ok`` derivation. A pre-existing
+        ``error`` is PRESERVED (never clobbered — keep the real upstream cause);
+        only a fresh downgrade (no prior error) gets the honesty note as its error.
+      * Otherwise everything is returned unchanged.
+
+    Pure: never mutates its inputs, never logs, never does I/O.
+    """
+    new_ok, note = reconcile_ok(ok, answer, tests_passed=tests_passed)
+    if new_ok == ok:
+        # No change (genuine success, empty answer, or already-False input).
+        return ok, error, note
+    # A downgrade happened. Set an error if none exists; otherwise keep the
+    # original (more specific) error.
+    new_error = error if error else (note or "final answer reconciled to not-success")
+    return new_ok, new_error, note
