@@ -1214,6 +1214,16 @@ class AsyncOrchestrator:
                 if done or not nxt:
                     break
 
+                # Per-sub-step activation reset. Each planner sub-goal is a fresh
+                # mini-task: reset SkillRunner's max_chain budget so load_skill does
+                # not hit its activation cap mid-chain across many sub-steps (the
+                # documented replan bug). skill_first/react never reach here.
+                if self.skill_router is not None:
+                    try:
+                        self.skill_router.runner.reset_activations()
+                    except Exception:
+                        pass
+
                 # Execute the sub-step: skill-first, then bounded ReAct fallback so
                 # non-skill steps (file edits / fixes) still execute.
                 skilled = await self._run_skill_first(nxt)
