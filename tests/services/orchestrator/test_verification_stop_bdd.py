@@ -43,18 +43,27 @@ def ctx():
 
 @given("a verification-stop AsyncOrchestrator with no skill router and no mcp")
 def _orch(ctx):
-    orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
+    # Set up skill_router to return a code-sandbox run_tests envelope (PASSING).
+    skill_router = AsyncMock()
+    test_result = {
+        "passed": 1,
+        "failed": 0,
+        "errors": 0,
+        "output": "1 passed",
+        "timed_out": False,
+    }
+    envelope = {
+        "ok": True,
+        "result": {
+            "content": [{"type": "text", "text": json.dumps(test_result)}],
+            "isError": False,
+        },
+    }
+    skill_router.execute.return_value = envelope
+
+    orch = AsyncOrchestrator(skill_router=skill_router, mcp=None, workspace="/tmp")
     # write_file flows through request_local_tool -> stub redis truthy.
     orch.redis = MagicMock()
-    # run_tests flows through mcp.call_tool -> stub a PASSING result.
-    mcp = AsyncMock()
-    mcp_result = MagicMock()
-    mcp_result.content = [MagicMock(
-        text=json.dumps({"ok": True, "exit_code": 0, "raw_output": "1 passed"})
-    )]
-    mcp_result.isError = False
-    mcp.call_tool.return_value = mcp_result
-    orch.mcp = mcp
     ctx["orch"] = orch
 
 

@@ -41,7 +41,7 @@ def build_verify_nudge(edited_files: set[str]) -> str:
     files = ", ".join(sorted(edited_files)) if edited_files else "the files you changed"
     return (
         f"You edited {files} but you have not shown that the tests pass. "
-        "Run the relevant verification command now (e.g. the run_tests tool, "
-        "or pytest / npm test via run_bash). Read any failure output, fix the "
-        "code, and re-run. Only call finish once the tests actually pass."
+        "Call the run_tests tool now to run the suite (it returns the raw "
+        "pass/fail output). Read any failure, fix the code, and re-run. "
+        "Only call finish once run_tests reports the tests actually pass."
     )

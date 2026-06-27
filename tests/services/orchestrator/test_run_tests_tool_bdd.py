@@ -49,8 +49,12 @@ def _orch_no_mcp(ctx):
 
 @given("an AsyncOrchestrator with no skill router and a stub bash seam")
 def _orch_stub_bash(ctx):
-    orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
-    ctx["orch"] = orch  # mcp set by the bash-seam step below
+    # For run_tests, we need a mock skill_router since the code-sandbox skill
+    # dispatch path requires it (the old exec_run bash-seam path is gone).
+    skill_router = AsyncMock()
+    orch = AsyncOrchestrator(skill_router=skill_router, mcp=None, workspace="/tmp")
+    ctx["orch"] = orch
+    ctx["skill_router"] = skill_router
 
 
 @given("an AsyncOrchestrator with no skill router and a local tool client")
@@ -69,12 +73,26 @@ def _build_tools(ctx):
 
 @given(parsers.parse('the bash seam returns exit code {code:d} with output "{output}"'))
 def _bash_returns(ctx, code, output):
-    mcp = AsyncMock()
-    res = MagicMock()
-    res.content = [MagicMock(text=output.replace("\\n", "\n"))]
-    res.isError = code != 0
-    mcp.call_tool.return_value = res
-    ctx["orch"].mcp = mcp
+    # Set up skill_router to return a code-sandbox run_tests envelope.
+    # The skill_router.execute() method returns {ok, result, error, detail}.
+    # The shape_sandbox_test_result helper parses this into {ok, exit_code, raw_output}.
+    raw_output = output.replace("\\n", "\n")
+    test_result = {
+        "passed": 0 if code != 0 else 1,
+        "failed": 0 if code == 0 else 1,
+        "errors": 0,
+        "output": raw_output,
+        "timed_out": False,
+    }
+    envelope = {
+        "ok": True,
+        "result": {
+            "content": [{"type": "text", "text": json.dumps(test_result)}],
+            "isError": code != 0,
+        },
+    }
+    if "skill_router" in ctx:
+        ctx["skill_router"].execute.return_value = envelope
 
 
 @given(parsers.parse('the write_file client reports success but the file reads back as "{readback}"'))

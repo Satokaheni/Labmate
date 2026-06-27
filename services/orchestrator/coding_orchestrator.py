@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import litellm
 import os
 import subprocess
@@ -18,9 +19,11 @@ from .prompt_assembler import PromptAssembler
 from .memory_search import MemorySearch
 from .local_tools import (
     LOCAL_TOOL_NAMES,
-    request_local_tool,
     build_run_tests_command,
+    build_sandbox_test_args,
+    request_local_tool,
     shape_run_tests_result,
+    shape_sandbox_test_result,
     verify_written_content,
 )
 from .loop_detection import LoopDetector, call_signature, repeat_limit_for
@@ -44,6 +47,10 @@ from .completion_guard import reconcile_ok
 LABMATE_TOOL_RESULT_BUDGET = int(
     os.getenv("LABMATE_TOOL_RESULT_BUDGET", str(DEFAULT_TOOL_RESULT_BUDGET))
 )
+
+# Timeout (seconds) for skill tool calls. Must exceed the skill-worker's own
+# call timeout so the skill has time to finish before we abort.
+SKILL_CALL_TIMEOUT = float(os.getenv("SKILL_CALL_TIMEOUT", "135"))
 
 # Sequencing strategy for react_execute (A/B knob — see eval/seq_ab):
 #   skill_first (DEFAULT): a confidently-matched skill runs deterministically and
@@ -1012,31 +1019,25 @@ class AsyncOrchestrator:
                             content = json.dumps({"error": "no bash runner available"})
 
                     elif name == "run_tests":
-                        # First-class test runner: run the REAL pytest command through
-                        # the same server-side bash seam run_bash uses (sandbox rule),
-                        # and hand the model the RAW pass/fail output so it cannot
-                        # fabricate "all tests pass".
-                        if self.mcp is not None:
-                            command, timeout_ms = build_run_tests_command(args)
+                        # First-class test runner. pytest is BLOCKED through the
+                        # generic exec_run bash seam (sandbox rule), so route to the
+                        # code-sandbox skill's run_tests tool, which runs the REAL
+                        # pytest suite (LocalSubprocessExecutor on RunPod). Always an
+                        # ABSOLUTE test_path rooted at the workspace.
+                        if self.skill_router is not None:
+                            sb_args = build_sandbox_test_args(args, self.workspace)
                             try:
-                                obs = await self.mcp.call_tool(
-                                    "exec_run",
-                                    {
-                                        "command": command,
-                                        "cwd": self.workspace,
-                                        "timeout": timeout_ms,
-                                    },
+                                envelope = await self.skill_router.execute(
+                                    "code-sandbox",
+                                    "run_tests",
+                                    sb_args,
+                                    timeout=min(sb_args["timeout"] + 15, SKILL_CALL_TIMEOUT),
                                 )
-                                raw = "\n".join(
-                                    c.text for c in obs.content if hasattr(c, "text")
+                                shaped = shape_sandbox_test_result(envelope)
+                                content = ground_tool_result(
+                                    json.dumps(shaped), LABMATE_TOOL_RESULT_BUDGET
                                 )
-                                exit_code = 1 if getattr(obs, "isError", False) else 0
-                                content = json.dumps(
-                                    shape_run_tests_result(exit_code, raw)
-                                )
-                                # Verification-stop: a passing run_tests result clears the guard.
-                                passed = _run_tests_passed(content)
-                                if passed:
+                                if _run_tests_passed(content):
                                     tests_passed = True
                             except Exception as exc:
                                 content = json.dumps({"error": str(exc)})

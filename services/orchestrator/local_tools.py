@@ -194,3 +194,88 @@ def verify_written_content(requested: str, readback: Any) -> str | None:
         f"read back {got_len}). The write may not have applied — re-read the "
         "file and try again; do NOT report the file as updated."
     )
+
+
+SANDBOX_TEST_TIMEOUT_S_MAX = 120
+
+
+def build_sandbox_test_args(args: dict[str, Any], workspace: str) -> dict[str, Any]:
+    """Shape ReAct run_tests args into a code-sandbox run_tests call.
+
+    code-sandbox resolves a relative test_path against the SKILL-WORKER's cwd,
+    not the task workspace, so we always hand it an ABSOLUTE path rooted at the
+    workspace. Timeout is converted ms->s and clamped to SANDBOX_TEST_TIMEOUT_S_MAX.
+    """
+    path = str(args.get("path") or "").strip()
+    if path:
+        test_path = path if os.path.isabs(path) else os.path.join(workspace, path)
+    else:
+        test_path = workspace
+
+    timeout_ms = args.get("timeout_ms")
+    if timeout_ms is None:
+        # For sandbox, default to the max timeout (sandbox is remote and robust)
+        timeout_s = SANDBOX_TEST_TIMEOUT_S_MAX
+    else:
+        timeout_ms = int(timeout_ms)
+        timeout_s = max(1, timeout_ms // 1000)
+        if timeout_s > SANDBOX_TEST_TIMEOUT_S_MAX:
+            timeout_s = SANDBOX_TEST_TIMEOUT_S_MAX
+
+    out: dict[str, Any] = {
+        "test_path": test_path,
+        "framework": "pytest",
+        "timeout": timeout_s,
+    }
+    expr = str(args.get("expr") or "").strip()
+    if expr:
+        out["expr"] = expr
+    return out
+
+
+def _extract_test_result_payload(envelope: dict[str, Any]) -> dict[str, Any] | None:
+    """Dig the code-sandbox TestResult JSON out of a skill_router envelope."""
+    result = envelope.get("result")
+    if isinstance(result, dict):
+        content = result.get("content")
+        if isinstance(content, list):
+            for piece in content:
+                text = piece.get("text") if isinstance(piece, dict) else None
+                if not text:
+                    continue
+                try:
+                    parsed = json.loads(text)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if isinstance(parsed, dict) and "passed" in parsed and "failed" in parsed:
+                    return parsed
+        if "passed" in result and "failed" in result:
+            return result
+    return None
+
+
+def shape_sandbox_test_result(envelope: dict[str, Any]) -> dict[str, Any]:
+    """code-sandbox run_tests envelope -> {ok, exit_code, raw_output}.
+
+    Mirrors shape_run_tests_result so the verification-stop signal (_run_tests_passed)
+    keeps working. ok requires failed==0 AND errors==0 AND not timed_out AND the
+    dispatch itself succeeded. Any infra failure (skill_unavailable, timeout,
+    dispatch_failed) shapes to ok=False with the reason in raw_output.
+    """
+    if not envelope.get("ok", False):
+        reason = str(envelope.get("error") or "test dispatch failed")
+        detail = envelope.get("detail")
+        raw = f"{reason}: {detail}" if detail else reason
+        return {"ok": False, "exit_code": 1, "raw_output": raw[-8000:]}
+
+    payload = _extract_test_result_payload(envelope)
+    if payload is None:
+        raw = json.dumps(envelope.get("result"))[-8000:]
+        return {"ok": False, "exit_code": 1, "raw_output": raw}
+
+    failed = int(payload.get("failed") or 0)
+    errors = int(payload.get("errors") or 0)
+    timed_out = bool(payload.get("timed_out"))
+    output = str(payload.get("output") or "")
+    ok = failed == 0 and errors == 0 and not timed_out
+    return {"ok": ok, "exit_code": 0 if ok else 1, "raw_output": output[-8000:]}
