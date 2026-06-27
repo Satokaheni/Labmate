@@ -175,6 +175,17 @@ class OrchestratorProcess:
                 gemma_api_base=GEMMA_BASE,
             )
 
+            # Wire the durable inner-loop checkpoint store when a Mongo-backed
+            # StorageManager is available. No-op when checkpointing is disabled
+            # (the flag is read inside _run_react_loop) or no storage exists.
+            try:
+                from .loop_checkpoint import CheckpointStore
+                async_orch.checkpoint_store = CheckpointStore(
+                    _sm.loop_checkpoint_collection
+                )
+            except Exception:  # best-effort wiring; never block startup
+                async_orch.checkpoint_store = None
+
             # Initialize Redis BEFORE skill router (CLAUDE.md: "after self._redis is created")
             pool = aioredis.ConnectionPool.from_url(
                 redis_url, max_connections=8, decode_responses=True,

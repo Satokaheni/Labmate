@@ -141,6 +141,17 @@ class StorageManager:
     def workspaces(self) -> WorkspaceManager:
         return self._workspaces
 
+    @property
+    def loop_checkpoint_collection(self):
+        """The Motor collection holding inner-loop checkpoints (one per task_id).
+
+        Used by CheckpointStore (services/orchestrator/loop_checkpoint.py) to
+        persist the per-turn ReAct-loop snapshot. No outbox: these are transient
+        crash-recovery records, cleared when a goal finishes.
+        """
+        from .loop_checkpoint import CHECKPOINT_COLLECTION
+        return self._db[CHECKPOINT_COLLECTION]
+
     async def _get_chroma(self):
         if self._chroma is None:
             self._chroma = await chromadb.AsyncHttpClient(**self._chroma_args)

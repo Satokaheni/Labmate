@@ -155,6 +155,27 @@ async def test_store_errors_are_swallowed_never_raised():
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# Storage manager accessor test
+# ─────────────────────────────────────────────────────────────────────────
+
+from services.orchestrator.loop_checkpoint import CHECKPOINT_COLLECTION
+
+
+def test_storage_manager_exposes_loop_checkpoint_collection():
+    from services.orchestrator.storage_manager import StorageManager
+    db = MagicMock()
+    sentinel = MagicMock()
+    db.__getitem__ = MagicMock(return_value=sentinel)
+    mongo = MagicMock()
+    mongo.__getitem__ = MagicMock(return_value=db)
+    redis = MagicMock()
+    sm = StorageManager.from_clients(mongo=mongo, chroma=MagicMock(), redis=redis)
+    col = sm.loop_checkpoint_collection
+    db.__getitem__.assert_called_with(CHECKPOINT_COLLECTION)
+    assert col is sentinel
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # Wire-in tests (Insertion A/B/C + flag + _checkpoint_active + module reload)
 # ─────────────────────────────────────────────────────────────────────────
 
