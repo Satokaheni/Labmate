@@ -20,6 +20,31 @@ def test_runnable_manifests_includes_code_sandbox():
     assert "academic-writing" not in names
 
 
+def test_dist_stale_detects_newer_src(tmp_path):
+    import os
+    from tests.live.skill_harness import _dist_stale
+
+    dist = tmp_path / "dist" / "index.js"
+    dist.parent.mkdir()
+    dist.write_text("compiled")
+    src = tmp_path / "src"
+    src.mkdir()
+    ts = src / "index.ts"
+    ts.write_text("source")
+
+    os.utime(dist, (1000, 1000))
+    os.utime(ts, (2000, 2000))  # src newer than dist -> stale
+    assert _dist_stale(dist, src) is True
+
+    os.utime(dist, (3000, 3000))  # dist newer than src -> fresh
+    assert _dist_stale(dist, src) is False
+
+
+def test_dist_stale_missing_paths_not_stale(tmp_path):
+    from tests.live.skill_harness import _dist_stale
+    assert _dist_stale(tmp_path / "nope.js", tmp_path / "nosrc") is False
+
+
 class _C:
     def __init__(self, text): self.text = text
 

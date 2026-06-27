@@ -63,9 +63,36 @@ def declared_tools(skill_name: str) -> set[str]:
     return tools
 
 
+def _dist_stale(dist: Path, src_dir: Path) -> bool:
+    """True if a compiled dist artifact is older than any TypeScript source.
+
+    A stale build means the running server serves OLD tool names while SKILL.md/
+    src track the new ones — which surfaces as a confusing "declares tools not
+    served" contract failure. Detecting it lets the suite skip with an actionable
+    message instead. Missing dist/src -> not stale (let registration handle it).
+    """
+    if not dist.exists() or not src_dir.exists():
+        return False
+    dist_mtime = dist.stat().st_mtime
+    return any(ts.stat().st_mtime > dist_mtime for ts in src_dir.rglob("*.ts"))
+
+
+def node_build_is_stale(manifest: SkillManifest) -> bool:
+    """True if a node skill's dist/index.js is older than its src (needs rebuild)."""
+    if getattr(manifest, "command", "") != "node":
+        return False
+    d = SKILLS_ROOT / manifest.name
+    return _dist_stale(d / "dist" / "index.js", d / "src")
+
+
 async def register_skill(
     manifest: SkillManifest, timeout: float = 30.0
 ) -> tuple[SkillRegistry, SkillProcess]:
+    if node_build_is_stale(manifest):
+        raise SkillRegisterError(
+            f"{manifest.name}: stale node build (src newer than dist/index.js) — "
+            f"run `npm run build` in services/skills/{manifest.name}"
+        )
     reg = SkillRegistry(call_timeout=timeout)
     try:
         await reg.register(manifest)

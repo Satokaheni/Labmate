@@ -500,6 +500,12 @@ A skill whose deps are absent SKIPS (not fails). Run this when adding/changing
 any skill — it's the deterministic tool-correctness check the model-driven A/B
 can't be (the A/B only exercises the few skills its cases happen to call).
 
+**Build node skills first.** Node skills (e.g. `component-doc-gen`, `ast-ts-refactor`)
+run from `dist/index.js`; a stale build serves OLD tool names while SKILL.md/src
+track the new ones. The suite detects `src` newer than `dist/index.js` and SKIPS
+with "stale node build — run `npm run build`" rather than a misleading contract
+failure, so run `npm run build` in the skill dir before testing it.
+
 ---
 
 ## What NOT to Do
