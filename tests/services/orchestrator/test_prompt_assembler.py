@@ -140,3 +140,11 @@ def test_memory_enabled_prefix_is_deterministic_and_clean():
     prefix = a.canonical_prefix()
     assert not re.search(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", prefix)
     assert not re.search(r"[0-9a-f]{32}", prefix)
+
+
+@pytest.mark.mocked
+def test_base_prompt_names_code_sandbox_tools():
+    for name in ("run_python", "run_shell", "run_tests", "install_packages"):
+        assert name in BASE_SYSTEM_PROMPT
+    # named together so the model uses them verbatim
+    assert "code-sandbox" in BASE_SYSTEM_PROMPT

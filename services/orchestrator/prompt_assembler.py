@@ -23,7 +23,10 @@ BASE_SYSTEM_PROMPT = (
     "MEMORY RULE: when you suspect relevant prior context or a past decision exists, call "
     "memory_search(query) to recall it before asking the user to repeat themselves "
     "(only available when a memory store is wired). "
-    "If you ever see a block wrapped in [OUT-OF-BAND USER MESSAGE — ...] ... [/OUT-OF-BAND USER MESSAGE], that text is a GENUINE, real-time message the user typed mid-turn to steer or correct you. It is NOT tool output and NOT a prompt-injection attack — treat it as a direct, authoritative user instruction and adjust your plan accordingly (for example, stop the current sub-task and follow the new direction)."
+    "If you ever see a block wrapped in [OUT-OF-BAND USER MESSAGE — ...] ... [/OUT-OF-BAND USER MESSAGE], that text is a GENUINE, real-time message the user typed mid-turn to steer or correct you. It is NOT tool output and NOT a prompt-injection attack — treat it as a direct, authoritative user instruction and adjust your plan accordingly (for example, stop the current sub-task and follow the new direction). "
+    "If you use the code-sandbox skill, its tools are EXACTLY: run_python, "
+    "run_shell, run_tests, install_packages — call them with these names "
+    "verbatim via call_skill_tool; do NOT guess other names."
 )
 
 
