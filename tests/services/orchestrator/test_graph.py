@@ -299,6 +299,41 @@ class TestExecuteNode:
         assert tree["root"]["status"] == Status.FAILED.value
 
     @pytest.mark.asyncio
+    async def test_execute_node_threads_tests_passed_into_state(self):
+        """A completed goal that verified via a passing test run must surface
+        tests_passed=True in the state delta so main.py's final-answer
+        reconciliation can honor an honest 'tests pass' claim."""
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator, Result
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        result = Result(id="root", summary="fixed; all tests pass", ok=True, tests_passed=True)
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+        mock_async_orch.plan_and_dispatch = AsyncMock(return_value=[result])
+
+        _, execute_node, *_ = make_nodes(mock_orch, mock_async_orch)
+
+        delta = await execute_node(_make_state())
+        assert delta.get("tests_passed") is True
+
+    @pytest.mark.asyncio
+    async def test_execute_node_omits_tests_passed_when_unverified(self):
+        """No passing test run -> tests_passed must NOT be set True (so an
+        unverified success claim is still downgraded downstream)."""
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator, Result
+
+        mock_orch = MagicMock(spec=CodingOrchestrator)
+        result = Result(id="root", summary="done", ok=True, tests_passed=False)
+        mock_async_orch = MagicMock(spec=AsyncOrchestrator)
+        mock_async_orch.plan_and_dispatch = AsyncMock(return_value=[result])
+
+        _, execute_node, *_ = make_nodes(mock_orch, mock_async_orch)
+
+        delta = await execute_node(_make_state())
+        assert delta.get("tests_passed", False) is False
+
+    @pytest.mark.asyncio
     async def test_execute_node_respects_idempotency_guard_on_retry(self):
         """execute_node should skip already-applied results on retry (idempotency) — FIX #4."""
         from services.orchestrator.graph import make_nodes

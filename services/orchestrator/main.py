@@ -590,6 +590,7 @@ class OrchestratorProcess:
                     final_state.get("error") is None,
                     final_state.get("error"),
                     _rendered,
+                    tests_passed=bool(final_state.get("tests_passed", False)),
                 )
                 if not _recon_ok and final_state.get("error") is None:
                     final_state["error"] = _recon_err

@@ -220,6 +220,12 @@ class Result:
     artifacts: dict = field(default_factory=dict)
     ok: bool = True
     tools_used: list[str] = field(default_factory=list)
+    # True iff a real verification (run_tests / assertion-backed sandbox run)
+    # PASSED during this run. Threaded to the final-answer reconciliation seam in
+    # main.py so an honest "tests pass" claim backed by a real run is not
+    # downgraded (the react loop's own reconcile_ok already used this; main.py
+    # was re-judging the rendered answer WITHOUT it -> false ok=False).
+    tests_passed: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -474,7 +480,7 @@ class AsyncOrchestrator:
         recon_ok, note = reconcile_ok(ok, summary, tests_passed=False)
         if note:
             summary = (summary + " " + note)[:2000]
-        return {"ok": recon_ok, "summary": summary, "tools_used": tools_list}
+        return {"ok": recon_ok, "summary": summary, "tools_used": tools_list, "tests_passed": False}
 
     def _maybe_repair(self, messages: list[dict]) -> list[dict]:
         """Repair the messages list right before a model call, when enabled.
@@ -665,7 +671,7 @@ class AsyncOrchestrator:
                         "wall-clock deadline exceeded",
                         edited_files=edited_files, tests_passed=tests_passed,
                     )
-                    return {"ok": _ok, "summary": _sum, "tools_used": _tools_used}
+                    return {"ok": _ok, "summary": _sum, "tools_used": _tools_used, "tests_passed": tests_passed}
 
                 # Hard absolute ceiling (prevents infinite loops of distinct cheap reads).
                 if not budget.record_turn():
@@ -673,7 +679,7 @@ class AsyncOrchestrator:
                         "absolute turn limit exceeded",
                         edited_files=edited_files, tests_passed=tests_passed,
                     )
-                    return {"ok": _ok, "summary": _sum, "tools_used": _tools_used}
+                    return {"ok": _ok, "summary": _sum, "tools_used": _tools_used, "tests_passed": tests_passed}
 
                 # Consume one unit; on exhaustion take the single grace turn,
                 # else stop with a clear "budget exhausted" outcome.
@@ -683,7 +689,7 @@ class AsyncOrchestrator:
                             "budget exhausted",
                             edited_files=edited_files, tests_passed=tests_passed,
                         )
-                        return {"ok": _ok, "summary": _sum, "tools_used": _tools_used}
+                        return {"ok": _ok, "summary": _sum, "tools_used": _tools_used, "tests_passed": tests_passed}
                     # grace turn: fall through and run one more iteration.
 
                 # Track tools used this turn so a cheap-only turn can be refunded.
@@ -848,7 +854,7 @@ class AsyncOrchestrator:
                         )
                         if note:
                             summary = (summary + " " + note)[:2000]
-                        return {"ok": recon_ok, "summary": summary, "tools_used": _tools_used}
+                        return {"ok": recon_ok, "summary": summary, "tools_used": _tools_used, "tests_passed": tests_passed}
 
                     # No-progress / tool-loop detection. finish already returned
                     # above, so only genuinely dispatched tools reach here.
@@ -1177,7 +1183,7 @@ class AsyncOrchestrator:
                         f"no-progress breaker tripped ({pstep.consecutive} consecutive idle turns)",
                         edited_files=edited_files, tests_passed=tests_passed,
                     )
-                    return {"ok": _ok, "summary": _sum, "tools_used": _tools_used}
+                    return {"ok": _ok, "summary": _sum, "tools_used": _tools_used, "tests_passed": tests_passed}
 
                 # Update pending steer for next iteration (defer injection by one turn).
                 # For pre-written steers: already handled above (set on turn 1, used on turn 2).
@@ -1461,6 +1467,7 @@ class AsyncOrchestrator:
                             summary=ret["summary"],
                             ok=ret["ok"],
                             tools_used=ret.get("tools_used", []),
+                            tests_passed=ret.get("tests_passed", False),
                         )
         except asyncio.CancelledError:
             await self.budget.refund(t.est_tokens)

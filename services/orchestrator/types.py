@@ -79,6 +79,10 @@ class State(TypedDict, total=False):
     revised: bool                     # True once the revise node replaced final_answer
     # Tool sequence accumulation (skill-curator feature). Additive, default-absent.
     tools_used: list[str]             # ordered list of tool/skill names dispatched during goal execution
+    # Verified-tests signal (additive, default-absent). True when a completed goal
+    # passed a real test run this execution; consumed by main.py's final-answer
+    # reconciliation so an honest "tests pass" claim is not downgraded.
+    tests_passed: bool
 
 
 def now_iso() -> str:

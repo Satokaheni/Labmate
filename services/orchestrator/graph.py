@@ -287,6 +287,7 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         last_artifact = {"type": "other", "payload": ""}
         error_class_seen: str | None = None
         _accumulated_tools: list[str] = []  # accumulate tools for skill-curator
+        _tests_passed = False  # True if any completed goal verified via a passing test run
         for r in results:
             gid = r.id
             # Idempotency guard (FIX #4): mark per-GOAL-ID only when COMPLETED.
@@ -334,6 +335,12 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             # Accumulate tools_used from this result
             if r.ok and hasattr(r, "tools_used") and isinstance(r.tools_used, list):
                 _accumulated_tools.extend(r.tools_used)
+            # Track whether any completed goal verified via a passing test run, so
+            # the final-answer reconciliation in main.py can honor an honest
+            # "tests pass" claim instead of downgrading it (tests_passed was lost
+            # between the react loop and the rendered-answer re-check).
+            if r.ok and getattr(r, "tests_passed", False):
+                _tests_passed = True
 
         out: dict = {
             "goal_tree": tree,
@@ -345,6 +352,9 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         # Thread tools_used into state for skill-curator capture
         if _accumulated_tools:
             out["tools_used"] = _accumulated_tools
+        # Thread the verified-tests signal for main.py's final-answer reconciliation.
+        if _tests_passed:
+            out["tests_passed"] = True
         return out
 
     async def check(state: State) -> dict:
