@@ -126,8 +126,18 @@ def run_case(r, case):
 
 def main():
     r = redis.from_url(REDIS_URL, decode_responses=True)
+    # Optional case filter: AB_ONLY=c1,c3 runs only cases whose id contains any of
+    # the comma-separated substrings. Unset = all cases (back-compat). A filtered
+    # run writes to a distinct file so it never clobbers the full results-<mode>.json.
+    only = [s.strip() for s in os.getenv("AB_ONLY", "").split(",") if s.strip()]
+    cases = [c for c in CASES if not only or any(s in c["id"] for s in only)]
+    out_path = OUT
+    if only:
+        tag = "-".join(only).replace("/", "_")
+        out_path = f"eval/seq_ab/results-{MODE}-only-{tag}.json"
+        print(f"[{MODE}] AB_ONLY={only} -> {len(cases)} case(s) -> {out_path}", flush=True)
     out = {"mode": MODE, "trials": TRIALS, "cases": []}
-    for case in CASES:
+    for case in cases:
         print(f"[{MODE}] running {case['id']} x{TRIALS} ...", flush=True)
         trial_results = []
         for t in range(TRIALS):
@@ -146,13 +156,13 @@ def main():
         out["cases"].append(case_record)
         print("  " + summarize_line(MODE, case["id"], agg), flush=True)
     os.makedirs("eval/seq_ab", exist_ok=True)
-    with open(OUT, "w") as f:
+    with open(out_path, "w") as f:
         json.dump(out, f, indent=2)
     # Final pass-rate roll-up across all cases (quick read).
     print(f"[{MODE}] pass-rate summary:", flush=True)
     for c in out["cases"]:
         print("  " + summarize_line(MODE, c["id"], c), flush=True)
-    print(f"[{MODE}] wrote {OUT}", flush=True)
+    print(f"[{MODE}] wrote {out_path}", flush=True)
 
 if __name__ == "__main__":
     main()
