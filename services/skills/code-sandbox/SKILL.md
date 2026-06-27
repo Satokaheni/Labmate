@@ -38,6 +38,18 @@ Every execution runs in a fresh container that is destroyed afterward, with:
 - `run_tests(test_path, framework="pytest", timeout=120)` -> JSON `{passed, failed, errors, duration_ms, output, timed_out}`
 - `install_packages(packages)` -> JSON execution result (verifies packages resolve)
 
+## Invoking these tools
+
+Call via `call_skill_tool` with the EXACT tool name (do not guess):
+
+- `call_skill_tool(skill="code-sandbox", tool="run_python", arguments={"code": "...", "timeout": 30})`
+- `call_skill_tool(skill="code-sandbox", tool="run_shell", arguments={"cmd": "...", "timeout": 30})`
+- `call_skill_tool(skill="code-sandbox", tool="run_tests", arguments={"test_path": "/abs/path", "timeout": 120})`
+- `call_skill_tool(skill="code-sandbox", tool="install_packages", arguments={"packages": ["..."]})`
+
+To verify the project's existing suite, prefer the top-level `run_tests` tool (it
+routes here for you with an absolute path).
+
 ## Environment
 
 - `SANDBOX_IMAGE` (default `python:3.11-slim`)

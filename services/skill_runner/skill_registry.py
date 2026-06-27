@@ -194,7 +194,10 @@ class SkillRegistry:
             raise SkillDraining(qualified_name)
         schema = sp.tools.get(tool)
         if schema is None:
-            raise SkillUnavailable(f"no tool {tool!r} in skill {ns!r}")
+            valid = ", ".join(sorted(sp.tools)) or "(none advertised)"
+            raise SkillUnavailable(
+                f"no tool {tool!r} in skill {ns!r}; valid tools: {valid}"
+            )
         # jsonschema gate: validates BEFORE any subprocess round-trip.
         jsonschema.validate(instance=arguments, schema=schema)
 
