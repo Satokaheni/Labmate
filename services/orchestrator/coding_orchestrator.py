@@ -41,6 +41,7 @@ from .verification_stop import (
     MAX_VERIFY_INFRA_ERRORS,
 )
 from .completion_guard import reconcile_ok, reconcile_cutoff, is_assertion_verification
+from .sandbox_edits import detect_sandbox_writes
 
 # Max chars of RAW tool output (test results, file contents, bash stdout/stderr,
 # skill results) fed back into the ReAct context per tool call. Generous on
@@ -980,6 +981,16 @@ class AsyncOrchestrator:
                             args.get("arguments", {}), res,
                         ):
                             tests_passed = True
+                        # Edit-accounting: files written via code-sandbox (the
+                        # workaround used when no local-tool client is attached)
+                        # must count as edits so reconcile_cutoff can credit a
+                        # verified run.
+                        _sb_writes = detect_sandbox_writes(
+                            args.get("skill", ""), args.get("tool", ""),
+                            args.get("arguments", {}), res,
+                        )
+                        if _sb_writes:
+                            edited_files |= _sb_writes
 
                     elif name in LOCAL_TOOL_NAMES:
                         if self.redis is not None:
