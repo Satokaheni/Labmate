@@ -33,7 +33,9 @@ TOOL_RESULTS_MAXLEN = 200
 DEFAULT_TIMEOUT_S = 30.0
 
 RUN_TESTS_DEFAULT_CMD = "pytest"
-RUN_TESTS_TIMEOUT_MS_DEFAULT = 120000
+RUN_TESTS_TIMEOUT_MS_DEFAULT = 60000
+# exec_run (mcp-bridge schema) hard-caps `timeout` at 60000ms; never exceed it.
+RUN_TESTS_TIMEOUT_MS_MAX = 60000
 
 
 def build_run_tests_command(args: dict[str, Any]) -> tuple[str, int]:
@@ -66,6 +68,9 @@ def build_run_tests_command(args: dict[str, Any]) -> tuple[str, int]:
         timeout_ms = int(env_to) if env_to else RUN_TESTS_TIMEOUT_MS_DEFAULT
     else:
         timeout_ms = int(timeout_ms)
+
+    if timeout_ms > RUN_TESTS_TIMEOUT_MS_MAX:
+        timeout_ms = RUN_TESTS_TIMEOUT_MS_MAX
 
     return command, timeout_ms
 

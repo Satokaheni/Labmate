@@ -219,3 +219,26 @@ def test_verify_written_content_treats_none_readback_as_mismatch():
     err = verify_written_content("content", None)
     assert err is not None
     assert "did not match" in err
+
+
+# ── run_tests timeout clamping ──────────────────────────────────────────────
+from services.orchestrator.local_tools import (
+    build_run_tests_command,
+    RUN_TESTS_TIMEOUT_MS_MAX,
+)
+
+
+def test_build_run_tests_command_clamps_explicit_timeout_to_cap():
+    cmd, timeout_ms = build_run_tests_command({"timeout_ms": 120000})
+    assert cmd == "pytest"
+    assert timeout_ms == RUN_TESTS_TIMEOUT_MS_MAX == 60000
+
+
+def test_build_run_tests_command_default_timeout_within_cap():
+    cmd, timeout_ms = build_run_tests_command({})
+    assert timeout_ms <= RUN_TESTS_TIMEOUT_MS_MAX
+
+
+def test_build_run_tests_command_small_timeout_unchanged():
+    _, timeout_ms = build_run_tests_command({"timeout_ms": 5000})
+    assert timeout_ms == 5000
