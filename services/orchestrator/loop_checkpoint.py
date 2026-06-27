@@ -51,6 +51,7 @@ class LoopCheckpoint:
     verify_nudges_used: int = 0
     loop_signatures: list[str] = field(default_factory=list)
     tools_used: list[str] = field(default_factory=list)
+    loaded_skills: list[str] = field(default_factory=list)
     start_monotonic_offset: float = 0.0
     turn: int = 0
 
@@ -79,6 +80,7 @@ def to_dict(cp: LoopCheckpoint) -> dict:
         "verify_nudges_used": cp.verify_nudges_used,
         "loop_signatures": list(cp.loop_signatures),
         "tools_used": list(cp.tools_used),
+        "loaded_skills": list(cp.loaded_skills),
         "start_monotonic_offset": cp.start_monotonic_offset,
         "turn": cp.turn,
     }
@@ -111,6 +113,7 @@ def from_dict(d: dict | None) -> LoopCheckpoint | None:
             verify_nudges_used=int(d.get("verify_nudges_used", 0)),
             loop_signatures=list(d.get("loop_signatures", []) or []),
             tools_used=list(d.get("tools_used", []) or []),
+            loaded_skills=list(d.get("loaded_skills", []) or []),
             start_monotonic_offset=float(d.get("start_monotonic_offset", 0.0)),
             turn=int(d.get("turn", 0)),
         )

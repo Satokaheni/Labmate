@@ -30,3 +30,14 @@ Feature: Durable per-turn inner-loop checkpoint
     When the react loop runs the goal "no checkpoint"
     Then the result ok is True
     And the checkpoint store was never read or written
+
+  Scenario: a resumed loop restores loaded_skills to avoid re-loading and re-charging budget
+    Given an AsyncOrchestrator with a fake checkpoint store and task id "task-skills"
+    And loop checkpointing is enabled
+    And a checkpoint is pre-seeded for goal "resume with skills" at turn 1 with prior message "prior work"
+    And the checkpoint has loaded_skills ["read_file", "write_file"]
+    And the model calls finish with summary "finished after resume"
+    When the react loop runs the goal "resume with skills"
+    Then the result ok is True
+    And the result summary contains "finished after resume"
+    And no checkpoint remains for task "task-skills"

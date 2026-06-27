@@ -77,6 +77,17 @@ def _preseed(ctx, goal, turn, msg):
     ctx["store"].save.reset_mock()
 
 
+@given(parsers.parse("the checkpoint has loaded_skills {skills}"))
+def _preseed_loaded_skills(ctx, skills):
+    # Parse the skills as a JSON string like ["read_file", "write_file"]
+    import json
+    loaded = run_async(ctx["store"].load(ctx["task_id"]))
+    if loaded is not None:
+        loaded.loaded_skills = json.loads(skills)
+        run_async(ctx["store"].save(loaded))
+        ctx["store"].save.reset_mock()
+
+
 @given(parsers.parse('the model calls finish with summary "{summary}"'))
 def _finish(ctx, summary):
     ctx["response"] = _finish_msg(summary)

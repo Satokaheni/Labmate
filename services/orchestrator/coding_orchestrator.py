@@ -590,6 +590,7 @@ class AsyncOrchestrator:
                 tests_passed = _loaded.tests_passed
                 verify_nudges_used = _loaded.verify_nudges_used
                 _tools_used = list(_loaded.tools_used)
+                loaded_skills = set(_loaded.loaded_skills)
                 # Rebase the wall-clock deadline: subtract elapsed-so-far from
                 # 'start' so deadline_s still measures total goal time across the
                 # restart (monotonic values are not comparable across processes).
@@ -1142,6 +1143,7 @@ class AsyncOrchestrator:
                         verify_nudges_used=verify_nudges_used,
                         loop_signatures=list(loop_detector._sigs),
                         tools_used=list(_tools_used),
+                        loaded_skills=sorted(loaded_skills),
                         start_monotonic_offset=self._now() - start,
                         turn=budget.used,
                     ))
