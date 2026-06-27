@@ -119,10 +119,65 @@ def from_dict(d: dict | None) -> LoopCheckpoint | None:
         return None
 
 
+class CheckpointStore:
+    """Best-effort persistence of one inner-loop checkpoint per task_id.
+
+    Backed by a Motor (async) collection. EVERY method swallows and logs (to
+    stderr via logging) all errors and never raises — a checkpoint failure must
+    never break the ReAct loop. Keyed by task_id; save() upserts so only the
+    latest snapshot per task is kept.
+    """
+
+    def __init__(self, collection: Any) -> None:
+        self._col = collection
+
+    async def save(self, cp: LoopCheckpoint) -> None:
+        try:
+            await self._col.update_one(
+                {"task_id": cp.task_id},
+                {"$set": to_dict(cp)},
+                upsert=True,
+            )
+        except Exception as exc:  # best-effort: never break the loop
+            _log.warning("checkpoint save failed for %s: %s", cp.task_id, exc)
+
+    async def load(self, task_id: str) -> LoopCheckpoint | None:
+        try:
+            doc = await self._col.find_one({"task_id": task_id})
+        except Exception as exc:
+            _log.warning("checkpoint load failed for %s: %s", task_id, exc)
+            return None
+        return from_dict(doc)
+
+    async def clear(self, task_id: str) -> None:
+        try:
+            await self._col.delete_one({"task_id": task_id})
+        except Exception as exc:
+            _log.warning("checkpoint clear failed for %s: %s", task_id, exc)
+
+
+class FakeCheckpointStore:
+    """In-memory CheckpointStore for tests and as a default DI seam."""
+
+    def __init__(self) -> None:
+        self._mem: dict[str, dict] = {}
+
+    async def save(self, cp: LoopCheckpoint) -> None:
+        self._mem[cp.task_id] = to_dict(cp)
+
+    async def load(self, task_id: str) -> LoopCheckpoint | None:
+        return from_dict(self._mem.get(task_id))
+
+    async def clear(self, task_id: str) -> None:
+        self._mem.pop(task_id, None)
+
+
 __all__ = [
     "CHECKPOINT_VERSION",
     "CHECKPOINT_COLLECTION",
     "LoopCheckpoint",
     "to_dict",
     "from_dict",
+    "CheckpointStore",
+    "FakeCheckpointStore",
 ]

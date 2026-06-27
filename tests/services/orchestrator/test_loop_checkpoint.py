@@ -5,12 +5,16 @@ No Mongo, no asyncio in this file — to_dict/from_dict are pure sync functions.
 from __future__ import annotations
 
 import json
+import pytest
+from unittest.mock import AsyncMock, MagicMock
 
 from services.orchestrator.loop_checkpoint import (
     CHECKPOINT_VERSION,
     LoopCheckpoint,
     to_dict,
     from_dict,
+    CheckpointStore,
+    FakeCheckpointStore,
 )
 
 
@@ -86,3 +90,65 @@ def test_from_dict_tolerates_extra_keys():
     d["_id"] = "mongo-object-id"  # Mongo adds this; load must ignore it
     d["saved_at"] = "2026-06-26T00:00:00Z"
     assert from_dict(d) == _sample()
+
+
+@pytest.mark.asyncio
+async def test_fake_store_save_load_clear_round_trip():
+    store = FakeCheckpointStore()
+    cp = _sample()
+    assert await store.load("task-123") is None
+    await store.save(cp)
+    assert await store.load("task-123") == cp
+    await store.clear("task-123")
+    assert await store.load("task-123") is None
+
+
+@pytest.mark.asyncio
+async def test_fake_store_save_overwrites_latest():
+    store = FakeCheckpointStore()
+    await store.save(_sample())
+    cp2 = _sample()
+    cp2.used = 99
+    await store.save(cp2)
+    assert (await store.load("task-123")).used == 99
+
+
+@pytest.mark.asyncio
+async def test_mongo_store_save_upserts_by_task_id():
+    col = MagicMock()
+    col.update_one = AsyncMock()
+    store = CheckpointStore(col)
+    await store.save(_sample())
+    args, kwargs = col.update_one.call_args
+    assert args[0] == {"task_id": "task-123"}      # filter
+    assert kwargs.get("upsert") is True
+
+
+@pytest.mark.asyncio
+async def test_mongo_store_load_returns_checkpoint():
+    col = MagicMock()
+    col.find_one = AsyncMock(return_value=to_dict(_sample()))
+    store = CheckpointStore(col)
+    assert await store.load("task-123") == _sample()
+
+
+@pytest.mark.asyncio
+async def test_mongo_store_load_missing_returns_none():
+    col = MagicMock()
+    col.find_one = AsyncMock(return_value=None)
+    store = CheckpointStore(col)
+    assert await store.load("nope") is None
+
+
+@pytest.mark.asyncio
+async def test_store_errors_are_swallowed_never_raised():
+    # save/load/clear must be best-effort: a raising collection must NOT
+    # propagate (the ReAct loop must never break on a checkpoint failure).
+    col = MagicMock()
+    col.update_one = AsyncMock(side_effect=RuntimeError("mongo down"))
+    col.find_one = AsyncMock(side_effect=RuntimeError("mongo down"))
+    col.delete_one = AsyncMock(side_effect=RuntimeError("mongo down"))
+    store = CheckpointStore(col)
+    await store.save(_sample())          # must not raise
+    assert await store.load("task-123") is None   # error -> None
+    await store.clear("task-123")        # must not raise
