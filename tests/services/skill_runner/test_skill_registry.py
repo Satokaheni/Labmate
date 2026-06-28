@@ -415,3 +415,24 @@ async def test_reload_waits_for_new_session_not_stale_ready(monkeypatch):
 
     # Verify the skill is READY after reload
     assert sp.state == "READY"
+
+
+@pytest.mark.mocked
+@pytest.mark.asyncio
+async def test_call_tool_unknown_tool_lists_valid_names(monkeypatch):
+    """Unknown-tool error must enumerate valid tool names so the model can self-correct."""
+    reg = SkillRegistry()
+    schema = {"type": "object"}
+    _patch_spawn(monkeypatch, reg, [
+        _tool("run_python", schema),
+        _tool("run_tests", schema),
+        _tool("run_shell", schema),
+    ])
+    await reg.register(SkillManifest(name="code-sandbox", command="python", args=["s.py"]))
+
+    with pytest.raises(SkillUnavailable) as exc:
+        await reg.call_tool("code-sandbox.run_pytest", {})
+
+    msg = str(exc.value)
+    assert "run_pytest" in msg
+    assert "run_python" in msg and "run_tests" in msg and "run_shell" in msg

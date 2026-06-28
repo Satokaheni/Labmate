@@ -26,6 +26,27 @@ _log = logging.getLogger("loop_detection")
 # Matches the env-knob style used in graph.py (module-level getenv + cast).
 LOOP_REPEAT_LIMIT = int(os.getenv("LOOP_REPEAT_LIMIT", "2"))
 
+# Mutating tools edit state (files / sandbox writes). A weak model legitimately
+# retries "edit, run tests, see failure, edit again", so identical consecutive
+# mutating calls must be tolerated longer than a read/inspect repeat before the
+# detector halts. Cycle detection is unaffected.
+MUTATING_TOOLS: frozenset[str] = frozenset({"write_file", "call_skill_tool"})
+
+# Higher consecutive-repeat tolerance for mutating tools. Default 4 vs the
+# read/inspect default of LOOP_REPEAT_LIMIT (2).
+LOOP_REPEAT_LIMIT_MUTATING = int(os.getenv("LOOP_REPEAT_LIMIT_MUTATING", "4"))
+
+
+def repeat_limit_for(name: str) -> int:
+    """Per-tool consecutive-repeat threshold.
+
+    Mutating tools (file/sandbox writes) get the higher mutating limit; every
+    other tool keeps the base LOOP_REPEAT_LIMIT. Pure: no I/O, no state.
+    """
+    if name in MUTATING_TOOLS:
+        return LOOP_REPEAT_LIMIT_MUTATING
+    return LOOP_REPEAT_LIMIT
+
 
 def call_signature(name: str, args: dict) -> str:
     """Deterministic signature for a tool call.
@@ -63,23 +84,27 @@ class LoopDetector:
         self._sigs = []
         self._reason = ""
 
-    def record(self, signature: str) -> bool:
+    def record(self, signature: str, repeat_limit: int | None = None) -> bool:
         self._sigs.append(signature)
-        return self.should_break()
+        return self.should_break(repeat_limit=repeat_limit)
 
     def reason(self) -> str:
         return self._reason
 
-    def should_break(self) -> bool:
-        if self.repeat_limit < 1:
+    def should_break(self, repeat_limit: int | None = None) -> bool:
+        # The repeat threshold may be overridden per-call (e.g. a higher
+        # tolerance for mutating tools). The cycle window/threshold below is
+        # deliberately NOT overridden — cycle detection stays as-is.
+        repeat_n = self.repeat_limit if repeat_limit is None else repeat_limit
+        if repeat_n < 1:
             return False
         sigs = self._sigs
         n = len(sigs)
-        if n < self.repeat_limit:
+        if n < repeat_n:
             return False
 
-        # 1) Immediate consecutive repeat.
-        tail = sigs[-self.repeat_limit:]
+        # 1) Immediate consecutive repeat (uses the possibly-overridden threshold).
+        tail = sigs[-repeat_n:]
         if len(set(tail)) == 1:
             self._reason = "repeat"
             return True

@@ -51,8 +51,16 @@ from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncO
 from services.orchestrator.storage_manager import StorageManager
 from services.orchestrator.mcp_client_manager import MCPClientManager
 from services.orchestrator.skill_router import SkillRouter
+from services.orchestrator.memory_search import MemorySearch
+from services.orchestrator.completion_guard import reconcile_final_answer
 from services.orchestrator import events
 from services.orchestrator import call_counter
+from services.orchestrator import skill_curator
+from services.orchestrator.skill_curator import (
+    RecentSequences,
+    CapturedSequence,
+    run_curator,
+)
 from services.skill_runner.skill_runner import SkillRunner
 
 _log = logging.getLogger("orchestrator")
@@ -77,6 +85,31 @@ FULL_THRESH  = int(CTX_TOKENS * 0.85)
 # sessions inspected per sweep (newest-active first) so one sweep stays bounded.
 BG_COMPACT_INTERVAL_S = int(os.getenv("BG_COMPACT_INTERVAL_S", "120"))
 BG_COMPACT_MAX_SESSIONS = int(os.getenv("BG_COMPACT_MAX_SESSIONS", "20"))
+
+
+import re as _re
+
+
+def _extract_tool_sequence(final_state) -> tuple[str, ...]:
+    """Pull the ordered tool/skill names a completed goal used from its state.
+
+    Reads final_state['tools_used'] when present (the orchestrator records the
+    per-goal tool sequence there). Returns an empty tuple for a non-dict or a
+    state with no recorded tools, so the curator simply has nothing to draft.
+    """
+    if not isinstance(final_state, dict):
+        return ()
+    tools = final_state.get("tools_used") or []
+    if not isinstance(tools, (list, tuple)):
+        return ()
+    return tuple(str(t) for t in tools if t)
+
+
+def _slug_for(task_text: str) -> str:
+    """kebab-case candidate skill name from the goal text (deterministic)."""
+    words = _re.findall(r"[a-z0-9]+", (task_text or "").lower())
+    slug = "-".join(words[:4]) or "proposed-skill"
+    return slug[:48]
 
 
 def _worker_id() -> str:
@@ -109,6 +142,8 @@ class OrchestratorProcess:
         self._redis: aioredis.Redis | None = None
         self._mcp:   MCPClientManager | None = None
         self._codegraph_mcp: MCPClientManager | None = None
+        self._recent_sequences = RecentSequences()
+        self._last_goal_at: float = 0.0
 
     # ── top-level run ──────────────────────────────────────────────────────
 
@@ -141,6 +176,17 @@ class OrchestratorProcess:
                 gemma_api_base=GEMMA_BASE,
             )
 
+            # Wire the durable inner-loop checkpoint store when a Mongo-backed
+            # StorageManager is available. No-op when checkpointing is disabled
+            # (the flag is read inside _run_react_loop) or no storage exists.
+            try:
+                from .loop_checkpoint import CheckpointStore
+                async_orch.checkpoint_store = CheckpointStore(
+                    _sm.loop_checkpoint_collection
+                )
+            except Exception:  # best-effort wiring; never block startup
+                async_orch.checkpoint_store = None
+
             # Initialize Redis BEFORE skill router (CLAUDE.md: "after self._redis is created")
             pool = aioredis.ConnectionPool.from_url(
                 redis_url, max_connections=8, decode_responses=True,
@@ -170,6 +216,7 @@ class OrchestratorProcess:
             # Wire redis and codegraph_mcp outside the try/except (always available)
             async_orch.redis = self._redis
             async_orch.codegraph_mcp = self._codegraph_mcp
+            async_orch.memory_search = MemorySearch(_sm)
 
             # CodingOrchestrator and build_graph have a circular dependency:
             # build_graph(orch, ...) closes node functions over the orch object;
@@ -196,6 +243,12 @@ class OrchestratorProcess:
             bg_compactor = asyncio.create_task(
                 self._background_compactor(orch, _sm), name="background-compactor",
             )
+            bg_curator = None
+            if skill_curator.ENABLE_SKILL_CURATOR:
+                bg_curator = asyncio.create_task(
+                    self._background_curator(orch), name="background-curator",
+                )
+                _log.info("skill curator enabled (proposal-only, background)")
             try:
                 await self._loop(orch, _sm)
             finally:
@@ -204,6 +257,12 @@ class OrchestratorProcess:
                     await bg_compactor
                 except asyncio.CancelledError:
                     pass
+                if bg_curator is not None:
+                    bg_curator.cancel()
+                    try:
+                        await bg_curator
+                    except asyncio.CancelledError:
+                        pass
 
         if self._mcp:
             await self._mcp.shutdown()
@@ -296,6 +355,47 @@ class OrchestratorProcess:
                 raise
             except Exception:
                 _log.warning("background compactor sweep failed (non-fatal)", exc_info=True)
+
+    async def _background_curator(self, orch: "CodingOrchestrator") -> None:
+        """Periodic, best-effort skill-curator loop (mirrors _background_compactor).
+
+        Only created when ENABLE_SKILL_CURATOR is set. Each cycle is gated by
+        should_run_now (interval + idle) inside run_curator. Failures are isolated
+        there; this loop additionally guards its own sleep/iteration.
+        """
+        import time as _time
+        skills_root = Path(__file__).resolve().parent.parent / "skills"
+        state_path = (
+            Path(os.getenv("CURATOR_STATE_DIR", ".data")) / "skill_curator.json"
+        )
+        # Wake roughly hourly; the real interval gate lives in run_curator.
+        wake_s = int(os.getenv("CURATOR_WAKE_INTERVAL_S", "3600"))
+
+        async def _draft(prompt: str) -> str:
+            # The ONE LLM call — routed through architect() (api_key + budget set).
+            return await orch.architect(prompt, thinking_budget=0)
+
+        while not self._shutdown.is_set():
+            try:
+                await asyncio.sleep(wake_s)
+                if self._shutdown.is_set():
+                    break
+                now = _time.time()
+                idle_for_s = now - self._last_goal_at if self._last_goal_at else 1e9
+                await run_curator(
+                    skills_root=skills_root,
+                    state_path=state_path,
+                    recent=self._recent_sequences,
+                    draft_fn=_draft,
+                    now=now,
+                    idle_for_s=idle_for_s,
+                    interval_hours=skill_curator.CURATOR_INTERVAL_HOURS,
+                    min_idle_hours=skill_curator.CURATOR_MIN_IDLE_HOURS,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _log.debug("background curator sweep failed (non-fatal)", exc_info=True)
 
     async def _handle(
         self,
@@ -476,6 +576,24 @@ class OrchestratorProcess:
                         final_state["final_answer"] = streamed
                 except Exception:
                     pass  # best-effort; never let streaming block the result
+            # Reconcile the RENDERED final answer (post-summarizer) with ok/error.
+            # The skill-first and ReAct seams reconcile their immediate outputs, but
+            # the user-facing punt wording is produced downstream by the summarizer /
+            # stream_final_answer and was never re-checked — so a "file too large /
+            # provide a snippet" answer slipped through as ok=True (A/B report §8.3).
+            # Setting final_state["error"] here propagates the downgrade to ok_flag
+            # below, the stored result payload, the finally-block status, and
+            # complete_session. Clarification states never reach here with a punt.
+            if isinstance(final_state, dict) and not final_state.get("awaiting_clarification"):
+                _rendered = final_state.get("final_answer", "") or ""
+                _recon_ok, _recon_err, _ = reconcile_final_answer(
+                    final_state.get("error") is None,
+                    final_state.get("error"),
+                    _rendered,
+                    tests_passed=bool(final_state.get("tests_passed", False)),
+                )
+                if not _recon_ok and final_state.get("error") is None:
+                    final_state["error"] = _recon_err
             # Derive ok from final_state.error (FIX #2: failed subtasks now finalize with error set, not exception)
             ok_flag = final_state.get("error") is None
             # A/B instrumentation: llm_calls is the approximate per-task count of
@@ -486,6 +604,22 @@ class OrchestratorProcess:
                 "llm_calls": call_counter.get_count(),
             })
             _log.info("task %s complete", task_id)
+            # Skill-curator: record a SUCCESSFUL multi-tool sequence as a draft
+            # candidate (best-effort; never blocks). RecentSequences itself drops
+            # failed / too-short sequences.
+            import time as _time
+            self._last_goal_at = _time.time()
+            try:
+                _tools = _extract_tool_sequence(final_state)
+                self._recent_sequences.record(CapturedSequence(
+                    name=_slug_for(task_text),
+                    goal=task_text[:500],
+                    tools=_tools,
+                    ok=ok_flag,
+                    ts=self._last_goal_at,
+                ))
+            except Exception:
+                pass  # capture is best-effort
             # Task-boundary reflection: write to semantic memory asynchronously
             _final_answer = (
                 final_state.get("final_answer", "") if isinstance(final_state, dict) else ""

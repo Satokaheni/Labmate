@@ -83,7 +83,7 @@ def _check_node():
 
     mock_orch = MagicMock(spec=CodingOrchestrator)
     mock_async_orch = MagicMock(spec=AsyncOrchestrator)
-    _, _, check_node, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
+    _, _, check_node, _, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
     return check_node
 
 

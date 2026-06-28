@@ -87,6 +87,12 @@ def _list_dir_on_turn(ctx, path, turn):
     ctx["responses"][turn - 1] = _tool_call_msg("list_dir", {"path": path})
 
 
+@given(parsers.parse('the model calls write_file with path "{path}" and content "{content}" on turn {turn:d}'))
+def _write_file_on_turn(ctx, path, content, turn):
+    _ensure_len(ctx, turn)
+    ctx["responses"][turn - 1] = _tool_call_msg("write_file", {"path": path, "content": content})
+
+
 @given(parsers.parse('the model calls finish with summary "{summary}" on turn {turn:d}'))
 def _finish_on_turn(ctx, summary, turn):
     _ensure_len(ctx, turn)

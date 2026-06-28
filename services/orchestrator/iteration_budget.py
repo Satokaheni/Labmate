@@ -26,6 +26,18 @@ CHEAP_TOOLS: frozenset[str] = frozenset({
     "code_semantic_search",
 })
 
+# Refundable tools: a SUPERSET of CHEAP_TOOLS. In addition to pure reads, a
+# turn that only ran verification (run_tests / run_bash) or inspection
+# (code_semantic_search / memory_search) is refunded, so checking the work
+# does not starve the editing budget. CHEAP_TOOLS stays intact for callers
+# that mean "pure read only".
+REFUNDABLE_TOOLS: frozenset[str] = CHEAP_TOOLS | frozenset({
+    "run_tests",
+    "run_bash",
+    "code_semantic_search",
+    "memory_search",
+})
+
 
 class IterationBudget:
     """Thread-safe iteration counter with a one-shot grace call.
@@ -116,4 +128,4 @@ class IterationBudget:
             return self._absolute_turns
 
 
-__all__ = ["IterationBudget", "CHEAP_TOOLS"]
+__all__ = ["IterationBudget", "CHEAP_TOOLS", "REFUNDABLE_TOOLS"]

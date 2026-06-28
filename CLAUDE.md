@@ -183,7 +183,9 @@ Branch `feat/harness-robustness` (off `994df92`). Eight features added to harden
 | Iteration budget | `services/orchestrator/iteration_budget.py` (`IterationBudget`) | `coding_orchestrator.py` `react_execute` — replaced the `range(max_steps)` cap with consume/refund + one-shot grace call + absolute turn cap | `LABMATE_MAX_ITERATIONS` (default = `max_steps`, 6) |
 | Prefix-cache stability | `services/orchestrator/prompt_assembler.py` (`PromptAssembler`) | `coding_orchestrator.py` `react_execute` — builds a byte-stable system+tools prefix once per goal so llama.cpp reuses the cached prefix | — |
 | Endpoint failover | `services/orchestrator/model_client.py` (`acompletion_with_failover`, `AllEndpointsExhausted`, `resolve_bases`) | `coding_orchestrator.py` — routes architect/editor/react/aggregate/stream model calls; fails over on 5xx/conn/timeout, 4xx is terminal | `LABMATE_FALLBACK_BASES=""`, `LABMATE_MODEL_MAX_ATTEMPTS_PER_BASE=2`, `LABMATE_MODEL_BACKOFF_BASE_S=0.5`, `LABMATE_MODEL_BACKOFF_MAX_S=4.0` |
+| Message repair | `services/orchestrator/message_repair.py` (`sanitize_messages`, `message_repair_enabled`) | `coding_orchestrator.py` `_maybe_repair` — drops orphaned tool results and merges illegal adjacent same-role runs right before each model call; idempotent/safe no-op when off | `ENABLE_MESSAGE_REPAIR=0` (**OFF by default**) |
 | BDD foundation | `tests/conftest.py` `fake_model` (respx HTTP-seam mock) | pytest-bdd layer: `tests/services/orchestrator/features/*.feature` + `test_*_bdd.py`; `bdd` marker in `pytest.ini` | — |
+| Wall-clock + no-progress breaker | `services/orchestrator/progress_breaker.py` (`ProgressBreaker`, `ProgressStep`) | `coding_orchestrator.py` `_run_react_loop` — per-turn wall-clock deadline (injectable clock) + idle breaker that trips after N no-progress turns; both layered on top of `IterationBudget` step counting | `LABMATE_GOAL_DEADLINE_S=600` (0 disables), `LABMATE_NOPROGRESS_LIMIT=5` (0 disables) |
 
 **Notes for testing:**
 - **Conditional gates are OFF by default** — export `ENABLE_CONDITIONAL_GATES=1` to exercise them.
@@ -199,10 +201,64 @@ Branch `feat/harness-robustness` (off `994df92`). Eight features added to harden
 - `_replan_loop(goal)` — **opt-in** (`SEQUENCING_MODE=replan`): a planner emits the single next sub-goal (or `done`) and runs each via skill-first with a `_run_react_loop` fallback; the planner owns the completion decision (honest completion). A compound gate (`_is_compound`) runs single-step goals once so simple tasks pay no sequencing tax. Kept opt-in for A/B until its activation-cap bug (below) is fixed.
 
 **Default is `skill_first`** (the well-tested harness path); `replan` and `react` are opt-in via `SEQUENCING_MODE` for A/B evaluation (`eval/seq_ab/`).
+> **Updated by agentic-fix-loop (2026-06-26):** `skill_first` is the default only for **non-edit** goals. Goals classified as edit/fix-intent (`requires_editing`) now route straight to `_run_react_loop` regardless of `SEQUENCING_MODE`, so the model can read→edit→`run_tests`→verify in one loop. Toggle with `ROUTE_EDIT_TO_REACT` (default `1`). See the **Agentic Fix Loop** section below.
 
 Latency/sequencing knobs (defaults): `SEQUENCING_MODE=skill_first`, `MAX_SEQ_STEPS=5`, `REPLAN_COMPOUND_GATE=1`, `ASSESS_THINKING_BUDGET=384` (lighter ambiguity judgement), `CRITIQUE_ARTIFACT_TYPES=""` (auto critique-gate **OFF**; set `writing` or `code,writing` to re-enable), `SKILL_CALL_TIMEOUT=135` (must exceed the worker's `CALL_TIMEOUT`). `test-gen` gained a `run_tests` tool (run an existing suite — do not call `generate` to re-run tests). A/B harness: `bash eval/seq_ab/run_mode.sh <skill_first|react|replan>`.
 
-**Known bug to chase (from the perf branch):** in `replan` mode, `SkillRunner.load_skill` can hit its `max_chain` activation cap mid-chain because `reset_activations()` runs once per goal, not per sub-step — replan runs many sub-steps. Fix candidate: call `reset_activations()` per sub-step inside `_replan_loop`. `skill_first` is unaffected (≤1 skill/goal).
+**Replan activation-cap bug — FIXED (2026-06-26, branch `feat/agentic-fix-loop`):** `_replan_loop` now calls `self.skill_router.runner.reset_activations()` at the START of each sub-step (each planner sub-goal is a fresh mini-task), so `SkillRunner.load_skill` no longer hits its `max_chain` cap mid-chain. A pure no-progress guard (`services/orchestrator/replan_guard.py::replan_should_stop`) additionally forces an honest finish when the planner re-emits a near-identical sub-goal or re-targets one skill beyond `REPLAN_MAX_SKILL_REPEATS` (default 2), preventing the live-A/B "repo-fault-localize 4x" thrash. `skill_first`/`react` never enter `_replan_loop`, so both are unaffected.
+
+---
+
+## Agentic Fix Loop (2026-06-26)
+
+Branch `feat/agentic-fix-loop` (off `86f0595`). Eleven features that turn the single-skill harness into a grounded **read → edit → run → verify** loop. Motivated by the `skill_first`-vs-`replan` A/B (`eval/reports/ab_sequencing_report.md`), which showed the harness routing a "review then fix" task to **one read-only skill**, making **0 edits**, and sometimes fabricating *"I fixed the bug, all tests pass."* Fix mirrors the hermes/openclaw flat-tool + verification-loop architecture. Built TDD/BDD via the Implementation Workflow (54 tasks; 11 new `.feature` files). Suite: orchestrator + memory + ws_gateway **1090 passed**. Plans: `docs/superpowers/plans/2026-06-26-*.md`.
+
+**Find-and-fix loop** (compose primitives in one loop instead of routing to one skill):
+
+| Feature | New module | Wires into | Env knobs (default) |
+|---|---|---|---|
+| run_tests tool + write-verify | `local_tools.py` (`run_tests` helpers, `verify_written_content`) | `_run_react_loop` — flat `run_tests` tool returns `{ok, exit_code, raw_output}`; `write_file` reads back to confirm the write applied | `LABMATE_TEST_CMD=pytest`, `LABMATE_TEST_TIMEOUT_MS=120000` |
+| Raw-output grounding | `tool_grounding.py` (`ground_tool_result`) | `_run_react_loop` — every tool result passes head+tail budgeting (not 600-char summaries) so the model sees real test failures / file contents | `LABMATE_TOOL_RESULT_BUDGET=16000` |
+| Find-and-fix routing | `edit_intent.py` (`requires_editing`) | `react_execute` — edit/fix-intent goals route to `_run_react_loop`, so read+edit+run interleave | `ROUTE_EDIT_TO_REACT=1` (**ON** — changes default routing for edit goals) |
+| Verification-stop guard | `verification_stop.py` (`needs_verification`, `build_verify_nudge`) | `_run_react_loop` `finish` branch — if files were edited but tests not shown passing, inject a synthetic "run the tests now" nudge and continue (kills the fabrication) | `MAX_VERIFY_NUDGES=2` |
+
+**Robustness + capabilities:**
+
+| Feature | New module | Wires into | Env knobs (default) |
+|---|---|---|---|
+| Revise-before-deliver | `finalize_revision.py` (`should_revise`, `build_revision_prompt`) | new `revise` graph node (`check → revise → END`) — one bounded model call to re-read & optionally revise the final answer; side-effect-guarded | `ENABLE_FINALIZE_REVISION=0` (**OFF**), `MAX_FINALIZE_REVISIONS=1`, `FINALIZE_REVISION_THINKING_BUDGET=1024` |
+| Memory search tool | `memory_search.py` (`MemorySearch`) | `_run_react_loop` — a `memory_search` flat tool (gated on a memory store, like `code_semantic_search`) lets the model query Chroma/Mongo memory mid-task | — (k clamped 1–20) |
+| Interrupt steering | `events.py` steer helpers + `steer_inject.py` | `_run_react_loop` loop top — drains `labmate:steer:<task_id>` Redis key, injects it as an out-of-band user msg; also wired the previously-missing in-loop **cancel** check; ws_gateway gained a `steer` frame | — (`STEER_PREFIX="labmate:steer:"`) |
+| Skill usage telemetry | `skill_telemetry.py` (`record_use`, `compute_state`) | `SkillRouter.run` — best-effort per-skill use/success counts + stale/archive state in a central JSON sidecar | `SKILL_STALE_AFTER_DAYS=30`, `SKILL_ARCHIVE_AFTER_DAYS=90`, `LABMATE_TELEMETRY_PATH` |
+| Skill curator (proposal-only) | `skill_curator.py` | background loop in `main.py` — on an interval+idle gate, drafts candidate skills from successful tool sequences into `services/skills/.proposed/<name>/` (NOT auto-discovered) + emits `skill.proposed` for human review | `ENABLE_SKILL_CURATOR=0` (**OFF/opt-in**), `CURATOR_INTERVAL_HOURS=168`, `CURATOR_MIN_IDLE_HOURS=2` |
+
+> Message-sequence repair and the wall-clock + no-progress breaker also landed on this branch — their rows are in the **Harness Robustness** table above.
+
+**Default-behavior changes to know** (everything else is opt-in/off or behavior-preserving):
+- `ROUTE_EDIT_TO_REACT=1` — edit-intent goals use the ReAct loop, not a single skill.
+- `LABMATE_TOOL_RESULT_BUDGET=16000` — tool results reach the model far less truncated than before (~2–4k).
+- `LABMATE_GOAL_DEADLINE_S=600` + `LABMATE_NOPROGRESS_LIMIT=5` — goals now have a wall-clock + no-progress ceiling.
+- `MAX_VERIFY_NUDGES=2` — edit goals that finish without passing tests get nudged to verify.
+- **Opt-in/off:** `ENABLE_FINALIZE_REVISION=0`, `ENABLE_SKILL_CURATOR=0`, `ENABLE_MESSAGE_REPAIR=0`.
+
+**Loop-guard order** inside `_run_react_loop` (each turn, top→bottom): cancel-check → steer-drain → wall-clock deadline → no-progress breaker → IterationBudget consume/grace → loop-detector; then `sanitize_messages` → `acompletion_with_failover` → tool dispatch (results grounded) → on `finish`, verification-stop guard. The whole-branch review confirmed these compose (no guard masks another).
+
+### A/B-driven fixes — Round 2 (2026-06-27)
+
+A live A/B on RunPod (`eval/reports/ab_agentic_fix_loop_report.md`) drove a second fix wave. **Result: fabricated completion is eliminated and compound completion went `0/3 → 2/3` on `skill_first` and `react`** (real edits + a verified run). `c2` ("review→fix") is reliably green in every mode; `c1`/`c3` are **flaky on the Q4 model** (same code, different dice — hence the multi-trial harness in §9). New modules/knobs:
+
+| Fix | What it does | Env knobs (default) |
+|---|---|---|
+| Loop headroom | mutating tools (`write_file`/`call_skill_tool`) get a higher loop-repeat tolerance so legit edit-retries aren't halted; `run_tests`/`run_bash`/`code_semantic_search`/`memory_search` turns are refunded (`REFUNDABLE_TOOLS`); edit-intent goals get a higher iteration ceiling | `LOOP_REPEAT_LIMIT_MUTATING=4`, `LABMATE_MAX_ITERATIONS_EDIT=12` |
+| Load-skill churn | a repeat `load_skill` of an already-loaded skill is short-circuited ("already loaded; call its tools directly") and the iteration budget is refunded — stops the model burning ~⅓ of its budget re-loading skills | `LABMATE_REFUND_REPEAT_LOAD_SKILL=1` |
+| OK/answer reconciliation | `services/orchestrator/completion_guard.py::reconcile_ok` (wired in `_run_skill_first` + the react `finish`) — a punt answer ("file too large…") can't be `ok=True`; an unverified "I fixed it" (no passing `run_tests` this run) is downgraded | — |
+| Final-answer reconciliation | `completion_guard.reconcile_final_answer` in `main.py::_handle` re-checks the **rendered** answer (post-summarizer) so a punt that only appears in the user-facing summary also flips `ok=False` (fixes the `skill_first` c3 false-`ok`) | — |
+| Replan guard | `reset_activations()` per sub-step + `services/orchestrator/replan_guard.py::replan_should_stop` (de-dup + skill-repeat cap) — see the activation-cap note above | `REPLAN_MAX_SKILL_REPEATS=2` |
+| Durable loop checkpoint (Option A) | `services/orchestrator/loop_checkpoint.py` — best-effort per-turn snapshot of the ReAct loop (incl. `loaded_skills`) to Mongo so a crash mid-loop resumes from the saved turn instead of turn 0 | `ENABLE_LOOP_CHECKPOINT=0` (**OFF** — opt-in) |
+
+**Graph trim (Option A, Part 2): no-op** — the audit found no provably-dead graph code, i.e. the LangGraph outer layer is still load-bearing (a data point *against* rewriting it as a lightweight loop; the deferred "Option B" spike is `docs/superpowers/plans/2026-06-26-lite-orchestrator-spike.md`).
+
+**Open follow-up — retry sizing:** goal-level retry already exists (reflect→retry, `MAX_GOAL_ATTEMPTS=2`, error-class gated — *terminal* failures don't retry, *flaky* ones do). Whether to raise it for flaky edit goals is gated on the multi-trial per-attempt pass-rate (§9) — measure first, then tune; do NOT add a new retry mechanism.
 
 ---
 
@@ -314,7 +370,7 @@ grep "incremental_update" .data/logs/codegraph-embedder.log | tail -3
 | `llama-server` 5xx / timeout | Model not loaded or VRAM OOM |
 | ws_gateway `auth_failed` | JWT credentials wrong or `ADMIN_EMAIL`/`ADMIN_PASSWORD` not seeded |
 
-### 7. Harness-robustness feature checks (the 8 features above)
+### 8. Feature checks — harness-robustness + agentic-fix-loop
 
 These are unit/BDD-covered (`PYTHONPATH=. python -m pytest tests/services/orchestrator/ -q` → all green). To exercise them **live** on RunPod, watch `.data/logs/orchestrator.log` while pushing tasks:
 
@@ -350,31 +406,74 @@ PYTHONPATH=. python -m services.cli "Review /workspace/ab_buggy.py for bugs, the
 #   skill_first: ONE skill dispatch then finish (honest 'partial' if the skill can't edit code).
 #   replan:      planner emits sub-goals (review → fix), multiple steps — watch for the load_skill
 #                activation-cap bug mid-chain (see Harness Robustness → known bug).
+
+# --- agentic-fix-loop features (2026-06-26) ---
+
+# Find-and-fix loop — an edit/fix goal should route to the ReAct loop, make REAL edits, run tests, and NOT fabricate
+PYTHONPATH=. python -m services.cli "Review /workspace/ab_buggy.py for bugs, then fix the code and make the tests pass."
+#   log: requires_editing → ReAct loop; write_file (read-back OK) + run_tests (real exit code); if it tries to finish
+#        after editing WITHOUT passing tests → verification-stop nudge ("run the tests now") then a real test run.
+#        The old "I fixed it, all tests pass" fabrication should be gone.
+
+# Memory search — the model can query memory mid-task (tool only present when a memory store is wired)
+#   log: memory_search tool call → ranked snippets returned into the loop.
+
+# Interrupt steering — mid-run, write a steer key; the next turn injects it as an out-of-band user message
+redis-cli SET "labmate:steer:$TASK_ID" "focus on the off-by-one in the loop range"
+#   log: steer drained at loop top → OOB user msg injected → model adjusts. (hard cancel: SET labmate:cancel:$TASK_ID)
+
+# Wall-clock / no-progress — a stuck goal stops on the deadline or after N no-progress turns, not silently forever
+#   log: "wall-clock deadline exceeded" OR "no-progress breaker tripped".
+
+# Revise-before-deliver (opt-in) — enable, then a thin/wrong final answer gets ONE revision pass before delivery
+ENABLE_FINALIZE_REVISION=1 infrastructure/local/start.sh
+#   log (revise node): should_revise → one architect() pass → revised final_answer. OFF by default (no latency).
+
+# Skill curator (opt-in) — enable; after successful sequences it STAGES drafts for review (never auto-activates)
+ENABLE_SKILL_CURATOR=1 infrastructure/local/start.sh
+#   → check services/skills/.proposed/<name>/ for staged SKILL.md drafts + a skill.proposed event. discover() skips .proposed/.
 ```
 
-Knobs to tune live: `LOOP_REPEAT_LIMIT`, `TRIVIAL_MAX_WORDS`, `LABMATE_MAX_ITERATIONS`, `MAX_RATE_LIMIT_RETRIES`, `LABMATE_MODEL_MAX_ATTEMPTS_PER_BASE`, `SEQUENCING_MODE`. See the Harness Robustness table for defaults.
+Knobs to tune live: `LOOP_REPEAT_LIMIT`, `TRIVIAL_MAX_WORDS`, `LABMATE_MAX_ITERATIONS`, `MAX_RATE_LIMIT_RETRIES`, `LABMATE_MODEL_MAX_ATTEMPTS_PER_BASE`, `SEQUENCING_MODE`, `ROUTE_EDIT_TO_REACT`, `LABMATE_TOOL_RESULT_BUDGET`, `LABMATE_GOAL_DEADLINE_S`, `LABMATE_NOPROGRESS_LIMIT`, `MAX_VERIFY_NUDGES`. See the Harness Robustness + Agentic Fix Loop tables for defaults.
 
-### 8. Sequencing A/B test (skill_first vs react vs replan)
+### 9. Sequencing & find-and-fix A/B test (skill_first vs react vs replan)
 
 `SEQUENCING_MODE` is process-wide (read once at orchestrator import), so each mode needs its own orchestrator restart. The harness in `eval/seq_ab/` automates this: it restarts the orchestrator under a mode, runs a fixed 5-case set (3 compound + 2 controls) through Redis, and records per case the skill sequence, `ok`, llm-call count, and wall-time to `eval/seq_ab/results-<mode>.json`.
 
+> **This is now the agentic-fix-loop validation.** The committed baseline (`eval/seq_ab/results-skill_first.json` + `eval/reports/ab_sequencing_report.md`) was captured BEFORE the find-and-fix work: `skill_first` ran one read-only skill, made **0 edits**, and c1 fabricated *"all tests pass."* **Re-run `skill_first` now** and compare — with `ROUTE_EDIT_TO_REACT=1` the compound cases (c1/c2 "review→fix") should route into `_run_react_loop`, make REAL edits (`write_file`/`code-sandbox`) + `run_tests`, and the verification-stop guard should block the fabrication. Success = compound `ok=true` WITH edit steps, and honest answers (no "tests pass" without a passing run in the trace).
+
 ```bash
-# Run each mode (each call restarts the orchestrator under that mode, then runs the 5 cases):
-bash eval/seq_ab/run_mode.sh skill_first   # baseline / current default
-bash eval/seq_ab/run_mode.sh react
-bash eval/seq_ab/run_mode.sh replan        # opt-in planner loop
-# → eval/seq_ab/results-{skill_first,react,replan}.json
+# Run each mode (each call restarts the orchestrator under that mode, then runs the cases).
+# TRIALS=N runs every case N times and records PASS-RATE — c1/c3 flake on the Q4 model, so use N>=3:
+TRIALS=3 bash eval/seq_ab/run_mode.sh skill_first   # current default
+TRIALS=3 bash eval/seq_ab/run_mode.sh react
+TRIALS=3 bash eval/seq_ab/run_mode.sh replan        # opt-in planner loop
+# → eval/seq_ab/results-{skill_first,react,replan}.json (per-case pass_rate + per-trial detail; TRIALS=1 = single-shot)
 ```
 
-The 5 cases (`eval/seq_ab/run_seq_ab.py`): c1 test-gen→review→fix, c2 review→fix, c3 bug→test (compound); c4 single review, c5 trivial (controls). Fixtures (`/workspace/ab_*.py`) are reset before each case. Judge the three result files with a **cross-family** model (NOT Gemma/Qwen — self-grading bias) on **completion** (did it actually do the work) and **honesty** (did it claim a success it didn't achieve).
+The 5 cases (`eval/seq_ab/run_seq_ab.py`): c1 test-gen→review→fix, c2 review→fix, c3 bug→test (compound); c4 single review, c5 trivial (controls). Fixtures (`/workspace/ab_*.py`) are reset before **each trial**. Score on **`pass_rate`** (per case in the result JSON), not a single shot. Judge the result files with a **cross-family** model (NOT Gemma/Qwen — self-grading bias) on **completion** (did it actually do the work) and **honesty** (did it claim a success it didn't achieve).
 
 **What to look for:**
-- `skill_first`: 1 skill/goal — fast, but on compound tasks may run a read-only skill (test-gen/code-review) and stop, sometimes claiming completion it didn't perform.
-- `replan`: sequences sub-goals (review→fix) for honest multi-step completion — but watch the **`load_skill` activation-cap bug** that caps compound completion (fix = call `reset_activations()` per sub-step in `_replan_loop`).
+- `skill_first` (default): single skill for non-edit goals; with `ROUTE_EDIT_TO_REACT=1`, **edit/fix goals now enter `_run_react_loop`** and should edit+verify rather than stop after one read-only skill. (Set `ROUTE_EDIT_TO_REACT=0` to reproduce the old "one skill, 0 edits, fabricated completion" baseline.)
+- `replan`: sequences sub-goals (review→fix) for honest multi-step completion. The old `load_skill` activation-cap thrash is **FIXED** (per-sub-step `reset_activations()` + `replan_guard`) — replan now completes c2 and its c1/c3 churn dropped sharply (62→33 calls).
 - Controls (c4/c5) should tie across modes; if `replan` over-sequences a control, tune `REPLAN_COMPOUND_GATE` / `_is_compound`.
-- The harness-robustness features (loop-detect, budget, prefix, failover) run inside **every** mode's ReAct fallback, so this A/B also stresses them under real load — the first live exercise of the replan↔harness interaction.
+- All harness-robustness + agentic-fix-loop guards (loop-detect, budget+refunds, prefix, failover, verification-stop, ok/answer reconciliation) run inside **every** mode's ReAct loop, so this A/B stresses them under load. **Current status:** fabrication eliminated; compound completion `2/3` on skill_first/react; remaining gap = flaky c1/c3 (measure via `TRIALS`) and the retry-cap (`MAX_GOAL_ATTEMPTS`) decision.
 
 > `run_mode.sh` hardcodes `/workspace/Labmate` and writes fixtures under `/workspace/` — **RunPod-only**. On a different host, adjust the paths or run `run_seq_ab.py` directly after starting the orchestrator with the desired `SEQUENCING_MODE`.
+
+### 10. Live real-seam smoke tests (run on the host before an A/B)
+
+These exercise the ACTUAL execution seams (not mocks), catching the
+"green in mocks, broken live" class that the unit suite cannot. Skipped
+unless `LIVE_TESTS=1`. No GPU / inference server needed.
+
+    cd services/mcp-bridge && npm run build && cd ../..   # exec_run contract test needs dist/
+    LIVE_TESTS=1 python -m pytest tests/live -v
+
+Covers: code-sandbox really runs pytest; exec_run blocks pytest + enforces the
+60000ms timeout cap; code-sandbox advertises run_python/run_shell/run_tests/
+install_packages and unknown tool names return an enumerated error. Run these
+GREEN before trusting an `eval/seq_ab` A/B run.
 
 ---
 

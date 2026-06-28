@@ -20,6 +20,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import litellm
@@ -27,6 +28,7 @@ import redis.asyncio as aioredis
 
 from services.skill_runner.skill_runner import SkillRunner
 from services.orchestrator import events
+from services.orchestrator.skill_telemetry import record_use_best_effort
 
 _log = logging.getLogger("skill_router")
 
@@ -78,6 +80,7 @@ class SkillRouter:
         gemma_api_base: str,
         *,
         call_timeout: float = float(os.getenv("SKILL_CALL_TIMEOUT", "135")),
+        telemetry_path: "Path | None" = None,
     ) -> None:
         """
         Args:
@@ -89,11 +92,14 @@ class SkillRouter:
                 worker's own result/timeout instead of giving up first — a 60s router
                 budget cut off heavy skills (test-gen, code-review, critique) mid-run.
                 Override via SKILL_CALL_TIMEOUT.
+            telemetry_path: optional path to skill telemetry store. Defaults to
+                None, which resolves to default_store_path() inside record_use_best_effort.
         """
         self._runner = runner
         self._redis = redis
         self._gemma_base = gemma_api_base
         self._call_timeout = call_timeout
+        self._telemetry_path = telemetry_path
         self._last_reasoning: str = ""
 
     @property
@@ -445,6 +451,10 @@ class SkillRouter:
                 )
                 raise
             ok = bool(result.get("ok"))
+            try:
+                record_use_best_effort(skill_name, ok, path=self._telemetry_path)
+            except Exception:  # pragma: no cover - telemetry must never break dispatch
+                _log.warning("skill telemetry wire-in failed for %s", skill_name, exc_info=True)
             await events.emit(
                 "tool.done",
                 tool_id=tool_id,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from services.orchestrator.iteration_budget import IterationBudget, CHEAP_TOOLS
+from services.orchestrator.iteration_budget import IterationBudget, CHEAP_TOOLS, REFUNDABLE_TOOLS
 
 
 @pytest.mark.mocked
@@ -173,3 +173,22 @@ class TestIterationBudgetAbsoluteTurnLimit:
         # Should halt after 2*5=10 absolute turns, not infinite
         assert step_count == 10
         assert b.absolute_turns == 10
+
+
+@pytest.mark.mocked
+class TestRefundableTools:
+    def test_refundable_is_superset_of_cheap(self):
+        assert CHEAP_TOOLS <= REFUNDABLE_TOOLS
+
+    def test_refundable_adds_verification_and_inspection(self):
+        for name in ("run_tests", "run_bash", "code_semantic_search", "memory_search"):
+            assert name in REFUNDABLE_TOOLS
+
+    def test_refundable_excludes_mutating_and_finish(self):
+        assert "write_file" not in REFUNDABLE_TOOLS
+        assert "call_skill_tool" not in REFUNDABLE_TOOLS
+        assert "finish" not in REFUNDABLE_TOOLS
+
+    def test_cheap_tools_unchanged(self):
+        # Regression guard: CHEAP_TOOLS must NOT have grown.
+        assert CHEAP_TOOLS == frozenset({"read_file", "list_dir", "code_semantic_search"})

@@ -122,6 +122,7 @@ async def list_tools() -> list[Tool]:
                     "test_path": {"type": "string"},
                     "framework": {"type": "string", "default": "pytest"},
                     "timeout": {"type": "integer", "default": 120},
+                    "expr": {"type": "string"},
                 },
                 "required": ["test_path"],
             },
@@ -160,6 +161,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 arguments["test_path"],
                 framework=arguments.get("framework", "pytest"),
                 timeout=arguments.get("timeout", 120),
+                expr=arguments.get("expr"),
             )
         elif name == "install_packages":
             result = executor.run_python(

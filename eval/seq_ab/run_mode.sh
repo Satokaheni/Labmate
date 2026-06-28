@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Restart the orchestrator under a given SEQUENCING_MODE, then run the A/B harness.
 # Usage: run_mode.sh <skill_first|react|replan>
+# Multi-trial: set TRIALS in the environment to run each case N times and score on
+#   pass-rate (default 3; TRIALS=1 == single-shot). Example: TRIALS=5 run_mode.sh react
+# RunPod-only: this script hardcodes /workspace/Labmate and the fixtures live under
+#   /workspace/ (see run_seq_ab.py FIXTURES). On another host, run run_seq_ab.py directly.
 set -uo pipefail
 cd /workspace/Labmate
 MODE="$1"
@@ -9,6 +13,7 @@ source .data/creds.env
 export PYTHONPATH="/workspace/Labmate"
 export MCP_BRIDGE_ARGS="/workspace/Labmate/services/mcp-bridge/dist/index.js"
 export SEQUENCING_MODE="$MODE"
+export TRIALS="${TRIALS:-3}"   # per-case trials; pass-rate scoring (RunPod-only fixtures)
 
 # stop existing orchestrator by pidfile (never pkill -f — it matches this script)
 if [ -f .data/pids/orchestrator.pid ]; then
@@ -27,5 +32,6 @@ for _ in $(seq 1 90); do
   sleep 2
 done
 echo "[$MODE] orchestrator ready; running harness"
+echo "[$MODE] TRIALS=$TRIALS"
 python eval/seq_ab/run_seq_ab.py "$MODE"
 echo "[$MODE] DONE"

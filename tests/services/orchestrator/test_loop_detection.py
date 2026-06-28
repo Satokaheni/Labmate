@@ -7,6 +7,9 @@ from services.orchestrator.loop_detection import (
     LoopDetector,
     call_signature,
     LOOP_REPEAT_LIMIT,
+    MUTATING_TOOLS,
+    LOOP_REPEAT_LIMIT_MUTATING,
+    repeat_limit_for,
 )
 
 
@@ -100,3 +103,56 @@ class TestLoopDetectorCycle:
         assert d.should_break() is False
         assert d.reason() == ""
         assert d.record(call_signature("run_bash", {"command": "ls"})) is False
+
+
+@pytest.mark.mocked
+class TestMutatingTolerance:
+    def test_mutating_tools_membership(self):
+        assert "write_file" in MUTATING_TOOLS
+        assert "call_skill_tool" in MUTATING_TOOLS
+        assert "read_file" not in MUTATING_TOOLS
+        assert "run_tests" not in MUTATING_TOOLS
+
+    def test_mutating_limit_higher_than_default(self):
+        assert LOOP_REPEAT_LIMIT_MUTATING >= 4
+        assert LOOP_REPEAT_LIMIT_MUTATING > LOOP_REPEAT_LIMIT
+
+    def test_repeat_limit_for_mutating_returns_higher(self):
+        assert repeat_limit_for("write_file") == LOOP_REPEAT_LIMIT_MUTATING
+        assert repeat_limit_for("call_skill_tool") == LOOP_REPEAT_LIMIT_MUTATING
+
+    def test_repeat_limit_for_read_returns_base(self):
+        assert repeat_limit_for("read_file") == LOOP_REPEAT_LIMIT
+
+    def test_per_call_override_tolerates_mutating_repeat(self):
+        # Two identical write_file calls must NOT trip when the per-call
+        # override raises the threshold to the mutating limit (>=4).
+        d = LoopDetector(repeat_limit=2)
+        sig = call_signature("write_file", {"path": "a.py", "content": "x"})
+        assert d.record(sig, repeat_limit=LOOP_REPEAT_LIMIT_MUTATING) is False
+        assert d.record(sig, repeat_limit=LOOP_REPEAT_LIMIT_MUTATING) is False
+        assert d.should_break(repeat_limit=LOOP_REPEAT_LIMIT_MUTATING) is False
+
+    def test_per_call_override_still_trips_at_mutating_limit(self):
+        d = LoopDetector(repeat_limit=2)
+        sig = call_signature("write_file", {"path": "a.py", "content": "x"})
+        tripped = False
+        for _ in range(LOOP_REPEAT_LIMIT_MUTATING):
+            tripped = d.record(sig, repeat_limit=LOOP_REPEAT_LIMIT_MUTATING)
+        assert tripped is True
+        assert d.reason() == "repeat"
+
+    def test_read_tool_thrash_still_trips_at_base_limit(self):
+        # No override (or base override) -> default-2 behavior is unchanged.
+        d = LoopDetector(repeat_limit=2)
+        sig = call_signature("read_file", {"path": "a.py"})
+        d.record(sig, repeat_limit=repeat_limit_for("read_file"))
+        assert d.record(sig, repeat_limit=repeat_limit_for("read_file")) is True
+        assert d.reason() == "repeat"
+
+    def test_record_remains_callable_with_one_arg(self):
+        # Backward-compat: existing call sites pass only the signature.
+        d = LoopDetector(repeat_limit=2)
+        sig = call_signature("run_bash", {"command": "ls"})
+        d.record(sig)
+        assert d.record(sig) is True

@@ -1,0 +1,311 @@
+"""
+Skill curator — PROPOSAL-ONLY, background, best-effort.
+
+Observes recent SUCCESSFUL multi-tool sequences and DRAFTS candidate skills into
+a `.proposed/` staging tier for HUMAN review. It NEVER generates a runnable MCP
+server and NEVER auto-activates a skill (SkillRunner.discover skips `.proposed`).
+
+CRITICAL: never write to stdout (this runs inside the orchestrator process whose
+stdout carries JSON-RPC / event data). Log to stderr only. Every public entry
+point is best-effort: failures are caught + logged at DEBUG and never propagate
+into goal execution.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+import shutil
+import tempfile
+from collections import deque
+from dataclasses import dataclass, asdict
+from pathlib import Path
+from typing import Awaitable, Callable
+
+from services.orchestrator import events
+from services.orchestrator.skill_telemetry import SkillState, compute_state
+
+log = logging.getLogger("skill_curator")  # -> stderr via host handlers
+
+
+def _flag(name: str, default: str) -> bool:
+    return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "on")
+
+
+ENABLE_SKILL_CURATOR = _flag("ENABLE_SKILL_CURATOR", "0")
+CURATOR_INTERVAL_HOURS = float(os.getenv("CURATOR_INTERVAL_HOURS", "168"))
+CURATOR_MIN_IDLE_HOURS = float(os.getenv("CURATOR_MIN_IDLE_HOURS", "2"))
+CURATOR_MIN_SEQUENCE_LEN = int(os.getenv("CURATOR_MIN_SEQUENCE_LEN", "2"))
+CURATOR_RECENT_BUFFER = int(os.getenv("CURATOR_RECENT_BUFFER", "64"))
+
+PROPOSED_DIRNAME = ".proposed"
+SKILL_PROPOSED_EVENT = "skill.proposed"
+
+
+@dataclass(frozen=True)
+class CapturedSequence:
+    """A completed goal and the ordered tools it used."""
+    name: str               # kebab-case candidate skill name
+    goal: str               # the user goal text
+    tools: tuple[str, ...]  # ordered tool/skill names used
+    ok: bool                # did the goal succeed
+    ts: float               # epoch seconds at completion
+
+
+class RecentSequences:
+    """Bounded ring buffer of recent SUCCESSFUL multi-tool sequences.
+
+    record() silently drops failed or too-short sequences so the curator only
+    ever drafts from genuine, repeatable successes.
+    """
+
+    def __init__(self, maxlen: int = CURATOR_RECENT_BUFFER) -> None:
+        self._buf: deque[CapturedSequence] = deque(maxlen=maxlen)
+
+    def record(self, seq: CapturedSequence) -> None:
+        if not seq.ok:
+            return
+        if len(seq.tools) < CURATOR_MIN_SEQUENCE_LEN:
+            return
+        self._buf.append(seq)
+
+    def snapshot(self) -> list[CapturedSequence]:
+        return list(self._buf)
+
+
+def should_run_now(
+    state,
+    now: float,
+    interval_hours: float,
+    min_idle_hours: float,
+    idle_for_s: float,
+) -> bool:
+    """PURE gate: True iff the curator should run this cycle.
+
+    Opens only when ALL hold:
+      - not paused
+      - at least ``interval_hours`` have elapsed since ``state.last_run_at``
+      - the host has been idle for at least ``min_idle_hours``
+    """
+    if getattr(state, "paused", False):
+        return False
+    if (now - state.last_run_at) < interval_hours * 3600.0:
+        return False
+    if idle_for_s < min_idle_hours * 3600.0:
+        return False
+    return True
+
+
+@dataclass
+class CuratorState:
+    """Persisted curator run state (sidecar JSON)."""
+    last_run_at: float = 0.0
+    paused: bool = False
+    run_count: int = 0
+
+
+def load_state(path: Path) -> CuratorState:
+    """Read the sidecar; return a default state on missing/corrupt file (best-effort)."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        return CuratorState(
+            last_run_at=float(data.get("last_run_at", 0.0)),
+            paused=bool(data.get("paused", False)),
+            run_count=int(data.get("run_count", 0)),
+        )
+    except FileNotFoundError:
+        return CuratorState()
+    except Exception as exc:  # corrupt JSON / bad types — never crash the loop
+        log.debug("curator sidecar unreadable (%s): %s", path, exc)
+        return CuratorState()
+
+
+def save_state(path: Path, state: CuratorState) -> None:
+    """Atomically persist the sidecar (temp file + os.replace)."""
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text(json.dumps(asdict(state)), encoding="utf-8")
+    os.replace(tmp, p)
+
+
+_STALE_AFTER_S = 14 * 24 * 3600.0
+_ARCHIVE_AFTER_S = 60 * 24 * 3600.0
+
+
+@dataclass(frozen=True)
+class SkillUsage:
+    """Per-skill usage telemetry the sweep reads (sourced from the telemetry store)."""
+    name: str
+    last_used_at: float | None
+    success_count: int
+
+
+def sweep_transitions(
+    usages: list[SkillUsage],
+    now: float,
+    *,
+    stale_after_s: float = _STALE_AFTER_S,
+    archive_after_s: float = _ARCHIVE_AFTER_S,
+) -> dict[str, str]:
+    """PURE lifecycle sweep: name -> SkillState value ("active"|"stale"|"archived").
+
+    Delegates the per-skill decision to the telemetry plan's compute_state. Returns
+    advisory verdicts only — it performs NO disk writes and NEVER mutates the active
+    catalog (proposal-only invariant).
+    """
+    verdicts: dict[str, str] = {}
+    for u in usages:
+        state: SkillState = compute_state(
+            last_used_at=u.last_used_at,
+            success_count=u.success_count,
+            now=now,
+            stale_after_s=stale_after_s,
+            archive_after_s=archive_after_s,
+        )
+        verdicts[u.name] = state.value
+    return verdicts
+
+
+_STUB_TEMPLATE = '''\
+# ============================================================================
+# NOT FUNCTIONAL — agent-drafted scaffold. DO NOT ACTIVATE AS-IS.
+# A human must implement this MCP server, verify it, then move this skill out
+# of `.proposed/` to activate it. The curator NEVER ships a runnable server.
+# ============================================================================
+"""Proposed skill server scaffold for: {name}
+
+Candidate derived from a successful tool sequence:
+    {tools}
+"""
+
+
+def main() -> None:
+    raise NotImplementedError(
+        "Proposed skill {name!r} has no implemented server yet. "
+        "Implement the MCP server, then move this skill out of .proposed/."
+    )
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+
+def _render_skill_md(seq: "CapturedSequence", description: str) -> str:
+    steps = "\n".join(f"{i}. Use `{t}`" for i, t in enumerate(seq.tools, start=1))
+    # Hand-written frontmatter (write-side) — keep it simple + deterministic.
+    return (
+        "---\n"
+        f"name: {seq.name}\n"
+        f"description: {description}\n"
+        "provenance: agent-created\n"
+        "status: proposed\n"
+        "---\n"
+        f"# {seq.name} (PROPOSED — pending human review)\n\n"
+        f"{description}\n\n"
+        f"Derived from goal: {seq.goal}\n\n"
+        "## Distilled step sequence\n\n"
+        f"{steps}\n"
+    )
+
+
+async def propose_skill(
+    skills_root: "Path",
+    seq: "CapturedSequence",
+    description: str,
+) -> "Path | None":
+    """Atomically stage a `.proposed/<name>/` draft and emit `skill.proposed`.
+
+    PROPOSAL-ONLY: writes ONLY under `skills_root/.proposed/`, produces a
+    non-functional `server.py.stub`, and never activates the skill. Best-effort:
+    returns None on failure (logged DEBUG). Idempotent: re-proposing replaces the
+    prior draft.
+    """
+    try:
+        proposed_root = Path(skills_root) / PROPOSED_DIRNAME
+        proposed_root.mkdir(parents=True, exist_ok=True)
+        dest = proposed_root / seq.name
+
+        # Build the full draft in a temp dir, then atomically swap it into place
+        # so a half-written draft is never observable.
+        tmp = Path(tempfile.mkdtemp(prefix=f"{seq.name}.", dir=proposed_root))
+        try:
+            (tmp / "SKILL.md").write_text(
+                _render_skill_md(seq, description), encoding="utf-8"
+            )
+            (tmp / "server.py.stub").write_text(
+                _STUB_TEMPLATE.format(name=seq.name, tools=", ".join(seq.tools)),
+                encoding="utf-8",
+            )
+            if dest.exists():
+                shutil.rmtree(dest)
+            os.replace(tmp, dest)
+        finally:
+            if tmp.exists():
+                shutil.rmtree(tmp, ignore_errors=True)
+
+        await events.emit(SKILL_PROPOSED_EVENT, name=seq.name, path=str(dest))
+        log.info("proposed skill draft staged: %s", dest)
+        return dest
+    except Exception as exc:  # best-effort — never propagate into goal execution
+        log.debug("propose_skill failed for %s: %s", getattr(seq, "name", "?"), exc)
+        return None
+
+
+def _draft_prompt(seq: "CapturedSequence") -> str:
+    tools = " then ".join(seq.tools)
+    return (
+        "You are distilling a successful agent run into a reusable skill "
+        "description. The agent achieved the goal:\n"
+        f"  {seq.goal}\n"
+        f"by using these tools in order: {tools}.\n\n"
+        "Write ONE or TWO plain sentences describing WHEN to use a skill that "
+        "performs this sequence. No preamble, no markdown."
+    )
+
+
+async def run_curator(
+    *,
+    skills_root: "Path",
+    state_path: "Path",
+    recent: RecentSequences,
+    draft_fn: "Callable[[str], Awaitable[str]]",
+    now: float,
+    idle_for_s: float,
+    interval_hours: float = CURATOR_INTERVAL_HOURS,
+    min_idle_hours: float = CURATOR_MIN_IDLE_HOURS,
+) -> "Path | None":
+    """One curator cycle: gate -> draft (1 LLM call) -> stage proposal -> persist.
+
+    Best-effort: any failure (incl. draft_fn raising) is caught, logged at DEBUG,
+    and returns None — the curator never breaks goal execution.
+    """
+    try:
+        state = load_state(state_path)
+        if not should_run_now(state, now, interval_hours, min_idle_hours, idle_for_s):
+            return None
+
+        sequences = recent.snapshot()
+        if not sequences:
+            # Nothing to draft from, but still record that we ran (avoids busy-looping
+            # the gate every cycle once the interval has elapsed).
+            state.last_run_at = now
+            state.run_count += 1
+            save_state(state_path, state)
+            return None
+
+        seq = sequences[-1]  # most recent successful multi-tool sequence
+        description = (await draft_fn(_draft_prompt(seq))).strip()
+        if not description:
+            description = f"Proposed skill distilled from: {seq.goal}"
+
+        dest = await propose_skill(skills_root, seq, description)
+
+        state.last_run_at = now
+        state.run_count += 1
+        save_state(state_path, state)
+        return dest
+    except Exception as exc:  # best-effort isolation
+        log.debug("run_curator cycle failed (non-fatal): %s", exc)
+        return None

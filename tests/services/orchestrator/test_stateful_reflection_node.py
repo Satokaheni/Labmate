@@ -27,8 +27,8 @@ def _make_reflect_node(architect_return="DIAGNOSIS-OUT"):
     mock_orch.architect = AsyncMock(return_value=architect_return)
     mock_async_orch = MagicMock(spec=AsyncOrchestrator)
     # make_nodes returns: plan, execute_node, check, reflect, approval,
-    # assess_ambiguity, verify  (7 nodes — see CLAUDE.md make_nodes arity note)
-    plan, execute_node, check, reflect, approval, assess_ambiguity, verify = make_nodes(
+    # assess_ambiguity, verify, revise  (8 nodes — see CLAUDE.md make_nodes arity note)
+    plan, execute_node, check, reflect, approval, assess_ambiguity, verify, revise = make_nodes(
         mock_orch, mock_async_orch
     )
     return reflect, mock_orch

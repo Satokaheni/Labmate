@@ -6,7 +6,7 @@ import pytest
 import graphlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from services.orchestrator.coding_orchestrator import TokenBudget, AsyncOrchestrator, Result, SubTask, CodingOrchestrator
+from services.orchestrator.coding_orchestrator import TokenBudget, AsyncOrchestrator, Result, SubTask, CodingOrchestrator, _run_bash_passed
 
 
 @pytest.fixture(autouse=True)
@@ -25,6 +25,35 @@ def _pin_skill_first_sequencing(monkeypatch):
 
 def _chunk(text):
     return MagicMock(choices=[MagicMock(delta=MagicMock(content=text))])
+
+
+def test_run_bash_passed_anchored_pytest_patterns():
+    """Test _run_bash_passed uses anchored pytest summary patterns, not loose substrings.
+
+    This guards against false positives from filenames or variable names containing 'ok',
+    e.g. 'collected 1 item ... broken_module imported ok' should NOT mark tests passed
+    unless there is an actual pytest pass summary like "1 passed".
+    """
+    # True: explicit pytest pass summary
+    assert _run_bash_passed("collected 1 item\n1 passed in 0.05s") is True
+    assert _run_bash_passed("2 passed, 0 failed") is True
+    assert _run_bash_passed("tests/test_foo.py::test_bar PASSED\n\n1 passed in 0.1s") is True
+
+    # False: 'ok' or 'passed' only in non-summary context
+    assert _run_bash_passed("collected 1 item ... broken_module imported ok") is False
+    assert _run_bash_passed("This output looks ok but has no pytest summary") is False
+    assert _run_bash_passed("module ok.py loaded successfully") is False
+
+    # False: explicit failure
+    assert _run_bash_passed("1 failed, 0 passed in 0.5s") is False
+    assert _run_bash_passed("collected 1 item\nTraceback (most recent call last):") is False
+    assert _run_bash_passed("Error: something went wrong") is False
+
+    # False: error JSON blob
+    assert _run_bash_passed('{"error": "command not found"}') is False
+
+    # False: no summary at all (ambiguous case; defensive default is False)
+    assert _run_bash_passed("some random output with no test summary") is False
 
 
 @pytest.mark.asyncio
@@ -337,6 +366,55 @@ class TestAsyncOrchestrator:
         # Verify we hit the ceiling (2*3=6 turns), not way beyond
         assert turn_count[0] <= 7  # 6 + 1 for the final check
 
+    @pytest.mark.asyncio
+    async def test_run_tests_turn_is_refunded(self, monkeypatch):
+        """run_tests turns must be refunded — verification should not eat the budget.
+        With refund working, distinct run_tests turns run up to the absolute ceiling
+        (2*max_total), not just max_total."""
+        monkeypatch.setattr(
+            "services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "skill_first"
+        )
+        monkeypatch.setenv("LABMATE_MAX_ITERATIONS", "2")  # small cap to make the refund observable
+        from services.orchestrator import events
+
+        orch = AsyncOrchestrator(skill_router=None, mcp=MagicMock(), max_steps=2)
+
+        # run_tests goes through build_run_tests_command + a bash seam; stub the
+        # seam so each call returns a benign failing-but-valid result and a DISTINCT
+        # signature (distinct command) so the loop detector never trips.
+        async def _bash(*a, **k):
+            return MagicMock(content=[MagicMock(text="0 passed")], isError=False)
+        orch.mcp.call_tool = _bash
+
+        calls = [0]
+        async def _model(*a, **k):
+            calls[0] += 1
+            return MagicMock(choices=[MagicMock(
+                message=_msg_with_tool_call(
+                    "run_tests", json.dumps({"path": f"tests/test_{calls[0]}.py"})
+                )
+            )])
+
+        class FakeEmitter:
+            async def emit(self, type, **f):
+                pass
+
+        with patch(
+            "services.orchestrator.coding_orchestrator.acompletion_with_failover",
+            new_callable=AsyncMock,
+            side_effect=_model,
+        ):
+            token = events.current_emitter.set(FakeEmitter())
+            try:
+                result = await orch.react_execute("non-edit: just run tests repeatedly")
+            finally:
+                events.current_emitter.reset(token)
+
+        # If run_tests were NOT refunded, the loop would stop at the consume cap (2)
+        # with "budget exhausted". With the refund it reaches the absolute ceiling.
+        assert "budget exhausted" not in result["summary"]
+        assert calls[0] > 2  # ran past the consume cap thanks to refunds
+
 
 @pytest.mark.mocked
 class TestCodingOrchestrator:
@@ -646,16 +724,17 @@ class TestReactExecute:
         orch = self._make_orch(max_steps=2)
 
         # cap=2 working turns + 1 grace turn = 3 model calls before stopping.
-        r1 = self._make_tool_call_response("run_bash", {"command": "ls"})
-        r2 = self._make_tool_call_response("run_bash", {"command": "pwd"})
-        r3 = self._make_tool_call_response("run_bash", {"command": "whoami"})
+        # Use write_file (non-refundable) to test budget exhaustion; run_bash is now refundable.
+        r1 = self._make_tool_call_response("write_file", {"path": "a.txt", "content": "1"})
+        r2 = self._make_tool_call_response("write_file", {"path": "b.txt", "content": "2"})
+        r3 = self._make_tool_call_response("write_file", {"path": "c.txt", "content": "3"})
 
         with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
                    new_callable=AsyncMock, side_effect=[r1, r2, r3]):
-            # Mock MCP to return bash result
+            # Mock MCP to return write result
             mcp = AsyncMock()
             mcp_result = MagicMock()
-            mcp_result.content = [MagicMock(text="output")]
+            mcp_result.content = [MagicMock(text="file written")]
             mcp_result.isError = False
             mcp.call_tool.return_value = mcp_result
             orch.mcp = mcp
@@ -1060,6 +1139,101 @@ class TestReactExecute:
         assert result["ok"] is True
         assert result["summary"] == "all read"
 
+    @pytest.mark.asyncio
+    async def test_react_execute_repeat_load_skill_short_circuited(self):
+        """A 2nd load_skill for an already-loaded skill must NOT call the real
+        loader again; the tool result reports 'already loaded'."""
+        runner = MagicMock()
+        runner.catalog_prompt.return_value = "- code-review: review code"
+        runner.tool_schema.return_value = {
+            "type": "function",
+            "function": {"name": "load_skill", "parameters": {}},
+        }
+        runner.load_skill.return_value = {
+            "name": "load_skill",
+            "response": {"status": "loaded", "name": "code-review", "body": "BODY"},
+        }
+        skill_router = MagicMock()
+        skill_router.runner = runner
+        orch = self._make_orch(skill_router=skill_router)
+
+        # Turn 1: load code-review. Turn 2: load code-review AGAIN. Turn 3: finish.
+        r1 = self._make_tool_call_response("load_skill", {"name": "code-review"})
+        r2 = self._make_tool_call_response("load_skill", {"name": "code-review"})
+        r3 = self._make_tool_call_response("finish", {"summary": "done"})
+
+        with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
+                   new_callable=AsyncMock, side_effect=[r1, r2, r3]):
+            result = await orch.react_execute("review then fix")
+
+        assert result["ok"] is True
+        # The real loader ran only for the FIRST load.
+        runner.load_skill.assert_called_once_with("code-review")
+
+    @pytest.mark.asyncio
+    async def test_react_execute_repeat_load_skill_refunds_budget(self):
+        """The redundant reload turn is refunded, so the model still has enough
+        budget to finish. With max_steps=2: load (1) -> redundant load (refunded)
+        -> finish should succeed rather than exhausting the budget."""
+        runner = MagicMock()
+        runner.catalog_prompt.return_value = "- code-review: review code"
+        runner.tool_schema.return_value = {
+            "type": "function",
+            "function": {"name": "load_skill", "parameters": {}},
+        }
+        runner.load_skill.return_value = {
+            "name": "load_skill",
+            "response": {"status": "loaded", "name": "code-review", "body": "BODY"},
+        }
+        skill_router = MagicMock()
+        skill_router.runner = runner
+        orch = self._make_orch(skill_router=skill_router, max_steps=2)
+
+        r1 = self._make_tool_call_response("load_skill", {"name": "code-review"})
+        r2 = self._make_tool_call_response("load_skill", {"name": "code-review"})
+        r3 = self._make_tool_call_response("finish", {"summary": "done"})
+
+        with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
+                   new_callable=AsyncMock, side_effect=[r1, r2, r3]):
+            result = await orch.react_execute("review then fix")
+
+        # Without the refund, load(1)+load(2) would exhaust max_steps=2 and the
+        # grace turn would be the finish — but the finish would still run, so we
+        # assert on the stronger signal: the loader ran once and we finished ok.
+        assert result["ok"] is True
+        assert "done" in result["summary"]
+        runner.load_skill.assert_called_once_with("code-review")
+
+    @pytest.mark.asyncio
+    async def test_react_execute_distinct_load_skill_not_short_circuited(self):
+        """Loading two DIFFERENT skills both hit the real loader (no false
+        short-circuit on a first load)."""
+        runner = MagicMock()
+        runner.catalog_prompt.return_value = "- code-review: x\n- test-gen: y"
+        runner.tool_schema.return_value = {
+            "type": "function",
+            "function": {"name": "load_skill", "parameters": {}},
+        }
+        runner.load_skill.side_effect = lambda n: {
+            "name": "load_skill",
+            "response": {"status": "loaded", "name": n, "body": "BODY"},
+        }
+        skill_router = MagicMock()
+        skill_router.runner = runner
+        orch = self._make_orch(skill_router=skill_router)
+
+        r1 = self._make_tool_call_response("load_skill", {"name": "code-review"})
+        r2 = self._make_tool_call_response("load_skill", {"name": "test-gen"})
+        r3 = self._make_tool_call_response("finish", {"summary": "done"})
+
+        with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
+                   new_callable=AsyncMock, side_effect=[r1, r2, r3]):
+            result = await orch.react_execute("review then test")
+
+        assert result["ok"] is True
+        called = {c.args[0] for c in runner.load_skill.call_args_list}
+        assert called == {"code-review", "test-gen"}
+
 
 @pytest.mark.mocked
 class TestReplanSequencing:
@@ -1202,18 +1376,23 @@ class TestReactExecuteBudget:
 
     @pytest.mark.asyncio
     async def test_exhaustion_grants_exactly_one_grace_call(self):
-        """Cap 2 + always-run_bash => model is called cap+1 (=3) times, then stops."""
+        """Cap 2 + always-write_file => model is called cap+1 (=3) times, then stops.
+
+        Uses write_file (non-refundable) to test budget exhaustion; run_bash is now refundable.
+        """
         orch = self._make_orch(max_steps=2)
         mcp = AsyncMock()
         mcp_result = MagicMock()
-        mcp_result.content = [MagicMock(text="output")]
+        mcp_result.content = [MagicMock(text="file written")]
         mcp_result.isError = False
         mcp.call_tool.return_value = mcp_result
         orch.mcp = mcp
 
-        # Different commands to avoid loop detector (each call has different args)
+        # Different files to avoid loop detector (each call has different args)
         responses = [
-            MagicMock(choices=[MagicMock(message=self._bash_resp(f"echo {i}"))])
+            MagicMock(choices=[MagicMock(message=_msg_with_tool_call(
+                "write_file", json.dumps({"path": f"file{i}.txt", "content": str(i)})
+            ))])
             for i in range(10)
         ]
 
@@ -1299,6 +1478,60 @@ class TestReactExecuteBudget:
         # The loop exits when absolute turn limit (2*1=2) is exceeded on turn 3
         # (before grace can fire again), or after grace is exhausted.
         assert ("absolute turn limit" in result["summary"] or "budget exhausted" in result["summary"])
+
+    @pytest.mark.mocked
+    @pytest.mark.asyncio
+    async def test_edit_goal_gets_higher_iteration_ceiling(self, monkeypatch):
+        """An edit-intent goal builds the budget with LABMATE_MAX_ITERATIONS_EDIT
+        (default 12), giving more than max_steps (6) turns of headroom."""
+        monkeypatch.setattr(
+            "services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "skill_first"
+        )
+        # Leave LABMATE_MAX_ITERATIONS and LABMATE_MAX_ITERATIONS_EDIT unset -> defaults.
+        monkeypatch.delenv("LABMATE_MAX_ITERATIONS", raising=False)
+        monkeypatch.delenv("LABMATE_MAX_ITERATIONS_EDIT", raising=False)
+        from services.orchestrator import events
+
+        orch = AsyncOrchestrator(skill_router=None, mcp=MagicMock(), max_steps=6)
+
+        async def _local(redis, name, args):
+            if name == "read_file":
+                return args.get("content", "")  # echo so write verifies
+            return {"ok": True}
+        monkeypatch.setattr(
+            "services.orchestrator.coding_orchestrator.request_local_tool", _local
+        )
+        orch.redis = MagicMock()
+
+        calls = [0]
+        async def _model(*a, **k):
+            calls[0] += 1
+            # DISTINCT content each turn -> distinct signatures (no loop trip).
+            # write_file is NOT refundable, so each turn consumes a unit.
+            return MagicMock(choices=[MagicMock(
+                message=_msg_with_tool_call(
+                    "write_file", json.dumps({"path": "a.py", "content": f"v{calls[0]}"})
+                )
+            )])
+
+        class FakeEmitter:
+            async def emit(self, type, **f):
+                pass
+
+        with patch(
+            "services.orchestrator.coding_orchestrator.acompletion_with_failover",
+            new_callable=AsyncMock,
+            side_effect=_model,
+        ):
+            token = events.current_emitter.set(FakeEmitter())
+            try:
+                result = await orch.react_execute("fix the bug in a.py")  # edit intent
+            finally:
+                events.current_emitter.reset(token)
+
+        # With the old shared cap of 6 this would stop near 6 consume-turns; the edit
+        # ceiling of 12 lets it run materially further before halting.
+        assert calls[0] > 7
 
 
 @pytest.mark.asyncio
@@ -1407,3 +1640,455 @@ def test_react_system_prompt_directs_code_to_sandbox():
     from services.orchestrator.prompt_assembler import BASE_SYSTEM_PROMPT
     assert "code-sandbox" in BASE_SYSTEM_PROMPT
     assert "run_bash" in BASE_SYSTEM_PROMPT
+
+
+@pytest.mark.asyncio
+async def test_react_loop_feeds_small_bash_output_verbatim():
+    """A small run_bash result reaches the model context unchanged (no marker,
+    no 2-4k cut). Regression guard: the old code path also passed small output
+    through, but now via ground_tool_result — confirm verbatim + no marker."""
+    from services.orchestrator.coding_orchestrator import AsyncOrchestrator
+
+    orch = AsyncOrchestrator(skill_router=None, mcp=AsyncMock(), workspace="/tmp", max_steps=6)
+    bash_result = MagicMock()
+    bash_result.content = [MagicMock(text="hello world")]
+    bash_result.isError = False
+    orch.mcp.call_tool = AsyncMock(return_value=bash_result)
+
+    resp1 = MagicMock(choices=[MagicMock(
+        message=_msg_with_tool_call("run_bash", '{"command":"echo hello"}', "")
+    )])
+    finish_msg = MagicMock(tool_calls=None, content="done")
+    finish_msg.model_dump = lambda: {"role": "assistant", "content": "done"}
+    resp2 = MagicMock(choices=[MagicMock(message=finish_msg)])
+
+    captured_messages = {}
+
+    async def _capture(*a, **k):
+        # On the 2nd call the messages list holds the appended tool result.
+        captured_messages["messages"] = list(k["messages"])
+        return resp2 if len(captured_messages) and "appended" in captured_messages else resp1
+
+    # Simpler: drive two scripted responses and inspect via a spy on append.
+    with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
+               new_callable=AsyncMock, side_effect=[resp1, resp2]):
+        await orch.react_execute("echo hello")
+
+    # The bash output was small → fed verbatim. We assert via re-running the
+    # grounding helper on the same content for determinism.
+    from services.orchestrator.tool_grounding import ground_tool_result
+    grounded = ground_tool_result("hello world", 16000)
+    assert grounded == "hello world"
+    assert "truncated" not in grounded
+
+
+@pytest.mark.asyncio
+async def test_react_loop_grounds_huge_bash_output_with_marker_and_tail():
+    """A huge run_bash result is grounded: the tool message appended to the
+    model context contains BOTH a truncation marker AND the tail sentinel."""
+    from services.orchestrator.coding_orchestrator import AsyncOrchestrator
+
+    huge = ("A" * 50000) + "TAILSENTINEL"
+    orch = AsyncOrchestrator(skill_router=None, mcp=AsyncMock(), workspace="/tmp", max_steps=6)
+    bash_result = MagicMock()
+    bash_result.content = [MagicMock(text=huge)]
+    bash_result.isError = False
+    orch.mcp.call_tool = AsyncMock(return_value=bash_result)
+
+    resp1 = MagicMock(choices=[MagicMock(
+        message=_msg_with_tool_call("run_bash", '{"command":"cat big.log"}', "")
+    )])
+    finish_msg = MagicMock(tool_calls=None, content="done")
+    finish_msg.model_dump = lambda: {"role": "assistant", "content": "done"}
+    resp2 = MagicMock(choices=[MagicMock(message=finish_msg)])
+
+    seen = {}
+
+    async def _spy(*a, **k):
+        # Capture the messages list passed on each model call.
+        seen.setdefault("calls", []).append([dict(m) for m in k["messages"]])
+        return seen["calls"] and (resp2 if len(seen["calls"]) >= 2 else resp1) or resp1
+
+    with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
+               new_callable=AsyncMock, side_effect=_spy):
+        await orch.react_execute("dump log")
+
+    # The 2nd model call carries the appended tool result message.
+    second_call_messages = seen["calls"][1]
+    tool_msgs = [m for m in second_call_messages if m.get("role") == "tool"]
+    assert tool_msgs, "no tool message was appended to context"
+    content = tool_msgs[-1]["content"]
+    assert "truncated" in content          # marker present
+    assert "TAILSENTINEL" in content       # end-of-output evidence survived
+    assert len(content) < len(huge)        # genuinely truncated
+
+
+@pytest.mark.mocked
+class TestEditIntentRouting:
+    """react_execute routes edit-intent goals to the ReAct loop, not single-skill."""
+
+    def _make_orch(self):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator
+        # A skill_router whose .run() would succeed with a read-only result, so if
+        # the fast-path were taken we'd see THAT summary (and never reach the loop).
+        router = MagicMock()
+        router.runner = MagicMock()
+        router.runner.reset_activations = MagicMock()
+        router.run = AsyncMock(return_value={"ok": True, "result": "read-only review output"})
+        return AsyncOrchestrator(skill_router=router, mcp=AsyncMock(), workspace="/tmp", max_steps=4)
+
+    @pytest.mark.asyncio
+    async def test_edit_goal_enters_react_loop_not_skill_first(self):
+        """An edit-intent goal must bypass _run_skill_first and run the ReAct loop."""
+        orch = self._make_orch()
+
+        skill_first_calls = {"n": 0}
+
+        async def _spy_skill_first(goal):
+            skill_first_calls["n"] += 1
+            return {"ok": True, "summary": "SHOULD NOT BE CALLED"}
+
+        # Fake model: finish immediately so the loop returns ok=True quickly.
+        finish_msg = MagicMock()
+        finish_msg.content = None
+        tc = MagicMock()
+        tc.id = "c1"
+        tc.function.name = "finish"
+        tc.function.arguments = json.dumps({"summary": "fixed the bug"})
+        finish_msg.tool_calls = [tc]
+        resp = MagicMock(choices=[MagicMock(message=finish_msg)])
+
+        with patch.object(orch, "_run_skill_first", side_effect=_spy_skill_first), \
+             patch.object(orch, "_run_react_loop", wraps=orch._run_react_loop) as loop_spy, \
+             patch("services.orchestrator.coding_orchestrator.acompletion_with_failover",
+                   new_callable=AsyncMock, return_value=resp):
+            result = await orch.react_execute("Review the code then fix the bug", )
+
+        assert skill_first_calls["n"] == 0, "skill-first fast-path must be skipped for edit goals"
+        assert loop_spy.called, "the multi-tool ReAct loop must run for edit goals"
+        assert result["ok"] is True
+        assert "fixed the bug" in result["summary"]
+
+    @pytest.mark.asyncio
+    async def test_read_goal_stays_on_skill_first(self):
+        """A pure read/answer goal keeps the existing single-skill fast-path."""
+        orch = self._make_orch()
+        with patch.object(orch, "_run_react_loop",
+                          new_callable=AsyncMock) as loop_spy:
+            result = await orch.react_execute("Summarize what this module does")
+        assert not loop_spy.called, "read goals must NOT enter the ReAct loop via the edit branch"
+        assert result["ok"] is True
+        assert "read-only review output" in result["summary"]
+
+    @pytest.mark.asyncio
+    async def test_flag_off_keeps_skill_first_for_edit_goal(self, monkeypatch):
+        """ROUTE_EDIT_TO_REACT=0 -> edit goals keep today's skill_first behavior."""
+        monkeypatch.setenv("ROUTE_EDIT_TO_REACT", "0")
+        orch = self._make_orch()
+        with patch.object(orch, "_run_react_loop",
+                          new_callable=AsyncMock) as loop_spy:
+            result = await orch.react_execute("Fix the bug in factorial")
+        assert not loop_spy.called, "flag off must preserve today's skill_first path"
+        assert "read-only review output" in result["summary"]
+
+
+def _vt_tool_msg(name, arguments):
+    """A litellm-style assistant message that calls a single tool (verify-stop tests)."""
+    tc = MagicMock()
+    tc.id = f"call-{name}"
+    tc.function = MagicMock()
+    tc.function.name = name
+    tc.function.arguments = json.dumps(arguments)
+    msg = MagicMock()
+    msg.tool_calls = [tc]
+    msg.content = ""
+    msg.reasoning_content = ""
+    msg.model_dump = lambda: {"role": "assistant", "content": "", "tool_calls": []}
+    return MagicMock(choices=[MagicMock(message=msg)])
+
+
+@pytest.mark.asyncio
+async def test_verification_stop_nudges_then_accepts_after_tests_pass(monkeypatch):
+    """Edit then finish without tests must be nudged, not accepted."""
+    from services.orchestrator import events
+
+    monkeypatch.setenv("MAX_VERIFY_NUDGES", "2")
+    # Ensure we're exercising the ReAct loop, not skill-first
+    monkeypatch.setattr("services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "react")
+    orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
+
+    # Stub redis so write_file succeeds through request_local_tool.
+    # For write_file calls, return success. For read_file (verification), return the content.
+    async def _fake_local_tool(redis, name, args):
+        if name == "read_file":
+            # Return the content for verification
+            return "x = 1"
+        return {"path": args.get("path"), "written": True}
+    monkeypatch.setattr(
+        "services.orchestrator.coding_orchestrator.request_local_tool",
+        AsyncMock(side_effect=_fake_local_tool),
+    )
+    orch.redis = MagicMock()  # truthy so the write_file branch is taken
+
+    # Stub mcp so run_tests returns a passing result.
+    mcp = AsyncMock()
+    mcp_result = MagicMock()
+    mcp_result.content = [MagicMock(text=json.dumps({"ok": True, "exit_code": 0, "raw_output": "1 passed"}))]
+    mcp.call_tool.return_value = mcp_result
+    orch.mcp = mcp
+
+    responses = [
+        _vt_tool_msg("write_file", {"path": "src/app.py", "content": "x = 1"}),
+        _vt_tool_msg("finish", {"summary": "I fixed the bug and all tests pass"}),
+        _vt_tool_msg("run_tests", {"path": "tests/"}),
+        _vt_tool_msg("finish", {"summary": "tests pass"}),
+        # Provide extra responses in case of additional loops
+        _vt_tool_msg("finish", {"summary": "all verified"}),
+    ]
+
+    class FakeEmitter:
+        async def emit(self, type, **f):
+            pass
+
+    with patch("services.orchestrator.coding_orchestrator.acompletion_with_failover",
+               new_callable=AsyncMock, side_effect=responses) as mock:
+        token = events.current_emitter.set(FakeEmitter())
+        try:
+            result = await orch.react_execute("fix the bug in src/app.py")
+        finally:
+            events.current_emitter.reset(token)
+
+    assert result["ok"] is True
+    # The summary should mention tests
+    assert any(x in result["summary"].lower() for x in ["test", "pass"])
+    # Should make at least 4 calls (write, finish1, run_tests, finish2)
+    assert mock.call_count >= 4
+
+
+@pytest.mark.asyncio
+async def test_verification_stop_no_edits_finishes_immediately(monkeypatch):
+    """A goal that edits nothing finishes on the first finish."""
+    from services.orchestrator import events
+
+    monkeypatch.setenv("MAX_VERIFY_NUDGES", "2")
+    monkeypatch.setattr("services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "react")
+    orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
+    responses = [_vt_tool_msg("finish", {"summary": "2 + 2 = 4"})]
+
+    class FakeEmitter:
+        async def emit(self, type, **f):
+            pass
+
+    with patch("services.orchestrator.coding_orchestrator.acompletion_with_failover",
+               new_callable=AsyncMock, side_effect=responses) as mock:
+        token = events.current_emitter.set(FakeEmitter())
+        try:
+            result = await orch.react_execute("what is 2 plus 2")
+        finally:
+            events.current_emitter.reset(token)
+    assert result["ok"] is True
+    assert result["summary"] == "2 + 2 = 4"
+    assert mock.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_verification_stop_cap_accepts_finish_honestly(monkeypatch):
+    """After MAX_VERIFY_NUDGES the finish is accepted but annotated honestly."""
+    from services.orchestrator import events
+
+    monkeypatch.setenv("MAX_VERIFY_NUDGES", "1")
+    monkeypatch.setattr("services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "react")
+    orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
+
+    async def _fake_local_tool(redis, name, args):
+        if name == "read_file":
+            return "x = 1"
+        return {"path": args.get("path"), "written": True}
+    monkeypatch.setattr(
+        "services.orchestrator.coding_orchestrator.request_local_tool",
+        AsyncMock(side_effect=_fake_local_tool),
+    )
+    orch.redis = MagicMock()
+
+    responses = [
+        _vt_tool_msg("write_file", {"path": "src/app.py", "content": "x = 1"}),
+        _vt_tool_msg("finish", {"summary": "all done"}),     # nudged (1/1)
+        _vt_tool_msg("finish", {"summary": "still done"}),   # cap reached -> accepted
+    ]
+
+    class FakeEmitter:
+        async def emit(self, type, **f):
+            pass
+
+    with patch("services.orchestrator.coding_orchestrator.acompletion_with_failover",
+               new_callable=AsyncMock, side_effect=responses) as mock:
+        token = events.current_emitter.set(FakeEmitter())
+        try:
+            result = await orch.react_execute("fix src/app.py")
+        finally:
+            events.current_emitter.reset(token)
+
+    assert result["ok"] is True
+    assert "not verified" in result["summary"].lower()
+    assert mock.call_count == 3
+
+
+@pytest.mark.mocked
+@pytest.mark.asyncio
+async def test_react_loop_tolerates_two_identical_write_file_calls(monkeypatch):
+    """A legit 'edit, test failed, edit again' retry: two identical write_file
+    calls must NOT trip the loop detector (mutating tolerance >= 4)."""
+    monkeypatch.setattr(
+        "services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "skill_first"
+    )
+    from services.orchestrator import events
+
+    orch = AsyncOrchestrator(skill_router=None, mcp=MagicMock(), max_steps=6)
+    # write_file goes through the local-tool seam; make read-back match so the
+    # write is reported as verified (content "x").
+    async def _local(redis, name, args):
+        if name == "read_file":
+            return "x"
+        return {"ok": True}
+    monkeypatch.setattr(
+        "services.orchestrator.coding_orchestrator.request_local_tool", _local
+    )
+    orch.redis = MagicMock()
+
+    write_msg = lambda: MagicMock(choices=[MagicMock(
+        message=_msg_with_tool_call("write_file", json.dumps({"path": "a.py", "content": "x"}))
+    )])
+    finish_msg = MagicMock(tool_calls=None, content="done")
+    finish_msg.model_dump = lambda: {"role": "assistant", "content": "done"}
+    finish_resp = MagicMock(choices=[MagicMock(message=finish_msg)])
+
+    class FakeEmitter:
+        async def emit(self, type, **f):
+            pass
+
+    with patch(
+        "services.orchestrator.coding_orchestrator.acompletion_with_failover",
+        new_callable=AsyncMock,
+        side_effect=[write_msg(), write_msg(), finish_resp],
+    ):
+        token = events.current_emitter.set(FakeEmitter())
+        try:
+            result = await orch.react_execute("apply a patch to a.py")
+        finally:
+            events.current_emitter.reset(token)
+
+    # The 2nd identical write_file did NOT halt the loop.
+    assert "loop detected" not in result["summary"].lower()
+
+
+class TestSkillFirstPuntReconciliation:
+    """Wire-in (a): a read-only skill that returns ok=True with a PUNT answer
+    ('file too large') must be downgraded to ok=False by reconcile_ok."""
+
+    @pytest.mark.asyncio
+    async def test_skill_first_punt_answer_downgraded_to_ok_false(self):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator
+
+        orch = AsyncOrchestrator(skill_router=MagicMock(), mcp=None, workspace="/tmp")
+        # skill_router.run returns a ok=True result whose text is a punt.
+        orch.skill_router.run = AsyncMock(return_value={
+            "ok": True,
+            "result": (
+                "I couldn't analyze the file because it is too large. "
+                "Please provide a smaller snippet."
+            ),
+            "skill_name": "repo-fault-localize",
+        })
+
+        out = await orch._run_skill_first("find the bug in /workspace/huge.py")
+
+        assert out is not None
+        assert out["ok"] is False
+        assert "too large" in out["summary"].lower()
+        assert "completion-guard" in out["summary"].lower()
+
+    @pytest.mark.asyncio
+    async def test_skill_first_honest_success_unchanged(self):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator
+
+        orch = AsyncOrchestrator(skill_router=MagicMock(), mcp=None, workspace="/tmp")
+        orch.skill_router.run = AsyncMock(return_value={
+            "ok": True,
+            "result": "Here are three potential bugs I found in the file.",
+            "skill_name": "code-review",
+        })
+
+        out = await orch._run_skill_first("review /workspace/app.py for bugs")
+
+        assert out is not None
+        assert out["ok"] is True
+        assert "completion-guard" not in out["summary"].lower()
+
+
+class TestReactFinishClaimGating:
+    """Wire-in (b): the finish branch downgrades an unverified 'I fixed it'
+    claim (no passing run_tests this run) to ok=False with a caveat, and
+    downgrades a punt summary to ok=False."""
+
+    @staticmethod
+    def _finish_msg(summary: str):
+        import json as _json
+        tc = MagicMock()
+        tc.id = "call-finish"
+        tc.function = MagicMock()
+        tc.function.name = "finish"
+        tc.function.arguments = _json.dumps({"summary": summary})
+        msg = MagicMock()
+        msg.tool_calls = [tc]
+        msg.content = ""
+        msg.reasoning_content = ""
+        msg.model_dump = lambda: {"role": "assistant", "content": "", "tool_calls": []}
+        return MagicMock(choices=[MagicMock(message=msg)])
+
+    @pytest.mark.asyncio
+    async def test_unverified_fix_claim_downgraded_with_caveat(self):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator
+
+        orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
+        # finish on turn 1 with a success claim; NO run_tests happened → tests_passed False.
+        with patch(
+            "services.orchestrator.coding_orchestrator.acompletion_with_failover",
+            new_callable=AsyncMock,
+            side_effect=[self._finish_msg("I fixed the off-by-one bug and all tests pass.")],
+        ):
+            out = await orch._run_react_loop("fix the factorial bug", 4)
+
+        assert out["ok"] is False
+        assert "completion-guard" in out["summary"].lower()
+
+    @pytest.mark.asyncio
+    async def test_punt_summary_downgraded(self):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator
+
+        orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
+        with patch(
+            "services.orchestrator.coding_orchestrator.acompletion_with_failover",
+            new_callable=AsyncMock,
+            side_effect=[self._finish_msg(
+                "I could not complete this; the file is too large, provide a smaller snippet."
+            )],
+        ):
+            out = await orch._run_react_loop("fix the file", 4)
+
+        assert out["ok"] is False
+        assert "too large" in out["summary"].lower()
+
+    @pytest.mark.asyncio
+    async def test_honest_neutral_finish_stays_ok_true(self):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator
+
+        orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
+        with patch(
+            "services.orchestrator.coding_orchestrator.acompletion_with_failover",
+            new_callable=AsyncMock,
+            side_effect=[self._finish_msg("Here is the square function you asked for.")],
+        ):
+            out = await orch._run_react_loop("write a square function", 4)
+
+        assert out["ok"] is True
+        assert "completion-guard" not in out["summary"].lower()

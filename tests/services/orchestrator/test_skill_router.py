@@ -522,3 +522,66 @@ class TestTwoTierSelect:
                    new=AsyncMock(side_effect=[good, bad])):
             assert await router._sample_select("t", 0) == "web-search"
             assert await router._sample_select("t", 0) is None
+
+
+@pytest.mark.mocked
+class TestSkillRouterTelemetry:
+    """run() records skill use best-effort without changing dispatch behavior."""
+
+    @pytest.fixture
+    def router(self, tmp_path):
+        runner = MagicMock(spec=SkillRunner)
+        runner.catalog = {"web-search": MagicMock()}
+        redis = AsyncMock()
+        r = SkillRouter(
+            runner=runner,
+            redis=redis,
+            gemma_api_base="http://localhost:8000/v1",
+            telemetry_path=tmp_path / "tele.json",
+        )
+        return r
+
+    @pytest.mark.asyncio
+    async def test_run_records_success(self, router, tmp_path):
+        from services.orchestrator import skill_telemetry as st
+
+        router.select = AsyncMock(return_value="web-search")
+        router.plan_tool_call = AsyncMock(return_value={"tool": "search", "arguments": {}})
+        router.execute = AsyncMock(return_value={"ok": True, "result": "done"})
+
+        result = await router.run("find papers")
+
+        assert result["ok"] is True
+        store = st.load(tmp_path / "tele.json")
+        assert store["skills"]["web-search"]["use_count"] == 1
+        assert store["skills"]["web-search"]["success_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_run_records_failure(self, router, tmp_path):
+        from services.orchestrator import skill_telemetry as st
+
+        router.select = AsyncMock(return_value="web-search")
+        router.plan_tool_call = AsyncMock(return_value={"tool": "search", "arguments": {}})
+        router.execute = AsyncMock(return_value={"ok": False, "error": "timeout"})
+
+        await router.run("find papers")
+
+        store = st.load(tmp_path / "tele.json")
+        assert store["skills"]["web-search"]["fail_count"] == 1
+        assert store["skills"]["web-search"]["success_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_run_unaffected_by_telemetry_failure(self, router):
+        """A telemetry exception must NOT break the dispatch return value."""
+        from services.orchestrator import skill_router as sr
+
+        router.select = AsyncMock(return_value="web-search")
+        router.plan_tool_call = AsyncMock(return_value={"tool": "search", "arguments": {}})
+        router.execute = AsyncMock(return_value={"ok": True, "result": "done"})
+
+        with patch.object(sr, "record_use_best_effort", side_effect=RuntimeError("telemetry boom")):
+            # record_use_best_effort itself swallows, but even if a future
+            # change made it raise, run() wraps the call defensively.
+            result = await router.run("find papers")
+
+        assert result is not None and result["ok"] is True

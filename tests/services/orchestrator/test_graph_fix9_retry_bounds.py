@@ -83,7 +83,7 @@ def _verify_node_with_score(score: float):
     )
     mock_orch.skill_router = router_obj
     mock_async_orch = MagicMock(spec=AsyncOrchestrator)
-    _, _, _, _, _, _, verify_node = make_nodes(mock_orch, mock_async_orch)
+    _, _, _, _, _, _, verify_node, _ = make_nodes(mock_orch, mock_async_orch)
     return verify_node
 
 
@@ -252,7 +252,7 @@ async def test_execute_node_marks_nonretryable_failure_exhausted_and_check_final
         return_value=[Result(id="child", summary="SkillUnavailable: Docker not running", ok=False)]
     )
 
-    _, execute_node, check_node, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
+    _, execute_node, check_node, _, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
 
     d_exec = await execute_node(state)
     # Marked exhausted in ONE pass (not incremented by 1).
@@ -264,8 +264,8 @@ async def test_execute_node_marks_nonretryable_failure_exhausted_and_check_final
     assert "final_answer" in d_check
     assert "error" in d_check
     state_final = {**state_after, **d_check}
-    from langgraph.graph import END
-    assert router(state_final) == END  # finalized -> END, never "reflect"
+    # finalized -> revise (the gate), never "reflect"
+    assert router(state_final) == "revise"
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +289,7 @@ async def test_execute_node_retryable_failure_increments_by_one_and_reflects(
         return_value=[Result(id="child", summary="AssertionError: output mismatch", ok=False)]
     )
 
-    _, execute_node, check_node, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
+    _, execute_node, check_node, _, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
 
     d_exec = await execute_node(state)
     # Retryable -> increment by exactly 1 (from 0 -> 1), still < MAX_GOAL_ATTEMPTS (2).
@@ -316,7 +316,7 @@ async def test_reflect_uses_reflect_thinking_budget(fake_event_emitter):
     mock_orch.architect = AsyncMock(return_value="diagnosis")
     mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
-    _, _, _, reflect_node, _, _, _ = make_nodes(mock_orch, mock_async_orch)
+    _, _, _, reflect_node, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
 
     state = _base_state(current_goal_id="child")
     create_goal(state["goal_tree"], "child", "root", "failing task")

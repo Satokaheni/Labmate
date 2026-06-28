@@ -116,3 +116,42 @@ async def is_cancelled(redis: aioredis.Redis, task_id: str) -> bool:
         return bool(await redis.exists(f"{CANCEL_PREFIX}{task_id}"))
     except Exception:
         return False
+
+
+STEER_PREFIX = "labmate:steer:"
+STEER_TTL = 300  # seconds — a stale steer self-expires if never drained
+
+
+async def write_steer(redis: aioredis.Redis, task_id: str, text: str) -> None:
+    """Queue an out-of-band steer message for a running task (best-effort).
+
+    Overwrites any pending-but-undrained steer (latest user instruction wins).
+    """
+    try:
+        await redis.set(f"{STEER_PREFIX}{task_id}", text, ex=STEER_TTL)
+    except Exception as exc:  # never let signalling break the caller
+        _log.warning("write_steer failed for %s: %s", task_id, exc)
+
+
+async def read_and_clear_steer(redis: aioredis.Redis, task_id: str) -> str | None:
+    """Atomically read AND delete the pending steer for task_id (consume-once).
+
+    Uses GETDEL so a steer is delivered to exactly one turn. Returns None when
+    no steer is pending or on any Redis error (best-effort).
+    """
+    try:
+        return await redis.getdel(f"{STEER_PREFIX}{task_id}")
+    except Exception as exc:
+        _log.warning("read_and_clear_steer failed for %s: %s", task_id, exc)
+        return None
+
+
+def current_task_id() -> str | None:
+    """The active task's id from the task-scoped EventEmitter, or None.
+
+    Mirrors local_tools._current_task_id() but returns None instead of raising
+    when no emitter is set (unit tests / no active task), so the ReAct loop can
+    degrade to "no steer/cancel channel" cleanly.
+    """
+    em = current_emitter.get()
+    return em._task_id if em is not None else None

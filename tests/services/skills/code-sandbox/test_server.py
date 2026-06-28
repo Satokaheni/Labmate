@@ -158,7 +158,7 @@ async def test_call_tool_local_mode_run_tests_warning_in_output(monkeypatch):
     from executor import TestResult
 
     class FakeLocalExec:
-        def run_tests(self, test_path, framework="pytest", timeout=120):
+        def run_tests(self, test_path, framework="pytest", timeout=120, expr=None):
             return TestResult(
                 passed=1, failed=0, errors=0, duration_ms=5,
                 output="1 passed in 0.1s", backend="local", sandboxed=False,

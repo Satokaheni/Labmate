@@ -2,22 +2,61 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import litellm
 import os
 import subprocess
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Callable
 from aiolimiter import AsyncLimiter
 
 from .types import Goal, State, Status, get_ready_goals, update_status, now_iso
 from . import events
 from .model_client import acompletion_with_failover, resolve_bases
 from .prompt_assembler import PromptAssembler
-from .local_tools import LOCAL_TOOL_NAMES, request_local_tool
-from .loop_detection import LoopDetector, call_signature
-from .iteration_budget import IterationBudget, CHEAP_TOOLS
+from .memory_search import MemorySearch
+from .local_tools import (
+    LOCAL_TOOL_NAMES,
+    build_sandbox_test_args,
+    request_local_tool,
+    shape_sandbox_test_result,
+    verify_written_content,
+)
+from .loop_detection import LoopDetector, call_signature, repeat_limit_for
+from .iteration_budget import IterationBudget, REFUNDABLE_TOOLS
+from .load_skill_guard import is_repeat_load, already_loaded_message
+from .steer_inject import inject_steer
+from .progress_breaker import ProgressBreaker, ProgressStep
+from .message_repair import sanitize_messages, message_repair_enabled
+from .tool_grounding import ground_tool_result, DEFAULT_TOOL_RESULT_BUDGET
+from .edit_intent import requires_editing, exposes_bug_intent
+from .replan_guard import replan_should_stop
+from .test_outcome import classify_test_attempt
+from .verification_stop import (
+    needs_verification,
+    build_verify_nudge,
+    build_expose_test_nudge,
+    build_infra_unverified_note,
+    MAX_VERIFY_INFRA_ERRORS,
+)
+from .completion_guard import reconcile_ok, reconcile_cutoff, is_assertion_verification
+from .sandbox_edits import detect_sandbox_writes
+
+# Max chars of RAW tool output (test results, file contents, bash stdout/stderr,
+# skill results) fed back into the ReAct context per tool call. Generous on
+# purpose: the weak local model must SEE real evidence, not a 600-char summary.
+# Over budget → ground_tool_result keeps a head + tail + marker (end-of-output
+# evidence like FAILED/assert lines survives). Replaces the old [:4000]/[:2000]
+# hard cuts. See services/orchestrator/tool_grounding.py.
+LABMATE_TOOL_RESULT_BUDGET = int(
+    os.getenv("LABMATE_TOOL_RESULT_BUDGET", str(DEFAULT_TOOL_RESULT_BUDGET))
+)
+
+# Timeout (seconds) for skill tool calls. Must exceed the skill-worker's own
+# call timeout so the skill has time to finish before we abort.
+SKILL_CALL_TIMEOUT = float(os.getenv("SKILL_CALL_TIMEOUT", "135"))
 
 # Sequencing strategy for react_execute (A/B knob — see eval/seq_ab):
 #   skill_first (DEFAULT): a confidently-matched skill runs deterministically and
@@ -42,6 +81,31 @@ MAX_SEQ_STEPS = int(os.getenv("MAX_SEQ_STEPS", "5"))
 # step goals skip the planner loop entirely (run once via skill-first / ReAct) so a
 # simple "review this file" doesn't pay the planner-sequencing tax (over-sequencing).
 REPLAN_COMPOUND_GATE = os.getenv("REPLAN_COMPOUND_GATE", "1") == "1"
+# Max times the replan planner may re-target the SAME skill across sub-steps
+# before the no-progress guard (replan_guard.replan_should_stop) forces a finish.
+# Prevents the live-A/B "repo-fault-localize 4x" thrash. Per-loop, not per-process.
+REPLAN_MAX_SKILL_REPEATS = int(os.getenv("REPLAN_MAX_SKILL_REPEATS", "2"))
+
+# When 1 (default), a load_skill call for a skill ALREADY loaded this goal is
+# short-circuited (no real reload) AND the wasted iteration is refunded, so the
+# weak local model cannot burn its step budget re-loading the same skills. When
+# 0, the redundant reload is still short-circuited but the budget is NOT
+# refunded (lets an operator A/B the refund half in isolation).
+REFUND_REPEAT_LOAD_SKILL = os.getenv("LABMATE_REFUND_REPEAT_LOAD_SKILL", "1") == "1"
+
+from .loop_checkpoint import (
+    LoopCheckpoint,
+    CheckpointStore,
+    from_dict as _cp_from_dict,
+)
+
+# Durable per-turn inner-loop checkpoint (Option A). OFF by default — the inner
+# loop was just stabilized, so this is regression-safe; flip ON after the
+# resilience A/B (sibling lite-orchestrator plan) validates it. When OFF,
+# _run_react_loop performs ZERO load/save/clear and is byte-identical to today.
+ENABLE_LOOP_CHECKPOINT = os.getenv("ENABLE_LOOP_CHECKPOINT", "0") not in (
+    "0", "false", "False", "",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +128,73 @@ def _infer_mime(path: str) -> str:
         "js": "application/javascript", "md": "text/markdown",
         "json": "application/json", "sh": "text/x-sh",
     }.get(ext, "text/plain")
+
+
+def _run_tests_passed(content: str) -> bool:
+    """True if a run_tests tool result indicates a pass.
+
+    The run_tests tool returns {"ok": bool, "exit_code": int, "raw_output": str}.
+    A result whose JSON has ok True or exit_code 0 is a pass. Non-JSON or an
+    error result is treated as NOT passed (the guard stays armed).
+    """
+    import json as _json
+    try:
+        data = _json.loads(content)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    if "error" in data:
+        return False
+    if data.get("ok") is True:
+        return True
+    return data.get("exit_code") == 0
+
+
+def _run_bash_passed(content: str) -> bool:
+    """Best-effort: did a pytest run_bash invocation pass?
+
+    run_bash returns raw stdout/stderr text (or an error JSON blob on
+    failure). Treat an error JSON as failed. Otherwise match anchored
+    pytest summary patterns to avoid false positives from arbitrary text
+    containing 'ok' (e.g. 'ok' in filenames, variable names, etc).
+    """
+    import json as _json
+    import re
+
+    try:
+        data = _json.loads(content)
+        if isinstance(data, dict) and "error" in data:
+            return False
+    except (TypeError, ValueError):
+        pass
+
+    lowered = str(content).lower()
+
+    # Check for traceback or " error" as explicit failure (not a summary pattern).
+    if "traceback" in lowered or " error" in lowered:
+        return False
+
+    # Look for anchored pytest summary patterns.
+    # A pytest summary with failures looks like "X failed" where X is non-zero.
+    # Pattern to detect: digit + "failed" or "error(s)" — this matches "1 failed", "2 errors" etc.
+    # We check if the count is non-zero by looking for non-zero leading digit.
+    has_failed = re.search(r'\b[1-9]\d*\s+(failed|errors?)\b', lowered) is not None
+
+    # If there are actual failures (count > 0), it failed.
+    if has_failed:
+        return False
+
+    # Otherwise, look for a passing summary: "X passed" where X > 0.
+    has_passed = re.search(r'\b[1-9]\d*\s+passed\b', lowered) is not None
+
+    # If we see tests passing and no non-zero failure count, it passed.
+    if has_passed:
+        return True
+
+    # Fallback: if no summary patterns found, return False to avoid
+    # false positives from incomplete or malformed output.
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +220,13 @@ class Result:
     summary: str
     artifacts: dict = field(default_factory=dict)
     ok: bool = True
+    tools_used: list[str] = field(default_factory=list)
+    # True iff a real verification (run_tests / assertion-backed sandbox run)
+    # PASSED during this run. Threaded to the final-answer reconciliation seam in
+    # main.py so an honest "tests pass" claim backed by a real run is not
+    # downgraded (the react loop's own reconcile_ok already used this; main.py
+    # was re-judging the rendered answer WITHOUT it -> false ok=False).
+    tests_passed: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +284,7 @@ class AsyncOrchestrator:
         workspace: str = ".",
         max_steps: int = 6,
         redis=None,
+        now: Callable[[], float] | None = None,
     ) -> None:
         self.sem = asyncio.Semaphore(max_inflight)
         self.rpm_limiter = AsyncLimiter(rpm, 60)
@@ -160,9 +299,15 @@ class AsyncOrchestrator:
         self.skill_router = skill_router
         self.mcp = mcp
         self.codegraph_mcp = None  # set after construction if codegraph-embedder is running
+        self.memory_search: MemorySearch | None = None  # set after construction when a memory store is wired
         self.workspace = workspace
         self.max_steps = max_steps
         self.redis = redis
+        # Injected post-construction by the orchestrator bootstrap when a Mongo
+        # handle is available (CheckpointStore over the loop_checkpoints
+        # collection). None in unit tests / when checkpointing is unwired.
+        self.checkpoint_store = None
+        self._now: Callable[[], float] = now if now is not None else time.monotonic
 
     async def plan_and_dispatch(self, ready_goals: list[dict]) -> list[Result]:
         """
@@ -240,6 +385,17 @@ class AsyncOrchestrator:
         #                 matches (baseline; current production default).
         if SEQUENCING_MODE == "replan":
             return await self._replan_loop(goal)
+
+        # Find-and-fix routing: a goal that needs file edits / verification
+        # ("fix", "make the tests pass", "review then fix the code") cannot be
+        # served by a single read-only skill dispatch — it must enter the
+        # multi-tool ReAct loop so the model can interleave read + edit + run
+        # (skills stay callable inside the loop via call_skill_tool). Gated by
+        # ROUTE_EDIT_TO_REACT (default ON); when off, behavior is identical to
+        # before. No effect in 'react' mode (already runs the loop).
+        if SEQUENCING_MODE != "react" and requires_editing(goal):
+            return await self._run_react_loop(goal, self.max_steps)
+
         if SEQUENCING_MODE != "react":
             skilled = await self._run_skill_first(goal)
             if skilled is not None:
@@ -314,7 +470,46 @@ class AsyncOrchestrator:
             else:
                 # Structured result: serialize to JSON
                 text = json.dumps(res, default=str)
-        return {"ok": ok, "summary": text[:2000]}
+        # Include the skill name in tools_used for curator sequence tracking
+        skill_name = skill_result.get("skill_name", "") if isinstance(skill_result, dict) else ""
+        tools_list = [skill_name] if skill_name else []
+        # Reconcile ok with the answer: a single-skill goal runs no in-loop test
+        # verification, so tests_passed=False. The live fix here is the PUNT
+        # shape — a read-only skill that returns ok=True with "file too large /
+        # provide a snippet" must NOT be reported as a success (report §4.5).
+        summary = text[:2000]
+        recon_ok, note = reconcile_ok(ok, summary, tests_passed=False)
+        if note:
+            summary = (summary + " " + note)[:2000]
+        return {"ok": recon_ok, "summary": summary, "tools_used": tools_list, "tests_passed": False}
+
+    def _maybe_repair(self, messages: list[dict]) -> list[dict]:
+        """Repair the messages list right before a model call, when enabled.
+
+        Drops orphaned tool results and merges illegal adjacent same-role runs
+        so malformed sequences (from injected synthetic turns) never reach the
+        OpenAI-compatible endpoint. No-op pass-through when the flag is off.
+        """
+        if message_repair_enabled():
+            return sanitize_messages(messages)
+        return messages
+
+    @staticmethod
+    def _turn_made_progress(*, has_tool_calls: bool, content: str | None, is_finish: bool) -> bool:
+        """A ReAct turn made progress if it produced real output: a tool call,
+        new non-empty assistant content, or a finish. Used by the no-progress
+        breaker to decide whether to increment or reset its idle counter.
+        """
+        return bool(is_finish or has_tool_calls or (content or "").strip())
+
+    def _checkpoint_active(self, task_id: str | None) -> bool:
+        """Checkpointing runs only when the flag is ON, a store is wired, and a
+        task_id is available. All three absent in unit tests -> complete no-op."""
+        return bool(
+            ENABLE_LOOP_CHECKPOINT
+            and self.checkpoint_store is not None
+            and task_id is not None
+        )
 
     async def _run_react_loop(self, goal: str, max_steps: int) -> dict:
         """Multi-tool ReAct loop bounded by ``max_steps``.
@@ -330,6 +525,7 @@ class AsyncOrchestrator:
         assembler = PromptAssembler(
             skill_router=self.skill_router,
             codegraph_enabled=self.codegraph_mcp is not None,
+            memory_enabled=self.memory_search is not None,
         )
         tools = assembler.tools()                 # frozen list — never rebuilt per step
         messages = [
@@ -341,35 +537,197 @@ class AsyncOrchestrator:
         # tool call or cycles a tiny set of calls and would otherwise burn the budget.
         loop_detector = LoopDetector()
 
+        # Per-goal tools accumulation for skill-curator sequence capture.
+        _tools_used: list[str] = []
+
+        # Verification-stop guard (hermes pattern). Track which files this run
+        # edited and whether a passing verification has been observed. The guard
+        # fires ONLY when the model tries to finish after editing without a
+        # passing test run, and is capped at MAX_VERIFY_NUDGES.
+        edited_files: set[str] = set()
+        tests_passed: bool = False
+        verify_nudges_used: int = 0
+        max_verify_nudges = int(os.getenv("MAX_VERIFY_NUDGES", "2"))
+        infra_error_streak: int = 0
+        _last_infra_reason: str = "test toolchain error"
+        # Inverted success signal: for an "expose the bug" goal a test that RAN and
+        # FAILED is the verification (a passing test would NOT expose the bug). When
+        # true, a failing run sets tests_passed (the unified verification-met signal)
+        # and the verify nudge steers toward RUNNING the test, not making it pass.
+        _expose_bug: bool = exposes_bug_intent(goal)
+        _bug_exposed: bool = False
+
+        # Skills already loaded THIS goal. A repeat load_skill for a name in
+        # this set is short-circuited + refunded (see load_skill dispatch below)
+        # so the model stops churning its iteration budget re-loading skills.
+        loaded_skills: set[str] = set()
+
         # ReAct loop — bounded by an IterationBudget (replaces the bare
         # range(max_steps) cap). The budget grants ONE grace turn after
         # exhaustion and refunds cheap read-only iterations (CHEAP_TOOLS).
         # Additionally, record_turn() enforces a hard absolute turn ceiling that
         # cannot be refunded, preventing infinite loops from distinct cheap reads.
-        cap = int(os.getenv("LABMATE_MAX_ITERATIONS", str(self.max_steps)))
+        # Edit/fix goals are inherently multi-step (edit -> run tests -> see
+        # failure -> edit again), so they get a higher iteration ceiling than
+        # read/answer goals. Non-edit goals keep the existing default cap.
+        if requires_editing(goal):
+            cap = int(os.getenv("LABMATE_MAX_ITERATIONS_EDIT", "12"))
+        else:
+            cap = int(os.getenv("LABMATE_MAX_ITERATIONS", str(self.max_steps)))
         budget = IterationBudget(max_total=cap)
+        # Wall-clock deadline (guard layered on top of step counting). 0 disables.
+        deadline_s = float(os.getenv("LABMATE_GOAL_DEADLINE_S", "600"))
+        noprogress_limit = int(os.getenv("LABMATE_NOPROGRESS_LIMIT", "5"))
+        breaker = ProgressBreaker(default_cap=noprogress_limit)
+        start = self._now()
+        # Steer deferral: read at turn N, inject at turn N+1.
+        # BUT: pre-written steers (available before turn 1) should NOT be injected on turn 1;
+        # they should be deferred to turn 2 (unit test expectation).
+        # Mid-loop steers (written during turn N, read at turn N+1's top) MUST be injected
+        # on turn N+1 (BDD test expectation, because there's no turn N+2).
+        # Approach: check if steer exists before loop starts. If yes, defer it.
+        # If no, then steers read during the loop are mid-loop and should be injected immediately.
+        try:
+            _task_id = events.current_task_id()
+        except AttributeError:
+            _task_id = None
+
+        _prewritten_steer: str | None = None
+        if _task_id is not None and self.redis is not None:
+            _prewritten_steer = await events.read_and_clear_steer(self.redis, _task_id)
+
+        _pending_steer: str | None = None
+
+        # ── Insertion A: durable inner-loop checkpoint — LOAD + rehydrate ──────
+        # Best-effort. On a crash+restart (same task_id), resume from the saved
+        # turn with the saved messages/counters instead of starting from turn 0.
+        try:
+            _cp_task_id = events.current_task_id()
+        except AttributeError:
+            _cp_task_id = None
+        if self._checkpoint_active(_cp_task_id):
+            _loaded = await self.checkpoint_store.load(_cp_task_id)
+            if _loaded is not None and _loaded.goal == goal:
+                messages = list(_loaded.messages)
+                budget._used = _loaded.used
+                budget._absolute_turns = _loaded.absolute_turns
+                budget._grace_used = _loaded.grace_used
+                loop_detector._sigs = list(_loaded.loop_signatures)
+                edited_files = set(_loaded.edited_files)
+                tests_passed = _loaded.tests_passed
+                verify_nudges_used = _loaded.verify_nudges_used
+                _tools_used = list(_loaded.tools_used)
+                loaded_skills = set(_loaded.loaded_skills)
+                # Rebase the wall-clock deadline: subtract elapsed-so-far from
+                # 'start' so deadline_s still measures total goal time across the
+                # restart (monotonic values are not comparable across processes).
+                start = self._now() - _loaded.start_monotonic_offset
+                await events.emit(
+                    "loop.checkpoint.resumed",
+                    task_id=_cp_task_id,
+                    turn=_loaded.turn,
+                    used=_loaded.used,
+                )
+
         try:
             while True:
+                # ── Live interrupt: cancel + steer (top of every turn) ──────────
+                # task_id comes from the active EventEmitter (set per-task in
+                # main._handle); None in unit tests with no emitter / no redis,
+                # in which case both checks are skipped and the loop is unchanged.
+                try:
+                    _task_id = events.current_task_id()
+                except AttributeError:
+                    _task_id = None  # FakeEmitter in tests lacks _task_id
+                _new_midloop_steer = None
+                _to_inject = None  # steer to inject into THIS turn's model call
+
+                if _task_id is not None and self.redis is not None:
+                    # (1) Cancel — honest partial halt (this is the in-loop cancel
+                    #     check that was previously MISSING entirely).
+                    if await events.is_cancelled(self.redis, _task_id):
+                        await events.emit("turn.cancelled", task_id=_task_id, steps=budget.used)
+                        return {
+                            "ok": False,
+                            "summary": (
+                                "cancelled by user mid-turn; partial progress only — "
+                                "the requested work was not fully completed"
+                            ),
+                            "tools_used": _tools_used,
+                        }
+                    # (2) Steer — handle both pre-written and mid-loop steers differently.
+                    #     Pre-written (read before loop): defer to turn 2 (unit test).
+                    #     Mid-loop (written during loop): inject immediately on next turn.
+                    # Read any newly available steer from mid-loop writes.
+                    _new_midloop_steer = await events.read_and_clear_steer(self.redis, _task_id)
+
+                    # Deferral logic for pre-written steers:
+                    # On turn 1, set _pending_steer to _prewritten_steer for use on turn 2.
+                    # On later turns, use the deferral pattern for mid-loop steers.
+                    if _pending_steer is None and _prewritten_steer is not None:
+                        # Turn 1 with pre-written steer: defer it to turn 2
+                        _pending_steer = _prewritten_steer
+                        _prewritten_steer = None  # consumed, don't re-use
+                    elif _new_midloop_steer is not None:
+                        # Mid-loop steer: inject immediately (don't defer)
+                        _to_inject = _new_midloop_steer
+
+                # Wall-clock guard: stop if this goal has run past its deadline.
+                if deadline_s > 0 and (self._now() - start) > deadline_s:
+                    _ok, _sum = reconcile_cutoff(
+                        "wall-clock deadline exceeded",
+                        edited_files=edited_files, tests_passed=tests_passed,
+                    )
+                    return {"ok": _ok, "summary": _sum, "tools_used": _tools_used, "tests_passed": tests_passed}
+
                 # Hard absolute ceiling (prevents infinite loops of distinct cheap reads).
                 if not budget.record_turn():
-                    return {"ok": False, "summary": "absolute turn limit exceeded"}
+                    _ok, _sum = reconcile_cutoff(
+                        "absolute turn limit exceeded",
+                        edited_files=edited_files, tests_passed=tests_passed,
+                    )
+                    return {"ok": _ok, "summary": _sum, "tools_used": _tools_used, "tests_passed": tests_passed}
 
                 # Consume one unit; on exhaustion take the single grace turn,
                 # else stop with a clear "budget exhausted" outcome.
                 if not budget.consume():
                     if not budget.grace():
-                        return {"ok": False, "summary": "budget exhausted"}
+                        _ok, _sum = reconcile_cutoff(
+                            "budget exhausted",
+                            edited_files=edited_files, tests_passed=tests_passed,
+                        )
+                        return {"ok": _ok, "summary": _sum, "tools_used": _tools_used, "tests_passed": tests_passed}
                     # grace turn: fall through and run one more iteration.
 
                 # Track tools used this turn so a cheap-only turn can be refunded.
                 _turn_tools: list[str] = []
 
                 step = budget.used - 1  # for logging (0-indexed)
+                # Inject steer only for this model call, without modifying the
+                # persistent messages list, so it appears exactly once.
+                _messages_for_model = messages
+                # Use either the deferred pre-written steer or the immediately-injected mid-loop steer.
+                # Defer pre-written steers to turn 2+ (step > 0) so they are injected as corrections
+                # to tool results, not as initial instructions. Mid-loop steers are immediate (step-agnostic).
+                _steer_this_turn = None
+                if step > 0 and _pending_steer is not None:
+                    _steer_this_turn = _pending_steer
+                elif _to_inject is not None:
+                    _steer_this_turn = _to_inject
+                if _steer_this_turn:
+                    _messages_for_model = inject_steer(messages, _steer_this_turn)
+                    if _task_id is not None and self.redis is not None:
+                        await events.emit("steer.injected", task_id=_task_id, text=_steer_this_turn)
+                    # Clear the pending steer so it is not re-injected on subsequent turns.
+                    # Mid-loop steers (_to_inject) are already cleared at line 517 each turn.
+                    if _pending_steer is not None:
+                        _pending_steer = None
+
                 r = await acompletion_with_failover(
                     model="openai/gemma-4-31b",
                     bases=self._bases,
                     api_key="not-needed",
-                    messages=messages,
+                    messages=self._maybe_repair(_messages_for_model),
                     tools=tools,
                     tool_choice="auto",
                     extra_body={"thinking_budget_tokens": 2048},
@@ -399,18 +757,23 @@ class AsyncOrchestrator:
                         "role": "assistant",
                         "content": msg.content or "",
                     }
-                    if tool_calls:
-                        msg_dict["tool_calls"] = [
-                            {
-                                "id": tc.id,
-                                "type": "function",
-                                "function": {
-                                    "name": tc.function.name,
-                                    "arguments": tc.function.arguments,
-                                },
-                            }
-                            for tc in tool_calls
-                        ]
+
+                # Ensure tool_calls from the actual message are always included in the dict,
+                # in case model_dump() returned an empty or missing tool_calls list.
+                # This is critical for the sanitizer to correctly identify tool_call_ids
+                # and not drop legitimate tool results as orphaned.
+                if tool_calls:
+                    msg_dict["tool_calls"] = [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            },
+                        }
+                        for tc in tool_calls
+                    ]
                 messages.append(msg_dict)
 
                 # Check for tool calls (already extracted above)
@@ -419,12 +782,17 @@ class AsyncOrchestrator:
                     return {
                         "ok": True,
                         "summary": (msg.content or "")[:2000],
+                        "tools_used": _tools_used,
                     }
 
                 # Process each tool call
                 for tc in tool_calls:
                     name = tc.function.name
                     _turn_tools.append(name)
+                    # Accumulate all dispatched tools for skill-curator sequence capture
+                    # (excluding "finish" which is not a real tool dispatch).
+                    if name != "finish":
+                        _tools_used.append(name)
                     try:
                         args = json.loads(tc.function.arguments or "{}")
                     except (json.JSONDecodeError, ValueError):
@@ -433,14 +801,98 @@ class AsyncOrchestrator:
                     content = ""
 
                     if name == "finish":
-                        return {
-                            "ok": True,
-                            "summary": str(args.get("summary", ""))[:2000],
-                        }
+                        summary = str(args.get("summary", ""))[:2000]
+                        _infra_blocked = (
+                            bool(edited_files)
+                            and not tests_passed
+                            and infra_error_streak >= MAX_VERIFY_INFRA_ERRORS
+                        )
+                        if needs_verification(
+                            edited_files, tests_passed,
+                            verify_nudges_used, max_verify_nudges,
+                            infra_error_streak=infra_error_streak,
+                        ):
+                            verify_nudges_used += 1
+                            await events.emit(
+                                "verify.nudge",
+                                files=sorted(edited_files),
+                                nudge=verify_nudges_used,
+                                max_nudges=max_verify_nudges,
+                            )
+                            # Append synthetic tool result for the finish tool_call
+                            # before re-entering the loop, so the message sequence
+                            # is valid: assistant(finish) -> tool(finish) -> user(nudge)
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": json.dumps({
+                                    "finish_deferred": True,
+                                    "reason": "verification required before completion"
+                                }),
+                            })
+                            messages.append({
+                                "role": "user",
+                                # Expose-bug goals get a nudge to RUN the test and
+                                # confirm it FAILS (not to make it pass).
+                                "content": (
+                                    build_expose_test_nudge(edited_files)
+                                    if _expose_bug
+                                    else build_verify_nudge(edited_files)
+                                ),
+                            })
+                            # Re-enter the loop: do not return, do not run the
+                            # remaining tool calls in this assistant turn.
+                            break
+                        # Either no verification was owed, or the nudge cap was
+                        # reached. If we edited without ever verifying, annotate
+                        # the summary honestly rather than claiming a pass.
+                        if _infra_blocked:
+                            _summary = (args.get("summary") or "")
+                            summary = (
+                                _summary + "\n\n"
+                                + build_infra_unverified_note(edited_files, _last_infra_reason)
+                            ).strip()
+                        elif _expose_bug and edited_files and not tests_passed:
+                            # Expose-bug goal that wrote a test but never ran it to
+                            # confirm it fails — honest note, not a "tests must pass".
+                            summary = (
+                                summary + " [verification-stop: the test was NOT run "
+                                "to confirm it exposes the bug]"
+                            )[:2000]
+                        elif edited_files and not tests_passed:
+                            summary = (
+                                summary + " [verification-stop: tests were NOT "
+                                "verified to pass within the nudge budget]"
+                            )[:2000]
+                        # Reconcile the final ok with the finish summary, reusing
+                        # the verification-stop guard's tests_passed signal so a
+                        # success CLAIM ("I fixed it / tests pass") that was NOT
+                        # backed by a passing run_tests this run is gated, and a
+                        # punt summary is never reported as a success (§4.5).
+                        recon_ok, note = reconcile_ok(
+                            True, summary, tests_passed=tests_passed
+                        )
+                        if note:
+                            summary = (summary + " " + note)[:2000]
+                        return {"ok": recon_ok, "summary": summary, "tools_used": _tools_used, "tests_passed": tests_passed}
 
                     # No-progress / tool-loop detection. finish already returned
                     # above, so only genuinely dispatched tools reach here.
-                    if loop_detector.record(call_signature(name, args)):
+                    # Special case: for repeat load_skill calls, skip the halt check
+                    # because we will dedupe them (short-circuit + refund). Still
+                    # record the signature for backstop detection in case a true
+                    # loop of failed loads occurs.
+                    _is_repeat_load_skill = (
+                        name == "load_skill"
+                        and is_repeat_load(args.get("name", ""), loaded_skills)
+                    )
+                    if (
+                        not _is_repeat_load_skill
+                        and loop_detector.record(
+                            call_signature(name, args),
+                            repeat_limit=repeat_limit_for(name),
+                        )
+                    ):
                         _reason = loop_detector.reason()
                         await events.emit(
                             "loop.detected",
@@ -460,7 +912,16 @@ class AsyncOrchestrator:
                                 f"loop detected ({_reason}): repeated tool "
                                 f"'{name}' — halting to avoid burning steps"
                             ),
+                            "tools_used": _tools_used,
                         }
+
+                    # For repeat load_skill, record the signature for backstop
+                    # loop detection in case a true loop of failed loads occurs.
+                    if _is_repeat_load_skill:
+                        loop_detector.record(
+                            call_signature(name, args),
+                            repeat_limit=repeat_limit_for(name),
+                        )
 
                     # Emit tool.start for all non-finish tools
                     _tool_id = uuid.uuid4().hex[:12]
@@ -477,8 +938,33 @@ class AsyncOrchestrator:
                     )
 
                     if name == "load_skill" and self.skill_router is not None:
-                        obs = self.skill_router.runner.load_skill(args.get("name", ""))
-                        content = json.dumps(obs)
+                        _skill_name = args.get("name", "")
+                        if is_repeat_load(_skill_name, loaded_skills):
+                            # Already loaded this goal: do NOT reload. Return a
+                            # clear "already loaded — call its tools directly"
+                            # result and refund the wasted iteration so a churn
+                            # of redundant loads cannot starve real work.
+                            obs = already_loaded_message(_skill_name, loaded_skills)
+                            content = json.dumps(obs)
+                            if REFUND_REPEAT_LOAD_SKILL:
+                                budget.refund()
+                            await events.emit(
+                                "load_skill.deduped",
+                                name=_skill_name,
+                                loaded=sorted(loaded_skills),
+                                refunded=REFUND_REPEAT_LOAD_SKILL,
+                            )
+                        else:
+                            obs = self.skill_router.runner.load_skill(_skill_name)
+                            content = json.dumps(obs)
+                            # Record a successful first load so a later repeat is
+                            # deduped. Only record on a real 'loaded'/'already_loaded'
+                            # status — an error (unknown skill / cap) must NOT be
+                            # remembered as loaded.
+                            _resp = obs.get("response") if isinstance(obs, dict) else None
+                            _status = _resp.get("status") if isinstance(_resp, dict) else None
+                            if _skill_name and _status in ("loaded", "already_loaded"):
+                                loaded_skills.add(_skill_name)
 
                     elif name == "call_skill_tool" and self.skill_router is not None:
                         res = await self.skill_router.execute(
@@ -486,7 +972,9 @@ class AsyncOrchestrator:
                             args.get("tool", ""),
                             args.get("arguments", {}),
                         )
-                        content = json.dumps(res)[:4000]
+                        content = ground_tool_result(
+                            json.dumps(res), LABMATE_TOOL_RESULT_BUDGET
+                        )
                         # Emit artifact.created if the skill produced a file
                         if isinstance(res, dict):
                             _result = res.get("result") if isinstance(res.get("result"), dict) else {}
@@ -511,6 +999,24 @@ class AsyncOrchestrator:
                                     )
                                 except Exception:
                                     pass  # artifact emission is best-effort
+                        # Verification-stop: an assertion-bearing code-sandbox run
+                        # that exits 0 is a real verification for tasks with no
+                        # test suite (so a correct fix is not downgraded to ok=False).
+                        if is_assertion_verification(
+                            args.get("skill", ""), args.get("tool", ""),
+                            args.get("arguments", {}), res,
+                        ):
+                            tests_passed = True
+                        # Edit-accounting: files written via code-sandbox (the
+                        # workaround used when no local-tool client is attached)
+                        # must count as edits so reconcile_cutoff can credit a
+                        # verified run.
+                        _sb_writes = detect_sandbox_writes(
+                            args.get("skill", ""), args.get("tool", ""),
+                            args.get("arguments", {}), res,
+                        )
+                        if _sb_writes:
+                            edited_files |= _sb_writes
 
                     elif name in LOCAL_TOOL_NAMES:
                         if self.redis is not None:
@@ -518,7 +1024,38 @@ class AsyncOrchestrator:
                                 result = await request_local_tool(
                                     self.redis, name, args
                                 )
-                                content = json.dumps({"result": result}, default=str)
+                                # Reliable write: after a write_file the client may
+                                # report success without the bytes landing. Read the
+                                # file back and confirm it matches what we asked to
+                                # write; surface an explicit error to the model on
+                                # mismatch so it cannot claim "code updated" falsely.
+                                if name == "write_file":
+                                    requested = str(args.get("content", ""))
+                                    try:
+                                        readback = await request_local_tool(
+                                            self.redis,
+                                            "read_file",
+                                            {"path": args.get("path", "")},
+                                        )
+                                    except Exception as exc:
+                                        readback = f"<read-back failed: {exc}>"
+                                    verify_err = verify_written_content(requested, readback)
+                                    if verify_err is not None:
+                                        content = json.dumps({"error": verify_err})
+                                    else:
+                                        content = json.dumps(
+                                            {"result": result, "verified": True},
+                                            default=str,
+                                        )
+                                        # Verification-stop: record a successful edit.
+                                        _path = str(args.get("path", "")).strip()
+                                        if _path:
+                                            edited_files.add(_path)
+                                else:
+                                    content = ground_tool_result(
+                                        json.dumps({"result": result}, default=str),
+                                        LABMATE_TOOL_RESULT_BUDGET,
+                                    )
                             except Exception as exc:
                                 content = json.dumps({"error": str(exc)})
                         else:
@@ -537,13 +1074,69 @@ class AsyncOrchestrator:
                                         "timeout": 30000,
                                     },
                                 )
-                                content = "\n".join(
-                                    c.text for c in obs.content if hasattr(c, "text")
+                                content = ground_tool_result(
+                                    "\n".join(
+                                        c.text for c in obs.content if hasattr(c, "text")
+                                    ),
+                                    LABMATE_TOOL_RESULT_BUDGET,
                                 )
+                                # Verification-stop: a passing pytest via run_bash also
+                                # counts as a verification (secondary signal).
+                                if "pytest" in str(args.get("command", "")) and _run_bash_passed(content):
+                                    tests_passed = True
+                                # Track infra errors only for pytest invocations
+                                if "pytest" in str(args.get("command", "")):
+                                    _bash_outcome = classify_test_attempt(content)
+                                    if _bash_outcome.infra_error:
+                                        infra_error_streak += 1
+                                        _last_infra_reason = _bash_outcome.reason
+                                    elif _bash_outcome.ran:
+                                        infra_error_streak = 0
+                                    # Expose-bug inversion (see run_tests handler).
+                                    if _expose_bug and _bash_outcome.ran and not _bash_outcome.passed and not _bash_outcome.infra_error:
+                                        _bug_exposed = True
+                                        tests_passed = True
                             except Exception as exc:
                                 content = json.dumps({"error": str(exc)})
                         else:
                             content = json.dumps({"error": "no bash runner available"})
+
+                    elif name == "run_tests":
+                        # First-class test runner. pytest is BLOCKED through the
+                        # generic exec_run bash seam (sandbox rule), so route to the
+                        # code-sandbox skill's run_tests tool, which runs the REAL
+                        # pytest suite (LocalSubprocessExecutor on RunPod). Always an
+                        # ABSOLUTE test_path rooted at the workspace.
+                        if self.skill_router is not None:
+                            sb_args = build_sandbox_test_args(args, self.workspace)
+                            try:
+                                envelope = await self.skill_router.execute(
+                                    "code-sandbox",
+                                    "run_tests",
+                                    sb_args,
+                                    timeout=min(sb_args["timeout"] + 15, SKILL_CALL_TIMEOUT),
+                                )
+                                shaped = shape_sandbox_test_result(envelope)
+                                content = ground_tool_result(
+                                    json.dumps(shaped), LABMATE_TOOL_RESULT_BUDGET
+                                )
+                                if _run_tests_passed(content):
+                                    tests_passed = True
+                                _outcome = classify_test_attempt(content)
+                                if _outcome.infra_error:
+                                    infra_error_streak += 1
+                                    _last_infra_reason = _outcome.reason
+                                elif _outcome.ran:
+                                    infra_error_streak = 0
+                                # Expose-bug inversion: a test that RAN and FAILED
+                                # exposes the bug -> that IS the verification.
+                                if _expose_bug and _outcome.ran and not _outcome.passed and not _outcome.infra_error:
+                                    _bug_exposed = True
+                                    tests_passed = True
+                            except Exception as exc:
+                                content = json.dumps({"error": str(exc)})
+                        else:
+                            content = json.dumps({"error": "no test runner available"})
 
                     elif name == "code_semantic_search":
                         if self.codegraph_mcp is not None:
@@ -552,13 +1145,27 @@ class AsyncOrchestrator:
                                     "code_semantic_search",
                                     {"query": args.get("query", ""), "k": args.get("k", 8)},
                                 )
-                                content = "\n".join(
-                                    c.text for c in obs.content if hasattr(c, "text")
+                                content = ground_tool_result(
+                                    "\n".join(
+                                        c.text for c in obs.content if hasattr(c, "text")
+                                    ),
+                                    LABMATE_TOOL_RESULT_BUDGET,
                                 )
                             except Exception as exc:
                                 content = json.dumps({"error": str(exc)})
                         else:
                             content = json.dumps({"error": "codegraph semantic search not available"})
+
+                    elif name == "memory_search":
+                        if self.memory_search is not None:
+                            try:
+                                content = await self.memory_search.search(
+                                    args.get("query", ""), args.get("k"),
+                                )
+                            except Exception as exc:
+                                content = json.dumps({"error": str(exc)})
+                        else:
+                            content = json.dumps({"error": "memory search not available"})
 
                     else:
                         content = json.dumps({"error": f"unknown tool: {name}"})
@@ -585,15 +1192,63 @@ class AsyncOrchestrator:
                         "content": content,
                     })
 
-                # Refund this turn if EVERY tool call it made was a cheap read.
-                # Pure inspection (read_file / list_dir / code_semantic_search)
-                # must not starve genuine work. A turn with no tool calls already
-                # returned above, so _turn_tools is non-empty here.
-                if _turn_tools and all(t in CHEAP_TOOLS for t in _turn_tools):
+                # Refund this turn if EVERY tool call it made was a refundable read/verify/inspect (REFUNDABLE_TOOLS).
+                # Pure inspection (read_file / list_dir / code_semantic_search) and
+                # verification (run_tests / run_bash / memory_search) must not starve genuine work.
+                # A turn with no tool calls already returned above, so _turn_tools is non-empty here.
+                if _turn_tools and all(t in REFUNDABLE_TOOLS for t in _turn_tools):
                     budget.refund()
 
+                # No-progress breaker (after the turn's work). Compute whether
+                # this turn advanced; a stalled turn increments the idle count.
+                made_progress = self._turn_made_progress(
+                    has_tool_calls=bool(tool_calls),
+                    content=msg.content,
+                    is_finish=False,  # finish already returned above
+                )
+                pstep: ProgressStep = breaker.step(made_progress, cap=noprogress_limit)
+                if pstep.tripped:
+                    _ok, _sum = reconcile_cutoff(
+                        f"no-progress breaker tripped ({pstep.consecutive} consecutive idle turns)",
+                        edited_files=edited_files, tests_passed=tests_passed,
+                    )
+                    return {"ok": _ok, "summary": _sum, "tools_used": _tools_used, "tests_passed": tests_passed}
+
+                # Update pending steer for next iteration (defer injection by one turn).
+                # For pre-written steers: already handled above (set on turn 1, used on turn 2).
+                # For mid-loop steers: never deferred, injected immediately when read.
+                # (No update needed here since mid-loop steers are never put into _pending_steer)
+
+                # ── Insertion B: durable inner-loop checkpoint — SAVE turn ─────
+                # Best-effort end-of-turn snapshot. A crash before the next model
+                # call resumes here (Insertion A) on the next run_task().
+                if self._checkpoint_active(_cp_task_id):
+                    await self.checkpoint_store.save(LoopCheckpoint(
+                        task_id=_cp_task_id,
+                        goal=goal,
+                        messages=messages,
+                        used=budget.used,
+                        absolute_turns=budget.absolute_turns,
+                        grace_used=budget.grace_used,
+                        edited_files=sorted(edited_files),
+                        tests_passed=tests_passed,
+                        verify_nudges_used=verify_nudges_used,
+                        loop_signatures=list(loop_detector._sigs),
+                        tools_used=list(_tools_used),
+                        loaded_skills=sorted(loaded_skills),
+                        start_monotonic_offset=self._now() - start,
+                        turn=budget.used,
+                    ))
+
         except Exception as exc:
-            return {"ok": False, "summary": f"error: {str(exc)[:1000]}"}
+            return {"ok": False, "summary": f"error: {str(exc)[:1000]}", "tools_used": _tools_used}
+        finally:
+            # ── Insertion C: durable inner-loop checkpoint — CLEAR on exit ─────
+            # Every terminal path (return or exception) flows through here, so a
+            # finished/aborted goal never leaves a stale checkpoint to be wrongly
+            # resumed by a later same-task run.
+            if self._checkpoint_active(_cp_task_id):
+                await self.checkpoint_store.clear(_cp_task_id)
 
     async def _is_compound(self, goal: str) -> bool:
         """Classify whether a goal genuinely requires multiple DISTINCT sequential
@@ -690,6 +1345,7 @@ class AsyncOrchestrator:
             planner_system += f"\n\nAvailable skills:\n{catalog}"
 
         history: list[dict] = []
+        _all_tools_used: list[str] = []  # accumulate tools across all sub-steps
 
         def render_history() -> str:
             if not history:
@@ -737,6 +1393,30 @@ class AsyncOrchestrator:
                 if done or not nxt:
                     break
 
+                # Per-sub-step activation reset. Each planner sub-goal is a fresh
+                # mini-task: reset SkillRunner's max_chain budget so load_skill does
+                # not hit its activation cap mid-chain across many sub-steps (the
+                # documented replan bug). skill_first/react never reach here.
+                if self.skill_router is not None:
+                    try:
+                        self.skill_router.runner.reset_activations()
+                    except Exception:
+                        pass
+
+                # No-progress / skill-repeat guard. If the planner is re-emitting
+                # a near-identical sub-goal or over-using one skill, stop instead of
+                # re-cycling (prevents the live-A/B 'repo-fault-localize 4x' thrash).
+                _stop = replan_should_stop(
+                    nxt, history, max_skill_repeats=REPLAN_MAX_SKILL_REPEATS,
+                )
+                if _stop.stop:
+                    await events.emit(
+                        "reasoning", node="plan",
+                        summary=f"replan stop: {_stop.reason}"[:200],
+                        text=_stop.reason,
+                    )
+                    break
+
                 # Execute the sub-step: skill-first, then bounded ReAct fallback so
                 # non-skill steps (file edits / fixes) still execute.
                 skilled = await self._run_skill_first(nxt)
@@ -745,16 +1425,26 @@ class AsyncOrchestrator:
                 else:
                     step_res = await self._run_react_loop(nxt, max(2, min(self.max_steps, 3)))
 
+                # Accumulate tools used in this sub-step
+                if "tools_used" in step_res and isinstance(step_res.get("tools_used"), list):
+                    _all_tools_used.extend(step_res["tools_used"])
+
+                # Skills used this sub-step (skill-first returns the matched skill in
+                # tools_used; ReAct fallback returns its tool/skill list there too).
+                _step_skills = [
+                    t for t in (step_res.get("tools_used") or []) if isinstance(t, str) and t
+                ]
                 history.append({
                     "step": nxt,
                     "ok": bool(step_res.get("ok")),
                     "summary": str(step_res.get("summary", ""))[:600],
+                    "skills": _step_skills,
                 })
         except Exception as exc:
-            return {"ok": False, "summary": f"error: {str(exc)[:1000]}"}
+            return {"ok": False, "summary": f"error: {str(exc)[:1000]}", "tools_used": _all_tools_used}
 
         if not history:
-            return {"ok": False, "summary": "planner produced no actionable sub-steps"}
+            return {"ok": False, "summary": "planner produced no actionable sub-steps", "tools_used": _all_tools_used}
 
         # Synthesize an honest final answer from the step history.
         synth_user = (
@@ -780,7 +1470,7 @@ class AsyncOrchestrator:
             summary = render_history()
 
         all_ok = all(h["ok"] for h in history)
-        return {"ok": all_ok, "summary": summary[:2000] or render_history()[:2000]}
+        return {"ok": all_ok, "summary": summary[:2000] or render_history()[:2000], "tools_used": _all_tools_used}
 
     async def _run_worker(self, t: SubTask) -> str:
         """
@@ -805,6 +1495,8 @@ class AsyncOrchestrator:
                             id=t.id,
                             summary=ret["summary"],
                             ok=ret["ok"],
+                            tools_used=ret.get("tools_used", []),
+                            tests_passed=ret.get("tests_passed", False),
                         )
         except asyncio.CancelledError:
             await self.budget.refund(t.est_tokens)
