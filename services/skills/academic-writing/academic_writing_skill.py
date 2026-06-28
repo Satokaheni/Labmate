@@ -1,7 +1,9 @@
 """AcademicWritingSkill — composable IMRaD academic writing pipeline.
 
-Runs inside the orchestrator (not an MCP server itself). Each method is
-independently importable and testable. DSPy modules back every LLM call.
+A plain Python pipeline class (DSPy modules back every LLM call); each method is
+independently importable and testable. It is NOT itself an MCP server — server.py
+in this directory wraps these methods as MCP tools so the skill-worker can
+discover and dispatch it.
 """
 from __future__ import annotations
 
@@ -214,8 +216,8 @@ def _load_formal_exemplars() -> str:
 class AcademicWritingSkill:
     """Composable skill set for producing IMRaD-structured academic papers.
 
-    Each method is independently testable and invokable. Not an MCP server;
-    runs inside the orchestrator.
+    Each method is independently testable and invokable. This class is not itself
+    an MCP server; server.py wraps these methods as MCP tools.
     """
 
     def __init__(self, lm: dspy.LM, citation_validator: CitationValidator | None = None):

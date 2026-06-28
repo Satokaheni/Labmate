@@ -6,6 +6,13 @@ description: >
   Use when the agent needs to write a research paper, literature review, or structured report
   with validated citations. Each stage is independently invokable.
 trigger: "Use when writing an academic paper or structured research document"
+tools:
+  - research_topic
+  - outline_skill
+  - draft_section
+  - validate_citations
+  - chain_of_density
+  - style_transfer
 version: "0.1.0"
 license: MIT
 requires: []

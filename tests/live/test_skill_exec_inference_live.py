@@ -69,3 +69,20 @@ async def test_test_gen_generate(tmp_path):
     r = await _run("test-gen", "generate", {"source_file": str(src)})
     assert not result_is_error(r)
     assert result_text(r).strip(), "test-gen returned empty"
+
+
+@pytest.mark.asyncio
+async def test_academic_writing_style_transfer():
+    # academic-writing gained its server.py wrapper (was discoverable-but-unrunnable).
+    # style_transfer is the cheapest end-to-end check: pure single LLM pass, no
+    # external citation APIs. Proves the DSPy->GEMMA_BASE wiring works through MCP.
+    import json
+    r = await _run(
+        "academic-writing", "style_transfer",
+        {"text": "We tried a bunch of models and the big one worked best.",
+         "source_style": "casual", "target_style": "formal"},
+    )
+    assert not result_is_error(r)
+    payload = json.loads(result_text(r))
+    assert "error" not in payload, f"academic-writing errored: {payload.get('error')}"
+    assert payload.get("result", "").strip(), "style_transfer returned empty"
