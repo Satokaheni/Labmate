@@ -35,7 +35,7 @@ repos:
       # tsc (project references), so it matches the build's type-checking.
       - id: frontend-typecheck
         name: frontend tsc --noEmit
-        entry: bash -c 'cd services/frontend && npx --no-install tsc -b --noEmit'
+        entry: bash -c 'cd services/frontend && npx --no-install tsc --noEmit -p tsconfig.json'
         language: system
         files: ^services/frontend/.*\.(ts|tsx)$
         pass_filenames: false
