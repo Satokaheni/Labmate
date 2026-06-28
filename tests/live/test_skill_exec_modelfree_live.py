@@ -60,6 +60,29 @@ async def test_repo_graph_build(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_results_analysis_profile(tmp_path):
+    # Deterministic pandas profiling of a results table (no model).
+    csv = tmp_path / "runs.csv"
+    csv.write_text("model,accuracy\na,0.9\nb,0.7\nc,0.8\n")
+    r = await _run("results-analysis", "profile_results", {"file_path": str(csv)})
+    assert not result_is_error(r)
+    assert result_text(r).strip(), "results-analysis returned empty"
+    assert "accuracy" in result_text(r), "profile did not mention the metric column"
+
+
+@pytest.mark.asyncio
+async def test_arxiv_prep_extract_metadata(tmp_path):
+    # Deterministic LaTeX metadata extraction (no model).
+    (tmp_path / "main.tex").write_text(
+        "\\documentclass{article}\n\\title{A Tiny Paper}\n\\author{Ada}\n"
+        "\\begin{document}\\begin{abstract}We test things.\\end{abstract}\\end{document}\n"
+    )
+    r = await _run("arxiv-prep", "extract_metadata", {"project_dir": str(tmp_path)})
+    assert not result_is_error(r)
+    assert "Tiny Paper" in result_text(r), f"title not extracted: {result_text(r)[:200]}"
+
+
+@pytest.mark.asyncio
 async def test_design_token_transform_transform():
     # transform is the model-free/local path (extract/extract_and_transform need a
     # Figma token). Deterministic: TokenSet JSON -> CSS custom properties.

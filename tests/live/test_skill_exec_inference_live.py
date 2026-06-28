@@ -72,6 +72,54 @@ async def test_test_gen_generate(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_citation_check_verify_claims():
+    r = await _run("citation-check", "verify_claims", {
+        "text": "Transformers use self-attention to model sequences.",
+        "references": ["Vaswani et al. 2017, Attention Is All You Need — introduces "
+                       "the Transformer, which relies entirely on self-attention."],
+    })
+    assert not result_is_error(r)
+    assert result_text(r).strip(), "citation-check returned empty"
+
+
+@pytest.mark.asyncio
+async def test_dataset_generation_from_seeds():
+    r = await _run("dataset-generation", "generate_from_seeds", {
+        "seeds": ["What is the capital of France?"],
+        "template": "Generate a short factual question similar to: {seed}",
+        "n_per_seed": 1,
+    })
+    assert not result_is_error(r)
+    assert result_text(r).strip(), "dataset-generation returned empty"
+
+
+@pytest.mark.asyncio
+async def test_rebuttal_response_parse_reviews():
+    r = await _run("rebuttal-response", "parse_reviews", {
+        "review_text": "Review 1: The method is interesting but the evaluation is weak; "
+                       "the baselines are missing and the ablation is incomplete.",
+    })
+    assert not result_is_error(r)
+    assert result_text(r).strip(), "rebuttal-response returned empty"
+
+
+@pytest.mark.asyncio
+async def test_paper_to_slides_generate_outline(tmp_path):
+    import json
+    paper = tmp_path / "paper.json"
+    paper.write_text(json.dumps({
+        "metadata": {"title": "A Tiny Study of Widgets"},
+        "figures": [],
+        "markdown": "# Intro\nWidgets matter.\n# Methods\nWe measured widgets.\n"
+                    "# Results\nWidgets improved 10%.\n# Conclusion\nWidgets help.\n",
+    }))
+    r = await _run("paper-to-slides", "generate_outline",
+                   {"parsed_paper_path": str(paper), "talk_duration_min": 5})
+    assert not result_is_error(r)
+    assert result_text(r).strip(), "paper-to-slides returned empty"
+
+
+@pytest.mark.asyncio
 async def test_academic_writing_style_transfer():
     # academic-writing gained its server.py wrapper (was discoverable-but-unrunnable).
     # style_transfer is the cheapest end-to-end check: pure single LLM pass, no
