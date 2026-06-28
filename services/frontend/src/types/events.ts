@@ -76,6 +76,7 @@ export interface Session {
   turnCount?: number;
   contextTokens?: number;
   createdAt?: string;
+  updatedAt?: string;
   turns?: Turn[];
 }
 
