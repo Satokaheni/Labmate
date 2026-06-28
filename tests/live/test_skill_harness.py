@@ -16,8 +16,9 @@ def test_declared_tools_unknown_skill_is_empty():
 def test_runnable_manifests_includes_code_sandbox():
     names = {m.name for m in runnable_manifests()}
     assert "code-sandbox" in names
-    # instruction-only skills are excluded
-    assert "academic-writing" not in names
+    # academic-writing gained a server.py wrapper, so it is now runnable
+    # (a skill is included iff it ships a server.py or dist/index.js).
+    assert "academic-writing" in names
 
 
 def test_dist_stale_detects_newer_src(tmp_path):
@@ -63,3 +64,65 @@ def test_result_text_joins_content():
 def test_result_is_error_reads_flag():
     assert result_is_error(_R([], is_error=True)) is True
     assert result_is_error(_R([_C("ok")])) is False
+
+
+# --- per-skill timeout guards (the multi-hour `tests/live` hang fix) ---
+
+@pytest.mark.asyncio
+async def test_teardown_skill_bounded_when_task_ignores_cancel(monkeypatch):
+    """A skill task that swallows CancelledError must not hang teardown."""
+    import asyncio
+    from tests.live import skill_harness
+
+    monkeypatch.setattr(skill_harness, "TEARDOWN_TIMEOUT", 0.3)
+
+    async def _wedged():
+        while True:
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                # deliberately refuse to die, like a wedged subprocess unwind
+                continue
+
+    class _SP:
+        def __init__(self, task):
+            self._run_task = task
+
+    task = asyncio.ensure_future(_wedged())
+    sp = _SP(task)
+    loop = asyncio.get_event_loop()
+    start = loop.time()
+    await skill_harness.teardown_skill(reg=None, sp=sp)  # must return ~0.3s, not hang
+    assert loop.time() - start < 2.0, "teardown_skill did not honor TEARDOWN_TIMEOUT"
+    # orphaned task is left cancelled-but-pending; clean it up for the test
+    task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_teardown_skill_no_task_is_noop():
+    from tests.live import skill_harness
+
+    class _SP:
+        _run_task = None
+
+    await skill_harness.teardown_skill(reg=None, sp=_SP())  # returns immediately
+
+
+@pytest.mark.asyncio
+async def test_register_skill_raises_on_hung_registration(monkeypatch):
+    """If registration never reaches READY, the hard ceiling raises (not hang)."""
+    import asyncio
+    from tests.live import skill_harness
+    from tests.live.skill_harness import SkillRegisterError
+
+    async def _never_returns(manifest, timeout):
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(skill_harness, "_register_skill_inner", _never_returns)
+    monkeypatch.setattr(skill_harness, "node_build_is_stale", lambda m: False)
+
+    class _M:
+        name = "fake-skill"
+
+    with pytest.raises(SkillRegisterError, match="hard ceiling"):
+        await skill_harness.register_skill(_M(), timeout=0.2)

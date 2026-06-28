@@ -85,14 +85,16 @@ def node_build_is_stale(manifest: SkillManifest) -> bool:
     return _dist_stale(d / "dist" / "index.js", d / "src")
 
 
-async def register_skill(
-    manifest: SkillManifest, timeout: float = 30.0
+# Hard ceiling (seconds) on tearing down one skill's subprocess. The production
+# stdio_client __aexit__ awaits the child process exit; a skill that ignores
+# cancellation (e.g. a node server stuck in a syscall) would otherwise block the
+# whole suite forever — which is the multi-hour `tests/live` hang this guards.
+TEARDOWN_TIMEOUT = 15.0
+
+
+async def _register_skill_inner(
+    manifest: SkillManifest, timeout: float
 ) -> tuple[SkillRegistry, SkillProcess]:
-    if node_build_is_stale(manifest):
-        raise SkillRegisterError(
-            f"{manifest.name}: stale node build (src newer than dist/index.js) — "
-            f"run `npm run build` in services/skills/{manifest.name}"
-        )
     reg = SkillRegistry(call_timeout=timeout)
     try:
         await reg.register(manifest)
@@ -109,14 +111,41 @@ async def register_skill(
     return reg, sp
 
 
+async def register_skill(
+    manifest: SkillManifest, timeout: float = 30.0
+) -> tuple[SkillRegistry, SkillProcess]:
+    if node_build_is_stale(manifest):
+        raise SkillRegisterError(
+            f"{manifest.name}: stale node build (src newer than dist/index.js) — "
+            f"run `npm run build` in services/skills/{manifest.name}"
+        )
+    # Hard outer ceiling: the registry's own _spawn() has a 30s ready-wait, but a
+    # subprocess that hangs mid-handshake (before _ready is awaited) or a wedged
+    # asyncio primitive could still block past it. wait_for caps the whole
+    # register+ready-poll so one bad skill becomes a SKIP, not a suite-wide hang.
+    try:
+        return await asyncio.wait_for(
+            _register_skill_inner(manifest, timeout), timeout=timeout + 5.0
+        )
+    except asyncio.TimeoutError as exc:
+        raise SkillRegisterError(
+            f"{manifest.name}: registration exceeded {timeout + 5.0}s hard ceiling"
+        ) from exc
+
+
 async def teardown_skill(reg: SkillRegistry, sp: SkillProcess) -> None:
     task = getattr(sp, "_run_task", None)
-    if task is not None:
-        task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001
-            pass
+    if task is None:
+        return
+    task.cancel()
+    try:
+        # Bound the cancellation join: if the subprocess refuses to die, stop
+        # waiting and orphan the task rather than hang the suite. On timeout the
+        # task stays cancelled and the event loop reaps it (or the child exit)
+        # eventually — better an orphaned task than a multi-hour suite hang.
+        await asyncio.wait_for(task, timeout=TEARDOWN_TIMEOUT)
+    except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001
+        pass
 
 
 def result_text(result) -> str:
