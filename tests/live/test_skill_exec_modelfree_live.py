@@ -57,3 +57,43 @@ async def test_repo_graph_build(tmp_path):
     r = await _run("repo-graph", "build", {"repo_path": str(tmp_path)})
     assert not result_is_error(r)
     assert result_text(r).strip(), "repo-graph build returned empty"
+
+
+@pytest.mark.asyncio
+async def test_design_token_transform_transform():
+    # transform is the model-free/local path (extract/extract_and_transform need a
+    # Figma token). Deterministic: TokenSet JSON -> CSS custom properties.
+    import json
+    token_set = json.dumps({
+        "source": "test",
+        "extracted_at": "2026-01-01T00:00:00+00:00",
+        "tokens": [
+            {"name": "Primary", "category": "color", "value": "#FF5733", "description": ""},
+            {"name": "Card", "category": "radius", "value": "8px", "description": ""},
+        ],
+    })
+    r = await _run("design-token-transform", "transform",
+                   {"tokens_json": token_set, "format": "css-vars"})
+    assert not result_is_error(r)
+    out = result_text(r)
+    assert out.strip(), "transform returned empty"
+    # known-answer: the colour token surfaces as a CSS custom property + its value
+    assert "--" in out and "FF5733" in out.upper(), f"unexpected transform output: {out[:200]}"
+
+
+@pytest.mark.asyncio
+async def test_ast_ts_refactor_rename_symbol(tmp_path):
+    # Type-aware TS rename via the TS checker — deterministic, no model. Returns a
+    # PENDING unified diff (not written to disk).
+    (tmp_path / "tsconfig.json").write_text('{"compilerOptions":{"strict":true},"include":["*.ts"]}')
+    src = tmp_path / "mod.ts"
+    src.write_text("export const oldName = 1;\nconsole.log(oldName);\n")
+    r = await _run("ast-ts-refactor", "rename_symbol", {
+        "tsconfig": str(tmp_path / "tsconfig.json"),
+        "file": str(src),
+        "symbol": "oldName",
+        "new_name": "newName",
+    })
+    assert not result_is_error(r)
+    out = result_text(r)
+    assert "newName" in out, f"rename did not produce newName in the diff: {out[:300]}"
