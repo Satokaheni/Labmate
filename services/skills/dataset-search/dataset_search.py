@@ -5,6 +5,7 @@ CRITICAL: never write to stdout. All logging goes to stderr.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from typing import Any
 
@@ -16,6 +17,7 @@ log = logging.getLogger("dataset-search")
 
 _HF_API = "https://huggingface.co/api/datasets"
 _PWC_API = "https://paperswithcode.com/api/v1/datasets"
+_GITHUB_API = "https://api.github.com/search/repositories"
 
 
 def search_hf_hub(
@@ -84,6 +86,52 @@ def search_papers_with_code(
     return {"results": results}
 
 
+def search_github(
+    query: str,
+    max_results: int = 10,
+    timeout: int = 15,
+) -> dict:
+    """Search GitHub for dataset repositories matching a query.
+
+    Dataset-scoped: the query is constrained with a `dataset` term so this returns
+    corpora/benchmarks hosted on GitHub, NOT general code/tool repos (those belong
+    to web-search). Uses GITHUB_TOKEN if set (raises the search rate limit from
+    ~10 to 30 req/min); works unauthenticated otherwise. Returns
+    {results: [{full_name, description, stars, url, topics}]}.
+    """
+    # Append a dataset scope so we surface corpora, not arbitrary tool repos.
+    scoped_q = f"{query} dataset"
+    params: dict[str, Any] = {
+        "q": scoped_q,
+        "per_page": max_results,
+        "sort": "stars",
+        "order": "desc",
+    }
+    headers = {"Accept": "application/vnd.github+json"}
+    token = os.getenv("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        resp = requests.get(_GITHUB_API, params=params, headers=headers, timeout=timeout)
+        resp.raise_for_status()
+        raw = resp.json()
+    except requests.RequestException as exc:
+        log.warning("GitHub search failed: %s", exc)
+        return {"results": [], "error": str(exc)}
+    results = []
+    for repo in raw.get("items", []):
+        if not isinstance(repo, dict):
+            continue
+        results.append({
+            "full_name": repo.get("full_name", ""),
+            "description": (repo.get("description") or "")[:300],
+            "stars": repo.get("stargazers_count", 0),
+            "url": repo.get("html_url", ""),
+            "topics": repo.get("topics", []),
+        })
+    return {"results": results}
+
+
 def rank_candidates(
     candidates: list[dict],
     query: str,
@@ -101,9 +149,11 @@ def rank_candidates(
         searchable = " ".join([
             str(item.get("id", "")),
             str(item.get("name", "")),
+            str(item.get("full_name", "")),
             str(item.get("description", "")),
             " ".join(str(t) for t in item.get("task_categories", [])),
             " ".join(str(t) for t in item.get("tasks", [])),
+            " ".join(str(t) for t in item.get("topics", [])),
         ]).lower()
         overlap = sum(1 for t in terms if t in searchable)
         score = overlap / max(len(terms), 1)

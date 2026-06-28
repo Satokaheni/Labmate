@@ -90,13 +90,66 @@ def test_skill_md_frontmatter_parses():
     assert "dataset-generation" in desc or "dataset generation" in desc
 
 
-def test_server_lists_three_tools():
+def test_server_lists_tools():
     server_path = _MODULE_PATH.parent / "server.py"
     spec = importlib.util.spec_from_file_location("dataset_search_server", server_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     tools = asyncio.run(mod.list_tools())
-    assert {t.name for t in tools} == {"search_hf_hub", "search_papers_with_code", "rank_candidates"}
+    assert {t.name for t in tools} == {
+        "search_hf_hub", "search_papers_with_code", "search_github", "rank_candidates",
+    }
+
+
+def test_search_github_returns_dataset_repos():
+    ds = _load()
+    raw = {"items": [
+        {"full_name": "org/emotion-dataset", "description": "Emotion corpus",
+         "stargazers_count": 120, "html_url": "https://github.com/org/emotion-dataset",
+         "topics": ["dataset", "nlp"]},
+    ]}
+    with patch.object(ds.requests, "get", return_value=_make_response(raw)) as mget:
+        out = ds.search_github("emotion recognition", max_results=5)
+    assert out["results"][0]["full_name"] == "org/emotion-dataset"
+    assert out["results"][0]["stars"] == 120
+    assert "topics" in out["results"][0]
+    # query is dataset-scoped so we don't surface arbitrary tool repos
+    sent_q = mget.call_args.kwargs["params"]["q"]
+    assert "dataset" in sent_q.lower()
+
+
+def test_search_github_handles_network_error():
+    ds = _load()
+    with patch.object(ds.requests, "get", side_effect=ds.requests.RequestException("boom")):
+        out = ds.search_github("anything")
+    assert out["results"] == []
+    assert "error" in out
+
+
+def test_search_github_uses_token_when_present(monkeypatch):
+    ds = _load()
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
+    with patch.object(ds.requests, "get", return_value=_make_response({"items": []})) as mget:
+        ds.search_github("x")
+    assert mget.call_args.kwargs["headers"].get("Authorization") == "Bearer ghp_test"
+
+
+def test_search_github_unauthenticated_when_no_token(monkeypatch):
+    ds = _load()
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    with patch.object(ds.requests, "get", return_value=_make_response({"items": []})) as mget:
+        ds.search_github("x")
+    assert "Authorization" not in mget.call_args.kwargs["headers"]
+
+
+def test_rank_candidates_scores_github_fields():
+    ds = _load()
+    candidates = [
+        {"full_name": "org/emotion-corpus", "description": "labels", "topics": ["dataset"]},
+        {"full_name": "org/weather-tool", "description": "forecast", "topics": ["cli"]},
+    ]
+    ranked = ds.rank_candidates(candidates, "emotion dataset")["ranked"]
+    assert ranked[0]["full_name"] == "org/emotion-corpus"
 
 
 def test_skill_runner_catalogs_dataset_search():

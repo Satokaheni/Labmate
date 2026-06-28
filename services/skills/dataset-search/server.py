@@ -35,6 +35,13 @@ async def list_tools() -> list[Tool]:
                  "query": {"type": "string"},
                  "max_results": {"type": "integer", "default": 5}},
                  "required": ["query"]}),
+        Tool(name="search_github",
+             description="Search GitHub for dataset repositories (corpora/benchmarks "
+                         "hosted on GitHub; dataset-scoped, NOT general code/tool repos).",
+             inputSchema={"type": "object", "properties": {
+                 "query": {"type": "string"},
+                 "max_results": {"type": "integer", "default": 10}},
+                 "required": ["query"]}),
         Tool(name="rank_candidates",
              description="Score and rank dataset candidates by query overlap.",
              inputSchema={"type": "object", "properties": {
@@ -59,6 +66,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = dataset_search.search_papers_with_code(
                 arguments["query"],
                 max_results=int(arguments.get("max_results", 5)),
+            )
+        elif name == "search_github":
+            result = dataset_search.search_github(
+                arguments["query"],
+                max_results=int(arguments.get("max_results", 10)),
             )
         elif name == "rank_candidates":
             result = dataset_search.rank_candidates(
