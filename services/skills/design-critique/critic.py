@@ -16,8 +16,11 @@ from pydantic import BaseModel
 logging.basicConfig(stream=sys.stderr, level=logging.INFO)
 log = logging.getLogger("design-critique.critic")
 
-GEMMA_BASE = os.getenv("GEMMA_BASE", "http://localhost:8000/v1")
-GEMMA_MODEL = os.getenv("GEMMA_MODEL", "openai/google/gemma-4-31B-it")
+from vision_config import resolve_vision_endpoint
+
+_VISION_NOT_CONFIGURED = {
+    "error": "vision endpoint not configured (set VISION_BASE)"
+}
 
 FOCUS_AREAS: list[str] = [
     "visual_hierarchy",
@@ -46,9 +49,14 @@ class CritiqueResult(BaseModel):
 
 
 class UICritic:
-    def __init__(self, model: str = GEMMA_MODEL, api_base: str = GEMMA_BASE) -> None:
-        self.model = model
-        self.api_base = api_base
+    def __init__(self, model: str | None = None, api_base: str | None = None) -> None:
+        endpoint = resolve_vision_endpoint()
+        self.enabled = endpoint is not None
+        if endpoint is not None:
+            self.api_base, default_model = endpoint
+            self.model = model or default_model
+        else:
+            self.api_base, self.model = None, None
 
     def _encode_image(self, path: str) -> str:
         """Load any image, re-encode as PNG, return base64 string."""
@@ -96,7 +104,9 @@ class UICritic:
 
     def critique(
         self, image_path: str, focus_areas: list[str] | None = None
-    ) -> CritiqueResult:
+    ) -> CritiqueResult | dict:
+        if not self.enabled:
+            return _VISION_NOT_CONFIGURED
         areas = self._resolve_areas(focus_areas)
         log.info("critiquing %s across %d areas", image_path, len(areas))
         b64 = self._encode_image(image_path)
@@ -112,6 +122,8 @@ class UICritic:
         )
 
     def compare(self, before_path: str, after_path: str) -> dict:
+        if not self.enabled:
+            return _VISION_NOT_CONFIGURED
         log.info("comparing %s -> %s", before_path, after_path)
         before_b64 = self._encode_image(before_path)
         after_b64 = self._encode_image(after_path)

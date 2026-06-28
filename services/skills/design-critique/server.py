@@ -63,7 +63,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         result = critic.critique(
             arguments["image_path"], arguments.get("focus_areas")
         )
-        return [TextContent(type="text", text=result.model_dump_json())]
+        if isinstance(result, dict):
+            text = json.dumps(result)
+        else:
+            text = result.model_dump_json()
+        return [TextContent(type="text", text=text)]
     if name == "compare":
         result = critic.compare(arguments["before_path"], arguments["after_path"])
         return [TextContent(type="text", text=json.dumps(result))]
