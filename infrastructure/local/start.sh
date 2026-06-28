@@ -152,6 +152,13 @@ else
   info "WARN: SearXNG not responding on :${SEARXNG_PORT} — web-search skill will be unavailable (see $LOGS/searxng.log)"
 fi
 
+# ─── Vision endpoint (GPU 1) — opt-in: only if the vision GGUF is present ─────
+if [[ -f "${VISION_MODEL_GGUF:-/workspace/models/gemma-3-vision-gguf/gemma-3-4b-it-Q4_K_M.gguf}" ]]; then
+  "$HERE/serve-vision.sh" || echo "[start] vision server failed to start (continuing text-only)" >&2
+else
+  echo "[start] vision GGUF absent — skipping vision endpoint (text-only)" >&2
+fi
+
 # ─── MCP bridge (TypeScript) — build only; the orchestrator spawns it as a child ─
 MCP_BRIDGE_DIR="${REPO_ROOT}/services/mcp-bridge"
 MCP_DIST="${MCP_BRIDGE_DIR}/dist/index.js"

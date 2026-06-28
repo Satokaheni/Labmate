@@ -46,3 +46,10 @@ if curl -fsS "http://127.0.0.1:8000/health" 2>/dev/null | grep -q '"status":"ok"
 else
   down "Gemma4  :8000   (llama.cpp) — run serve-model.sh"
 fi
+
+# Vision server (Gemma 3 vision via llama.cpp, optional / GPU 1)
+if curl -fsS "http://localhost:${VISION_PORT:-8001}/health" >/dev/null 2>&1; then
+  ok "vision  llama-server :${VISION_PORT:-8001}  UP"
+else
+  echo "  vision  llama-server :${VISION_PORT:-8001}  (down / not configured)"
+fi

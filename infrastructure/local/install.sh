@@ -185,6 +185,16 @@ else
   fi
 fi
 
+# ─── Vision model (Gemma 3 4B vision) + mmproj for the :8001 endpoint (GPU 1).
+VISION_DIR="/workspace/models/gemma-3-vision-gguf"
+if [[ ! -f "$VISION_DIR/gemma-3-4b-it-Q4_K_M.gguf" ]]; then
+  mkdir -p "$VISION_DIR"
+  have hf || $PIP "huggingface-hub>=0.34"
+  log "downloading vision model (Gemma 3 4B vision GGUF + mmproj) ..."
+  hf download ggml-org/gemma-3-4b-it-GGUF \
+    gemma-3-4b-it-Q4_K_M.gguf mmproj-gemma-3-4b-it.gguf --local-dir "$VISION_DIR"
+fi
+
 # ─── 5. SearXNG (native metasearch for the web-search skill) ──────────────────
 # The web-search skill calls a SearXNG instance's JSON API (GET /search?format=json).
 # We run SearXNG NATIVELY here (this pod cannot run Docker — see the WHY note above).
