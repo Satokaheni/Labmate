@@ -64,6 +64,24 @@ def build_verify_nudge(edited_files: set[str]) -> str:
     )
 
 
+def build_expose_test_nudge(edited_files: set[str]) -> str:
+    """Verification nudge for an EXPOSE-BUG goal (inverted signal).
+
+    For "write a test that exposes the bug" tasks a FAILING run is the goal, so
+    the nudge must push the agent to RUN the test and confirm it FAILS — NOT to
+    make it pass (the default build_verify_nudge would steer it the wrong way and
+    cause thrash). Deterministic (files sorted).
+    """
+    files = ", ".join(sorted(edited_files)) if edited_files else "the test you wrote"
+    return (
+        f"You wrote {files} but have not run it yet. Call the run_tests tool now "
+        "to run it. This test is meant to EXPOSE a bug, so a FAILING result is the "
+        "expected, correct outcome — it confirms the test reproduces the bug. Do "
+        "NOT change the code to make it pass. Once run_tests shows the test fails "
+        "(exposing the bug), call finish and report that the test exposes the bug."
+    )
+
+
 def build_infra_unverified_note(edited_files: set[str], reason: str) -> str:
     """Honest finish annotation when tests could not be run (infra failure).
 

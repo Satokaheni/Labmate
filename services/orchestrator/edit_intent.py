@@ -137,3 +137,46 @@ def classify_edit_intent(
 def requires_editing(goal: str, *, enabled: bool | None = None) -> bool:
     """Bool-only convenience wrapper over classify_edit_intent()."""
     return classify_edit_intent(goal, enabled=enabled).requires_edit
+
+
+# ── Expose-bug intent (inverted success signal) ───────────────────────────────
+# For "write a test that EXPOSES / reproduces the bug" goals, a test that RUNS
+# and FAILS is the SUCCESS signal (a passing test would NOT expose the bug). The
+# default verification policy (nudge toward / credit only a PASSING run) is
+# therefore inverted for these goals. Kept deliberately NARROW so a normal
+# fix-goal ("fix the bug and make the tests pass") is never misclassified — a
+# misfire would let a fix goal finish with a failing suite.
+_EXPOSE_BUG_RE = re.compile(
+    r"(?:"
+    # "test that/which/to [up to 3 words] expose|reproduce|demonstrate|reveal|trigger|surface|catch"
+    r"tests?\s+(?:that|which|to)\s+(?:\w+\s+){0,3}?"
+    r"(?:expos|reproduc|demonstrat|reveal|trigger|surfac|catch)"
+    # "expose|reproduce|... the bug / it / the issue"
+    r"|(?:expos|reproduc|demonstrat|reveal|trigger|surfac|catch)\w*\s+(?:the\s+)?(?:bug|issue|defect|it)\b"
+    # explicit failing-test phrasings
+    r"|failing\s+tests?\b|tests?\s+that\s+fails?\b"
+    r")",
+    re.IGNORECASE,
+)
+
+# A pass/fix-completion intent ("until they pass", "make the tests pass", "so the
+# tests pass") means a PASSING test is the desired end-state, so the inversion
+# must NOT apply even if an expose verb is also present.
+_PASS_INTENT_RE = re.compile(
+    r"(?:until\s+(?:they|it|the\s+tests?)\s+pass"
+    r"|make\s+(?:the\s+|all\s+)?(?:tests?|it|build)\s+\w*\s*pass"
+    r"|so\s+(?:the\s+|all\s+)?tests?\s+pass"
+    r"|tests?\s+(?:now\s+)?pass)",
+    re.IGNORECASE,
+)
+
+
+def exposes_bug_intent(goal: str) -> bool:
+    """True iff the goal asks for a test that EXPOSES/reproduces a bug (a FAILING
+    run is the success signal), and there is no competing "make the tests pass"
+    intent. Pure/deterministic; no I/O. See the inversion note above.
+    """
+    text = goal or ""
+    if _PASS_INTENT_RE.search(text):
+        return False
+    return bool(_EXPOSE_BUG_RE.search(text))

@@ -93,3 +93,23 @@ def test_build_infra_unverified_note_is_honest():
     assert "a.py" in note and "b.py" in note
     # Must NOT claim success.
     assert "all tests pass" not in note.lower()
+
+
+from services.orchestrator.verification_stop import build_expose_test_nudge
+
+
+def test_build_expose_test_nudge_steers_toward_failing_not_passing():
+    nudge = build_expose_test_nudge({"test_off.py"})
+    low = nudge.lower()
+    # Tells the agent to RUN the test and that a FAILING result is correct.
+    assert "run_tests" in low
+    assert "fail" in low
+    # Steers AWAY from making it pass (the phrase appears only inside a "do NOT" clause).
+    assert "do not" in low and "make it pass" in low
+    assert "test_off.py" in nudge
+
+
+def test_build_expose_test_nudge_is_deterministic():
+    a = build_expose_test_nudge({"b.py", "a.py"})
+    b = build_expose_test_nudge({"a.py", "b.py"})
+    assert a == b  # files sorted -> byte-stable
