@@ -27,6 +27,8 @@ function statusText(state: SubsystemState): string {
       return 'degraded';
     case 'failed':
       return 'failed';
+    default:
+      return state;
   }
 }
 
@@ -36,7 +38,7 @@ function SubsystemRow({ s, onRetry }: { s: Subsystem; onRetry: (id: SubsystemId)
       data-testid="subsystem-row"
       className="flex items-center gap-3 border-b border-border-1 py-3 last:border-b-0"
     >
-      <span className="h-2.5 w-2.5 rounded-full" style={{ background: DOT_COLOR[s.id] }} />
+      <span className="h-2.5 w-2.5 rounded-full" style={{ background: s.id ? DOT_COLOR[s.id] : '#939ba7' }} />
       <div className="flex min-w-0 flex-1 flex-col">
         <span className="text-sm text-primary">{s.label}</span>
         <span className="font-mono text-[11px] text-mono">{s.message ?? s.detail}</span>
@@ -62,7 +64,7 @@ function SubsystemRow({ s, onRetry }: { s: Subsystem; onRetry: (id: SubsystemId)
         {s.state === 'failed' && s.required && (
           <button
             type="button"
-            onClick={() => onRetry(s.id)}
+            onClick={() => s.id && onRetry(s.id)}
             className="rounded-pill border border-border-3 px-2 py-0.5 font-mono text-[11px] text-secondary hover:text-primary"
           >
             Retry
