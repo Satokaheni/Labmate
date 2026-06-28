@@ -21,7 +21,41 @@ from services.orchestrator.edit_intent import (
     route_edit_to_react_enabled,
     requires_editing,
     classify_edit_intent,
+    exposes_bug_intent,
 )
+
+
+class TestExposesBugIntent:
+    def test_c3_write_test_that_exposes_it(self):
+        assert exposes_bug_intent(
+            "Find the bug in /workspace/ab_off.py and write a unit test that exposes it."
+        ) is True
+
+    def test_reproduce_phrasing(self):
+        assert exposes_bug_intent("Write a test that reproduces the crash.") is True
+
+    def test_failing_test_phrasing(self):
+        assert exposes_bug_intent("Add a failing test for the off-by-one bug.") is True
+
+    def test_demonstrate_the_bug(self):
+        assert exposes_bug_intent("Create a test to demonstrate the defect.") is True
+
+    def test_c1_fix_until_pass_is_not_expose(self):
+        # A fix goal whose end-state is a PASSING suite must NOT invert.
+        assert exposes_bug_intent(
+            "Generate unit tests, run them, find and fix the bug, and re-run until they pass."
+        ) is False
+
+    def test_make_tests_pass_disqualifies(self):
+        assert exposes_bug_intent(
+            "Write a test that exposes the bug, then fix it so the tests pass."
+        ) is False
+
+    def test_plain_test_authoring_is_not_expose(self):
+        assert exposes_bug_intent("Write unit tests for the parser.") is False
+
+    def test_review_only_is_not_expose(self):
+        assert exposes_bug_intent("Review the auth module for issues.") is False
 
 
 class TestEditIntentDataclass:

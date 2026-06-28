@@ -31,12 +31,13 @@ from .steer_inject import inject_steer
 from .progress_breaker import ProgressBreaker, ProgressStep
 from .message_repair import sanitize_messages, message_repair_enabled
 from .tool_grounding import ground_tool_result, DEFAULT_TOOL_RESULT_BUDGET
-from .edit_intent import requires_editing
+from .edit_intent import requires_editing, exposes_bug_intent
 from .replan_guard import replan_should_stop
 from .test_outcome import classify_test_attempt
 from .verification_stop import (
     needs_verification,
     build_verify_nudge,
+    build_expose_test_nudge,
     build_infra_unverified_note,
     MAX_VERIFY_INFRA_ERRORS,
 )
@@ -549,6 +550,12 @@ class AsyncOrchestrator:
         max_verify_nudges = int(os.getenv("MAX_VERIFY_NUDGES", "2"))
         infra_error_streak: int = 0
         _last_infra_reason: str = "test toolchain error"
+        # Inverted success signal: for an "expose the bug" goal a test that RAN and
+        # FAILED is the verification (a passing test would NOT expose the bug). When
+        # true, a failing run sets tests_passed (the unified verification-met signal)
+        # and the verify nudge steers toward RUNNING the test, not making it pass.
+        _expose_bug: bool = exposes_bug_intent(goal)
+        _bug_exposed: bool = False
 
         # Skills already loaded THIS goal. A repeat load_skill for a name in
         # this set is short-circuited + refunded (see load_skill dispatch below)
@@ -825,7 +832,13 @@ class AsyncOrchestrator:
                             })
                             messages.append({
                                 "role": "user",
-                                "content": build_verify_nudge(edited_files),
+                                # Expose-bug goals get a nudge to RUN the test and
+                                # confirm it FAILS (not to make it pass).
+                                "content": (
+                                    build_expose_test_nudge(edited_files)
+                                    if _expose_bug
+                                    else build_verify_nudge(edited_files)
+                                ),
                             })
                             # Re-enter the loop: do not return, do not run the
                             # remaining tool calls in this assistant turn.
@@ -839,6 +852,13 @@ class AsyncOrchestrator:
                                 _summary + "\n\n"
                                 + build_infra_unverified_note(edited_files, _last_infra_reason)
                             ).strip()
+                        elif _expose_bug and edited_files and not tests_passed:
+                            # Expose-bug goal that wrote a test but never ran it to
+                            # confirm it fails — honest note, not a "tests must pass".
+                            summary = (
+                                summary + " [verification-stop: the test was NOT run "
+                                "to confirm it exposes the bug]"
+                            )[:2000]
                         elif edited_files and not tests_passed:
                             summary = (
                                 summary + " [verification-stop: tests were NOT "
@@ -1072,6 +1092,10 @@ class AsyncOrchestrator:
                                         _last_infra_reason = _bash_outcome.reason
                                     elif _bash_outcome.ran:
                                         infra_error_streak = 0
+                                    # Expose-bug inversion (see run_tests handler).
+                                    if _expose_bug and _bash_outcome.ran and not _bash_outcome.passed and not _bash_outcome.infra_error:
+                                        _bug_exposed = True
+                                        tests_passed = True
                             except Exception as exc:
                                 content = json.dumps({"error": str(exc)})
                         else:
@@ -1104,6 +1128,11 @@ class AsyncOrchestrator:
                                     _last_infra_reason = _outcome.reason
                                 elif _outcome.ran:
                                     infra_error_streak = 0
+                                # Expose-bug inversion: a test that RAN and FAILED
+                                # exposes the bug -> that IS the verification.
+                                if _expose_bug and _outcome.ran and not _outcome.passed and not _outcome.infra_error:
+                                    _bug_exposed = True
+                                    tests_passed = True
                             except Exception as exc:
                                 content = json.dumps({"error": str(exc)})
                         else:
