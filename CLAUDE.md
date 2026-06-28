@@ -368,6 +368,17 @@ grep "incremental_update" .data/logs/codegraph-embedder.log | tail -3
 | `llama-server` 5xx / timeout | Model not loaded or VRAM OOM |
 | ws_gateway `auth_failed` | JWT credentials wrong or `ADMIN_EMAIL`/`ADMIN_PASSWORD` not seeded |
 
+### Vision endpoint (dual-GPU, opt-in)
+
+design-critique + screenshot-to-component are image-in and need a vision model.
+On a dual-GPU host, a 2nd llama-server (Gemma 3 4B vision GGUF + mmproj) runs on
+GPU 1 (`CUDA_VISIBLE_DEVICES=1`) at `:8001`; the 32GB GPU 0 keeps gemma-4-31B text
+on `:8000` with full context. Enable by setting `VISION_BASE=http://localhost:8001/v1`
+in `local.env` and running `infrastructure/local/serve-vision.sh` (start.sh runs it
+automatically if the vision GGUF is present). Unset `VISION_BASE` → the two skills
+return "vision endpoint not configured" and skip; text-only/single-GPU deploys are
+unaffected. Live check: `LIVE_TESTS=1 python -m pytest tests/live/test_vision_skills_live.py -v`.
+
 ### 8. Feature checks — harness-robustness + agentic-fix-loop
 
 These are unit/BDD-covered (`PYTHONPATH=. python -m pytest tests/services/orchestrator/ -q` → all green). To exercise them **live** on RunPod, watch `.data/logs/orchestrator.log` while pushing tasks:
