@@ -30,7 +30,8 @@ Optionally lint the whole tree once: `pre-commit run --all-files`.
 
 - **ruff** (lint + autofix) and **ruff format** on staged Python files
   (config: `ruff.toml` — `E,F,I,UP,B`, line length 100).
-- **frontend `tsc -b --noEmit`** when `services/frontend/**.ts(x)` is staged.
+- (frontend type-check is **CI-only/informational** for now — the frontend is
+  WIP; the pre-commit `tsc` hook will be added once it's type-clean.)
 - Generic hygiene: trailing whitespace, end-of-file, YAML/JSON checks,
   merge-conflict markers, large-file guard.
 
