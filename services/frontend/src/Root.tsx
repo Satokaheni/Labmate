@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useLabmateWS } from '@/hooks/useLabmateWS';
+import { useMinimumElapsed } from '@/hooks/useMinimumElapsed';
 import { ChatLayout } from '@/layouts/ChatLayout';
 import { BootScreen } from '@/screens/BootScreen';
 import { LoginScreen } from '@/screens/LoginScreen';
@@ -11,6 +12,10 @@ import { FilePreview } from '@/components/FilePreview';
 import { WS_URL } from '@/config';
 import type { Artifact, SubsystemId } from '@/types/events';
 
+/** Minimum time the boot/loading screen stays visible, so a fast boot doesn't
+ *  flash the loading animation. */
+const MIN_BOOT_MS = 3000;
+
 export function Root(): JSX.Element {
   // Resolve token from Electron config (if available) or null
   const initialToken = window.electronAPI?.token ?? null;
@@ -19,6 +24,15 @@ export function Root(): JSX.Element {
 
   // Call the WebSocket hook
   const { state, send, newSession, openSession, setDebug } = useLabmateWS(WS_URL, token);
+
+  // Minimum boot/loading display time: if the connect→ready sequence finishes in
+  // under MIN_BOOT_MS the loading animation flashes by and looks bad, so hold the
+  // boot screen until at least MIN_BOOT_MS has elapsed since loading began.
+  const isBooting =
+    state.phase === 'connecting' ||
+    state.phase === 'authenticating' ||
+    state.phase === 'booting';
+  const minBootElapsed = useMinimumElapsed(isBooting, MIN_BOOT_MS);
 
   // Handle login submission
   const handleLoginSubmit = useCallback(
@@ -64,6 +78,12 @@ export function Root(): JSX.Element {
     }
 
     case 'ready': {
+      // Honor the minimum boot display time: if ready arrived before MIN_BOOT_MS,
+      // keep showing the (completed) boot screen until the minimum has elapsed.
+      if (!minBootElapsed) {
+        return <BootScreen subsystems={state.subsystems ?? []} onRetry={handleBootRetry} />;
+      }
+
       const agentStatus = state.agentStatus;
       const sessions = state.sessions ?? [];
       const turns = state.turns ?? [];
