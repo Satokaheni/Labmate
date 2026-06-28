@@ -1,7 +1,7 @@
 """Vision endpoint resolution (os-only — no heavy imports, unit-testable).
 
 VISION_BASE is the OpenAI-compatible vision server (the dual-GPU host sets it to
-http://localhost:8001/v1; unset elsewhere). Unset/empty => vision disabled.
+http://localhost:8002/v1; unset elsewhere). Unset/empty => vision disabled.
 """
 from __future__ import annotations
 

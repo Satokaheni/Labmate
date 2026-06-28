@@ -372,8 +372,8 @@ grep "incremental_update" .data/logs/codegraph-embedder.log | tail -3
 
 design-critique + screenshot-to-component are image-in and need a vision model.
 On a dual-GPU host, a 2nd llama-server (Gemma 3 4B vision GGUF + mmproj) runs on
-GPU 1 (`CUDA_VISIBLE_DEVICES=1`) at `:8001`; the 32GB GPU 0 keeps gemma-4-31B text
-on `:8000` with full context. Enable by setting `VISION_BASE=http://localhost:8001/v1`
+GPU 1 (`CUDA_VISIBLE_DEVICES=1`) at `:8002`; the 32GB GPU 0 keeps gemma-4-31B text
+on `:8000` with full context. Enable by setting `VISION_BASE=http://localhost:8002/v1`
 in `local.env` and running `infrastructure/local/serve-vision.sh` (start.sh runs it
 automatically if the vision GGUF is present). Unset `VISION_BASE` → the two skills
 return "vision endpoint not configured" and skip; text-only/single-GPU deploys are

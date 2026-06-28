@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Second llama-server for VISION, pinned to GPU 1 (3070 Ti). Text model on :8000
-# (GPU 0) is untouched. Idempotent; waits until :8001/health is ready.
+# (GPU 0) is untouched. Idempotent; waits until :8002/health is ready.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/local.env" 2>/dev/null || true
@@ -8,7 +8,7 @@ source "$HERE/local.env" 2>/dev/null || true
 LLAMA_SERVER="${LLAMA_SERVER:-/workspace/llama.cpp/build/bin/llama-server}"
 VISION_MODEL_GGUF="${VISION_MODEL_GGUF:-/workspace/models/gemma-3-vision-gguf/gemma-3-4b-it-Q4_K_M.gguf}"
 VISION_MMPROJ="${VISION_MMPROJ:-/workspace/models/gemma-3-vision-gguf/mmproj-gemma-3-4b-it.gguf}"
-VISION_PORT="${VISION_PORT:-8001}"
+VISION_PORT="${VISION_PORT:-8002}"
 VISION_GPU="${VISION_GPU:-1}"
 VISION_NGL="${VISION_NGL:-99}"
 VISION_CTX="${VISION_CTX:-8192}"
