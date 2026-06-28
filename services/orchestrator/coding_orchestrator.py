@@ -32,7 +32,6 @@ from .progress_breaker import ProgressBreaker, ProgressStep
 from .message_repair import sanitize_messages, message_repair_enabled
 from .tool_grounding import ground_tool_result, DEFAULT_TOOL_RESULT_BUDGET
 from .edit_intent import requires_editing, exposes_bug_intent
-from .replan_guard import replan_should_stop
 from .test_outcome import classify_test_attempt
 from .verification_stop import (
     needs_verification,
@@ -65,26 +64,7 @@ SKILL_CALL_TIMEOUT = float(os.getenv("SKILL_CALL_TIMEOUT", "135"))
 #   react: skip the skill-first fast-path and run the multi-tool ReAct loop, which
 #       can chain multiple skills (test-gen -> code-review -> fix) within one goal,
 #       at the cost of the loop occasionally bypassing a matching skill.
-#   replan (opt-in, set SEQUENCING_MODE=replan): an explicit planner-driven
-#       continuation loop. Each step the planner inspects the original goal + the
-#       history of completed sub-steps and returns the SINGLE next sub-goal (or
-#       done=true). Each sub-goal runs via the deterministic skill-first path,
-#       falling back to a bounded ReAct loop when no skill matches. Gives honest
-#       completion + bounded multi-skill sequencing. In a live A/B it was
-#       non-inferior on single-step controls and ~4x honest-completion on compound
-#       tasks, BUT it has a known mid-chain load_skill activation-cap bug (see
-#       CLAUDE.md) — kept opt-in for A/B evaluation until that is fixed. See eval/seq_ab.
 SEQUENCING_MODE = os.getenv("SEQUENCING_MODE", "skill_first")
-# Max sub-goals the replan continuation loop will execute before forcing a finish.
-MAX_SEQ_STEPS = int(os.getenv("MAX_SEQ_STEPS", "5"))
-# When 1, replan first classifies whether the goal is genuinely multi-step. Single-
-# step goals skip the planner loop entirely (run once via skill-first / ReAct) so a
-# simple "review this file" doesn't pay the planner-sequencing tax (over-sequencing).
-REPLAN_COMPOUND_GATE = os.getenv("REPLAN_COMPOUND_GATE", "1") == "1"
-# Max times the replan planner may re-target the SAME skill across sub-steps
-# before the no-progress guard (replan_guard.replan_should_stop) forces a finish.
-# Prevents the live-A/B "repo-fault-localize 4x" thrash. Per-loop, not per-process.
-REPLAN_MAX_SKILL_REPEATS = int(os.getenv("REPLAN_MAX_SKILL_REPEATS", "2"))
 
 # When 1 (default), a load_skill call for a skill ALREADY loaded this goal is
 # short-circuited (no real reload) AND the wasted iteration is refunded, so the
@@ -377,14 +357,9 @@ class AsyncOrchestrator:
                 pass
 
         # Dispatch by sequencing mode (A/B):
-        #   replan      — planner-driven continuation loop (option A): one skill per
-        #                 step, an explicit planner decides the next sub-goal and when
-        #                 the goal is complete (honest completion, bounded sequencing).
-        #   react       — pure multi-tool ReAct loop, no skill-first fast-path (option B).
+        #   react       — pure multi-tool ReAct loop, no skill-first fast-path (opt-in).
         #   skill_first — deterministic single-skill fast-path, ReAct only when no skill
-        #                 matches (baseline; current production default).
-        if SEQUENCING_MODE == "replan":
-            return await self._replan_loop(goal)
+        #                 matches (default; well-tested harness path).
 
         # Find-and-fix routing: a goal that needs file edits / verification
         # ("fix", "make the tests pass", "review then fix the code") cannot be
@@ -515,7 +490,7 @@ class AsyncOrchestrator:
         """Multi-tool ReAct loop bounded by ``max_steps``.
 
         Returns {"ok": bool, "summary": str}. Activation budget is reset by the
-        caller (react_execute), so this can be invoked per sub-goal in replan mode.
+        caller (react_execute) at the start of each goal.
         """
         import json
 
@@ -1249,228 +1224,6 @@ class AsyncOrchestrator:
             # resumed by a later same-task run.
             if self._checkpoint_active(_cp_task_id):
                 await self.checkpoint_store.clear(_cp_task_id)
-
-    async def _is_compound(self, goal: str) -> bool:
-        """Classify whether a goal genuinely requires multiple DISTINCT sequential
-        steps (e.g. generate tests AND fix code) vs a single operation (review a
-        file, find bugs, answer a question). One cheap call; defaults to True
-        (run the full planner loop) on any parse/transport failure, so a compound
-        task is never under-handled.
-        """
-        import json
-        import re
-
-        try:
-            r = await litellm.acompletion(
-                model="openai/gemma-4-31b",
-                api_base=self._gemma_base,
-                api_key="not-needed",
-                messages=[
-                    {"role": "system", "content": (
-                        "You classify whether a user goal needs MULTIPLE distinct "
-                        "sequential operations or just ONE. Multi-step examples: "
-                        "'generate tests AND fix the failing code', 'review this file "
-                        "THEN refactor it', 'find the bug and write a test that exposes "
-                        "it'. Single-step examples: 'review this file for bugs', 'find "
-                        "bugs in X', 'generate unit tests for Y', 'what is 2+2'. "
-                        "A single operation that a tool runs to completion (even if the "
-                        "tool internally loops) is NOT compound. "
-                        "Respond with ONLY a JSON object: {\"compound\": <bool>}"
-                    )},
-                    {"role": "user", "content": goal},
-                ],
-                extra_body={"thinking_budget_tokens": 128},
-            )
-            text = r.choices[0].message.content or ""
-            m = re.search(r"\{.*\}", text, re.S)
-            if not m:
-                return True
-            return bool(json.loads(m.group(0)).get("compound", True))
-        except Exception:
-            return True
-
-    async def _replan_loop(self, goal: str) -> dict:
-        """Planner-driven continuation loop (sequencing option A).
-
-        Each iteration an explicit planner inspects the original goal plus the
-        history of completed sub-steps and returns the SINGLE next sub-goal (or
-        done=true). Each sub-goal executes via the deterministic skill-first path,
-        falling back to a bounded ReAct loop when no skill matches (so file edits /
-        fixes still run). The planner — not the executor — owns the completion
-        decision, so the agent never claims a goal is done unless the history
-        actually supports it (fixes skill_first's hallucinated-completion defect),
-        and the loop is hard-bounded by MAX_SEQ_STEPS (no ReAct thrash).
-
-        A compound gate (REPLAN_COMPOUND_GATE) runs first: single-step goals skip the
-        planner loop and execute once (skill-first, ReAct fallback), so simple tasks
-        like "review this file" aren't over-sequenced into multiple skill calls.
-        """
-        import json
-        import re
-
-        # ── Compound gate ────────────────────────────────────────────────────
-        # Only pay the planner-sequencing cost when the goal is genuinely multi-step.
-        if REPLAN_COMPOUND_GATE and not await self._is_compound(goal):
-            skilled = await self._run_skill_first(goal)
-            if skilled is not None:
-                return skilled
-            return await self._run_react_loop(goal, self.max_steps)
-
-        catalog = ""
-        if self.skill_router is not None:
-            try:
-                catalog = self.skill_router.runner.catalog_prompt()
-            except Exception:
-                catalog = ""
-
-        planner_system = (
-            "You are a planning controller that sequences a single user goal into "
-            "concrete sub-steps. You are given the ORIGINAL goal and a HISTORY of "
-            "sub-steps already completed (each with its result summary). Decide the "
-            "SINGLE next concrete sub-step required to advance the goal, or declare "
-            "the goal complete.\n"
-            "Rules:\n"
-            "- Return done=true ONLY when the HISTORY shows every part of the goal is "
-            "actually accomplished. NEVER claim completion for work that is not "
-            "present in the history.\n"
-            "- 'next' must be ONE concrete imperative sub-step (e.g. 'Generate and run "
-            "unit tests for the factorial function', then later 'Fix the off-by-one "
-            "bug in factorial so the tests pass'). Do not bundle multiple steps.\n"
-            "- Prefer using an available skill when one fits the sub-step.\n"
-            "- If a previous step failed, the next step should address that failure.\n"
-            "Respond with ONLY a JSON object and nothing else:\n"
-            '{"done": <bool>, "next": "<one sub-step, empty if done>", "reason": "<short>"}'
-        )
-        if catalog:
-            planner_system += f"\n\nAvailable skills:\n{catalog}"
-
-        history: list[dict] = []
-        _all_tools_used: list[str] = []  # accumulate tools across all sub-steps
-
-        def render_history() -> str:
-            if not history:
-                return "(no steps completed yet)"
-            lines = []
-            for i, h in enumerate(history, 1):
-                status = "ok" if h["ok"] else "FAILED"
-                lines.append(f"{i}. [{status}] {h['step']}\n   result: {h['summary']}")
-            return "\n".join(lines)
-
-        try:
-            for step in range(MAX_SEQ_STEPS):
-                planner_user = (
-                    f"ORIGINAL GOAL:\n{goal}\n\n"
-                    f"HISTORY ({len(history)} step(s) done):\n{render_history()}\n\n"
-                    "What is the single next sub-step, or is the goal complete?"
-                )
-                pr = await litellm.acompletion(
-                    model="openai/gemma-4-31b",
-                    api_base=self._gemma_base,
-                    api_key="not-needed",
-                    messages=[
-                        {"role": "system", "content": planner_system},
-                        {"role": "user", "content": planner_user},
-                    ],
-                    extra_body={"thinking_budget_tokens": 512},
-                )
-                ptext = pr.choices[0].message.content or ""
-                m = re.search(r"\{.*\}", ptext, re.S)
-                try:
-                    decision = json.loads(m.group(0)) if m else {}
-                except (json.JSONDecodeError, ValueError):
-                    decision = {}
-
-                done = bool(decision.get("done"))
-                nxt = str(decision.get("next") or "").strip()
-                reason = str(decision.get("reason") or "").strip()
-
-                await events.emit(
-                    "reasoning", node="plan",
-                    summary=(f"done" if done else f"next: {nxt}")[:200],
-                    text=reason or nxt,
-                )
-
-                if done or not nxt:
-                    break
-
-                # Per-sub-step activation reset. Each planner sub-goal is a fresh
-                # mini-task: reset SkillRunner's max_chain budget so load_skill does
-                # not hit its activation cap mid-chain across many sub-steps (the
-                # documented replan bug). skill_first/react never reach here.
-                if self.skill_router is not None:
-                    try:
-                        self.skill_router.runner.reset_activations()
-                    except Exception:
-                        pass
-
-                # No-progress / skill-repeat guard. If the planner is re-emitting
-                # a near-identical sub-goal or over-using one skill, stop instead of
-                # re-cycling (prevents the live-A/B 'repo-fault-localize 4x' thrash).
-                _stop = replan_should_stop(
-                    nxt, history, max_skill_repeats=REPLAN_MAX_SKILL_REPEATS,
-                )
-                if _stop.stop:
-                    await events.emit(
-                        "reasoning", node="plan",
-                        summary=f"replan stop: {_stop.reason}"[:200],
-                        text=_stop.reason,
-                    )
-                    break
-
-                # Execute the sub-step: skill-first, then bounded ReAct fallback so
-                # non-skill steps (file edits / fixes) still execute.
-                skilled = await self._run_skill_first(nxt)
-                if skilled is not None:
-                    step_res = skilled
-                else:
-                    step_res = await self._run_react_loop(nxt, max(2, min(self.max_steps, 3)))
-
-                # Accumulate tools used in this sub-step
-                if "tools_used" in step_res and isinstance(step_res.get("tools_used"), list):
-                    _all_tools_used.extend(step_res["tools_used"])
-
-                # Skills used this sub-step (skill-first returns the matched skill in
-                # tools_used; ReAct fallback returns its tool/skill list there too).
-                _step_skills = [
-                    t for t in (step_res.get("tools_used") or []) if isinstance(t, str) and t
-                ]
-                history.append({
-                    "step": nxt,
-                    "ok": bool(step_res.get("ok")),
-                    "summary": str(step_res.get("summary", ""))[:600],
-                    "skills": _step_skills,
-                })
-        except Exception as exc:
-            return {"ok": False, "summary": f"error: {str(exc)[:1000]}", "tools_used": _all_tools_used}
-
-        if not history:
-            return {"ok": False, "summary": "planner produced no actionable sub-steps", "tools_used": _all_tools_used}
-
-        # Synthesize an honest final answer from the step history.
-        synth_user = (
-            f"ORIGINAL GOAL:\n{goal}\n\n"
-            f"COMPLETED STEPS:\n{render_history()}\n\n"
-            "Write a concise final answer for the user summarizing what was actually "
-            "accomplished. Be honest: if a step failed or part of the goal was not "
-            "completed, say so plainly. Do NOT claim work that is not in the steps above."
-        )
-        try:
-            sr = await litellm.acompletion(
-                model="openai/gemma-4-31b",
-                api_base=self._gemma_base,
-                api_key="not-needed",
-                messages=[
-                    {"role": "system", "content": "You summarize completed work honestly."},
-                    {"role": "user", "content": synth_user},
-                ],
-                extra_body={"thinking_budget_tokens": 256},
-            )
-            summary = (sr.choices[0].message.content or "").strip()
-        except Exception:
-            summary = render_history()
-
-        all_ok = all(h["ok"] for h in history)
-        return {"ok": all_ok, "summary": summary[:2000] or render_history()[:2000], "tools_used": _all_tools_used}
 
     async def _run_worker(self, t: SubTask) -> str:
         """
