@@ -1,0 +1,29 @@
+# Ruff config for Labmate (Python 3.11). Conservative, real-bug-focused rule set
+# so pre-commit (staged files only) and CI (changed files only) are adoptable
+# without a big-bang reformat of the existing codebase.
+target-version = "py311"
+line-length = 100
+
+# Generated / vendored / non-source trees ruff should never touch.
+extend-exclude = [
+  "services/frontend",
+  "**/dist",
+  "**/node_modules",
+  "**/__pycache__",
+  ".data",
+  "research",
+]
+
+[lint]
+# E/F = pycodestyle errors + pyflakes (undefined names, unused imports — real bugs)
+# I  = import sorting; UP = pyupgrade; B = bugbear (likely-bug patterns)
+select = ["E", "F", "I", "UP", "B"]
+# Line length is handled by the formatter; don't double-flag long strings/URLs.
+ignore = ["E501"]
+
+[lint.per-file-ignores]
+# Tests may shadow/redefine and use bare asserts/fixtures loosely.
+"tests/**" = ["B011", "F811"]
+
+[format]
+quote-style = "double"

@@ -1,0 +1,50 @@
+# Pre-commit hooks for Labmate. Install once per clone:
+#   pip install pre-commit && pre-commit install && pre-commit install --hook-type pre-push
+#
+# Hooks run on STAGED files only (fast, adoptable — existing code isn't touched
+# unless you edit it). The pre-push hook blocks direct pushes to main.
+# Emergency bypass: git commit --no-verify  /  git push --no-verify
+minimum_pre_commit_version: "3.5.0"
+
+repos:
+  # ---- Python: ruff lint (+autofix) and ruff format ----
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.6
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+      - id: ruff-format
+
+  # ---- generic hygiene ----
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=2048"]
+
+  # ---- local hooks ----
+  - repo: local
+    hooks:
+      # React/TS "lint equivalent": type-check the frontend with tsc (no emit).
+      # Runs only when frontend .ts/.tsx files are staged. Uses the project's own
+      # tsc (project references), so it matches the build's type-checking.
+      - id: frontend-typecheck
+        name: frontend tsc --noEmit
+        entry: bash -c 'cd services/frontend && npx --no-install tsc -b --noEmit'
+        language: system
+        files: ^services/frontend/.*\.(ts|tsx)$
+        pass_filenames: false
+
+      # Block direct pushes to main (client-side stand-in for branch protection).
+      - id: no-push-to-main
+        name: block direct push to main (use a PR)
+        entry: scripts/git-hooks/no-push-to-main.sh
+        language: script
+        stages: [pre-push]
+        always_run: true
+        pass_filenames: false

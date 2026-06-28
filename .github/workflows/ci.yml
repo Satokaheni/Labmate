@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Lint only the Python files changed in the PR — keeps CI green/adoptable
+  # without a big-bang reformat of the pre-existing codebase.
+  ruff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install ruff==0.8.6
+      - name: ruff check (changed .py)
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.base_ref }}"
+            git fetch origin "${{ github.base_ref }}" --depth=1 || true
+            mapfile -t files < <(git diff --name-only --diff-filter=ACM "$base"...HEAD -- '*.py' || true)
+          else
+            mapfile -t files < <(git diff --name-only --diff-filter=ACM HEAD~1 HEAD -- '*.py' || true)
+          fi
+          if [ "${#files[@]}" -eq 0 ]; then echo "no changed .py files"; exit 0; fi
+          printf '%s\n' "${files[@]}"
+          ruff check --output-format=github "${files[@]}"
+          ruff format --check "${files[@]}"
+
+  # Frontend type-check (React/TS "lint equivalent").
+  frontend-typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: install + type-check
+        working-directory: services/frontend
+        run: |
+          npm install --no-audit --no-fund
+          npx tsc -b --noEmit
+
+  # Orchestrator test suite (mocked: no GPU/services; LIVE_TESTS auto-skips).
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: install deps
+        run: |
+          pip install -r services/orchestrator/requirements.txt
+          pip install pytest pytest-asyncio pytest-bdd respx
+      - name: pytest (orchestrator)
+        run: PYTHONPATH=. python -m pytest tests/services/orchestrator -q
