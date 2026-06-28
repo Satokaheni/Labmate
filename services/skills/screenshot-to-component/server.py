@@ -2,7 +2,8 @@
 
 CRITICAL: stdout is the JSON-RPC 2.0 channel. NEVER print() anywhere.
 All logging is configured to sys.stderr below, including third-party loggers.
-SINGLE-GPU: every LLM call targets GEMMA_BASE.
+Vision-endpoint: every LLM call targets VISION_BASE (dual-GPU host).
+Raises VisionNotConfigured when VISION_BASE unset — clean disabled-when-unset path.
 """
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ logging.basicConfig(
 log = logging.getLogger("screenshot-to-component.server")
 
 from grounder import UIGrounder  # noqa: E402 (after logging is configured)
+from llm import VisionNotConfigured  # noqa: E402
 from pipeline import Pipeline  # noqa: E402
 from planner import LayoutPlanner  # noqa: E402
 
@@ -122,6 +124,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         else:
             log.error("unknown tool: %s", name)
             return [TextContent(type="text", text=f"unknown tool: {name}")]
+    except VisionNotConfigured as exc:
+        return [TextContent(type="text", text=json.dumps({"error": str(exc)}))]
     except Exception as exc:  # never let one bad call crash the stdio server
         log.exception("tool %s failed", name)
         return [TextContent(type="text", text=f"error: {exc!r}")]

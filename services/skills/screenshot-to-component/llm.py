@@ -1,6 +1,7 @@
 """Shared LLM access for the screenshot_to_component skill.
 
-SINGLE-GPU: every call targets GEMMA_BASE. There is no QWEN_BASE.
+Vision-endpoint: every call targets VISION_BASE (vision server on dual-GPU host).
+Vision is opt-in: VISION_BASE unset => raises VisionNotConfigured, clean disable path.
 stdout is sacred — never print(); litellm is routed to stderr via root logging.
 """
 from __future__ import annotations
@@ -16,10 +17,13 @@ import litellm
 
 log = logging.getLogger("screenshot-to-component.llm")
 
-# SINGLE-GPU: all LLM calls (vision + text) hit the one Gemma 4 server.
-GEMMA_BASE = os.getenv("GEMMA_BASE", "http://localhost:8000/v1")
-GEMMA_MODEL = os.getenv("GEMMA_MODEL", "openai/google/gemma-4-31B-it")
-GEMMA_API_KEY = os.getenv("GEMMA_API_KEY", "not-needed")  # vLLM ignores the key
+from vision_config import resolve_vision_endpoint
+
+VISION_API_KEY = os.getenv("VISION_API_KEY", "not-needed")  # local llama.cpp ignores the key
+
+
+class VisionNotConfigured(RuntimeError):
+    """Raised when VISION_BASE is unset so the pipeline can return a clean error."""
 
 
 def encode_image_b64(image_path: str) -> tuple[str, int, int]:
@@ -46,12 +50,16 @@ def encode_image_b64(image_path: str) -> tuple[str, int, int]:
 
 
 def call_llm(messages: list[dict], *, temperature: float = 0.2, max_tokens: int = 4096) -> str:
-    """Single litellm chat completion against the Gemma 4 server. Returns content text."""
+    """Single litellm chat completion against the vision server. Returns content text."""
+    endpoint = resolve_vision_endpoint()
+    if endpoint is None:
+        raise VisionNotConfigured("vision endpoint not configured (set VISION_BASE)")
+    api_base, model = endpoint
     log.info("LLM call: %d message(s), max_tokens=%d", len(messages), max_tokens)
     resp = litellm.completion(
-        model=GEMMA_MODEL,
-        api_base=GEMMA_BASE,
-        api_key=GEMMA_API_KEY,
+        model=model,
+        api_base=api_base,
+        api_key=VISION_API_KEY,
         messages=messages,
         temperature=temperature,
         max_tokens=max_tokens,
