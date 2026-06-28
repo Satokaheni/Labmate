@@ -8,9 +8,21 @@ import type {
   ContextWindow,
   Artifact,
   Reasoning,
+  SessionBootstrap,
+  LabmateWSStatePublic,
 } from '@/types/events';
 
-export type LabmateWSState =
+type LabmateWSStateBase = {
+  subsystems?: Subsystem[];
+  agentStatus?: AgentStatus;
+  sessions?: Session[];
+  activeSessionId?: string | null;
+  turns?: Turn[];
+  contextWindow?: ContextWindow;
+  authError?: string;
+};
+
+export type LabmateWSState = LabmateWSStateBase & (
   | { phase: 'idle' }
   | { phase: 'connecting' }
   | { phase: 'authenticating' }
@@ -20,18 +32,18 @@ export type LabmateWSState =
       subsystems: Subsystem[];
       agentStatus: AgentStatus;
       sessions: Session[];
+      activeSessionId: string | null;
       turns: Turn[];
-      contextWindow?: ContextWindow;
-      authError?: string;
     }
-  | { phase: 'error'; authError?: string };
+  | { phase: 'error' }
+);
 
 type WSFrame =
   | { type: 'auth.error'; reason: string }
   | { type: 'auth.ok' }
   | { type: 'boot.plan'; subsystems: Subsystem[] }
   | { type: 'boot.update'; id: string; state: string }
-  | { type: 'boot.ready'; sessionBootstrap: { sessions: Session[]; agentStatus: AgentStatus } }
+  | { type: 'boot.ready'; sessionBootstrap: SessionBootstrap }
   | { type: 'turn.created'; turn: Turn }
   | { type: 'answer.delta'; turnId: string; text: string }
   | { type: 'reasoning.done'; turnId: string; reasoning: Reasoning }
@@ -111,6 +123,7 @@ function labmateWSReducer(state: LabmateWSState, action: DispatchAction): Labmat
             subsystems: state.phase === 'booting' ? state.subsystems : [],
             agentStatus: frame.sessionBootstrap.agentStatus,
             sessions: frame.sessionBootstrap.sessions,
+            activeSessionId: frame.sessionBootstrap.activeSessionId,
             turns: [],
           };
         }
@@ -119,6 +132,7 @@ function labmateWSReducer(state: LabmateWSState, action: DispatchAction): Labmat
             ...state,
             agentStatus: frame.sessionBootstrap.agentStatus,
             sessions: frame.sessionBootstrap.sessions,
+            activeSessionId: frame.sessionBootstrap.activeSessionId,
           };
         }
         return state;
@@ -223,7 +237,7 @@ export function useLabmateWS(
   token: string | null,
   reconnectKey?: number
 ): {
-  state: LabmateWSState;
+  state: LabmateWSStatePublic;
   send: (text: string, sessionId: string) => void;
   newSession?: (mode: string) => void;
   openSession?: (sessionId: string) => void;
@@ -351,7 +365,7 @@ export function useLabmateWS(
   };
 
   return {
-    state,
+    state: state as LabmateWSStatePublic,
     send,
     newSession,
     openSession,

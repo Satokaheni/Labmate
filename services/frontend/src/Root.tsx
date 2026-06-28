@@ -60,16 +60,24 @@ export function Root(): JSX.Element {
     }
 
     case 'booting': {
-      return <BootScreen subsystems={state.subsystems} onRetry={handleBootRetry} />;
+      return <BootScreen subsystems={state.subsystems ?? []} onRetry={handleBootRetry} />;
     }
 
     case 'ready': {
+      const agentStatus = state.agentStatus;
+      const sessions = state.sessions ?? [];
+      const turns = state.turns ?? [];
+
+      if (!agentStatus) {
+        return <div className="flex items-center justify-center h-screen">Loading...</div>;
+      }
+
       return (
         <ChatLayout
           topBar={
             <div className="flex items-center justify-between w-full">
               <div className="text-sm font-medium text-primary">Labmate Chat</div>
-              <SystemFooter status={state.agentStatus} />
+              <SystemFooter status={agentStatus} />
             </div>
           }
           left={
@@ -81,7 +89,7 @@ export function Root(): JSX.Element {
                 + New Chat
               </button>
               <div className="flex flex-col gap-1 overflow-y-auto">
-                {state.sessions.map((session) => (
+                {sessions.map((session) => (
                   <button
                     key={session.id}
                     onClick={() => openSession?.(session.id)}
@@ -98,7 +106,7 @@ export function Root(): JSX.Element {
             <div className="flex flex-col">
               <div className="flex-1 overflow-y-auto p-4">
                 <div className="flex flex-col gap-4">
-                  {state.turns.map((turn) => (
+                  {turns.map((turn) => (
                     <Turn
                       key={turn.id}
                       turn={turn}
@@ -111,12 +119,12 @@ export function Root(): JSX.Element {
               <div className="border-t border-border-1 px-4 py-2">
                 <Composer
                   onSend={(text: string) => {
-                    const sessionId = state.sessions[0]?.id ?? 'default';
+                    const sessionId = sessions[0]?.id ?? 'default';
                     send(text, sessionId);
                   }}
                   onStop={() => {
                     // TODO: implement stop signal via setDebug or similar
-                    setDebug(state.sessions[0]?.id ?? 'default', false);
+                    setDebug(sessions[0]?.id ?? 'default', false);
                   }}
                   streaming={false}
                 />
@@ -143,9 +151,8 @@ export function Root(): JSX.Element {
     }
 
     default: {
-      // Exhaustiveness check
-      const _unreachable: never = state;
-      return _unreachable;
+      // Fallback for unknown phases
+      return <div className="flex items-center justify-center h-screen">Unknown phase: {state.phase}</div>;
     }
   }
 }

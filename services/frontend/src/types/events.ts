@@ -140,6 +140,28 @@ export interface ContextWindow {
   };
 }
 
+/** Bootstrap data sent on boot.ready. */
+export interface SessionBootstrap {
+  sessions: Session[];
+  activeSessionId: string | null;
+  agentStatus: AgentStatus;
+}
+
+/** Extended phase type with all optional properties for hook state access. */
+export type LabmateWSPhase = 'idle' | 'connecting' | 'authenticating' | 'booting' | 'ready' | 'error';
+
+/** Public type for WebSocket hook state - all properties present but may be undefined. */
+export type LabmateWSStatePublic = {
+  phase: LabmateWSPhase;
+  subsystems: Subsystem[];
+  agentStatus: AgentStatus;
+  sessions: Session[];
+  activeSessionId: string | null;
+  turns: Turn[];
+  contextWindow?: ContextWindow;
+  authError?: string;
+};
+
 /** Discriminated union of streamed events the chat UI reduces over. */
 export type StreamEvent =
   | { type: 'node.enter'; node?: NodeName; thinkingBudget?: number; turnId?: string }
