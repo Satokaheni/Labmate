@@ -17,7 +17,7 @@ export function ReasoningBlock({ reasoning }: { reasoning: Reasoning }) {
         <span className="flex-1 truncate">{reasoning.summary}</span>
         <span className="font-mono text-[10px] text-mono">
           {reasoning.node} · {formatTokens(reasoning.tokens)}/{formatTokens(reasoning.budget)} ·{' '}
-          {formatDuration(reasoning.durationMs)}
+          {formatDuration(reasoning.durationMs ?? 0)}
         </span>
       </button>
       {open && (

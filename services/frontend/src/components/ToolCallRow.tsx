@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { ToolCall } from '@/types/events';
 import { formatDuration } from '@/lib/format';
 
-const STATUS_COLOR: Record<ToolCall['status'], string> = {
+const STATUS_COLOR: Record<NonNullable<ToolCall['status']>, string> = {
   running: '#8c9bf0',
   done: '#6aa6ff',
   error: '#ff6b6b',
@@ -18,7 +18,7 @@ function pretty(value: unknown): string {
 
 export function ToolCallRow({ toolCall }: { toolCall: ToolCall }) {
   const [open, setOpen] = useState(false);
-  const color = STATUS_COLOR[toolCall.status];
+  const color = STATUS_COLOR[toolCall.status ?? 'running'];
 
   return (
     <div className="rounded-pill border border-border-2 bg-page/30">
@@ -44,7 +44,7 @@ export function ToolCallRow({ toolCall }: { toolCall: ToolCall }) {
           {toolCall.name}
         </span>
         <span className="min-w-0 flex-1 truncate text-secondary">{toolCall.summary}</span>
-        <span className="font-mono text-[10px] text-mono">{formatDuration(toolCall.durationMs)}</span>
+        <span className="font-mono text-[10px] text-mono">{formatDuration(toolCall.durationMs ?? 0)}</span>
         <span className="text-mono">{open ? '▾' : '▸'}</span>
       </button>
 
