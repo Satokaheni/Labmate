@@ -471,6 +471,37 @@ Covers: code-sandbox really runs pytest; exec_run blocks pytest + enforces the
 install_packages and unknown tool names return an enumerated error. Run these
 GREEN before trusting an `eval/seq_ab` A/B run.
 
+### 11. Live skill execution smoke tests (calls real tools on fixtures)
+
+Execution smoke (calls real tools on fixtures):
+
+    # model-free core (no GPU): ast-search, ast-repo-map, repo-graph
+    LIVE_TESTS=1 python -m pytest tests/live/test_skill_exec_modelfree_live.py -v
+    # inference-guarded (needs GEMMA_BASE up): repo-fault-localize, code-review, critique, test-gen
+    LIVE_TESTS=1 python -m pytest tests/live/test_skill_exec_inference_live.py -v
+
+The inference group SKIPS when GEMMA_BASE is unreachable. repo-fault-localize's
+test guards the "file too large on a tiny file" punt.
+
+### 12. Live skill contract suite (model-free, every-skill deterministic check)
+
+The live skill suite registers every runnable skill (no model/Redis/GPU) and
+checks its tool contract — advertised tools match SKILL.md, schemas are valid,
+unknown tools return an enumerated error:
+
+    LIVE_TESTS=1 python -m pytest tests/live/test_skill_contract_live.py \
+      tests/live/test_skill_unknown_tool_live.py -v
+
+A skill whose deps are absent SKIPS (not fails). Run this when adding/changing
+any skill — it's the deterministic tool-correctness check the model-driven A/B
+can't be (the A/B only exercises the few skills its cases happen to call).
+
+**Build node skills first.** Node skills (e.g. `component-doc-gen`, `ast-ts-refactor`)
+run from `dist/index.js`; a stale build serves OLD tool names while SKILL.md/src
+track the new ones. The suite detects `src` newer than `dist/index.js` and SKIPS
+with "stale node build — run `npm run build`" rather than a misleading contract
+failure, so run `npm run build` in the skill dir before testing it.
+
 ---
 
 ## What NOT to Do
