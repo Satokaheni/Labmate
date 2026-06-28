@@ -1,16 +1,19 @@
 from __future__ import annotations
+
 import asyncio
 import importlib.util
 import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 import yaml
 
 _MODULE_PATH = (
     Path(__file__).resolve().parents[4]
-    / "services" / "skills" / "dataset-search" / "dataset_search.py"
+    / "services"
+    / "skills"
+    / "dataset-search"
+    / "dataset_search.py"
 )
 
 
@@ -31,8 +34,13 @@ def _make_response(json_data):
 def test_search_hf_hub_returns_results():
     ds = _load()
     raw = [
-        {"id": "emotion", "downloads": 1000, "likes": 50,
-         "task_categories": ["text-classification"], "description": "Emotion dataset"},
+        {
+            "id": "emotion",
+            "downloads": 1000,
+            "likes": 50,
+            "task_categories": ["text-classification"],
+            "description": "Emotion dataset",
+        },
     ]
     with patch.object(ds.requests, "get", return_value=_make_response(raw)):
         out = ds.search_hf_hub("emotion recognition", max_results=5)
@@ -51,11 +59,17 @@ def test_search_hf_hub_handles_network_error():
 
 def test_search_papers_with_code_returns_results():
     ds = _load()
-    raw = {"results": [
-        {"name": "EmpathyDataset", "full_name": "Empathy Dialogue Dataset",
-         "description": "Empathetic conversation dataset",
-         "evaluations": [{"task": "dialogue"}], "url": "https://pwc.com/x"}
-    ]}
+    raw = {
+        "results": [
+            {
+                "name": "EmpathyDataset",
+                "full_name": "Empathy Dialogue Dataset",
+                "description": "Empathetic conversation dataset",
+                "evaluations": [{"task": "dialogue"}],
+                "url": "https://pwc.com/x",
+            }
+        ]
+    }
     with patch.object(ds.requests, "get", return_value=_make_response(raw)):
         out = ds.search_papers_with_code("empathetic dialogue", max_results=3)
     assert out["results"][0]["name"] == "EmpathyDataset"
@@ -81,7 +95,7 @@ def test_skill_md_frontmatter_parses():
     skill_md = _MODULE_PATH.parent / "SKILL.md"
     assert skill_md.exists()
     text = skill_md.read_text(encoding="utf-8")
-    m = re.match(r'^---\s*\n(.*?)\n---\s*\n', text, re.DOTALL)
+    m = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
     assert m, "No YAML frontmatter found"
     meta = yaml.safe_load(m.group(1))
     assert meta["name"] == "dataset-search"
@@ -97,17 +111,26 @@ def test_server_lists_tools():
     spec.loader.exec_module(mod)
     tools = asyncio.run(mod.list_tools())
     assert {t.name for t in tools} == {
-        "search_hf_hub", "search_papers_with_code", "search_github", "rank_candidates",
+        "search_hf_hub",
+        "search_papers_with_code",
+        "search_github",
+        "rank_candidates",
     }
 
 
 def test_search_github_returns_dataset_repos():
     ds = _load()
-    raw = {"items": [
-        {"full_name": "org/emotion-dataset", "description": "Emotion corpus",
-         "stargazers_count": 120, "html_url": "https://github.com/org/emotion-dataset",
-         "topics": ["dataset", "nlp"]},
-    ]}
+    raw = {
+        "items": [
+            {
+                "full_name": "org/emotion-dataset",
+                "description": "Emotion corpus",
+                "stargazers_count": 120,
+                "html_url": "https://github.com/org/emotion-dataset",
+                "topics": ["dataset", "nlp"],
+            },
+        ]
+    }
     with patch.object(ds.requests, "get", return_value=_make_response(raw)) as mget:
         out = ds.search_github("emotion recognition", max_results=5)
     assert out["results"][0]["full_name"] == "org/emotion-dataset"
@@ -154,6 +177,7 @@ def test_rank_candidates_scores_github_fields():
 
 def test_skill_runner_catalogs_dataset_search():
     from services.skill_runner.skill_runner import SkillRunner
+
     skills_root = _MODULE_PATH.resolve().parent.parent
     runner = SkillRunner(roots=[skills_root])
     runner.discover()

@@ -2,18 +2,20 @@
 
 CRITICAL: stdout carries JSON-RPC. All logging goes to stderr.
 """
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+
 import asyncio
 import json
 import logging
 import sys
 
 import dataset_search
+from mcp.server import Server
+from mcp.server.stdio import stdio_server
+from mcp.types import TextContent, Tool
 
-logging.basicConfig(stream=sys.stderr, level=logging.INFO,
-                    format="%(name)s %(levelname)s %(message)s")
+logging.basicConfig(
+    stream=sys.stderr, level=logging.INFO, format="%(name)s %(levelname)s %(message)s"
+)
 log = logging.getLogger("dataset-search.server")
 app: Server = Server("dataset-search")
 
@@ -21,34 +23,58 @@ app: Server = Server("dataset-search")
 @app.list_tools()
 async def list_tools() -> list[Tool]:
     return [
-        Tool(name="search_hf_hub",
-             description="Search Hugging Face Hub for datasets.",
-             inputSchema={"type": "object", "properties": {
-                 "query": {"type": "string"},
-                 "task": {"type": "string"},
-                 "modality": {"type": "string"},
-                 "max_results": {"type": "integer", "default": 10}},
-                 "required": ["query"]}),
-        Tool(name="search_papers_with_code",
-             description="Search PapersWithCode for datasets.",
-             inputSchema={"type": "object", "properties": {
-                 "query": {"type": "string"},
-                 "max_results": {"type": "integer", "default": 5}},
-                 "required": ["query"]}),
-        Tool(name="search_github",
-             description="Search GitHub for dataset repositories (corpora/benchmarks "
-                         "hosted on GitHub; dataset-scoped, NOT general code/tool repos).",
-             inputSchema={"type": "object", "properties": {
-                 "query": {"type": "string"},
-                 "max_results": {"type": "integer", "default": 10}},
-                 "required": ["query"]}),
-        Tool(name="rank_candidates",
-             description="Score and rank dataset candidates by query overlap.",
-             inputSchema={"type": "object", "properties": {
-                 "candidates": {"type": "array", "items": {"type": "object"}},
-                 "query": {"type": "string"},
-                 "criteria": {"type": "array", "items": {"type": "string"}}},
-                 "required": ["candidates", "query"]}),
+        Tool(
+            name="search_hf_hub",
+            description="Search Hugging Face Hub for datasets.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "task": {"type": "string"},
+                    "modality": {"type": "string"},
+                    "max_results": {"type": "integer", "default": 10},
+                },
+                "required": ["query"],
+            },
+        ),
+        Tool(
+            name="search_papers_with_code",
+            description="Search PapersWithCode for datasets.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "max_results": {"type": "integer", "default": 5},
+                },
+                "required": ["query"],
+            },
+        ),
+        Tool(
+            name="search_github",
+            description="Search GitHub for dataset repositories (corpora/benchmarks "
+            "hosted on GitHub; dataset-scoped, NOT general code/tool repos).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "max_results": {"type": "integer", "default": 10},
+                },
+                "required": ["query"],
+            },
+        ),
+        Tool(
+            name="rank_candidates",
+            description="Score and rank dataset candidates by query overlap.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "candidates": {"type": "array", "items": {"type": "object"}},
+                    "query": {"type": "string"},
+                    "criteria": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["candidates", "query"],
+            },
+        ),
     ]
 
 
