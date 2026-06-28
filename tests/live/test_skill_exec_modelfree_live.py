@@ -82,6 +82,37 @@ async def test_design_token_transform_transform():
 
 
 @pytest.mark.asyncio
+async def test_a11y_audit_list_rules():
+    # list_rules is the deterministic, zero-arg path (audit_file/audit_url need
+    # headless Chromium). Asserts the axe-core ruleset is enumerable.
+    r = await _run("a11y-audit", "list_rules", {})
+    assert not result_is_error(r)
+    assert result_text(r).strip(), "a11y-audit list_rules returned empty"
+
+
+@pytest.mark.asyncio
+async def test_react_doctor_list_rules():
+    # Zero-arg deterministic ruleset enumeration (audit needs a React project).
+    r = await _run("react-doctor", "list_rules", {})
+    assert not result_is_error(r)
+    assert result_text(r).strip(), "react-doctor list_rules returned empty"
+
+
+@pytest.mark.asyncio
+async def test_web_search_search():
+    # web-search hits the local SearXNG (SEARXNG_URL). Skip if it is not reachable.
+    import os, urllib.request
+    base = os.getenv("SEARXNG_URL", "http://localhost:8080")
+    try:
+        urllib.request.urlopen(base, timeout=3)
+    except Exception:
+        require_service(lambda: False, f"SearXNG not reachable at {base}")
+    r = await _run("web-search", "search", {"query": "python list comprehension", "limit": 3})
+    assert not result_is_error(r)
+    assert result_text(r).strip(), "web-search returned empty"
+
+
+@pytest.mark.asyncio
 async def test_ast_ts_refactor_rename_symbol(tmp_path):
     # Type-aware TS rename via the TS checker — deterministic, no model. Returns a
     # PENDING unified diff (not written to disk).
