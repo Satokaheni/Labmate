@@ -30,6 +30,9 @@ def mock_vision(monkeypatch, captured_calls):
     import sys
     import os
 
+    # Set VISION_BASE so the critic can be initialized
+    monkeypatch.setenv("VISION_BASE", "http://localhost:8001/v1")
+
     # Ensure the skill directory is on the path so critic can be imported
     skill_dir = os.path.join(
         os.path.dirname(__file__), "..", "..", "..", "..",

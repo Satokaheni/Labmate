@@ -83,8 +83,8 @@ def test_overall_verdict_is_valid(mock_vision, sample_png):
 
 
 @pytest.mark.mocked
-def test_uses_gemma_base(mock_vision, captured_calls, sample_png, monkeypatch):
-    monkeypatch.setenv("GEMMA_BASE", "http://host.docker.internal:8000/v1")
+def test_uses_vision_base(mock_vision, captured_calls, sample_png, monkeypatch):
+    monkeypatch.setenv("VISION_BASE", "http://host.docker.internal:8001/v1")
     import importlib
     import critic as critic_mod
     importlib.reload(critic_mod)
@@ -97,7 +97,7 @@ def test_uses_gemma_base(mock_vision, captured_calls, sample_png, monkeypatch):
          '"overall":"pass","summary":"ok"}'}}]},
     )
     critic_mod.UICritic().critique(sample_png)
-    assert captured_calls[-1]["api_base"] == "http://host.docker.internal:8000/v1"
+    assert captured_calls[-1]["api_base"] == "http://host.docker.internal:8001/v1"
 
 
 @pytest.mark.mocked
@@ -109,7 +109,10 @@ def test_no_stdout_writes(mock_vision, sample_png, capsys):
 
 @pytest.mark.mocked
 def test_parses_fenced_json(monkeypatch, sample_png):
+    monkeypatch.setenv("VISION_BASE", "http://localhost:8001/v1")
+    import importlib
     import critic as critic_mod
+    importlib.reload(critic_mod)
 
     fenced = '```json\n{"items": [], "overall": "pass", "summary": "ok"}\n```'
     monkeypatch.setattr(
