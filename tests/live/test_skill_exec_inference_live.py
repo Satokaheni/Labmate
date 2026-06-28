@@ -72,6 +72,18 @@ async def test_test_gen_generate(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_commit_pr_summarize_diff():
+    diff = (
+        "diff --git a/m.py b/m.py\n--- a/m.py\n+++ b/m.py\n@@\n"
+        "-def avg(x):\n-    return sum(x)/len(x)\n"
+        "+def avg(x):\n+    if not x:\n+        return 0\n+    return sum(x)/len(x)\n"
+    )
+    r = await _run("commit-pr", "summarize_diff", {"diff_text": diff})
+    assert not result_is_error(r)
+    assert result_text(r).strip(), "commit-pr returned empty"
+
+
+@pytest.mark.asyncio
 async def test_citation_check_verify_claims():
     r = await _run("citation-check", "verify_claims", {
         "text": "Transformers use self-attention to model sequences.",

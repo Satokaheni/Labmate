@@ -60,6 +60,22 @@ async def test_repo_graph_build(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_component_doc_gen_generate(tmp_path):
+    # Prop extraction + doc rendering is deterministic; the LLM description is
+    # optional ("" unless GEMMA_BASE set), so this runs model-free.
+    comp = tmp_path / "Button.tsx"
+    comp.write_text(
+        "interface ButtonProps { label: string; disabled?: boolean; }\n"
+        "export const Button = ({ label, disabled }: ButtonProps) => "
+        "<button disabled={disabled}>{label}</button>;\n"
+    )
+    r = await _run("component-doc-gen", "generate", {"component_path": str(comp)})
+    assert not result_is_error(r)
+    out = result_text(r)
+    assert "label" in out, f"props not documented: {out[:200]}"
+
+
+@pytest.mark.asyncio
 async def test_results_analysis_profile(tmp_path):
     # Deterministic pandas profiling of a results table (no model).
     csv = tmp_path / "runs.csv"
