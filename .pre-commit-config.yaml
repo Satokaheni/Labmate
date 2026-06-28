@@ -30,12 +30,15 @@ repos:
   # ---- local hooks ----
   - repo: local
     hooks:
-      # NOTE: a frontend `tsc` pre-commit hook is intentionally omitted for now —
-      # the frontend is WIP (missing modules / in-progress type errors), so a
-      # whole-project type-check would block every frontend commit. The CI
-      # frontend-typecheck job runs it informationally instead; add it back here
-      # (entry: bash -c 'cd services/frontend && npx --no-install tsc --noEmit -p tsconfig.json')
-      # once the frontend is type-clean.
+      # React/TS "lint equivalent": type-check the frontend (no emit) when a
+      # frontend .ts/.tsx file is staged. The frontend is type-clean (tsc 0
+      # errors), so this gates new type errors locally.
+      - id: frontend-typecheck
+        name: frontend tsc --noEmit
+        entry: bash -c 'cd services/frontend && npx --no-install tsc --noEmit -p tsconfig.json'
+        language: system
+        files: ^services/frontend/.*\.(ts|tsx)$
+        pass_filenames: false
 
       # Block direct pushes to main (client-side stand-in for branch protection).
       - id: no-push-to-main

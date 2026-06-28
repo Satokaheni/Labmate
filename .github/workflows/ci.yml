@@ -38,13 +38,10 @@ jobs:
           ruff check --output-format=github "${files[@]}"
           ruff format --check "${files[@]}"
 
-  # Frontend type-check (React/TS "lint equivalent"). INFORMATIONAL for now:
-  # the frontend is WIP (missing modules like @/types/events, in-progress type
-  # errors), so this surfaces type errors as annotations without failing CI.
-  # Flip continue-on-error to false once the frontend is type-clean + committed.
+  # Frontend type-check (React/TS "lint equivalent"). BLOCKING: the frontend is
+  # type-clean (tsc 0 errors), so a new type error fails CI.
   frontend-typecheck:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
