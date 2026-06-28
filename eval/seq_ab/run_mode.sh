@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Restart the orchestrator under a given SEQUENCING_MODE, then run the A/B harness.
-# Usage: run_mode.sh <skill_first|react|replan>
+# Usage: run_mode.sh <skill_first|react>
 # Multi-trial: set TRIALS in the environment to run each case N times and score on
 #   pass-rate (default 3; TRIALS=1 == single-shot). Example: TRIALS=5 run_mode.sh react
 # RunPod-only: this script hardcodes /workspace/Labmate and the fixtures live under
