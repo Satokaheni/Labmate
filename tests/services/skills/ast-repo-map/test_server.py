@@ -5,6 +5,7 @@ Regression guard for the discovery-call bug: get_repo_map used to mark
 by schema validation before it ever reached the mapper — even though the mapper
 treats chat_files=[] as a normal whole-repo map.
 """
+
 import pytest
 from mcp.types import TextContent
 

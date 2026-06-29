@@ -3,6 +3,7 @@
 CRITICAL: stdout is the JSON-RPC 2.0 channel. NEVER print() anywhere.
 All logging is configured to sys.stderr below.
 """
+
 from __future__ import annotations
 
 import asyncio
