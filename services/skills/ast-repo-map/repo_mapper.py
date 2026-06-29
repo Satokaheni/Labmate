@@ -74,9 +74,22 @@ TAGS_QUERIES: dict[str, str] = {
   function: (identifier) @name.reference.call)
 """,
 }
-# tsx/javascript reuse the typescript query.
+# tsx reuses the typescript query (the TSX grammar is TS-based, so it has the
+# TS-only node types like type_identifier). JavaScript does NOT: its grammar has
+# no `type_identifier` node, so reusing the TS query raises
+# `QueryError: Invalid node type: type_identifier` and aborts the whole map.
+# Give JS its own query — class names are (identifier), not (type_identifier).
 TAGS_QUERIES["tsx"] = TAGS_QUERIES["typescript"]
-TAGS_QUERIES["javascript"] = TAGS_QUERIES["typescript"]
+TAGS_QUERIES["javascript"] = """
+(function_declaration
+  name: (identifier) @name.definition.function) @definition.function
+(class_declaration
+  name: (identifier) @name.definition.class) @definition.class
+(method_definition
+  name: (property_identifier) @name.definition.method) @definition.method
+(call_expression
+  function: (identifier) @name.reference.call)
+"""
 TAGS_QUERIES["go"] = """
 (function_declaration
   name: (identifier) @name.definition.function) @definition.function
@@ -121,16 +134,24 @@ class RepoMapper:
             log.warning("cannot read %s: %s", path, exc)
             return []
 
-        language = get_language(lang_name)
-        # Use Python tree_sitter.Parser (not the Rust-native get_parser)
-        # so we get a Python Tree/Node with the Query/QueryCursor API.
-        parser = tree_sitter.Parser(language)
-        # tree-sitter is error-tolerant: broken code yields a partial tree
-        # with ERROR nodes and does NOT raise.
-        tree = parser.parse(source)
-        self._parse_count += 1
+        try:
+            language = get_language(lang_name)
+            # Use Python tree_sitter.Parser (not the Rust-native get_parser)
+            # so we get a Python Tree/Node with the Query/QueryCursor API.
+            parser = tree_sitter.Parser(language)
+            # tree-sitter is error-tolerant: broken code yields a partial tree
+            # with ERROR nodes and does NOT raise.
+            tree = parser.parse(source)
+            self._parse_count += 1
+            tags = self._extract_tags(language, tree, source, path)
+        except Exception as exc:
+            # A single unparseable file (e.g. a grammar/query mismatch) must not
+            # abort the entire repo map. Skip it, log, and cache empty so we do
+            # not retry it on every call.
+            log.warning("failed to parse %s (%s): %s", path, lang_name, exc)
+            self._cache[path] = {"mtime": mtime, "tags": []}
+            return []
 
-        tags = self._extract_tags(language, tree, source, path)
         self._cache[path] = {"mtime": mtime, "tags": tags}
         return tags
 
@@ -253,19 +274,40 @@ class RepoMapper:
         return str(Path(path))  # collapses "./x" -> "x"
 
     _tokenizer = None  # class-level cache shared across instances
+    _tokenizer_failed = False  # set once if the tokenizer can't be loaded
 
     @property
     def tokenizer(self):
-        if RepoMapper._tokenizer is None:
+        # Use the tokenizer of the SERVED model (gemma-4-31B-it) so token counts
+        # match the model's real budget. Gemma uses SentencePiece — NEVER tiktoken.
+        # Only the tokenizer files are fetched (~MBs, CPU-only); the model WEIGHTS
+        # are not downloaded, so this costs ~0 VRAM. Override via REPO_MAP_TOKENIZER.
+        if RepoMapper._tokenizer is None and not RepoMapper._tokenizer_failed:
             from transformers import AutoTokenizer
-            # Gemma uses SentencePiece. NEVER use tiktoken here.
-            RepoMapper._tokenizer = AutoTokenizer.from_pretrained(
-                "google/gemma-4-9b-it"
-            )
+            # Try the local copy first (REPO_MAP_TOKENIZER, downloaded by
+            # install.sh — offline, deterministic), then the HF id (network),
+            # then give up and fall back to a char estimate in _count_tokens.
+            candidates = [
+                c for c in (os.getenv("REPO_MAP_TOKENIZER"), "google/gemma-4-31B-it") if c
+            ]
+            for src in candidates:
+                try:
+                    RepoMapper._tokenizer = AutoTokenizer.from_pretrained(src)
+                    break
+                except Exception as exc:
+                    log.warning("tokenizer load failed for %s: %s", src, exc)
+            if RepoMapper._tokenizer is None:
+                # An unavailable tokenizer must not crash the whole repo map.
+                log.warning("no tokenizer available; using char estimate")
+                RepoMapper._tokenizer_failed = True
         return RepoMapper._tokenizer
 
     def _count_tokens(self, text: str) -> int:
-        return len(self.tokenizer.encode(text))
+        tok = self.tokenizer
+        if tok is None:
+            # ~4 chars/token heuristic — approximate budget, never crashes.
+            return max(1, len(text) // 4)
+        return len(tok.encode(text))
 
     def get_repo_map(self, chat_files: list[str], max_tokens: int) -> str:
         all_tags: list[Tag] = []
