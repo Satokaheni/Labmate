@@ -5,7 +5,7 @@ import json
 import os
 import time as _time
 import uuid
-from typing import Awaitable, Callable
+from datetime import UTC
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -23,12 +23,18 @@ from services.ws_gateway.redis_bridge import (
     write_tool_result,
 )
 from services.ws_gateway.sessions import InMemorySessionStore, build_sessions_router
-from services.ws_gateway.user_store import MongoUserStore
+from services.ws_gateway.user_store import (
+    InMemoryUserStore,
+    MongoUserStore,
+    SqliteUserStore,
+    UserStore,
+)
 
 
 def _now_iso() -> str:
-    from datetime import datetime, timezone
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    from datetime import datetime
+
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 async def _relay_task(
@@ -65,18 +71,20 @@ async def _relay_task(
                 (ln.strip() for ln in full_text.splitlines() if ln.strip()),
                 full_text[:120],
             )
-            await ws.send_json({
-                "type": "reasoning.done",
-                "turnId": turn_id,
-                "reasoning": {
-                    "summary": first_line[:120],
-                    "text": full_text,
-                    "node": reasoning_node,
-                    "tokens": len(full_text) // 4,
-                    "budget": 0,
-                    "durationMs": duration_ms,
-                },
-            })
+            await ws.send_json(
+                {
+                    "type": "reasoning.done",
+                    "turnId": turn_id,
+                    "reasoning": {
+                        "summary": first_line[:120],
+                        "text": full_text,
+                        "node": reasoning_node,
+                        "tokens": len(full_text) // 4,
+                        "budget": 0,
+                        "durationMs": duration_ms,
+                    },
+                }
+            )
             reasoning_chunks = []
 
         # Emit tool.frame when debug mode is active
@@ -88,17 +96,19 @@ async def _relay_task(
             else:
                 frame_payload = {"result": raw.get("result"), "status": raw.get("status", "done")}
                 frame_dir = "in"
-            await ws.send_json({
-                "type": "tool.frame",
-                "turnId": turn_id,
-                "toolId": tool_id,
-                "frame": {
-                    "dir": frame_dir,
-                    "method": "tools/call",
-                    "payload": frame_payload,
-                    "ts": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
-                },
-            })
+            await ws.send_json(
+                {
+                    "type": "tool.frame",
+                    "turnId": turn_id,
+                    "toolId": tool_id,
+                    "frame": {
+                        "dir": frame_dir,
+                        "method": "tools/call",
+                        "payload": frame_payload,
+                        "ts": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+                    },
+                }
+            )
 
         framed = translate_event(raw, turn_id=turn_id)
         if framed is not None:
@@ -167,7 +177,16 @@ async def _ws_loop(
         await ws.close()
         return
 
-    await ws.send_json({"type": "auth.ok", "user": {"id": claims["sub"], "email": claims["email"], "role": claims.get("role", "user")}})
+    await ws.send_json(
+        {
+            "type": "auth.ok",
+            "user": {
+                "id": claims["sub"],
+                "email": claims["email"],
+                "role": claims.get("role", "user"),
+            },
+        }
+    )
 
     # ── boot sequence ──────────────────────────────────────────────────────
     async def emit(ev: dict) -> None:
@@ -209,7 +228,9 @@ async def _ws_loop(
             # Write Redis cancel flag so the orchestrator can detect cancellation
             if active_task_id is not None:
                 await write_cancel(redis, active_task_id)
-            await ws.send_json({"type": "turn.done", "turnId": turn_id_to_cancel, "status": "error"})
+            await ws.send_json(
+                {"type": "turn.done", "turnId": turn_id_to_cancel, "status": "error"}
+            )
             relay = None
             active_task_id = None
         elif mtype == "steer":
@@ -258,13 +279,15 @@ async def _ws_loop(
                 await redis.xadd(
                     "labmate:goals",
                     {
-                        "payload": json.dumps({
-                            "task_id":     task_id,
-                            "kind":        "compact",
-                            "session_id":  active_session_id,
-                            "user_id":     claims["sub"],
-                            "workspace_id": "",
-                        }),
+                        "payload": json.dumps(
+                            {
+                                "task_id": task_id,
+                                "kind": "compact",
+                                "session_id": active_session_id,
+                                "user_id": claims["sub"],
+                                "workspace_id": "",
+                            }
+                        ),
                     },
                 )
 
@@ -277,7 +300,7 @@ async def _ws_loop(
 
                 try:
                     result_dict = await asyncio.wait_for(_await_result(), timeout=60.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     result_dict = None
             finally:
                 await pubsub.aclose()
@@ -288,6 +311,17 @@ async def _ws_loop(
                 await ws.send_json({"type": "compact.done", "ok": False, "error": "timeout"})
         else:
             continue
+
+
+def _build_user_store(config: Config) -> UserStore:
+    kind = config.user_store
+    if kind == "memory":
+        return InMemoryUserStore()
+    if kind == "mongo":
+        return MongoUserStore(config.mongo_url)
+    if kind == "sqlite":
+        return SqliteUserStore(os.path.join(config.data_dir, "users.db"))
+    raise ValueError(f"unknown USER_STORE: {kind!r}")
 
 
 def build_app(
@@ -308,7 +342,8 @@ def build_app(
         allow_headers=["*"],
     )
 
-    user_store = user_store or MongoUserStore(config.mongo_url)
+    if user_store is None:
+        user_store = _build_user_store(config)
     auth = AuthService(config, user_store)
     store = session_store or InMemorySessionStore()
     r = redis or aioredis.from_url(config.redis_url, decode_responses=True)
