@@ -3,12 +3,12 @@
 CRITICAL: this module is loaded inside an MCP stdio child process.
 NEVER print() or write to stdout. All logging goes to sys.stderr.
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import os
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,9 +34,9 @@ EXT_TO_LANG: dict[str, str] = {
 @dataclass
 class Tag:
     name: str
-    kind: str          # 'def' | 'ref'
-    file: str          # repo-relative path
-    line: int          # 1-based line number
+    kind: str  # 'def' | 'ref'
+    file: str  # repo-relative path
+    line: int  # 1-based line number
     signature: str | None = None
     parent: str | None = None
 
@@ -155,9 +155,7 @@ class RepoMapper:
         self._cache[path] = {"mtime": mtime, "tags": tags}
         return tags
 
-    def _extract_tags(
-        self, language, tree, source: bytes, path: str
-    ) -> list[Tag]:
+    def _extract_tags(self, language, tree, source: bytes, path: str) -> list[Tag]:
         lang_name = self._lang_for(path)
         # tree_sitter 0.25+: Query constructor takes (Language, str)
         # QueryCursor.captures(node) returns dict[str, list[Node]]
@@ -175,9 +173,7 @@ class RepoMapper:
             else:
                 continue  # skip @definition.* wrapper captures
             for node in nodes:
-                name = source[node.start_byte:node.end_byte].decode(
-                    "utf-8", errors="replace"
-                )
+                name = source[node.start_byte : node.end_byte].decode("utf-8", errors="replace")
                 line = node.start_point[0] + 1  # 0-based row -> 1-based line
                 signature = self._signature_line(source, node) if kind == "def" else None
                 tags.append(
@@ -201,8 +197,17 @@ class RepoMapper:
             return lines[row].strip()
         return ""
 
-    _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv",
-                  "dist", "build", ".mypy_cache", ".pytest_cache"}
+    _SKIP_DIRS = {
+        ".git",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "dist",
+        "build",
+        ".mypy_cache",
+        ".pytest_cache",
+    }
 
     def _all_source_files(self) -> list[str]:
         files: list[str] = []
@@ -246,8 +251,7 @@ class RepoMapper:
             return {}
         chat_set = {self._normalize(f) for f in chat_files}
         personalization = {
-            node: (self.CHAT_FILE_BOOST if node in chat_set else 1.0)
-            for node in graph.nodes()
+            node: (self.CHAT_FILE_BOOST if node in chat_set else 1.0) for node in graph.nodes()
         }
         try:
             # Use the pure-Python implementation to avoid scipy/numpy version
@@ -256,9 +260,8 @@ class RepoMapper:
             from networkx.algorithms.link_analysis.pagerank_alg import (
                 _pagerank_python,
             )
-            return _pagerank_python(
-                graph, personalization=personalization, weight="weight"
-            )
+
+            return _pagerank_python(graph, personalization=personalization, weight="weight")
         except nx.PowerIterationFailedConvergence:
             log.warning("pagerank failed to converge; using uniform ranks")
             n = graph.number_of_nodes()
@@ -284,6 +287,7 @@ class RepoMapper:
         # are not downloaded, so this costs ~0 VRAM. Override via REPO_MAP_TOKENIZER.
         if RepoMapper._tokenizer is None and not RepoMapper._tokenizer_failed:
             from transformers import AutoTokenizer
+
             # Try the local copy first (REPO_MAP_TOKENIZER, downloaded by
             # install.sh — offline, deterministic), then the HF id (network),
             # then give up and fall back to a char estimate in _count_tokens.

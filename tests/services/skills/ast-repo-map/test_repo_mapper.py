@@ -45,10 +45,9 @@ def test_pagerank_boosts_chat_files(repo_mapper, sample_repo):
 def test_output_within_token_budget(repo_mapper, sample_repo):
     mapper = repo_mapper.RepoMapper(str(sample_repo))
     out = mapper.get_repo_map(chat_files=["service.py"], max_tokens=10)
-    data_lines = [l for l in out.splitlines() if not l.startswith("// ...")]
-    total = sum(len(l.split()) + 1 for l in data_lines)  # +1 for newline word? see note
+    data_lines = [line for line in out.splitlines() if not line.startswith("// ...")]
     # budget is a HARD cap: emitted data tokens never exceed max_tokens
-    emitted_cost = sum(mapper._count_tokens(l + "\n") for l in data_lines)
+    emitted_cost = sum(mapper._count_tokens(line + "\n") for line in data_lines)
     assert emitted_cost <= 10
 
 
@@ -56,8 +55,7 @@ def test_output_within_token_budget(repo_mapper, sample_repo):
 def test_truncation_marker_appears(repo_mapper, sample_repo):
     mapper = repo_mapper.RepoMapper(str(sample_repo))
     out = mapper.get_repo_map(chat_files=["service.py"], max_tokens=1)
-    assert any(l.startswith("// ...") and "symbols omitted" in l
-               for l in out.splitlines())
+    assert any(line.startswith("// ...") and "symbols omitted" in line for line in out.splitlines())
 
 
 @pytest.mark.mocked
@@ -77,9 +75,7 @@ def test_mtime_cache_parses_once(repo_mapper, sample_repo):
 
 @pytest.mark.mocked
 def test_broken_code_is_error_tolerant(repo_mapper, tmp_path):
-    (tmp_path / "broken.py").write_text(
-        "def good():\n    return 1\n\ndef bad(  :\n    oops\n"
-    )
+    (tmp_path / "broken.py").write_text("def good():\n    return 1\n\ndef bad(  :\n    oops\n")
     mapper = repo_mapper.RepoMapper(str(tmp_path))
     tags = mapper._parse_file("broken.py")  # must not raise
     names = {t.name for t in tags if t.kind == "def"}
@@ -119,9 +115,12 @@ def test_unparseable_file_is_isolated(repo_mapper, sample_repo, monkeypatch):
 
     # service.py blows up, but util.py still contributes — no exception escapes.
     out = mapper.get_repo_map(chat_files=[], max_tokens=1000)
-    names = {json.loads(l)["name"]
-             for l in out.splitlines() if l and not l.startswith("// ...")}
-    assert "helper" in names               # from util.py
+    names = {
+        json.loads(line)["name"]
+        for line in out.splitlines()
+        if line and not line.startswith("// ...")
+    }
+    assert "helper" in names  # from util.py
     assert mapper._parse_file("service.py") == []  # isolated -> empty (cached)
 
 
@@ -134,6 +133,6 @@ def test_count_tokens_char_fallback_when_no_tokenizer(repo_mapper, sample_repo):
     repo_mapper.RepoMapper._tokenizer_failed = True
     try:
         assert mapper._count_tokens("abcdefgh") == 2  # 8 // 4
-        assert mapper._count_tokens("") == 1          # max(1, 0)
+        assert mapper._count_tokens("") == 1  # max(1, 0)
     finally:
         repo_mapper.RepoMapper._tokenizer_failed = False

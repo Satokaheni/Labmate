@@ -3,10 +3,7 @@ from pathlib import Path
 
 import pytest
 
-SERVER_DIR = (
-    Path(__file__).resolve().parents[4]
-    / "services" / "skills" / "ast-repo-map"
-)
+SERVER_DIR = Path(__file__).resolve().parents[4] / "services" / "skills" / "ast-repo-map"
 sys.path.insert(0, str(SERVER_DIR))
 
 
@@ -24,6 +21,7 @@ class _FakeTokenizer:
 @pytest.fixture
 def repo_mapper(tmp_path):
     import repo_mapper as rm
+
     rm.RepoMapper._tokenizer = _FakeTokenizer()  # bypass transformers load
     return rm
 
