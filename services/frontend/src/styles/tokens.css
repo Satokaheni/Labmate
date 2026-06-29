@@ -101,6 +101,18 @@ body {
   100% { transform: translateX(500%); }
 }
 
+/* Status-dot pulse (matches the design comp's `pulse` animation). */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* Thin custom scrollbar for scrollable chat panes (design comp `.lm-scroll`). */
+.lm-scroll::-webkit-scrollbar { width: 9px; height: 9px; }
+.lm-scroll::-webkit-scrollbar-thumb { background: #252b34; border-radius: 5px; }
+.lm-scroll::-webkit-scrollbar-thumb:hover { background: #323a45; }
+.lm-scroll::-webkit-scrollbar-track { background: transparent; }
+
 /* Spin speed utility classes (applied to a <g>) */
 .orbit-spin-fast {
   animation: orbitspin 1.4s linear infinite;

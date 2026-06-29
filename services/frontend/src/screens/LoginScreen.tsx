@@ -16,6 +16,8 @@ export interface LoginScreenProps {
 function errorMessage(error: string): string {
   if (error === 'invalid_credentials') return 'Invalid email or password.';
   if (error === 'empty_fields') return 'Email and password are required.';
+  if (error === 'network_error') return 'Could not reach the server. Check your connection.';
+  if (error === 'locked') return 'Too many failed attempts. Try again in 5 minutes.';
   return error;
 }
 
