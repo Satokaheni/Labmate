@@ -44,14 +44,20 @@ async def list_tools() -> list[Tool]:
                     "chat_files": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Files the agent is actively editing.",
+                        "description": (
+                            "Files the agent is actively editing (optional). "
+                            "Omit for a discovery / orientation map of the whole repo."
+                        ),
                     },
                     "max_tokens": {
                         "type": "integer",
-                        "description": "Hard cap on output tokens.",
+                        "description": "Hard cap on output tokens (optional; defaults to 2000).",
                     },
                 },
-                "required": ["chat_files", "max_tokens"],
+                # Both optional: ast-repo-map's primary use is discovery, where the
+                # agent has no chat_files yet. The mapper treats chat_files=[] as a
+                # normal whole-repo PageRank map, so requiring it broke that use.
+                "required": [],
             },
         ),
         Tool(
@@ -81,9 +87,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     try:
         if name == "get_repo_map":
+            # Both optional (see inputSchema): default chat_files to [] for the
+            # discovery case and max_tokens to a sane budget.
             result = mapper.get_repo_map(
-                chat_files=arguments["chat_files"],
-                max_tokens=arguments["max_tokens"],
+                chat_files=arguments.get("chat_files", []),
+                max_tokens=arguments.get("max_tokens", 2000),
             )
         elif name == "get_symbols":
             result = mapper.get_symbols(file=arguments["file"])
