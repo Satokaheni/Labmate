@@ -1,10 +1,11 @@
 from __future__ import annotations
-import pytest
-import pytest_asyncio
-from datetime import datetime, timezone
+
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
 from services.orchestrator.workspace_manager import WorkspaceManager
-from services.orchestrator.models import User, Workspace
 
 pytestmark = [pytest.mark.mocked, pytest.mark.asyncio]
 
@@ -12,10 +13,12 @@ pytestmark = [pytest.mark.mocked, pytest.mark.asyncio]
 @pytest.fixture
 def mock_db():
     collections = {}
+
     def _get(key):
         if key not in collections:
             collections[key] = MagicMock()
         return collections[key]
+
     db = MagicMock()
     db.__getitem__ = MagicMock(side_effect=_get)
     return db
@@ -55,13 +58,23 @@ async def test_get_workspace_not_found(mgr, mock_db):
 
 
 async def test_list_workspaces(mgr, mock_db):
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cursor = MagicMock()
-    cursor.to_list = AsyncMock(return_value=[
-        {"workspace_id": "ws-1", "name": "proj-a", "user_id": "u-1",
-         "paths": [], "sources": [], "instructions": None,
-         "description": None, "created_at": now, "updated_at": now},
-    ])
+    cursor.to_list = AsyncMock(
+        return_value=[
+            {
+                "workspace_id": "ws-1",
+                "name": "proj-a",
+                "user_id": "u-1",
+                "paths": [],
+                "sources": [],
+                "instructions": None,
+                "description": None,
+                "created_at": now,
+                "updated_at": now,
+            },
+        ]
+    )
     cursor.limit = MagicMock(return_value=cursor)
     mock_db["workspaces"].find = MagicMock(return_value=cursor)
     result = await mgr.list_workspaces("u-1")
@@ -97,3 +110,51 @@ async def test_upsert_workspace_calls_update_one(mgr, mock_db):
     assert call_args[0][1]["$setOnInsert"]["user_id"] == "user-456"
     assert call_args[0][1]["$setOnInsert"]["workspace_id"] == "ws-123"
     mock_db["workspaces"].update_one.assert_called_once()
+
+
+async def test_load_agent_instructions_empty_id(mgr):
+    assert await mgr.load_agent_instructions("") == ""
+
+
+async def test_load_agent_instructions_prefers_agents_md(mgr, mock_db, tmp_path):
+    (tmp_path / "AGENTS.md").write_text("use ruff", encoding="utf-8")
+    (tmp_path / "AGENT.md").write_text("legacy", encoding="utf-8")
+    mock_db["workspaces"].find_one = AsyncMock(return_value={"paths": [str(tmp_path)]})
+
+    out = await mgr.load_agent_instructions("ws-1")
+    assert "use ruff" in out
+    assert "legacy" not in out  # AGENTS.md wins over AGENT.md
+
+
+async def test_load_agent_instructions_concatenates_all_roots(mgr, mock_db, tmp_path):
+    a = tmp_path / "repo-a"
+    b = tmp_path / "repo-b"
+    a.mkdir()
+    b.mkdir()
+    (a / "AGENTS.md").write_text("rules A", encoding="utf-8")
+    (b / "AGENT.md").write_text("rules B", encoding="utf-8")  # legacy still picked up
+    mock_db["workspaces"].find_one = AsyncMock(return_value={"paths": [str(a), str(b)]})
+
+    out = await mgr.load_agent_instructions("ws-1")
+    assert "rules A" in out and "rules B" in out
+    assert "repo-a/AGENTS.md" in out and "repo-b/AGENT.md" in out
+
+
+async def test_load_agent_instructions_falls_back_to_db_field(mgr, mock_db, tmp_path):
+    mock_db["workspaces"].find_one = AsyncMock(
+        return_value={"paths": [str(tmp_path)], "instructions": "db rules"}
+    )
+    assert await mgr.load_agent_instructions("ws-1") == "db rules"
+
+
+async def test_load_agent_instructions_caps_size(mgr, mock_db, tmp_path):
+    from services.orchestrator.workspace_manager import AGENT_INSTRUCTIONS_MAX_CHARS
+
+    (tmp_path / "AGENTS.md").write_text(
+        "x" * (AGENT_INSTRUCTIONS_MAX_CHARS + 5000), encoding="utf-8"
+    )
+    mock_db["workspaces"].find_one = AsyncMock(return_value={"paths": [str(tmp_path)]})
+
+    out = await mgr.load_agent_instructions("ws-1")
+    assert len(out) <= AGENT_INSTRUCTIONS_MAX_CHARS + 32  # cap + truncation marker
+    assert out.endswith("[… truncated]")
