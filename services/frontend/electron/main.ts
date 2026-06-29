@@ -1,16 +1,15 @@
-import { app, BrowserWindow, ipcMain, Menu, Tray, nativeImage, safeStorage } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, Tray, nativeImage, safeStorage } from 'electron';
 import path from 'node:path';
-import os from 'node:os';
 import fs from 'node:fs';
 import { deflateSync } from 'node:zlib';
 import { executeTool, LOCAL_TOOL_NAMES, type LocalToolName } from './tool-executor';
-
-const WORKSPACE = process.env.LABMATE_WORKSPACE
-  ? path.resolve(process.env.LABMATE_WORKSPACE)
-  : os.homedir();
+import { WorkspaceStore } from './workspace';
+import { searchWorkspace } from './fs-search';
 
 const DEV_URL = 'http://localhost:8080';
 const IS_DEV = process.env.ELECTRON_DEV === '1';
+/** Default UI scale (1.0 = 100%). Lower renders the whole app smaller. */
+const UI_ZOOM = 0.75;
 
 // ── Auth token (encrypted via OS keychain; session-only when remember=false) ──
 
@@ -32,6 +31,38 @@ function loadConfig(): AppConfig {
 
 function saveConfig(wsUrl: string): void {
   fs.writeFileSync(configFile(), JSON.stringify({ wsUrl }), 'utf8');
+}
+
+// ── Per-chat workspace store ──────────────────────────────────────────────────
+
+let _workspaceStore: WorkspaceStore | null = null;
+
+function workspaceStore(): WorkspaceStore {
+  if (_workspaceStore === null) {
+    const seed = process.env.LABMATE_WORKSPACE ? path.resolve(process.env.LABMATE_WORKSPACE) : null;
+    _workspaceStore = new WorkspaceStore(path.join(app.getPath('userData'), 'workspaces.json'), seed);
+  }
+  return _workspaceStore;
+}
+
+/** Open the native folder picker (single); returns the chosen absolute path or null. */
+async function pickFolder(): Promise<string | null> {
+  const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null;
+  const opts = { properties: ['openDirectory', 'createDirectory'] as Array<'openDirectory' | 'createDirectory'> };
+  const res = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
+  return res.canceled || !res.filePaths[0] ? null : res.filePaths[0];
+}
+
+/** Open the native folder picker allowing multiple selections; returns chosen paths. */
+async function pickFolders(): Promise<string[]> {
+  const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? null;
+  const opts = {
+    properties: ['openDirectory', 'createDirectory', 'multiSelections'] as Array<
+      'openDirectory' | 'createDirectory' | 'multiSelections'
+    >,
+  };
+  const res = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
+  return res.canceled ? [] : res.filePaths;
 }
 
 // ── Window state persistence ──────────────────────────────────────────────────
@@ -121,6 +152,18 @@ function buildMenu(): Menu {
       ],
     },
     {
+      label: 'Workspace',
+      submenu: [
+        {
+          label: 'Set Default Workspace…',
+          click: async () => {
+            const chosen = await pickFolder();
+            if (chosen) workspaceStore().setDefault(chosen);
+          },
+        },
+      ],
+    },
+    {
       label: 'View',
       submenu: [
         { role: 'reload' as const },
@@ -177,6 +220,13 @@ function createWindow(): BrowserWindow {
     }
   });
 
+  // Default UI scale: render the whole app slightly smaller than 1:1. Applied
+  // on every load so it survives dev HMR full-reloads and navigations. Tune
+  // UI_ZOOM (1.0 = 100%); lower = smaller.
+  win.webContents.on('did-finish-load', () => {
+    win.webContents.setZoomFactor(UI_ZOOM);
+  });
+
   if (process.env.ELECTRON_DEV === '1') {
     void win.loadURL(DEV_URL);
   } else {
@@ -230,16 +280,68 @@ ipcMain.handle('labmate:clear-token', () => {
 
 ipcMain.handle('labmate:set-config', (_evt, wsUrl: string) => { saveConfig(wsUrl); });
 
+// ── Workspace (multi-root per chat) ───────────────────────────────────────────
+
+ipcMain.handle(
+  'labmate:get-workspace-roots',
+  (_evt, payload: { sessionId?: string | null } | undefined) =>
+    workspaceStore().roots(payload?.sessionId ?? null),
+);
+
+ipcMain.handle('labmate:has-default-workspace', () => workspaceStore().hasDefault());
+ipcMain.handle('labmate:get-default-workspace', () => workspaceStore().getDefault());
+
+// Pick a folder and set it as the global default ("current directory"). Returns the path or null.
+ipcMain.handle('labmate:set-default-workspace', async () => {
+  const chosen = await pickFolder();
+  if (chosen === null) return { path: null };
+  workspaceStore().setDefault(chosen);
+  return { path: chosen };
+});
+
+// Add one or more directories as roots of a chat. Returns the updated roots.
+ipcMain.handle(
+  'labmate:add-workspace-root',
+  async (_evt, payload: { sessionId: string }) => {
+    const chosen = await pickFolders();
+    let roots = workspaceStore().roots(payload.sessionId);
+    for (const dir of chosen) roots = workspaceStore().addRoot(payload.sessionId, dir);
+    return { roots };
+  },
+);
+
+ipcMain.handle(
+  'labmate:remove-workspace-root',
+  (_evt, payload: { sessionId: string; path: string }) => ({
+    roots: workspaceStore().removeRoot(payload.sessionId, payload.path),
+  }),
+);
+
+// Fuzzy file/dir search across a chat's roots, for the @-mention autocomplete.
+ipcMain.handle(
+  'labmate:search-workspace',
+  async (_evt, payload: { sessionId?: string | null; query: string }) => {
+    const roots = workspaceStore().roots(payload?.sessionId ?? null);
+    if (roots.length === 0) return { entries: [] };
+    return { entries: await searchWorkspace(roots, payload.query ?? '') };
+  },
+);
+
 ipcMain.handle(
   'labmate:tool-execute',
   async (_evt, payload: unknown) => {
     try {
       if (!payload || typeof payload !== 'object') return { error: 'invalid payload' };
-      const { name, args } = payload as { name: string; args: Record<string, unknown> };
+      const { name, args, sessionId } = payload as {
+        name: string;
+        args: Record<string, unknown>;
+        sessionId?: string | null;
+      };
       if (!LOCAL_TOOL_NAMES.includes(name as LocalToolName)) {
         return { error: `unknown local tool: ${name}` };
       }
-      return { result: await executeTool(name as LocalToolName, args ?? {}, WORKSPACE) };
+      const roots = workspaceStore().roots(sessionId ?? null);
+      return { result: await executeTool(name as LocalToolName, args ?? {}, roots) };
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
     }

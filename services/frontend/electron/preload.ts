@@ -10,6 +10,14 @@ export interface AppConfig {
   isDev: boolean;
 }
 
+export interface WorkspaceEntry {
+  absolute: string;
+  insert: string;
+  display: string;
+  root: string;
+  isDir: boolean;
+}
+
 // Read config and token synchronously so they're available before the renderer module graph runs.
 const config = ipcRenderer.sendSync('labmate:get-config') as AppConfig;
 const token = ipcRenderer.sendSync('labmate:get-token') as string | null;
@@ -23,6 +31,30 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('labmate:set-token', { token: t, remember }),
   clearToken: (): Promise<void> =>
     ipcRenderer.invoke('labmate:clear-token'),
-  executeTool: (name: string, args: Record<string, unknown>): Promise<ExecuteToolResponse> =>
-    ipcRenderer.invoke('labmate:tool-execute', { name, args }),
+  executeTool: (
+    name: string,
+    args: Record<string, unknown>,
+    sessionId?: string | null,
+  ): Promise<ExecuteToolResponse> =>
+    ipcRenderer.invoke('labmate:tool-execute', { name, args, sessionId }),
+
+  // ── Workspace (multi-root per chat) ──
+  getWorkspaceRoots: (sessionId: string | null): Promise<string[]> =>
+    ipcRenderer.invoke('labmate:get-workspace-roots', { sessionId }),
+  addWorkspaceRoot: (sessionId: string): Promise<{ roots: string[] }> =>
+    ipcRenderer.invoke('labmate:add-workspace-root', { sessionId }),
+  removeWorkspaceRoot: (sessionId: string, p: string): Promise<{ roots: string[] }> =>
+    ipcRenderer.invoke('labmate:remove-workspace-root', { sessionId, path: p }),
+  hasDefaultWorkspace: (): Promise<boolean> =>
+    ipcRenderer.invoke('labmate:has-default-workspace'),
+  getDefaultWorkspace: (): Promise<string | null> =>
+    ipcRenderer.invoke('labmate:get-default-workspace'),
+  setDefaultWorkspace: (): Promise<{ path: string | null }> =>
+    ipcRenderer.invoke('labmate:set-default-workspace'),
+  // Fuzzy file/dir search across the chat's roots, for @-mention autocomplete.
+  searchWorkspace: (
+    sessionId: string | null,
+    query: string,
+  ): Promise<{ entries: WorkspaceEntry[] }> =>
+    ipcRenderer.invoke('labmate:search-workspace', { sessionId, query }),
 });
