@@ -14,7 +14,7 @@ class _FakeTokenizer:
     """Deterministic stand-in for the Gemma tokenizer.
 
     One token per whitespace-separated chunk. Avoids downloading
-    google/gemma-4-9b-it in CI while preserving budget semantics.
+    google/gemma-4-31B-it in CI while preserving budget semantics.
     """
 
     def encode(self, text: str) -> list[int]:
