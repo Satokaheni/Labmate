@@ -1,9 +1,11 @@
 import path from 'node:path';
 
 /** Arg keys that hosted skills treat as filesystem paths.
- *  TS-refactor uses: tsconfig, file, source_file, dest_file
+ *  ast-ts-refactor uses: tsconfig, file, source_file, dest_file
  *  ast-repo-map uses: path
  *  code-sandbox uses: files, directory, dir
+ *  component-doc-gen uses: component_path, dir_path
+ *  a11y-audit uses: html_or_component_path
  */
 export const PATH_ARG_KEYS = [
   'path',
@@ -18,6 +20,9 @@ export const PATH_ARG_KEYS = [
   'files',
   'paths',
   'project',
+  'component_path',
+  'dir_path',
+  'html_or_component_path',
 ];
 
 /** Resolve relative path-typed args to absolute against the primary workspace root.

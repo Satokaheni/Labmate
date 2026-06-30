@@ -134,6 +134,9 @@ describe('resolveMcpPathArgs', () => {
           files: ['p10'],
           paths: ['p11'],
           project: 'p12',
+          component_path: 'p13',
+          dir_path: 'p14',
+          html_or_component_path: 'p15',
         },
         ['/root'],
       );
@@ -150,7 +153,26 @@ describe('resolveMcpPathArgs', () => {
         files: ['/root/p10'],
         paths: ['/root/p11'],
         project: '/root/p12',
+        component_path: '/root/p13',
+        dir_path: '/root/p14',
+        html_or_component_path: '/root/p15',
       });
+    });
+
+    it('resolves the React-skill path args (component-doc-gen, a11y-audit)', () => {
+      // component-doc-gen enforces absolute component_path/dir_path;
+      // a11y-audit enforces absolute html_or_component_path.
+      const result = resolveMcpPathArgs(
+        {
+          component_path: 'src/components/Button.tsx',
+          dir_path: 'src/components',
+          html_or_component_path: 'src/pages/Home.tsx',
+        },
+        ['/Users/me/repo'],
+      );
+      expect(result.component_path).toBe('/Users/me/repo/src/components/Button.tsx');
+      expect(result.dir_path).toBe('/Users/me/repo/src/components');
+      expect(result.html_or_component_path).toBe('/Users/me/repo/src/pages/Home.tsx');
     });
   });
 
