@@ -93,13 +93,15 @@ function TopBar(props: {
   debug: boolean;
   roots: string[];
   workspaceAvailable: boolean;
+  sidebarCollapsed: boolean;
+  onToggleSidebar: () => void;
   onAddRoot: () => void;
   onRemoveRoot: (path: string) => void;
   onSkills: () => void;
   onFiles: () => void;
   onToggleDebug: () => void;
 }) {
-  const { sessionTitle, rightView, debug, roots, workspaceAvailable, onAddRoot, onRemoveRoot, onSkills, onFiles, onToggleDebug } = props;
+  const { sessionTitle, rightView, debug, roots, workspaceAvailable, sidebarCollapsed, onToggleSidebar, onAddRoot, onRemoveRoot, onSkills, onFiles, onToggleDebug } = props;
 
   const dot = (bg: string): CSSProperties => ({ width: 11, height: 11, borderRadius: '50%', background: bg });
   const segTab = (active: boolean): CSSProperties => ({
@@ -133,6 +135,41 @@ function TopBar(props: {
         <div style={dot('#37404c')} />
         <div style={dot('#37404c')} />
         <div style={dot('#37404c')} />
+      </div>
+      {/* Sidebar collapse toggle (Claude-Desktop style) */}
+      <div
+        role="button"
+        aria-label={sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}
+        title={sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}
+        onClick={onToggleSidebar}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: 26,
+          height: 26,
+          marginLeft: 4,
+          borderRadius: 7,
+          cursor: 'pointer',
+          color: '#939ba7',
+          background: sidebarCollapsed ? '#1b1f26' : 'transparent',
+          boxShadow: sidebarCollapsed ? 'inset 0 0 0 1px #2f3742' : 'none',
+        }}
+      >
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <rect x="3" y="4" width="18" height="16" rx="2" />
+          <line x1="9" y1="4" x2="9" y2="20" />
+        </svg>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 8, flex: 'none' }}>
         <LabmateMark size={18} variant="tile" spin="none" />
@@ -1257,6 +1294,25 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug }: Chat
   const [sysOpen, setSysOpen] = useState(false);
   const [skillsTurnId, setSkillsTurnId] = useState<string | null>(null);
 
+  // Collapsible left column (Claude-Desktop style); collapsed state persists.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('lm.sidebarCollapsed') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const toggleSidebar = () =>
+    setSidebarCollapsed((v) => {
+      const next = !v;
+      try {
+        localStorage.setItem('lm.sidebarCollapsed', next ? '1' : '0');
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+
   // Workspace is keyed on the effective session id (same id used for sends +
   // tool routing), so the roots shown are exactly what the file tools use.
   const wsId = activeSessionId ?? 'default';
@@ -1321,6 +1377,8 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug }: Chat
         debug={debug}
         roots={roots}
         workspaceAvailable={workspaceAvailable}
+        sidebarCollapsed={sidebarCollapsed}
+        onToggleSidebar={toggleSidebar}
         onAddRoot={addRoot}
         onRemoveRoot={removeRoot}
         onSkills={() => setRightView((v) => (v === 'skills' ? null : 'skills'))}
@@ -1333,17 +1391,19 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug }: Chat
       )}
 
       <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
-        <Sidebar
-          mode={mode}
-          sessions={sessions}
-          activeSessionId={activeSessionId}
-          nodeLabel={nodeLabel}
-          toolCount={toolCount}
-          handsSummary={handsSummary}
-          onSetMode={setMode}
-          onNewSession={() => newChat()}
-          onOpenSession={(id) => openSession?.(id)}
-        />
+        {!sidebarCollapsed && (
+          <Sidebar
+            mode={mode}
+            sessions={sessions}
+            activeSessionId={activeSessionId}
+            nodeLabel={nodeLabel}
+            toolCount={toolCount}
+            handsSummary={handsSummary}
+            onSetMode={setMode}
+            onNewSession={() => newChat()}
+            onOpenSession={(id) => openSession?.(id)}
+          />
+        )}
 
         {/* center conversation */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: '#0f1115', minWidth: 0 }}>
