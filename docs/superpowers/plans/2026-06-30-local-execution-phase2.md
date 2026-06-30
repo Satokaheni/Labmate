@@ -65,6 +65,22 @@ manifest seam — so most of P2-A is frontend.
 
 ---
 
+## P2-B.0 — hosted-skill robustness (DONE 2026-06-30) — from P2-A live testing
+
+Live-testing the P2-A MCP host surfaced three failure modes when the model drove the hosted
+`ast-ts-refactor` skill. All three fixed (Haiku→Opus-judge, all **PASS**); suites green
+(frontend **231**, backend tool_manifest+prompt_assembler+skill_runner **115**).
+
+| Task | Fix | Commit |
+|---|---|---|
+| **T-B0.1** dispatch-side rooting | `electron/mcp-path-rooting.ts::resolveMcpPathArgs` — the `mcp__` dispatch branch in `main.ts` now resolves path-typed args (`PATH_ARG_KEYS`) to **absolute** against the workspace root before calling the host. Fixes the live `tsconfig must be an absolute path` error regardless of what the model passes. | `93873a6` |
+| ↳ coverage extension | Added `component_path`/`dir_path` (component-doc-gen) + `html_or_component_path` (a11y-audit) to `PATH_ARG_KEYS` — the other two bundled hosts also enforce absolute paths. | `4106260` |
+| **T-B0.2** pod/hosted skill dedup | `hosted_skill_namespaces(manifest)` + an `exclude` param on `SkillRunner.catalog_prompt`/`tool_schema`, threaded from the manifest in `PromptAssembler` + `build_tool_list`. A client-hosted skill is dropped from the pod `load_skill` catalog so the model no longer sees it two ways (killed the load_skill/code-sandbox thrash). **No-client prefix byte-identical** (prefix-cache safe; proven by identity tests + mutation testing). When all pod skills are hosted, `load_skill`+`call_skill_tool` are omitted together. | `10cb1c1` |
+| **T-B0.3** namespacing hardening | `parseNamespacedTool(name, knownServers)` — `McpHostManager.callTool` parses `mcp__<server>__<tool>` by **longest-prefix match against registered server names** instead of a fragile regex, so tool names with underscores (`find_references`) and server names with underscores can't mis-split. Error contracts (`Invalid namespaced tool name` / `Unknown MCP server`) preserved. | `7a24b91` |
+
+**Next:** live-validate on RunPod — drive `mcp__ast-ts-refactor__find_references` with a relative
+tsconfig and confirm it resolves + executes (no thrash, no abs-path error). Then proceed to P2-B.
+
 ## P2-B — local `SKILL.md` discovery (after P2-A merges)
 Frontend discovers `SKILL.md` files (frontmatter name/description) in the workspace / a skills
 dir; declares them as `source:'skill'` in the manifest (metadata only). The orchestrator
