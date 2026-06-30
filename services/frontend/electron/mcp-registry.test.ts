@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { McpHostManager, skillsDir } from './mcp-registry.js';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { McpHostManager, skillsDir, parseNamespacedTool } from './mcp-registry.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -178,6 +178,199 @@ describe('McpHostManager', () => {
       const manager = new McpHostManager();
       await expect(manager.stopAll()).resolves.toBeUndefined();
       await expect(manager.stopAll()).resolves.toBeUndefined();
+    });
+  });
+});
+
+describe('parseNamespacedTool', () => {
+  describe('basic parsing', () => {
+    it('should parse tool name with underscore correctly', () => {
+      const result = parseNamespacedTool('mcp__ast-ts-refactor__find_references', [
+        'ast-ts-refactor',
+      ]);
+      expect(result).toEqual({ server: 'ast-ts-refactor', tool: 'find_references' });
+    });
+
+    it('should parse server name with underscore correctly', () => {
+      const result = parseNamespacedTool('mcp__my_server__find_references', ['my_server']);
+      expect(result).toEqual({ server: 'my_server', tool: 'find_references' });
+    });
+
+    it('should handle tool name with double underscore', () => {
+      const result = parseNamespacedTool('mcp__srv__a__b', ['srv']);
+      expect(result).toEqual({ server: 'srv', tool: 'a__b' });
+    });
+
+    it('should use longest-prefix match when multiple servers could match', () => {
+      const result = parseNamespacedTool('mcp__ast-ts-refactor__rename', [
+        'ast',
+        'ast-ts-refactor',
+      ]);
+      expect(result).toEqual({ server: 'ast-ts-refactor', tool: 'rename' });
+    });
+
+    it('should prefer exact name over partial prefix', () => {
+      const result = parseNamespacedTool('mcp__ast-ts-refactor__foo', [
+        'ast',
+        'ast-ts',
+        'ast-ts-refactor',
+      ]);
+      expect(result).toEqual({ server: 'ast-ts-refactor', tool: 'foo' });
+    });
+  });
+
+  describe('error cases (null returns)', () => {
+    it('should return null when mcp__ prefix is missing', () => {
+      const result = parseNamespacedTool('no_prefix__tool', ['server']);
+      expect(result).toBeNull();
+    });
+
+    it('should return null when no registered server matches', () => {
+      const result = parseNamespacedTool('mcp__unknown__tool', ['other-server']);
+      expect(result).toBeNull();
+    });
+
+    it('should return null when tool is empty', () => {
+      const result = parseNamespacedTool('mcp__srv__', ['srv']);
+      expect(result).toBeNull();
+    });
+
+    it('should return null when there is no __ separator after mcp__', () => {
+      const result = parseNamespacedTool('mcp__noseparator', ['srv']);
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('edge cases', () => {
+    it('should handle single-character tool names', () => {
+      const result = parseNamespacedTool('mcp__srv__x', ['srv']);
+      expect(result).toEqual({ server: 'srv', tool: 'x' });
+    });
+
+    it('should handle complex tool names with mixed separators', () => {
+      const result = parseNamespacedTool('mcp__ast-ts-refactor__find_all_refs_in_scope', [
+        'ast-ts-refactor',
+      ]);
+      expect(result).toEqual({
+        server: 'ast-ts-refactor',
+        tool: 'find_all_refs_in_scope',
+      });
+    });
+
+    it('should work with empty knownServers array (returns null)', () => {
+      const result = parseNamespacedTool('mcp__srv__tool', []);
+      expect(result).toBeNull();
+    });
+
+    it('should handle numeric characters in names', () => {
+      const result = parseNamespacedTool('mcp__v2_api__get_data_123', ['v2_api']);
+      expect(result).toEqual({ server: 'v2_api', tool: 'get_data_123' });
+    });
+  });
+});
+
+describe('McpHostManager.callTool integration with parseNamespacedTool', () => {
+  describe('with stubbed hosts', () => {
+    it('should route to correct host and call tool with bare name', async () => {
+      const manager = new McpHostManager();
+
+      // Stub a host
+      const fakeHost = {
+        callTool: vi.fn(async (toolName: string) => ({ result: 'ok' })),
+        listTools: vi.fn(),
+        start: vi.fn(),
+        stop: vi.fn(),
+      };
+      (manager as any).hosts.set('ast-ts-refactor', fakeHost);
+
+      const result = await manager.callTool('mcp__ast-ts-refactor__find_references', {
+        pos: 42,
+      });
+
+      expect(fakeHost.callTool).toHaveBeenCalledWith('find_references', { pos: 42 });
+      expect(result).toEqual({ result: 'ok' });
+    });
+
+    it('should route to correct host when server name has underscores', async () => {
+      const manager = new McpHostManager();
+
+      const fakeHost = {
+        callTool: vi.fn(async () => ({ ok: true })),
+        listTools: vi.fn(),
+        start: vi.fn(),
+        stop: vi.fn(),
+      };
+      (manager as any).hosts.set('my_server', fakeHost);
+
+      await manager.callTool('mcp__my_server__some_tool', {});
+
+      expect(fakeHost.callTool).toHaveBeenCalledWith('some_tool', {});
+    });
+
+    it('should throw "Invalid namespaced tool name" when mcp__ prefix is missing', async () => {
+      const manager = new McpHostManager();
+      await expect(manager.callTool('invalid-format', {})).rejects.toThrow(
+        /Invalid namespaced tool name/
+      );
+    });
+
+    it('should throw "Invalid namespaced tool name" when no __ separator exists', async () => {
+      const manager = new McpHostManager();
+      await expect(manager.callTool('mcp__noseparator', {})).rejects.toThrow(
+        /Invalid namespaced tool name/
+      );
+    });
+
+    it('should throw "Unknown MCP server" when no registered server matches', async () => {
+      const manager = new McpHostManager();
+      (manager as any).hosts.set('known', {});
+
+      await expect(manager.callTool('mcp__unknown__tool', {})).rejects.toThrow(
+        /Unknown MCP server/
+      );
+    });
+
+    it('should use longest-prefix match to route to the correct host', async () => {
+      const manager = new McpHostManager();
+
+      const shortHost = {
+        callTool: vi.fn(),
+        listTools: vi.fn(),
+        start: vi.fn(),
+        stop: vi.fn(),
+      };
+      const longHost = {
+        callTool: vi.fn(async () => ({ matched: 'long' })),
+        listTools: vi.fn(),
+        start: vi.fn(),
+        stop: vi.fn(),
+      };
+
+      (manager as any).hosts.set('ast', shortHost);
+      (manager as any).hosts.set('ast-ts-refactor', longHost);
+
+      await manager.callTool('mcp__ast-ts-refactor__rename', { name: 'foo' });
+
+      expect(longHost.callTool).toHaveBeenCalledWith('rename', { name: 'foo' });
+      expect(shortHost.callTool).not.toHaveBeenCalled();
+    });
+
+    it('should wrap host.callTool exceptions in a descriptive error', async () => {
+      const manager = new McpHostManager();
+
+      const fakeHost = {
+        callTool: vi.fn(async () => {
+          throw new Error('Tool execution failed');
+        }),
+        listTools: vi.fn(),
+        start: vi.fn(),
+        stop: vi.fn(),
+      };
+      (manager as any).hosts.set('test-server', fakeHost);
+
+      await expect(manager.callTool('mcp__test-server__mytool', {})).rejects.toThrow(
+        /Failed to call tool 'mytool' on server 'test-server'/
+      );
     });
   });
 });

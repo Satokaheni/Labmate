@@ -15,6 +15,48 @@ export interface ToolDescriptor {
 }
 
 /**
+ * Parse mcp__<server>__<tool> against the set of known server names (longest-prefix match).
+ * Returns { server, tool } on success, null if parsing failed.
+ * Tool names may contain underscores and double underscores; the parser uses longest-prefix
+ * matching on registered server names to unambiguously split the server and tool segments.
+ *
+ * Examples:
+ *   parseNamespacedTool('mcp__ast-ts-refactor__find_references', ['ast-ts-refactor'])
+ *   → { server: 'ast-ts-refactor', tool: 'find_references' }
+ *
+ *   parseNamespacedTool('mcp__my_server__find_references', ['my_server'])
+ *   → { server: 'my_server', tool: 'find_references' }
+ *
+ *   parseNamespacedTool('mcp__ast-ts-refactor__a__b', ['ast', 'ast-ts-refactor'])
+ *   → { server: 'ast-ts-refactor', tool: 'a__b' } (longest prefix wins)
+ *
+ *   parseNamespacedTool('no-prefix__tool', ['server']) → null (no mcp__ prefix)
+ *   parseNamespacedTool('mcp__unknown__tool', ['other']) → null (no matching server)
+ *   parseNamespacedTool('mcp__server__', ['server']) → null (empty tool)
+ */
+export function parseNamespacedTool(
+  namespacedName: string,
+  knownServers: Iterable<string>
+): { server: string; tool: string } | null {
+  if (!namespacedName.startsWith('mcp__')) return null;
+  const rest = namespacedName.slice('mcp__'.length);
+
+  let best: string | null = null;
+  for (const s of knownServers) {
+    if (rest === s || rest.startsWith(s + '__')) {
+      if (best === null || s.length > best.length) best = s;
+    }
+  }
+
+  if (best === null) return null;
+
+  const tool = rest.slice(best.length + 2); // skip "__"
+  if (!tool) return null;
+
+  return { server: best, tool };
+}
+
+/**
  * Resolve the skills directory.
  * Uses LABMATE_SKILLS_DIR env var if set, else computes relative path from repo root.
  * Frontend is at <repo>/services/frontend, skills at <repo>/services/skills.
@@ -110,18 +152,38 @@ export class McpHostManager {
    * Call a tool on the appropriate MCP server.
    * namespacedName format: "mcp__<server>__<tool>"
    * Throws if the namespace or tool is unknown.
+   *
+   * Uses longest-prefix matching on registered server names to unambiguously
+   * parse the server and tool segments, even when tool names contain underscores.
    */
   async callTool(namespacedName: string, args: Record<string, unknown>): Promise<unknown> {
-    // Parse "mcp__<server>__<tool>"
-    const match = namespacedName.match(/^mcp__([^_]+(?:_[^_]+)*)__(.+)$/);
-    if (!match) {
+    // Check for mcp__ prefix and non-empty remainder for Invalid-name error
+    if (!namespacedName.startsWith('mcp__')) {
       throw new Error(
         `Invalid namespaced tool name: ${namespacedName}. Expected format: mcp__<server>__<tool>`
       );
     }
 
-    const [, serverName, toolName] = match;
+    const rest = namespacedName.slice('mcp__'.length);
+    if (!rest.includes('__')) {
+      throw new Error(
+        `Invalid namespaced tool name: ${namespacedName}. Expected format: mcp__<server>__<tool>`
+      );
+    }
+
+    // Parse using longest-prefix matching against known servers
+    const parsed = parseNamespacedTool(namespacedName, this.hosts.keys());
+
+    if (!parsed) {
+      // No known server matched; extract a best-guess for the error message
+      const firstSegment = rest.split('__')[0];
+      const bestGuess = firstSegment || rest;
+      throw new Error(`Unknown MCP server: ${bestGuess}`);
+    }
+
+    const { server: serverName, tool: toolName } = parsed;
     const host = this.hosts.get(serverName);
+
     if (!host) {
       throw new Error(`Unknown MCP server: ${serverName}`);
     }
