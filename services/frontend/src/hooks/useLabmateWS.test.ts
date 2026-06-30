@@ -411,6 +411,70 @@ describe('useLabmateWS', () => {
       JSON.stringify({ type: 'session.open', sessionId: 's-xyz' }),
     );
   });
+
+  it('session.history merges turns, deduplicating by id', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    emit({ type: 'boot.plan', subsystems: SUBSYSTEMS });
+    emit({ type: 'boot.ready', sessionBootstrap: BOOTSTRAP });
+
+    // Add one turn to the state
+    const turn1: import('@/types/events').Turn = {
+      id: 't-1',
+      sessionId: 's-1',
+      role: 'user',
+      text: 'Hello',
+      createdAt: '2026-01-01T00:00:00Z',
+      status: 'complete',
+    };
+    emit({ type: 'turn.created', turn: turn1 });
+    expect(result.current.state.turns).toHaveLength(1);
+
+    // Emit session.history with two turns: one already in state (t-1), one new (t-2)
+    const turn2: import('@/types/events').Turn = {
+      id: 't-2',
+      sessionId: 's-1',
+      role: 'assistant',
+      text: 'Hi',
+      createdAt: '2026-01-01T00:00:01Z',
+      status: 'complete',
+    };
+    emit({ type: 'session.history', sessionId: 's-1', turns: [turn1, turn2] });
+
+    // Should have both turns, no duplicate of t-1
+    expect(result.current.state.turns).toHaveLength(2);
+    expect(result.current.state.turns.map((t) => t.id)).toEqual(['t-1', 't-2']);
+  });
+
+  it('session.history populates turnSessionRef so tool routing works', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    emit({ type: 'boot.plan', subsystems: SUBSYSTEMS });
+    emit({ type: 'boot.ready', sessionBootstrap: BOOTSTRAP });
+
+    const turns: import('@/types/events').Turn[] = [
+      {
+        id: 't-1',
+        sessionId: 's-chat-1',
+        role: 'user',
+        text: 'Read file',
+        createdAt: '2026-01-01T00:00:00Z',
+        status: 'complete',
+      },
+      {
+        id: 't-2',
+        sessionId: 's-chat-1',
+        role: 'assistant',
+        text: 'Done',
+        createdAt: '2026-01-01T00:00:01Z',
+        status: 'complete',
+      },
+    ];
+    emit({ type: 'session.history', sessionId: 's-chat-1', turns });
+
+    // Should have loaded both turns
+    expect(result.current.state.turns).toHaveLength(2);
+  });
 });
 
 describe('ensureActiveSession', () => {

@@ -566,6 +566,7 @@ class OrchestratorProcess:
             # in this session, so it shows the accumulated context (e.g. 11%) instead of
             # resetting to 0% — then refresh live as this turn's real peak is measured.
             _carried_fill = self._session_ctx_fill.get(session_id, 0)
+            _log.info("ctx-carry: session=%s carried=%d", session_id, _carried_fill)
             await _emitter.emit("context", window=_context_window(_carried_fill))
             if CONTEXT_REFRESH_S > 0:
                 _ctx_task = asyncio.create_task(
@@ -818,6 +819,7 @@ class OrchestratorProcess:
                 # Persist it as this session's carried fill so the NEXT turn's strip
                 # starts from here instead of 0%.
                 _final_peak = call_counter.get_peak_prompt_tokens()
+                _log.info("ctx-persist: session=%s final_peak=%d", session_id, _final_peak)
                 if _final_peak > 0 and session_id:
                     self._session_ctx_fill[session_id] = _final_peak
                 await events.emit("context", window=_context_window(_final_peak))

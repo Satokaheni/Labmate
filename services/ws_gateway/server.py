@@ -288,6 +288,9 @@ async def _ws_loop(
             if session is not None:
                 active_session_id = sid
                 await ws.send_json({"type": "session.updated", "session": session})
+                # Replay the session's stored turns so the client can render them
+                turns = store.turns(sid)
+                await ws.send_json({"type": "session.history", "sessionId": sid, "turns": turns})
         elif mtype == "session.rename":
             sid = msg.get("sessionId", "")
             title = msg.get("title", "")

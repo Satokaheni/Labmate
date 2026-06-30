@@ -50,6 +50,7 @@ type WSFrame =
   | { type: 'reasoning.done'; turnId: string; reasoning: Reasoning }
   | { type: 'artifact.created'; turnId: string; artifact: Artifact }
   | { type: 'session.updated'; session: Session }
+  | { type: 'session.history'; sessionId: string; turns: Turn[] }
   | { type: 'context.update'; window: ContextWindow }
   | { type: 'agent.status'; status: AgentStatus }
   | { type: 'turn.done'; turnId: string; status: string }
@@ -244,6 +245,18 @@ function labmateWSReducer(state: LabmateWSState, action: DispatchAction): Labmat
         return state;
       }
 
+      if (frame.type === 'session.history') {
+        if (state.phase === 'ready') {
+          // Merge turns from session history, deduplicating by turn id.
+          // Append any turn whose id is not already in state.turns.
+          const existingIds = new Set((state.turns ?? []).map((t) => t.id));
+          const newTurns = frame.turns.filter((t) => !existingIds.has(t.id));
+          const turns = [...(state.turns ?? []), ...newTurns];
+          return { ...state, turns };
+        }
+        return state;
+      }
+
       if (frame.type === 'context.update') {
         if (state.phase === 'ready') {
           return { ...state, contextWindow: frame.window };
@@ -381,6 +394,15 @@ export function useLabmateWS(
         // Remember which session each turn belongs to (for per-chat tool routing).
         if (frame.type === 'turn.created' && frame.turn?.id) {
           turnSessionRef.current[frame.turn.id] = frame.turn.sessionId ?? '';
+        }
+
+        // Also populate turnSessionRef for turns replayed via session.history
+        if (frame.type === 'session.history') {
+          for (const turn of frame.turns) {
+            if (turn?.id) {
+              turnSessionRef.current[turn.id] = turn.sessionId ?? frame.sessionId ?? '';
+            }
+          }
         }
 
         // Handle tool.request asynchronously (outside reducer)
