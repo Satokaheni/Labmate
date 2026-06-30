@@ -78,16 +78,46 @@ Live-testing the P2-A MCP host surfaced three failure modes when the model drove
 | **T-B0.2** pod/hosted skill dedup | `hosted_skill_namespaces(manifest)` + an `exclude` param on `SkillRunner.catalog_prompt`/`tool_schema`, threaded from the manifest in `PromptAssembler` + `build_tool_list`. A client-hosted skill is dropped from the pod `load_skill` catalog so the model no longer sees it two ways (killed the load_skill/code-sandbox thrash). **No-client prefix byte-identical** (prefix-cache safe; proven by identity tests + mutation testing). When all pod skills are hosted, `load_skill`+`call_skill_tool` are omitted together. | `10cb1c1` |
 | **T-B0.3** namespacing hardening | `parseNamespacedTool(name, knownServers)` — `McpHostManager.callTool` parses `mcp__<server>__<tool>` by **longest-prefix match against registered server names** instead of a fragile regex, so tool names with underscores (`find_references`) and server names with underscores can't mis-split. Error contracts (`Invalid namespaced tool name` / `Unknown MCP server`) preserved. | `7a24b91` |
 
-**Next:** live-validate on RunPod — drive `mcp__ast-ts-refactor__find_references` with a relative
-tsconfig and confirm it resolves + executes (no thrash, no abs-path error). Then proceed to P2-B.
+**Live-validated 2026-06-30** ✅ — prompt "find all references to `capabilitiesFrame` … (tsconfig is
+services/frontend/tsconfig.json)" drove `mcp__ast-ts-refactor__find_references` with the **relative**
+tsconfig; dispatch rooted it to absolute, the hosted skill executed, real refs returned
+(`capabilities.ts:27` def + `useLabmateWS.ts` call sites). No abs-path error, no load_skill/code-sandbox
+thrash. **P2-B.0 closed.**
 
-## P2-B — local `SKILL.md` discovery (after P2-A merges)
+## P2-B — local `SKILL.md` discovery + hosted-skill auto-routing (after P2-A merges)
+
+### P2-B.1 — `SKILL.md` discovery (the documentation model)
 Frontend discovers `SKILL.md` files (frontmatter name/description) in the workspace / a skills
 dir; declares them as `source:'skill'` in the manifest (metadata only). The orchestrator
 advertises the metadata; on use, the body is loaded and the model uses the local tools the skill
 describes — **no skill runtime on the client** (the documentation model). Reclassify the Python
 repo-reading skills (supersede via client primitives, or treat as candidates for a future client
 runtime); keep content+model skills server-side fed client content.
+
+### P2-B.2 — hosted-skill auto-routing ("don't make me name the skill")
+**Problem (from P2-B.0 live testing):** the user still prefixes prompts with "use ast-ts-refactor"
+because auto-selection of a **hosted MCP tool** is unproven on the Q4 Gemma model. The harness
+already auto-routes — pod skills via `SkillRouter.select()`/`catalog_prompt` (gated by the routing
+eval, §5: new skill ≥ 0.80, no existing skill drops > 0.05). But hosted MCP skills bypass that path:
+they appear as flat `mcp__<server>__<tool>` tools in the ReAct loop and are selected purely off the
+tool's own `inputSchema.description` (whatever the skill author wrote for its MCP layer) — which has
+**never been run through the routing eval**. So "don't name the skill" is a **description-quality +
+measurement** problem, not new architecture.
+
+This is the CLAUDE.md discipline applied to hosted tools — **measure → tune descriptions → only then
+add machinery**:
+- **Measure first.** Extend the routing eval to cover hosted MCP tools: generate natural tasks
+  ("find all references to function X in TypeScript") with NO skill name in the prompt, and score
+  whether the model calls the right `mcp__<server>__<tool>`. Reuse `eval/extend_eval.py` /
+  `eval/run_routing_eval.py`; the new signal source is each MCP tool's `tools/list` description, not
+  a `SKILL.md`. Acceptance: ≥ 0.80 auto-select per hosted tool, no pod-skill regression > 0.05.
+- **Tune descriptions** (the real lever). Where a hosted tool mis-routes, improve its source
+  `inputSchema` description in `services/skills/<name>/src` (rebuild `dist/`), the same way a
+  mis-routing pod skill gets its `SKILL.md` sharpened. No prompt changes needed.
+- **Only if measurement still falls short**, consider a lightweight pre-selection hint step — but do
+  NOT add it speculatively; gate it on the eval numbers.
+- **Constraint:** any enrichment must keep prefix byte-stability (hosted tool schemas are sorted by
+  final name in `build_tool_list`) and not break the no-client pod-routing path.
 
 ## P2-C — client-side semantic search (CodeGraph)
 `code_semantic_search` becomes a client-routed tool when the client declares `codegraph`: the
