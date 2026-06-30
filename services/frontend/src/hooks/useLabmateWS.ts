@@ -53,6 +53,20 @@ type WSFrame =
   | { type: 'agent.status'; status: AgentStatus }
   | { type: 'turn.done'; turnId: string; status: string }
   | { type: 'tool.request'; turnId: string; toolRequestId: string; name: string; args: unknown }
+  | {
+      type: 'tool.start';
+      turnId: string;
+      toolCall: { id: string; name: string; kind?: string; summary?: string; reasoningWhy?: string; args?: unknown };
+    }
+  | {
+      type: 'tool.done';
+      turnId: string;
+      toolId: string;
+      status?: string;
+      summary?: string;
+      result?: unknown;
+      durationMs?: number;
+    }
   | { type: '_INTERNAL_RESET' };
 
 type DispatchAction =
@@ -60,7 +74,35 @@ type DispatchAction =
   | { action: 'AUTHENTICATING' }
   | { action: 'FRAME'; frame: WSFrame }
   | { action: 'ERROR'; error: string }
+  | { action: 'SET_ACTIVE_SESSION'; sessionId: string | null }
   | { action: 'RESET' };
+
+/** Mint a client-side session id (no backend round-trip needed). */
+export function mintSessionId(): string {
+  return (
+    's-' +
+    (typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID().replace(/-/g, '').slice(0, 12)
+      : Math.random().toString(36).slice(2, 14))
+  );
+}
+
+/**
+ * Guarantee the boot bootstrap carries an active session id, so the view never
+ * has to create one reactively (this replaces a newChat()-in-useEffect side
+ * effect in ChatScreen — which risked a stale-closure / StrictMode double
+ * create). Mints a fresh id only when the server delivered no active session
+ * AND there are no existing sessions to fall back to. Idempotent: a bootstrap
+ * that already names a session (or has sessions) is returned unchanged.
+ */
+export function ensureActiveSession(
+  bootstrap: SessionBootstrap,
+  mint: () => string = mintSessionId,
+): SessionBootstrap {
+  if (bootstrap.activeSessionId) return bootstrap;
+  if (bootstrap.sessions.length > 0) return bootstrap;
+  return { ...bootstrap, activeSessionId: mint() };
+}
 
 function labmateWSReducer(state: LabmateWSState, action: DispatchAction): LabmateWSState {
   switch (action.action) {
@@ -73,6 +115,12 @@ function labmateWSReducer(state: LabmateWSState, action: DispatchAction): Labmat
     case 'ERROR': {
       return { phase: 'error', authError: action.error };
     }
+
+    case 'SET_ACTIVE_SESSION':
+      if (state.phase === 'ready') {
+        return { ...state, activeSessionId: action.sessionId };
+      }
+      return state;
 
     case 'RESET':
       return { phase: 'idle' };
@@ -219,6 +267,57 @@ function labmateWSReducer(state: LabmateWSState, action: DispatchAction): Labmat
         return state;
       }
 
+      if (frame.type === 'tool.start') {
+        if (state.phase === 'booting' || state.phase === 'ready') {
+          const turns = (state.turns ?? []).map((t) =>
+            t.id === frame.turnId
+              ? {
+                  ...t,
+                  toolCalls: [
+                    ...(t.toolCalls ?? []),
+                    {
+                      id: frame.toolCall.id,
+                      name: frame.toolCall.name,
+                      kind: frame.toolCall.kind,
+                      summary: frame.toolCall.summary,
+                      reasoningWhy: frame.toolCall.reasoningWhy,
+                      args: frame.toolCall.args,
+                      status: 'running' as const,
+                    },
+                  ],
+                }
+              : t
+          );
+          return { ...state, turns };
+        }
+        return state;
+      }
+
+      if (frame.type === 'tool.done') {
+        if (state.phase === 'booting' || state.phase === 'ready') {
+          const turns = (state.turns ?? []).map((t) =>
+            t.id === frame.turnId
+              ? {
+                  ...t,
+                  toolCalls: (t.toolCalls ?? []).map((c) =>
+                    c.id === frame.toolId
+                      ? {
+                          ...c,
+                          status: frame.status === 'error' ? ('error' as const) : ('done' as const),
+                          result: frame.result,
+                          summary: frame.summary || c.summary,
+                          durationMs: frame.durationMs,
+                        }
+                      : c
+                  ),
+                }
+              : t
+          );
+          return { ...state, turns };
+        }
+        return state;
+      }
+
       if (frame.type === 'tool.request') {
         // Handled in effect, not in reducer
         return state;
@@ -240,11 +339,16 @@ export function useLabmateWS(
   state: LabmateWSStatePublic;
   send: (text: string, sessionId: string) => void;
   newSession?: (mode: string) => void;
+  newChat: () => string;
+  setActiveSession: (sessionId: string) => void;
   openSession?: (sessionId: string) => void;
   setDebug: (sessionId: string, enabled: boolean) => void;
 } {
   const [state, dispatch] = useReducer(labmateWSReducer, { phase: 'idle' });
   const wsRef = useRef<WebSocket | null>(null);
+  // Maps an assistant turnId -> its sessionId, so a tool.request (which carries
+  // only turnId) can be executed against the right chat's local workspace.
+  const turnSessionRef = useRef<Record<string, string>>({});
 
   // Socket lifecycle: open when token is set, close/reopen on reconnectKey
   useEffect(() => {
@@ -273,13 +377,25 @@ export function useLabmateWS(
       try {
         const frame = JSON.parse(ev.data) as WSFrame;
 
+        // Remember which session each turn belongs to (for per-chat tool routing).
+        if (frame.type === 'turn.created' && frame.turn?.id) {
+          turnSessionRef.current[frame.turn.id] = frame.turn.sessionId ?? '';
+        }
+
         // Handle tool.request asynchronously (outside reducer)
         if (frame.type === 'tool.request') {
           handleToolRequest(frame, ws);
           return;
         }
 
-        dispatch({ action: 'FRAME', frame });
+        // Fill in a fresh active session at the source when boot delivers none,
+        // so ChatScreen never has to create one from a useEffect.
+        const outFrame =
+          frame.type === 'boot.ready'
+            ? { ...frame, sessionBootstrap: ensureActiveSession(frame.sessionBootstrap) }
+            : frame;
+
+        dispatch({ action: 'FRAME', frame: outFrame });
       } catch (err) {
         console.error('Failed to parse WS frame:', err);
       }
@@ -301,11 +417,18 @@ export function useLabmateWS(
     frame: Extract<WSFrame, { type: 'tool.request' }>,
     ws: WebSocket
   ) => {
-    const { toolRequestId, name, args } = frame;
+    const { toolRequestId, turnId, name, args } = frame;
+    const sessionId = turnSessionRef.current[turnId] ?? null;
 
     try {
       const electronAPI = (window as Window & { electronAPI?: unknown }).electronAPI as
-        | { executeTool: (name: string, args: unknown) => Promise<{ result: unknown }> }
+        | {
+            executeTool: (
+              name: string,
+              args: unknown,
+              sessionId?: string | null,
+            ) => Promise<{ result?: unknown; error?: string }>;
+          }
         | undefined;
 
       if (!electronAPI) {
@@ -319,13 +442,13 @@ export function useLabmateWS(
         return;
       }
 
-      const res = await electronAPI.executeTool(name, args);
+      const res = await electronAPI.executeTool(name, args, sessionId);
       ws.send(
         JSON.stringify({
           type: 'tool.result',
           toolRequestId,
           result: res.result,
-          error: undefined,
+          error: res.error,
         })
       );
     } catch (err) {
@@ -359,15 +482,31 @@ export function useLabmateWS(
   };
 
   const openSession = (sessionId: string) => {
+    dispatch({ action: 'SET_ACTIVE_SESSION', sessionId });
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'session.open', sessionId }));
     }
+  };
+
+  // Start a fresh chat: mint a client-side session id and make it active. The
+  // backend auto-creates + titles the session from the first message on send,
+  // so no round-trip is needed before the user can type.
+  const setActiveSession = (sessionId: string) => {
+    dispatch({ action: 'SET_ACTIVE_SESSION', sessionId });
+  };
+
+  const newChat = (): string => {
+    const id = mintSessionId();
+    dispatch({ action: 'SET_ACTIVE_SESSION', sessionId: id });
+    return id;
   };
 
   return {
     state: state as LabmateWSStatePublic,
     send,
     newSession,
+    newChat,
+    setActiveSession,
     openSession,
     setDebug,
   };

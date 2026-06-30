@@ -6,9 +6,32 @@ declare global {
       setConfig: (wsUrl: string) => Promise<void>;
       setToken: (token: string, remember: boolean) => Promise<void>;
       clearToken: () => Promise<void>;
-      executeTool: (name: string, args: Record<string, unknown>) => Promise<{ result?: unknown; error?: string }>;
+      executeTool: (
+        name: string,
+        args: Record<string, unknown>,
+        sessionId?: string | null,
+      ) => Promise<{ result?: unknown; error?: string }>;
+      getWorkspaceRoots: (sessionId: string | null) => Promise<string[]>;
+      addWorkspaceRoot: (sessionId: string) => Promise<{ roots: string[] }>;
+      removeWorkspaceRoot: (sessionId: string, path: string) => Promise<{ roots: string[] }>;
+      hasDefaultWorkspace: () => Promise<boolean>;
+      getDefaultWorkspace: () => Promise<string | null>;
+      setDefaultWorkspace: () => Promise<{ path: string | null }>;
+      searchWorkspace: (
+        sessionId: string | null,
+        query: string,
+      ) => Promise<{ entries: WorkspaceMentionEntry[] }>;
     };
   }
+}
+
+/** A file/dir match from the workspace @-mention search (mirrors fs-search.WorkspaceEntry). */
+export interface WorkspaceMentionEntry {
+  absolute: string;
+  insert: string;
+  display: string;
+  root: string;
+  isDir: boolean;
 }
 
 const ec = window.electronAPI?.config;

@@ -1,39 +1,60 @@
-import { useState, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import { useLabmateWS } from '@/hooks/useLabmateWS';
-import { ChatLayout } from '@/layouts/ChatLayout';
+import { useMinimumElapsed } from '@/hooks/useMinimumElapsed';
 import { BootScreen } from '@/screens/BootScreen';
 import { LoginScreen } from '@/screens/LoginScreen';
-import { Composer } from '@/components/Composer';
-import { ContextBar } from '@/components/ContextBar';
-import { SystemFooter } from '@/components/SystemFooter';
-import { Turn } from '@/components/Turn';
-import { FilePreview } from '@/components/FilePreview';
-import { WS_URL } from '@/config';
-import type { Artifact, SubsystemId } from '@/types/events';
+import { ChatScreen } from '@/components/chat/ChatScreen';
+import { WS_URL, API_URL } from '@/config';
+import type { SubsystemId } from '@/types/events';
 
-export function Root(): JSX.Element {
+/** Minimum time the boot/loading screen stays visible, so a fast boot doesn't
+ *  flash the loading animation. */
+const MIN_BOOT_MS = 3000;
+
+export function Root(): React.ReactNode {
   // Resolve token from Electron config (if available) or null
   const initialToken = window.electronAPI?.token ?? null;
   const [token, setToken] = useState<string | null>(initialToken);
-  const [previewArtifact, setPreviewArtifact] = useState<Artifact | null>(null);
+  const [loginError, setLoginError] = useState<string | undefined>(undefined);
+  const [loggingIn, setLoggingIn] = useState(false);
 
   // Call the WebSocket hook
-  const { state, send, newSession, openSession, setDebug } = useLabmateWS(WS_URL, token);
+  const { state, send, newSession, newChat, openSession, setDebug } = useLabmateWS(WS_URL, token);
+
+  // Minimum boot/loading display time: if the connect→ready sequence finishes in
+  // under MIN_BOOT_MS the loading animation flashes by and looks bad, so hold the
+  // boot screen until at least MIN_BOOT_MS has elapsed since loading began.
+  const isBooting =
+    state.phase === 'connecting' ||
+    state.phase === 'authenticating' ||
+    state.phase === 'booting';
+  const minBootElapsed = useMinimumElapsed(isBooting, MIN_BOOT_MS);
 
   // Handle login submission
   const handleLoginSubmit = useCallback(
     async (creds: { email: string; password: string; remember: boolean }) => {
+      setLoginError(undefined);
+      setLoggingIn(true);
       try {
-        // In a real app, you'd authenticate here and get a token from the backend.
-        // For now, assume the email:password is the token (or use a placeholder).
-        // This should be replaced with actual backend auth.
-        const newToken = `${creds.email}:${creds.password}`;
+        const res = await fetch(`${API_URL}/auth/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: creds.email, password: creds.password }),
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          setLoginError((body as { detail?: string }).detail ?? 'invalid_credentials');
+          return;
+        }
+        const { token: newToken } = (await res.json()) as { token: string };
         setToken(newToken);
         if (window.electronAPI?.setToken) {
           await window.electronAPI.setToken(newToken, creds.remember);
         }
-      } catch (err) {
-        console.error('Login failed:', err);
+      } catch {
+        setLoginError('network_error');
+      } finally {
+        setLoggingIn(false);
       }
     },
     []
@@ -47,11 +68,11 @@ export function Root(): JSX.Element {
   // Render based on phase
   switch (state.phase) {
     case 'idle': {
-      return <LoginScreen onSubmit={handleLoginSubmit} />;
+      return <LoginScreen onSubmit={handleLoginSubmit} submitting={loggingIn} error={loginError} />;
     }
 
     case 'error': {
-      return <LoginScreen onSubmit={handleLoginSubmit} error={state.authError} />;
+      return <LoginScreen onSubmit={handleLoginSubmit} submitting={loggingIn} error={loginError ?? state.authError} />;
     }
 
     case 'connecting':
@@ -64,88 +85,24 @@ export function Root(): JSX.Element {
     }
 
     case 'ready': {
-      const agentStatus = state.agentStatus;
-      const sessions = state.sessions ?? [];
-      const turns = state.turns ?? [];
+      // Honor the minimum boot display time: if ready arrived before MIN_BOOT_MS,
+      // keep showing the (completed) boot screen until the minimum has elapsed.
+      if (!minBootElapsed) {
+        return <BootScreen subsystems={state.subsystems ?? []} onRetry={handleBootRetry} />;
+      }
 
-      if (!agentStatus) {
-        return <div className="flex items-center justify-center h-screen">Loading...</div>;
+      if (!state.agentStatus) {
+        return <div className="flex h-screen items-center justify-center text-mono">Loading…</div>;
       }
 
       return (
-        <ChatLayout
-          topBar={
-            <div className="flex items-center justify-between w-full">
-              <div className="text-sm font-medium text-primary">Labmate Chat</div>
-              <SystemFooter status={agentStatus} />
-            </div>
-          }
-          left={
-            <div className="flex flex-col gap-3 p-3">
-              <button
-                onClick={() => newSession?.('chat')}
-                className="rounded bg-secondary px-3 py-2 text-sm font-medium text-white hover:bg-secondary-hover"
-              >
-                + New Chat
-              </button>
-              <div className="flex flex-col gap-1 overflow-y-auto">
-                {sessions.map((session) => (
-                  <button
-                    key={session.id}
-                    onClick={() => openSession?.(session.id)}
-                    className="truncate rounded px-2 py-1 text-left text-sm text-secondary hover:bg-rail-hover"
-                    title={session.title}
-                  >
-                    {session.title || `Session ${session.id.slice(0, 6)}`}
-                  </button>
-                ))}
-              </div>
-            </div>
-          }
-          center={
-            <div className="flex flex-col">
-              <div className="flex-1 overflow-y-auto p-4">
-                <div className="flex flex-col gap-4">
-                  {turns.map((turn) => (
-                    <Turn
-                      key={turn.id}
-                      turn={turn}
-                      onPreviewArtifact={(artifact: Artifact) => setPreviewArtifact(artifact)}
-                    />
-                  ))}
-                </div>
-              </div>
-
-              <div className="border-t border-border-1 px-4 py-2">
-                <Composer
-                  onSend={(text: string) => {
-                    const sessionId = sessions[0]?.id ?? 'default';
-                    send(text, sessionId);
-                  }}
-                  onStop={() => {
-                    // TODO: implement stop signal via setDebug or similar
-                    setDebug(sessions[0]?.id ?? 'default', false);
-                  }}
-                  streaming={false}
-                />
-              </div>
-
-              {state.contextWindow && (
-                <div className="border-t border-border-1">
-                  <ContextBar window={state.contextWindow} />
-                </div>
-              )}
-            </div>
-          }
-          right={
-            previewArtifact ? (
-              <FilePreview artifact={previewArtifact} />
-            ) : (
-              <div className="flex items-center justify-center p-4 text-sm text-mono">
-                Select an artifact to preview
-              </div>
-            )
-          }
+        <ChatScreen
+          state={state}
+          send={send}
+          newSession={newSession}
+          newChat={newChat}
+          openSession={openSession}
+          setDebug={setDebug}
         />
       );
     }

@@ -1,6 +1,6 @@
 import { renderHook, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { useLabmateWS } from './useLabmateWS';
+import { useLabmateWS, ensureActiveSession, mintSessionId } from './useLabmateWS';
 
 let mockWs: {
   send: ReturnType<typeof vi.fn>;
@@ -111,6 +111,13 @@ describe('useLabmateWS', () => {
     (window as Window & { electronAPI?: unknown }).electronAPI = {
       config: { wsUrl: null, isDev: true }, token: null,
       setConfig: vi.fn(), setToken: vi.fn(), clearToken: vi.fn(), executeTool,
+      getWorkspaceRoots: vi.fn().mockResolvedValue([]),
+      addWorkspaceRoot: vi.fn().mockResolvedValue({ roots: [] }),
+      removeWorkspaceRoot: vi.fn().mockResolvedValue({ roots: [] }),
+      hasDefaultWorkspace: vi.fn().mockResolvedValue(true),
+      getDefaultWorkspace: vi.fn().mockResolvedValue(null),
+      setDefaultWorkspace: vi.fn().mockResolvedValue({ path: null }),
+      searchWorkspace: vi.fn().mockResolvedValue({ entries: [] }),
     };
 
     try {
@@ -131,7 +138,7 @@ describe('useLabmateWS', () => {
       });
 
       await vi.waitFor(() => {
-        expect(executeTool).toHaveBeenCalledWith('read_file', { path: 'a.txt' });
+        expect(executeTool).toHaveBeenCalledWith('read_file', { path: 'a.txt' }, null);
       });
       await vi.waitFor(() => {
         const sent = mockWs.send.mock.calls.map((c) => JSON.parse(c[0] as string));
@@ -141,6 +148,44 @@ describe('useLabmateWS', () => {
           result: { content: 'hi' },
           error: undefined,
         });
+      });
+    } finally {
+      delete (window as Window & { electronAPI?: unknown }).electronAPI;
+    }
+  });
+
+  it('routes a tool.request to the workspace of its turn’s session', async () => {
+    const executeTool = vi.fn().mockResolvedValue({ result: { content: 'hi' } });
+    (window as Window & { electronAPI?: unknown }).electronAPI = {
+      config: { wsUrl: null, isDev: true }, token: null,
+      setConfig: vi.fn(), setToken: vi.fn(), clearToken: vi.fn(), executeTool,
+      getWorkspaceRoots: vi.fn().mockResolvedValue([]),
+      addWorkspaceRoot: vi.fn().mockResolvedValue({ roots: [] }),
+      removeWorkspaceRoot: vi.fn().mockResolvedValue({ roots: [] }),
+      hasDefaultWorkspace: vi.fn().mockResolvedValue(true),
+      getDefaultWorkspace: vi.fn().mockResolvedValue(null),
+      setDefaultWorkspace: vi.fn().mockResolvedValue({ path: null }),
+      searchWorkspace: vi.fn().mockResolvedValue({ entries: [] }),
+    };
+
+    try {
+      renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+      act(() => { mockWs.onopen?.(); });
+      // The assistant turn announces its session first…
+      act(() => {
+        mockWs.onmessage?.({
+          data: JSON.stringify({ type: 'turn.created', turn: { id: 'turn-7', sessionId: 'sess-X', role: 'assistant' } }),
+        });
+      });
+      // …then a tool.request carrying only that turnId must resolve to sess-X.
+      act(() => {
+        mockWs.onmessage?.({
+          data: JSON.stringify({ type: 'tool.request', turnId: 'turn-7', toolRequestId: 'req-7', name: 'read_file', args: { path: 'a.txt' } }),
+        });
+      });
+
+      await vi.waitFor(() => {
+        expect(executeTool).toHaveBeenCalledWith('read_file', { path: 'a.txt' }, 'sess-X');
       });
     } finally {
       delete (window as Window & { electronAPI?: unknown }).electronAPI;
@@ -298,5 +343,76 @@ describe('useLabmateWS', () => {
 
     expect(instances).toHaveLength(2);
     expect(instances[0].close).toHaveBeenCalledTimes(1);
+  });
+
+  it('newChat() mints a fresh active session id (no backend round-trip)', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    emit({ type: 'boot.plan', subsystems: SUBSYSTEMS });
+    emit({ type: 'boot.ready', sessionBootstrap: BOOTSTRAP });
+    let id = '';
+    act(() => {
+      id = result.current.newChat();
+    });
+    expect(id).toMatch(/^s-/);
+    expect(result.current.state.activeSessionId).toBe(id);
+  });
+
+  it('boot.ready with no active session mints exactly one — created at the source, not in a view effect', () => {
+    const { result, rerender } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    emit({ type: 'boot.plan', subsystems: SUBSYSTEMS });
+    // BOOTSTRAP has sessions:[] and activeSessionId:null
+    emit({ type: 'boot.ready', sessionBootstrap: BOOTSTRAP });
+    const id = result.current.state.activeSessionId;
+    expect(id).toMatch(/^s-/); // a session exists immediately, no reactive newChat() needed
+    // Stable across re-renders: created once, no churn (the old useEffect could re-fire).
+    rerender();
+    expect(result.current.state.activeSessionId).toBe(id);
+  });
+
+  it('boot.ready that already names an active session does not mint a new one', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    emit({ type: 'boot.plan', subsystems: SUBSYSTEMS });
+    emit({ type: 'boot.ready', sessionBootstrap: { ...BOOTSTRAP, activeSessionId: 's-existing' } });
+    expect(result.current.state.activeSessionId).toBe('s-existing');
+  });
+
+  it('openSession() sets the active session and sends session.open', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    emit({ type: 'boot.plan', subsystems: SUBSYSTEMS });
+    emit({ type: 'boot.ready', sessionBootstrap: BOOTSTRAP });
+    act(() => result.current.openSession?.('s-xyz'));
+    expect(result.current.state.activeSessionId).toBe('s-xyz');
+    expect(mockWs.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'session.open', sessionId: 's-xyz' }),
+    );
+  });
+});
+
+describe('ensureActiveSession', () => {
+  it('mints an id only when there is no active session and no sessions', () => {
+    const out = ensureActiveSession(BOOTSTRAP, () => 's-fixed');
+    expect(out.activeSessionId).toBe('s-fixed');
+  });
+
+  it('leaves an already-active bootstrap untouched (idempotent, no double create)', () => {
+    const b = { ...BOOTSTRAP, activeSessionId: 's-real' };
+    expect(ensureActiveSession(b, () => 's-new')).toBe(b);
+  });
+
+  it('falls back to existing sessions instead of minting', () => {
+    const b = {
+      ...BOOTSTRAP,
+      sessions: [{ id: 's-old', title: 'x', mode: 'chat', turnCount: 0 }],
+      activeSessionId: null,
+    };
+    expect(ensureActiveSession(b, () => 's-new')).toBe(b);
+  });
+
+  it('mintSessionId returns an s-prefixed id', () => {
+    expect(mintSessionId()).toMatch(/^s-/);
   });
 });
