@@ -3,18 +3,30 @@
 > Captured 2026-06-30 during the local-execution work, to be worked when we circle back to
 > frontend polish. Branch where the partial fix lives: `feat/local-execution-phase2`.
 
-## 1. Session continuity — PARTIAL FIX committed, NEEDS LIVE VERIFICATION
-**Symptom:** clicking an old chat in the sidebar did nothing (blank); context strip appeared to
-reset on each message.
-**Fix shipped (`413535e`):** `session.open` now replays a `session.history` frame with the
-session's stored turns; the frontend merges them (deduped by turn id); added `ctx-carry` /
-`ctx-persist` diagnostic logs in the orchestrator.
-**Still TODO — verify live** (pull branch → restart orchestrator → reload frontend):
-- Clicking an old chat loads its history (not blank).
-- Staying in ONE chat across messages → context strip holds its value (doesn't drop to 0).
-- Orchestrator log shows `ctx-carry: session=<same id> carried=<nonzero on 2nd+ msg>`.
-- If any of these still fail → debug further (the carry code itself is verified-correct, so
-  suspect a deploy/branch mismatch or a frontend display reset).
+## 1. Session continuity — clicking an old chat STILL does nothing (fix `413535e` did NOT resolve it)
+**Symptom:** clicking an old chat in the sidebar does nothing (no switch / blank). Re-confirmed
+broken AFTER the fix below.
+**Fix shipped (`413535e`) — insufficient:** `session.open` replays a `session.history` frame with
+the session's stored turns; frontend merges them (dedup by turn id); added `ctx-carry`/`ctx-persist`
+diagnostic logs. This addressed history-replay, but the click is still dead.
+**Code wiring VERIFIED CORRECT (so the bug is elsewhere):**
+- `openSession` IS passed Root → ChatScreen (`Root.tsx:104`) → Sidebar `onOpenSession` → the
+  session `<button>` `onClick`.
+- `openSession(sid)` dispatches `SET_ACTIVE_SESSION` (reducer updates `activeSessionId` in phase
+  'ready') + sends a `session.open` frame.
+- The session store is APP-LEVEL (`server.py:374`, shared via `app.state.store`), so old sessions'
+  turns persist across connections; `session.open` replays them.
+**Debug leads for the later fix (in order):**
+1. **Rule out a stale frontend first** — hard-reload / rebuild the Electron app and retest; the
+   test may have run pre-`413535e` code.
+2. If still dead: add temp logging in `openSession` + the session-item `onClick` — does the click
+   fire? does `activeSessionId` actually change in state? (Suspect the click handler on the
+   converted `<button>`, or the `activeSessionId = state.activeSessionId ?? sessions[0]?.id`
+   render fallback masking the change.)
+3. Then confirm the `session.history` frame arrives and the turns render under the new
+   `activeSessionId` filter.
+**Also verify (same fix):** staying in ONE chat across messages → context strip holds its value;
+orchestrator log shows `ctx-carry: session=<same id> carried=<nonzero on 2nd+ msg>`.
 
 ## 2. Context strip resets per message — likely a SYMPTOM of #1
 **Hypothesis:** because old chats didn't reload, the user kept starting NEW chats, and each new
