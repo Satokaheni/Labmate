@@ -116,6 +116,18 @@ never read here), byte-stable when none; **T-B1.4** [backend] `load_skill` dispa
 doc-skill to its stored `body` (status `loaded`), pod skills unchanged.
 
 ### P2-B.2 — hosted-skill auto-routing ("don't make me name the skill")
+
+> **DOC-SKILL auto-routing — RESOLVED 2026-06-30 by measurement (no machinery built).** Live 5-run
+> measurement of the IMPLICIT prompt ("Write a short welcome greeting…", NO skill name) against the
+> `repo-greeting` doc-skill: **marker 5/5, `load_skill` fired 5/5, fully deterministic (llm_calls=7,
+> ok=True every run).** The `fcbd477` routing fix (doc-skills present → route to the ReAct loop) plus a
+> clear skill description is SUFFICIENT — the model recognizes the doc-skill from its catalog
+> description and loads it unprompted. The planned "first-class router-candidate voting" machinery was
+> NOT needed and was NOT built (measure-first win). If a future doc-skill with a weak/overlapping
+> description mis-routes, the lever is the description (or the repeatable doc-skill routing eval below),
+> NOT new routing machinery. **The HOSTED-MCP-tool half below is still open** (eval built in `39f86db`,
+> not yet run live).
+
 **Problem (from P2-B.0 live testing):** the user still prefixes prompts with "use ast-ts-refactor"
 because auto-selection of a **hosted MCP tool** is unproven on the Q4 Gemma model. The harness
 already auto-routes — pod skills via `SkillRouter.select()`/`catalog_prompt` (gated by the routing
