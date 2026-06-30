@@ -133,6 +133,47 @@ CANONICAL_BUILTIN_SCHEMAS: dict[str, dict] = {
 }
 
 
+def _final_tool_name(descriptor: ToolDescriptor) -> str:
+    """
+    Compute the final dispatch name for a tool descriptor.
+
+    Implements the EXACT namespacing rule: if descriptor has both namespace
+    and source in {"mcp", "skill"}, the final name is f"mcp__{namespace}__{name}";
+    otherwise just the tool name.
+
+    This helper is used consistently in both build_tool_list and
+    manifest_local_tool_names to prevent drift.
+    """
+    namespace = descriptor.get("namespace")
+    source = descriptor.get("source", "builtin")
+    name = descriptor.get("name", "")
+
+    if namespace and source in ("mcp", "skill"):
+        return f"mcp__{namespace}__{name}"
+    return name
+
+
+def manifest_local_tool_names(manifest: ClientManifest | None, fallback: set[str]) -> set[str]:
+    """
+    Extract the set of tool names that route to the local client.
+
+    If manifest is None (no client attached), returns the fallback set.
+    Otherwise, returns the set of final dispatch names for every tool
+    declared in the manifest, using _final_tool_name to compute each name.
+
+    This set is used in dispatch routing to check `if name in local_tool_names`.
+    """
+    if manifest is None:
+        return set(fallback)
+
+    names: set[str] = set()
+    for descriptor in manifest.get("tools", []):
+        if "name" in descriptor:
+            names.add(_final_tool_name(descriptor))
+
+    return names
+
+
 def parse_manifest(payload: dict | None) -> ClientManifest | None:
     """
     Parse a client manifest from a raw dict payload.
@@ -259,12 +300,8 @@ def build_tool_list(
             continue
         if "schema" not in descriptor or descriptor["schema"] is None:
             continue
-        # Namespaced name: mcp__<namespace>__<name> if namespace set, else <name>.
-        namespace = descriptor.get("namespace")
-        if namespace:
-            final_name = f"mcp__{namespace}__{descriptor['name']}"
-        else:
-            final_name = descriptor["name"]
+        # Compute final name using the shared helper.
+        final_name = _final_tool_name(descriptor)
         # Clone the schema and update the function name to match final_name.
         schema = descriptor["schema"].copy()
         if "function" in schema:

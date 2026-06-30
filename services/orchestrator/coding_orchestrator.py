@@ -35,6 +35,7 @@ from .sandbox_edits import detect_sandbox_writes
 from .steer_inject import inject_steer
 from .test_outcome import classify_test_attempt
 from .tool_grounding import DEFAULT_TOOL_RESULT_BUDGET, ground_tool_result
+from .tool_manifest import manifest_local_tool_names
 from .types import State
 from .verification_stop import (
     MAX_VERIFY_INFRA_ERRORS,
@@ -523,6 +524,11 @@ class AsyncOrchestrator:
             client_manifest=client_context.get_manifest(),
         )
         tools = assembler.tools()  # frozen list — never rebuilt per step
+        # Compute the set of tools that route to the local client (if attached).
+        # Falls back to LOCAL_TOOL_NAMES if no manifest is present.
+        local_tool_names = manifest_local_tool_names(
+            client_context.get_manifest(), LOCAL_TOOL_NAMES
+        )
         messages = [
             assembler.system_message(),  # frozen system dict at index 0
             {"role": "user", "content": goal},
@@ -1049,7 +1055,7 @@ class AsyncOrchestrator:
                         if _sb_writes:
                             edited_files |= _sb_writes
 
-                    elif name in LOCAL_TOOL_NAMES:
+                    elif name in local_tool_names:
                         if self.redis is not None:
                             try:
                                 result = await request_local_tool(self.redis, name, args)

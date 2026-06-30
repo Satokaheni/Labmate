@@ -16,6 +16,7 @@ from services.orchestrator.tool_manifest import (
     CANONICAL_BUILTIN_SCHEMAS,
     ClientManifest,
     build_tool_list,
+    manifest_local_tool_names,
     parse_manifest,
 )
 
@@ -475,3 +476,155 @@ def test_prompt_assembler_existing_tests_still_pass():
     a = PromptAssembler(skill_router=None, codegraph_enabled=False)
     names = [t["function"]["name"] for t in a.tools()]
     assert names == ["read_file", "write_file", "list_dir", "run_bash", "run_tests", "finish"]
+
+
+@pytest.mark.mocked
+def test_manifest_local_tool_names_no_manifest():
+    """manifest_local_tool_names(None, fallback) returns the fallback set."""
+    fallback = {"read_file", "write_file", "list_dir"}
+    result = manifest_local_tool_names(None, fallback)
+    assert result == fallback
+
+
+@pytest.mark.mocked
+def test_manifest_local_tool_names_builtin_tools():
+    """manifest_local_tool_names extracts builtin tool names from manifest."""
+    manifest: ClientManifest = {
+        "tools": [
+            {"name": "read_file", "source": "builtin"},
+            {"name": "write_file", "source": "builtin"},
+            {"name": "search_files", "source": "builtin"},
+        ]
+    }
+    result = manifest_local_tool_names(manifest, set())
+    assert result == {"read_file", "write_file", "search_files"}
+
+
+@pytest.mark.mocked
+def test_manifest_local_tool_names_mcp_tool_with_namespace():
+    """manifest_local_tool_names namespaces mcp tools correctly."""
+    manifest: ClientManifest = {
+        "tools": [
+            {"name": "read_file", "source": "builtin"},
+            {"name": "foo", "source": "mcp", "namespace": "srv", "schema": {}},
+        ]
+    }
+    result = manifest_local_tool_names(manifest, set())
+    assert result == {"read_file", "mcp__srv__foo"}
+
+
+@pytest.mark.mocked
+def test_manifest_local_tool_names_mcp_tool_no_namespace():
+    """manifest_local_tool_names uses tool name as-is when namespace is absent."""
+    manifest: ClientManifest = {
+        "tools": [
+            {"name": "my_tool", "source": "mcp", "schema": {}},
+        ]
+    }
+    result = manifest_local_tool_names(manifest, set())
+    assert result == {"my_tool"}
+
+
+@pytest.mark.mocked
+def test_manifest_local_tool_names_skips_entries_without_name():
+    """manifest_local_tool_names skips descriptors without a name field."""
+    manifest: ClientManifest = {
+        "tools": [
+            {"name": "read_file", "source": "builtin"},
+            {"source": "mcp", "namespace": "srv"},  # no name
+            {"name": "write_file", "source": "builtin"},
+        ]
+    }
+    result = manifest_local_tool_names(manifest, set())
+    assert result == {"read_file", "write_file"}
+
+
+@pytest.mark.mocked
+def test_manifest_local_tool_names_matches_advertised_names():
+    """manifest_local_tool_names output matches advertised function names from build_tool_list.
+
+    This sync guard ensures dispatch routing cannot drift from advertisement.
+    The set should equal all advertised tool names EXCEPT control/server tools
+    (finish, load_skill, call_skill_tool, code_semantic_search, memory_search).
+    """
+    manifest: ClientManifest = {
+        "tools": [
+            {"name": "read_file", "source": "builtin"},
+            {"name": "write_file", "source": "builtin"},
+            {"name": "search_files", "source": "builtin"},
+            {
+                "name": "my_mcp_tool",
+                "source": "mcp",
+                "namespace": "my_server",
+                "schema": {
+                    "type": "function",
+                    "function": {"name": "my_mcp_tool", "parameters": {}},
+                },
+            },
+        ]
+    }
+    static_tail = _static_tail_schemas()
+    advertised_tools = build_tool_list(
+        manifest, skill_router=None, codegraph_enabled=False, static_tail=static_tail
+    )
+    advertised_names = {t["function"]["name"] for t in advertised_tools}
+
+    # Get the local tool names.
+    local_names = manifest_local_tool_names(manifest, set())
+
+    # Control/server tools that should NOT be in local_names.
+    control_tools = {
+        "finish",
+        "load_skill",
+        "call_skill_tool",
+        "code_semantic_search",
+        "memory_search",
+    }
+
+    # Compute expected: advertised minus control tools.
+    expected = advertised_names - control_tools
+
+    # They must match.
+    assert local_names == expected, f"Expected {expected}, got {local_names}"
+
+
+@pytest.mark.mocked
+def test_manifest_local_tool_names_dispatch_routing():
+    """Test that manifest_local_tool_names correctly identifies tools that should route to the client.
+
+    This is the core routing check used in coding_orchestrator._run_react_loop:
+    `elif name in local_tool_names:` dispatches to request_local_tool.
+
+    When a client declares a builtin tool (e.g., search_files) in the manifest,
+    it must be in the local_tool_names set so the dispatch branch catches it.
+    When the client is not attached (no manifest), fallback to LOCAL_TOOL_NAMES.
+    """
+    # Case 1: Client attached, declares read_file and search_files.
+    manifest: ClientManifest = {
+        "tools": [
+            {"name": "read_file", "source": "builtin"},
+            {"name": "search_files", "source": "builtin"},
+        ]
+    }
+    local_names = manifest_local_tool_names(manifest, {"read_file", "write_file", "list_dir"})
+    # Should have exactly what the manifest declares (builtin tools).
+    assert "read_file" in local_names
+    assert "search_files" in local_names
+    # write_file not declared; should NOT be in local_names (manifest is authoritative).
+    assert "write_file" not in local_names
+
+    # Case 2: No client (manifest=None), fall back to static LOCAL_TOOL_NAMES.
+    fallback = {"read_file", "write_file", "list_dir"}
+    local_names = manifest_local_tool_names(None, fallback)
+    assert local_names == fallback
+
+    # Case 3: Client declares an MCP tool with namespace.
+    # The dispatch check must use the final namespaced name.
+    manifest = {
+        "tools": [
+            {"name": "search", "source": "mcp", "namespace": "fs", "schema": {}},
+        ]
+    }
+    local_names = manifest_local_tool_names(manifest, set())
+    assert "mcp__fs__search" in local_names  # Dispatch check looks for this exact name.
+    assert "search" not in local_names  # NOT the bare name.
