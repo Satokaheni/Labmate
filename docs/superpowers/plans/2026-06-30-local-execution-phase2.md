@@ -139,6 +139,13 @@ add machinery**:
   NOT add it speculatively; gate it on the eval numbers.
 - **Constraint:** any enrichment must keep prefix byte-stability (hosted tool schemas are sorted by
   final name in `build_tool_list`) and not break the no-client pod-routing path.
+- **Known follow-up (latency, from the `fcbd477` review):** the plan-node fix routes EVERY skill-less
+  goal to the ReAct loop whenever ANY client doc-skill is installed (so a trivial "what is 2+2" loses
+  the one-call direct-answer fast-path — correctness is fine, the loop still answers via `finish`, only
+  latency regresses). Acceptable as shipped. IF doc-skill users report latency on trivial goals, add a
+  CHEAP relevance gate (lexical/embedding match of the goal against doc-skill *descriptions*) before
+  routing to execute — do NOT revert to pod-only routing (that's the blindness `fcbd477` removed), and
+  do NOT add an extra LLM judgement call (defeats the latency goal). Measure first.
 
 ### P2-B.3 — global user-installed MCP servers (`~/.labmate/mcp.json`) — PLANNED, build after live test
 **Motivation:** mirrors how Claude scopes MCP — a `--scope user` server is GLOBAL (available in every
