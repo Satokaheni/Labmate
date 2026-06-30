@@ -57,9 +57,10 @@ export function parseNamespacedTool(
 }
 
 /**
- * Resolve the skills directory.
- * Uses LABMATE_SKILLS_DIR env var if set, else computes relative path from repo root.
- * Frontend is at <repo>/services/frontend, skills at <repo>/services/skills.
+ * Resolve the bundled MCP skills directory (for first-party skills like ast-ts-refactor,
+ * component-doc-gen, and a11y-audit). Uses LABMATE_SKILLS_DIR env var as a dev override
+ * (not the location for user doc-skills — those are loaded from ~/.labmate/skills/).
+ * Frontend is at <repo>/services/frontend, bundled skills at <repo>/services/skills.
  */
 export function skillsDir(): string {
   if (process.env.LABMATE_SKILLS_DIR) {

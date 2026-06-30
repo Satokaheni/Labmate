@@ -8,7 +8,7 @@ import { searchWorkspace } from './fs-search.js';
 import { McpHostManager } from './mcp-registry.js';
 import { resolveMcpPathArgs } from './mcp-path-rooting.js';
 import { skillDescriptors } from './skill-discovery.js';
-import { skillsDir } from './mcp-registry.js';
+import { userSkillsDir, ensureUserSkillsDir } from './labmate-home.js';
 
 const DEV_URL = 'http://localhost:8080';
 const IS_DEV = process.env.ELECTRON_DEV === '1';
@@ -351,7 +351,7 @@ ipcMain.handle('labmate:mcp-tools', async () => {
 
 ipcMain.handle('labmate:skill-descriptors', async () => {
   try {
-    const skills = skillDescriptors(skillsDir());
+    const skills = skillDescriptors(userSkillsDir());
     return skills;
   } catch (err) {
     console.error('failed to get skill descriptors:', err);
@@ -389,6 +389,7 @@ ipcMain.handle(
 );
 
 void app.whenReady().then(() => {
+  ensureUserSkillsDir();
   mcpReady = mcpManager.startAll().catch((e) => {
     console.error('mcp startAll failed:', e);
   });
