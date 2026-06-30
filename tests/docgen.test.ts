@@ -122,12 +122,15 @@ describe("batch shape", () => {
 });
 
 describe("resolveComponentPath", () => {
-  it("resolves a bare component name by searching the workspace", async () => {
+  it("existing absolute path is returned unchanged (REGRESSION-CRITICAL)", async () => {
     const fs = await import("node:fs");
     const os = await import("node:os");
     const path = await import("node:path");
+    const { resolveComponentPath } = await import(
+      "../services/skills/component-doc-gen/src/index.js"
+    );
 
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "component-resolve-"));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "component-abs-"));
     const componentFile = path.join(dir, "Button.tsx");
     fs.writeFileSync(
       componentFile,
@@ -135,77 +138,69 @@ describe("resolveComponentPath", () => {
       "utf-8",
     );
 
-    // Import the resolver from the built module
-    const { ComponentParser } = await import(
-      "../services/skills/component-doc-gen/src/parser.js"
-    );
-    const { default: src } = await import(
-      "../services/skills/component-doc-gen/dist/index.js"
-    ).catch(() => ({ default: {} }));
-
-    // Since resolveComponentPath is not exported, we test via the CLI handler indirectly
-    // by checking that a bare name resolves to the correct file when in that directory
-    const resolvedPath = path.resolve(path.join(dir, "Button"));
-    expect(resolvedPath).toBeTruthy();
+    const result = resolveComponentPath(componentFile);
+    expect(result).toBe(path.resolve(componentFile));
 
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it("accepts an existing absolute path unchanged", async () => {
+  it("absolute non-existent path is searched by basename", async () => {
     const fs = await import("node:fs");
     const os = await import("node:os");
     const path = await import("node:path");
-    const { ComponentParser } = await import(
-      "../services/skills/component-doc-gen/src/parser.js"
+    const { resolveComponentPath } = await import(
+      "../services/skills/component-doc-gen/src/index.js"
     );
 
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "component-abs-"));
-    const componentFile = path.join(dir, "Modal.tsx");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "component-search-"));
+    const srcDir = path.join(dir, "src");
+    fs.mkdirSync(srcDir);
+    const componentFile = path.join(srcDir, "Button.tsx");
     fs.writeFileSync(
       componentFile,
-      `export interface ModalProps { title: string }\nexport function Modal(p: ModalProps){return null}\nexport default Modal;\n`,
+      `export function Button(){return null}\n`,
       "utf-8",
     );
 
-    const parser = new ComponentParser();
-    const { componentName } = parser.extractProps(componentFile);
-    expect(componentName).toBe("Modal");
+    // Dispatch-rooting case: absolute but non-existent path to a dir, search by basename
+    const result = resolveComponentPath(path.join(dir, "Button"));
+    expect(result).toBe(path.resolve(componentFile));
 
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it("throws when a component name has no matches", async () => {
+  it("throws when component name has no matches", async () => {
     const fs = await import("node:fs");
     const os = await import("node:os");
     const path = await import("node:path");
+    const { resolveComponentPath } = await import(
+      "../services/skills/component-doc-gen/src/index.js"
+    );
 
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "component-nomatch-"));
-    // Create no files
+    // Create no component files
 
-    // The resolver should fail to find NonExistent when called with that name
-    // We verify this indirectly by ensuring the search would fail
     expect(() => {
-      // A bare name that doesn't exist as a file should trigger search
-      const fakeComponentPath = "NonExistent.tsx";
-      const exists = fs.existsSync(fakeComponentPath);
-      expect(exists).toBe(false);
-    }).not.toThrow();
+      resolveComponentPath(path.join(dir, "NoSuchComp"));
+    }).toThrow(/no component file found/);
 
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it("throws when multiple files match the same basename", async () => {
+  it("throws when multiple files match the basename", async () => {
     const fs = await import("node:fs");
     const os = await import("node:os");
     const path = await import("node:path");
+    const { resolveComponentPath } = await import(
+      "../services/skills/component-doc-gen/src/index.js"
+    );
 
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "component-multi-"));
-    const subdir1 = path.join(dir, "components1");
-    const subdir2 = path.join(dir, "components2");
+    const subdir1 = path.join(dir, "a");
+    const subdir2 = path.join(dir, "b");
     fs.mkdirSync(subdir1);
     fs.mkdirSync(subdir2);
 
-    // Create two Button.tsx files in different subdirectories
     fs.writeFileSync(
       path.join(subdir1, "Button.tsx"),
       `export function Button(){return null}\n`,
@@ -217,33 +212,49 @@ describe("resolveComponentPath", () => {
       "utf-8",
     );
 
-    // When searching for "Button" from the root, it should find multiple matches
-    expect(true).toBe(true); // Placeholder; actual test is in the resolver
+    expect(() => {
+      resolveComponentPath(path.join(dir, "Button"));
+    }).toThrow(/multiple files match/);
 
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it("resolves a workspace-relative path by searching from the root", async () => {
+  it("end-to-end: resolves and generates doc with correct component_name", async () => {
     const fs = await import("node:fs");
     const os = await import("node:os");
     const path = await import("node:path");
+    const { resolveComponentPath } = await import(
+      "../services/skills/component-doc-gen/src/index.js"
+    );
     const { ComponentParser } = await import(
       "../services/skills/component-doc-gen/src/parser.js"
     );
+    const { DocGenerator } = await import(
+      "../services/skills/component-doc-gen/src/docgen.js"
+    );
 
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "component-wsrel-"));
-    const nestedDir = path.join(dir, "src", "components");
-    fs.mkdirSync(nestedDir, { recursive: true });
-    const componentFile = path.join(nestedDir, "Checkbox.tsx");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "component-e2e-"));
+    const srcDir = path.join(dir, "src");
+    fs.mkdirSync(srcDir);
+    const componentFile = path.join(srcDir, "Checkbox.tsx");
     fs.writeFileSync(
       componentFile,
       `export interface CheckboxProps { checked: boolean }\nexport function Checkbox(p: CheckboxProps){return null}\nexport default Checkbox;\n`,
       "utf-8",
     );
 
+    // Resolve by name (absolute non-existent path)
+    const resolved = resolveComponentPath(path.join(dir, "Checkbox"));
+    expect(resolved).toBe(path.resolve(componentFile));
+
+    // Parse and generate doc
     const parser = new ComponentParser();
-    const { componentName } = parser.extractProps(componentFile);
+    const { componentName, props, filePath } = parser.extractProps(resolved);
     expect(componentName).toBe("Checkbox");
+
+    const gen = new DocGenerator();
+    const doc = gen.generate(componentName, filePath, props, true);
+    expect(doc.component_name).toBe("Checkbox");
 
     fs.rmSync(dir, { recursive: true, force: true });
   });

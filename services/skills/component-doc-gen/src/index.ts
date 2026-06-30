@@ -18,7 +18,7 @@ import type { ComponentDoc } from "./types.js";
 const parser = new ComponentParser();
 const docgen = new DocGenerator();
 
-function resolveComponentPath(componentPath: string): string {
+export function resolveComponentPath(componentPath: string): string {
   // existing file (absolute, or relative-to-cwd) -> use as-is
   if (fs.existsSync(componentPath) && fs.statSync(componentPath).isFile()) {
     return path.resolve(componentPath);
@@ -89,7 +89,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "generate",
       description:
-        "Generate a markdown prop table, full markdown doc, and optional Storybook CSF3 story for a single React component file. AST-based (ts-morph), deterministic. component_path must be absolute.",
+        "Generate a markdown prop table, full markdown doc, and optional Storybook CSF3 story for a single React component file. AST-based (ts-morph), deterministic. component_path accepts an absolute path, a component name, or a workspace-relative path (searched for if it is not an existing file).",
       inputSchema: GENERATE_SCHEMA,
     },
     {
