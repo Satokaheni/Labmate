@@ -19,9 +19,16 @@ export function emptyWorkspaceState(): WorkspaceState {
   return { defaultWorkspace: null, perSession: {} };
 }
 
-/** Ordered roots for a session: explicit per-chat list, else [default], else []. */
+/** Ordered roots for a session: explicit per-chat list, else [default], else [].
+ *
+ * An explicit per-session entry is honored VERBATIM even when empty — a chat whose
+ * roots the user has fully removed must stay rootless, not silently fall back to the
+ * default seed (which would also let a later addRoot re-materialize the removed
+ * default). Only a session with NO entry at all uses the default. */
 export function resolveRoots(state: WorkspaceState, sessionId: string | null): string[] {
-  if (sessionId && state.perSession[sessionId]?.length) return state.perSession[sessionId];
+  if (sessionId && state.perSession[sessionId] !== undefined) {
+    return state.perSession[sessionId];
+  }
   return state.defaultWorkspace ? [state.defaultWorkspace] : [];
 }
 
@@ -67,8 +74,10 @@ export function parseWorkspaceState(raw: unknown): WorkspaceState {
   if (r.perSession && typeof r.perSession === 'object') {
     for (const [k, v] of Object.entries(r.perSession)) {
       if (Array.isArray(v)) {
-        const roots = v.filter((p): p is string => typeof p === 'string');
-        if (roots.length) perSession[k] = roots;
+        // Keep the entry even when empty: an explicitly-emptied chat (user removed
+        // every root) must persist as [] across reloads, not silently revert to the
+        // default seed via the resolveRoots fallback.
+        perSession[k] = v.filter((p): p is string => typeof p === 'string');
       }
     }
   }
