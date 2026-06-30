@@ -232,15 +232,37 @@ async function handleRunTests(args: Record<string, unknown>, roots: string[]): P
     };
   }
 
-  // Parse timeout (default 120s)
+  // Parse timeout (default 120s). Guard BOTH the arg and the env var against
+  // non-finite/non-positive values — an unguarded NaN (e.g. LABMATE_TEST_TIMEOUT_MS="abc")
+  // would feed setTimeout(fn, NaN), firing at ~0ms and killing every run with exit 124.
   const rawTimeoutMs = Number(args.timeout_ms);
+  const envTimeoutMs = Number(process.env.LABMATE_TEST_TIMEOUT_MS);
   const timeoutMs =
-    Number.isFinite(rawTimeoutMs) && rawTimeoutMs > 0 ? rawTimeoutMs : Number(process.env.LABMATE_TEST_TIMEOUT_MS ?? 120000);
+    Number.isFinite(rawTimeoutMs) && rawTimeoutMs > 0
+      ? rawTimeoutMs
+      : Number.isFinite(envTimeoutMs) && envTimeoutMs > 0
+        ? envTimeoutMs
+        : 120000;
 
   return new Promise<TestResult>((resolve) => {
     let timedOut = false;
+    // Buffer ALL output, then head+tail truncate at settle time. pytest failure
+    // summaries live at the TAIL, so a head-only cap would drop exactly what the
+    // model needs to fix the bug.
     let output = '';
-    const maxOutputBytes = 200 * 1024; // 200 KB cap
+    let killTimeout: ReturnType<typeof setTimeout> | undefined;
+    const maxOutputBytes = 200 * 1024; // 200 KB cap (100 KB head + 100 KB tail)
+    const halfCap = maxOutputBytes / 2;
+
+    function truncateOutput(raw: string): string {
+      if (raw.length <= maxOutputBytes) {
+        return raw;
+      }
+      const dropped = raw.length - maxOutputBytes;
+      const head = raw.substring(0, halfCap);
+      const tail = raw.substring(raw.length - halfCap);
+      return `${head}\n...[truncated ${dropped} bytes]...\n${tail}`;
+    }
 
     const child = proc.spawn(argv[0], argv.slice(1), {
       cwd,
@@ -251,62 +273,55 @@ async function handleRunTests(args: Record<string, unknown>, roots: string[]): P
       timedOut = true;
       if (!child.killed) {
         child.kill('SIGTERM');
-        // Grace period for graceful exit
-        const killTimeout = setTimeout(() => {
+        // Grace period for graceful exit, then force-kill. Tracked in outer scope
+        // so the 'close'/'error' handlers can clear it — otherwise a dangling timer
+        // could fire kill('SIGKILL') after the promise has already settled.
+        killTimeout = setTimeout(() => {
           if (!child.killed) {
             child.kill('SIGKILL');
           }
         }, 1000);
-        child.once('exit', () => clearTimeout(killTimeout));
       }
     }, timeoutMs);
 
-    // Collect stdout and stderr
+    // Collect stdout and stderr (full buffer; truncated only at settle time).
     if (child.stdout) {
       child.stdout.on('data', (data: Buffer) => {
-        const chunk = data.toString('utf-8');
-        if (output.length < maxOutputBytes) {
-          output += chunk;
-          if (output.length > maxOutputBytes) {
-            output = output.substring(0, maxOutputBytes) + '\n[output truncated]';
-          }
-        }
+        output += data.toString('utf-8');
       });
     }
 
     if (child.stderr) {
       child.stderr.on('data', (data: Buffer) => {
-        const chunk = data.toString('utf-8');
-        if (output.length < maxOutputBytes) {
-          output += chunk;
-          if (output.length > maxOutputBytes) {
-            output = output.substring(0, maxOutputBytes) + '\n[output truncated]';
-          }
-        }
+        output += data.toString('utf-8');
       });
     }
 
     child.on('close', (code: number | null) => {
       clearTimeout(timeoutHandle);
+      if (killTimeout) clearTimeout(killTimeout);
+
+      const rawOutput = truncateOutput(output);
 
       if (timedOut) {
         const timeoutMsg = `\n[run_tests timed out after ${timeoutMs}ms]`;
         resolve({
           ok: false,
           exit_code: 124,
-          raw_output: output + timeoutMsg,
+          raw_output: rawOutput + timeoutMsg,
         });
       } else {
         resolve({
           ok: code === 0,
           exit_code: code ?? -1,
-          raw_output: output,
+          raw_output: rawOutput,
         });
       }
     });
 
     child.on('error', (err: Error) => {
       clearTimeout(timeoutHandle);
+      if (killTimeout) clearTimeout(killTimeout);
       resolve({
         ok: false,
         exit_code: -1,

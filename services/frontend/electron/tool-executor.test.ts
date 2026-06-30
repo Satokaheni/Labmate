@@ -379,4 +379,71 @@ describe('run_tests', () => {
     expect(result.raw_output).toContain('err line 1');
     expect(result.raw_output).toContain('out line 2');
   });
+
+  it('does NOT timeout when LABMATE_TEST_TIMEOUT_MS is non-numeric (NaN guard)', async () => {
+    const fakeChild = new EventEmitter();
+    (fakeChild as any).stdout = new EventEmitter();
+    (fakeChild as any).stderr = new EventEmitter();
+    (fakeChild as any).killed = false;
+    const killSpy = vi.fn();
+    (fakeChild as any).kill = killSpy;
+
+    vi.spyOn(proc, 'spawn').mockReturnValue(fakeChild as never);
+
+    const originalEnv = process.env.LABMATE_TEST_TIMEOUT_MS;
+    process.env.LABMATE_TEST_TIMEOUT_MS = 'abc';
+
+    try {
+      const promise = executeTool('run_tests', {}, [ws]);
+
+      // A fast-closing child should resolve normally; a NaN timeout would have
+      // fired at ~0ms and forced exit_code 124 with a SIGTERM kill.
+      (fakeChild as any).stdout.emit('data', Buffer.from('1 passed\n'));
+      (fakeChild as any).emit('close', 0);
+
+      const result = (await promise) as { ok: boolean; exit_code: number; raw_output: string };
+      expect(result.ok).toBe(true);
+      expect(result.exit_code).toBe(0);
+      expect(result.raw_output).toContain('1 passed');
+      expect(killSpy).not.toHaveBeenCalled();
+    } finally {
+      if (originalEnv !== undefined) {
+        process.env.LABMATE_TEST_TIMEOUT_MS = originalEnv;
+      } else {
+        delete process.env.LABMATE_TEST_TIMEOUT_MS;
+      }
+    }
+  });
+
+  it('truncates over-cap output keeping HEAD and TAIL (pytest summary survives)', async () => {
+    const fakeChild = new EventEmitter();
+    (fakeChild as any).stdout = new EventEmitter();
+    (fakeChild as any).stderr = new EventEmitter();
+    (fakeChild as any).killed = false;
+    (fakeChild as any).kill = vi.fn();
+
+    vi.spyOn(proc, 'spawn').mockReturnValue(fakeChild as never);
+
+    const promise = executeTool('run_tests', {}, [ws]);
+
+    // Emit > 200KB of filler so the cap engages, with a unique marker at the
+    // very END (where pytest puts its failure summary).
+    const headMarker = 'HEAD_MARKER_START';
+    const tailMarker = 'TAIL_FAILURE_SUMMARY_MARKER';
+    const filler = 'x'.repeat(300 * 1024); // 300 KB, well over the 200 KB cap
+    (fakeChild as any).stdout.emit('data', Buffer.from(headMarker + filler));
+    (fakeChild as any).stdout.emit('data', Buffer.from(tailMarker + '\n'));
+    (fakeChild as any).emit('close', 1);
+
+    const result = (await promise) as { exit_code: number; raw_output: string };
+    expect(result.exit_code).toBe(1);
+    // Head preserved
+    expect(result.raw_output).toContain(headMarker);
+    // Tail preserved — this is the regression guard for the head-only bug
+    expect(result.raw_output).toContain(tailMarker);
+    // Truncation notice present
+    expect(result.raw_output).toMatch(/\[truncated \d+ bytes\]/);
+    // And the output is actually shrunk (not the full 300KB+)
+    expect(result.raw_output.length).toBeLessThan(300 * 1024);
+  });
 });
