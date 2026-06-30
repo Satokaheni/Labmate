@@ -954,8 +954,7 @@ class AsyncOrchestrator:
 
                     # Emit tool.start for all non-finish tools
                     _tool_id = uuid.uuid4().hex[:12]
-                    _kind = "skill" if name == "call_skill_tool" else "tool"
-                    _emit_name = args.get("skill", name) if name == "call_skill_tool" else name
+                    _kind, _emit_name = events.tool_event_display(name, args)
                     _t0 = time.monotonic()
                     await events.emit(
                         "tool.start",
