@@ -11,7 +11,11 @@ describe('McpHostManager', () => {
         process.env.LABMATE_SKILLS_DIR = '/custom/path';
         expect(skillsDir()).toBe('/custom/path');
       } finally {
-        process.env.LABMATE_SKILLS_DIR = original;
+        if (original === undefined) {
+          delete process.env.LABMATE_SKILLS_DIR;
+        } else {
+          process.env.LABMATE_SKILLS_DIR = original;
+        }
       }
     });
 
@@ -23,7 +27,11 @@ describe('McpHostManager', () => {
         // Should end with 'services/skills'
         expect(result).toMatch(/services[/\\]skills$/);
       } finally {
-        process.env.LABMATE_SKILLS_DIR = original;
+        if (original === undefined) {
+          delete process.env.LABMATE_SKILLS_DIR;
+        } else {
+          process.env.LABMATE_SKILLS_DIR = original;
+        }
       }
     });
   });
