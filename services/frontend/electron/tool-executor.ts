@@ -1,4 +1,4 @@
-import { promises as fs } from 'node:fs';
+import { promises as fs, statSync } from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -7,7 +7,11 @@ import { resolveToolPath } from './workspace';
 export type LocalToolName = 'read_file' | 'write_file' | 'list_dir' | 'search_files';
 export const LOCAL_TOOL_NAMES: readonly LocalToolName[] = ['read_file', 'write_file', 'list_dir', 'search_files'];
 
-export const execFileAsync = promisify(execFile);
+// Exported as a namespace-accessible binding so tests can spy on it
+// (handleSearchFiles calls it via this module's namespace).
+export const rg = {
+  execFileAsync: promisify(execFile),
+};
 
 /**
  * Get the ripgrep binary path. Checks LABMATE_RG_PATH env var, common install locations, or system 'rg'.
@@ -27,7 +31,7 @@ function ripgrepBin(): string {
 
   for (const p of commonPaths) {
     try {
-      if (require('node:fs').statSync(p).isFile()) {
+      if (statSync(p).isFile()) {
         return p;
       }
     } catch {
@@ -93,7 +97,8 @@ async function handleSearchFiles(args: Record<string, unknown>, roots: string[])
   const cwd = resolveToolPath(searchPath, roots);
 
   const glob = args.glob ? String(args.glob) : undefined;
-  const maxResults = args.max_results ? Number(args.max_results) : 200;
+  const rawMax = Number(args.max_results);
+  const maxResults = Number.isFinite(rawMax) && rawMax > 0 ? Math.floor(rawMax) : 200;
 
   // Build rg command line arguments
   const rgArgs = [
@@ -110,7 +115,7 @@ async function handleSearchFiles(args: Record<string, unknown>, roots: string[])
   rgArgs.push('--regexp', query, '.');
 
   try {
-    const { stdout } = await execFileAsync(ripgrepBin(), rgArgs, {
+    const { stdout } = await rg.execFileAsync(ripgrepBin(), rgArgs, {
       cwd,
       maxBuffer: 8 * 1024 * 1024,
     });
@@ -118,6 +123,7 @@ async function handleSearchFiles(args: Record<string, unknown>, roots: string[])
     // Parse vimgrep format: relpath:line:col:text
     const lines = stdout.split('\n').filter((line) => line.length > 0);
     const hits: SearchHit[] = [];
+    let truncated = false;
 
     for (const line of lines) {
       const colonIdx1 = line.indexOf(':');
@@ -131,21 +137,20 @@ async function handleSearchFiles(args: Record<string, unknown>, roots: string[])
 
       const file = line.substring(0, colonIdx1);
       const lineNum = Number.parseInt(line.substring(colonIdx1 + 1, colonIdx2), 10);
-      // skip column (colonIdx2 + 1 to colonIdx3)
+      // skip column (colonIdx2 + 1 to colonIdx3); split on the FIRST 3 colons
+      // only so any colons inside the matched text are preserved.
       const text = line.substring(colonIdx3 + 1);
 
       if (!isNaN(lineNum)) {
-        hits.push({ file, line: lineNum, text });
         if (hits.length >= maxResults) {
+          truncated = true;
           break;
         }
+        hits.push({ file, line: lineNum, text });
       }
     }
 
-    return {
-      hits,
-      truncated: lines.length > maxResults,
-    };
+    return { hits, truncated };
   } catch (err) {
     // rg exit code 1 means "no matches", not an error
     if ((err as NodeJS.ErrnoException).code === 1) {

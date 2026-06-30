@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { executeTool } from './tool-executor';
+import { executeTool, rg } from './tool-executor';
 
 let ws: string;
 
@@ -66,6 +66,68 @@ describe('executeTool', () => {
 });
 
 describe('search_files', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('parses multi-line vimgrep stdout, preserving colons in matched text', async () => {
+    const stdout =
+      './a.ts:12:5:const x = 1\n./b.ts:3:1:url: https://a.com:8080/x\n';
+    vi.spyOn(rg, 'execFileAsync').mockResolvedValue({ stdout, stderr: '' } as never);
+
+    const result = (await executeTool('search_files', { query: 'x' }, [ws])) as {
+      hits: Array<{ file: string; line: number; text: string }>;
+      truncated: boolean;
+    };
+
+    expect(result.hits).toEqual([
+      { file: './a.ts', line: 12, text: 'const x = 1' },
+      { file: './b.ts', line: 3, text: 'url: https://a.com:8080/x' },
+    ]);
+    expect(result.truncated).toBe(false);
+  });
+
+  it('returns empty hits on rg exit code 1 (no matches), without throwing', async () => {
+    const err = Object.assign(new Error('exit 1'), { code: 1 });
+    vi.spyOn(rg, 'execFileAsync').mockRejectedValue(err);
+
+    const result = (await executeTool('search_files', { query: 'nope' }, [ws])) as {
+      hits: unknown[];
+      truncated: boolean;
+    };
+
+    expect(result.hits).toEqual([]);
+    expect(result.truncated).toBe(false);
+  });
+
+  it('caps hits to max_results and reports truncated', async () => {
+    const stdout = Array.from({ length: 5 }, (_, i) => `./f${i}.ts:${i + 1}:1:match ${i}`).join(
+      '\n',
+    );
+    vi.spyOn(rg, 'execFileAsync').mockResolvedValue({ stdout, stderr: '' } as never);
+
+    const result = (await executeTool(
+      'search_files',
+      { query: 'match', max_results: 3 },
+      [ws],
+    )) as { hits: unknown[]; truncated: boolean };
+
+    expect(result.hits.length).toBe(3);
+    expect(result.truncated).toBe(true);
+  });
+
+  it('throws with rg stderr on exit code >= 2', async () => {
+    const err = Object.assign(new Error('exit 2'), {
+      code: 2,
+      stderr: 'regex parse error',
+    });
+    vi.spyOn(rg, 'execFileAsync').mockRejectedValue(err);
+
+    await expect(executeTool('search_files', { query: '(' }, [ws])).rejects.toThrow(
+      /regex parse error/,
+    );
+  });
+
   it('throws when passed outside the workspace roots', async () => {
     await expect(
       executeTool('search_files', { query: 'test', path: '../../etc/passwd' }, [ws]),
