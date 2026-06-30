@@ -208,7 +208,7 @@ export class TsRefactor {
     const decl = this.locateDeclaration(project, resolvedFile, symbol);
 
     if (!("rename" in decl) || typeof (decl as any).rename !== "function") {
-      throw new Error(`symbol '${symbol}' in ${file} is not renameable`);
+      throw new Error(`symbol '${symbol}' in ${resolvedFile} is not renameable`);
     }
     (decl as any).rename(newName); // type-checker-driven cross-file rename; in-memory only
 
