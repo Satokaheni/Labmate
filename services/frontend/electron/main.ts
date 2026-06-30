@@ -6,6 +6,7 @@ import { executeTool, LOCAL_TOOL_NAMES, type LocalToolName } from './tool-execut
 import { WorkspaceStore } from './workspace.js';
 import { searchWorkspace } from './fs-search.js';
 import { McpHostManager } from './mcp-registry.js';
+import { resolveMcpPathArgs } from './mcp-path-rooting.js';
 
 const DEV_URL = 'http://localhost:8080';
 const IS_DEV = process.env.ELECTRON_DEV === '1';
@@ -359,7 +360,9 @@ ipcMain.handle(
 
       // Route mcp__ prefixed tools to McpHostManager
       if (name.startsWith('mcp__')) {
-        return { result: await mcpManager.callTool(name, args ?? {}) };
+        const roots = workspaceStore().roots(sessionId ?? null);
+        const rootedArgs = resolveMcpPathArgs(args ?? {}, roots);
+        return { result: await mcpManager.callTool(name, rootedArgs) };
       }
 
       if (!LOCAL_TOOL_NAMES.includes(name as LocalToolName)) {

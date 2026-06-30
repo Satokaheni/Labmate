@@ -1,0 +1,191 @@
+import { describe, it, expect } from 'vitest';
+import { resolveMcpPathArgs } from './mcp-path-rooting.js';
+
+describe('resolveMcpPathArgs', () => {
+  describe('single-value path keys', () => {
+    it('resolves a relative path-key to absolute', () => {
+      const result = resolveMcpPathArgs(
+        { tsconfig: 'services/frontend/tsconfig.json' },
+        ['/Users/me/repo'],
+      );
+      expect(result.tsconfig).toBe('/Users/me/repo/services/frontend/tsconfig.json');
+    });
+
+    it('leaves an absolute path unchanged', () => {
+      const result = resolveMcpPathArgs(
+        { file: '/Users/me/repo/src/a.ts' },
+        ['/Users/me/repo'],
+      );
+      expect(result.file).toBe('/Users/me/repo/src/a.ts');
+    });
+
+    it('ignores empty string paths', () => {
+      const result = resolveMcpPathArgs({ path: '' }, ['/Users/me/repo']);
+      expect(result.path).toBe('');
+    });
+
+    it('leaves non-path keys untouched', () => {
+      const result = resolveMcpPathArgs(
+        { tsconfig: 'src/tsconfig.json', new_name: 'MyComponent' },
+        ['/Users/me/repo'],
+      );
+      expect(result.tsconfig).toBe('/Users/me/repo/src/tsconfig.json');
+      expect(result.new_name).toBe('MyComponent');
+    });
+  });
+
+  describe('array path keys', () => {
+    it('resolves each element in a files array', () => {
+      const result = resolveMcpPathArgs(
+        { files: ['src/a.ts', 'src/b.ts'] },
+        ['/Users/me/repo'],
+      );
+      expect(result.files).toEqual([
+        '/Users/me/repo/src/a.ts',
+        '/Users/me/repo/src/b.ts',
+      ]);
+    });
+
+    it('handles mixed absolute and relative paths in an array', () => {
+      const result = resolveMcpPathArgs(
+        { paths: ['src/a.ts', '/Users/me/repo/src/b.ts'] },
+        ['/Users/me/repo'],
+      );
+      expect(result.paths).toEqual([
+        '/Users/me/repo/src/a.ts',
+        '/Users/me/repo/src/b.ts',
+      ]);
+    });
+
+    it('handles empty arrays', () => {
+      const result = resolveMcpPathArgs({ files: [] }, ['/Users/me/repo']);
+      expect(result.files).toEqual([]);
+    });
+
+    it('ignores empty strings in arrays', () => {
+      const result = resolveMcpPathArgs(
+        { files: ['src/a.ts', '', 'src/b.ts'] },
+        ['/Users/me/repo'],
+      );
+      expect(result.files).toEqual([
+        '/Users/me/repo/src/a.ts',
+        '',
+        '/Users/me/repo/src/b.ts',
+      ]);
+    });
+  });
+
+  describe('multiple roots', () => {
+    it('resolves against the primary (first) root only', () => {
+      const result = resolveMcpPathArgs(
+        { file: 'src/a.ts' },
+        ['/primary', '/secondary'],
+      );
+      expect(result.file).toBe('/primary/src/a.ts');
+    });
+
+    it('returns args unchanged when roots is empty', () => {
+      const result = resolveMcpPathArgs(
+        { file: 'src/a.ts', tsconfig: 'tsconfig.json' },
+        [],
+      );
+      expect(result).toEqual({
+        file: 'src/a.ts',
+        tsconfig: 'tsconfig.json',
+      });
+    });
+  });
+
+  describe('immutability', () => {
+    it('does not mutate the input object', () => {
+      const input = { tsconfig: 'src/tsconfig.json' };
+      const result = resolveMcpPathArgs(input, ['/Users/me/repo']);
+      expect(input.tsconfig).toBe('src/tsconfig.json'); // unchanged
+      expect(result.tsconfig).toBe('/Users/me/repo/src/tsconfig.json'); // changed
+      expect(result).not.toBe(input); // different objects
+    });
+
+    it('does not mutate array values', () => {
+      const files = ['src/a.ts', 'src/b.ts'];
+      const input = { files };
+      const result = resolveMcpPathArgs(input, ['/Users/me/repo']);
+      expect(input.files).toBe(files); // same array reference
+      expect(result.files).not.toBe(files); // different array
+      expect(result.files).toEqual([
+        '/Users/me/repo/src/a.ts',
+        '/Users/me/repo/src/b.ts',
+      ]);
+    });
+  });
+
+  describe('all path key names', () => {
+    it('resolves all registered path key names', () => {
+      const result = resolveMcpPathArgs(
+        {
+          path: 'p1',
+          file: 'p2',
+          tsconfig: 'p3',
+          source_file: 'p4',
+          dest_file: 'p5',
+          dir: 'p6',
+          directory: 'p7',
+          filepath: 'p8',
+          file_path: 'p9',
+          files: ['p10'],
+          paths: ['p11'],
+          project: 'p12',
+        },
+        ['/root'],
+      );
+      expect(result).toEqual({
+        path: '/root/p1',
+        file: '/root/p2',
+        tsconfig: '/root/p3',
+        source_file: '/root/p4',
+        dest_file: '/root/p5',
+        dir: '/root/p6',
+        directory: '/root/p7',
+        filepath: '/root/p8',
+        file_path: '/root/p9',
+        files: ['/root/p10'],
+        paths: ['/root/p11'],
+        project: '/root/p12',
+      });
+    });
+  });
+
+  describe('edge cases', () => {
+    it('handles a single root', () => {
+      const result = resolveMcpPathArgs({ file: 'src/a.ts' }, ['/root']);
+      expect(result.file).toBe('/root/src/a.ts');
+    });
+
+    it('handles args with no path keys', () => {
+      const result = resolveMcpPathArgs({ foo: 'bar', baz: 42 }, ['/root']);
+      expect(result).toEqual({ foo: 'bar', baz: 42 });
+    });
+
+    it('handles args as empty object', () => {
+      const result = resolveMcpPathArgs({}, ['/root']);
+      expect(result).toEqual({});
+    });
+
+    it('preserves non-string, non-array values in path keys', () => {
+      const result = resolveMcpPathArgs(
+        { file: 123, tsconfig: null, path: undefined },
+        ['/root'],
+      );
+      expect(result).toEqual({
+        file: 123,
+        tsconfig: null,
+        path: undefined,
+      });
+    });
+
+    it('normalizes path separators on the platform', () => {
+      const result = resolveMcpPathArgs({ file: 'src/nested/a.ts' }, ['/root']);
+      // path.join normalizes to platform separator
+      expect(result.file).toBe('/root/src/nested/a.ts');
+    });
+  });
+});

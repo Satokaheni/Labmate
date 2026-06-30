@@ -11,6 +11,6 @@
     "types": ["node"],
     "sourceMap": false
   },
-  "include": ["main.ts", "preload.ts", "tool-executor.ts", "mcp-host.ts", "mcp-registry.ts"],
+  "include": ["main.ts", "preload.ts", "tool-executor.ts", "mcp-host.ts", "mcp-registry.ts", "mcp-path-rooting.ts"],
   "exclude": ["*.test.ts"]
 }
