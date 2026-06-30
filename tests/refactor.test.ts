@@ -60,6 +60,22 @@ describe("renameSymbol", () => {
     expect(onDisk).toContain("computeTotal");
     expect(onDisk).not.toContain("computeOrderTotal");
   });
+
+  it("renames without an explicit file by auto-locating the declaring file", () => {
+    const r = new TsRefactor();
+    const tsconfig = path.join(tmp, "tsconfig.json");
+    // Call WITHOUT the file parameter (undefined)
+    const diff = r.renameSymbol(tsconfig, undefined, "computeTotal", "computeOrderTotal");
+
+    expect(diff.changes).toBeGreaterThan(0);
+    // All four files should still be affected
+    const affected = diff.files_affected.map((f) => path.basename(f)).sort();
+    expect(affected).toContain("order.ts");
+    expect(affected).toContain("checkout.ts");
+    expect(affected).toContain("index.ts");
+    expect(affected).toContain("report.ts");
+    expect(diff.unified_diff).toContain("computeOrderTotal");
+  });
 });
 
 describe("findReferences", () => {
@@ -80,6 +96,21 @@ describe("findReferences", () => {
       expect(ref.column).toBeGreaterThan(0);
       expect(typeof ref.text).toBe("string");
     }
+  });
+
+  it("finds references without an explicit file by auto-locating the declaring file", () => {
+    const r = new TsRefactor();
+    const tsconfig = path.join(tmp, "tsconfig.json");
+    // Call WITHOUT the file parameter (undefined)
+    const refs = r.findReferences(tsconfig, undefined, "computeTotal");
+
+    const files = new Set(refs.map((ref) => path.basename(ref.file)));
+    expect(files.has("order.ts")).toBe(true);     // definition
+    expect(files.has("checkout.ts")).toBe(true);  // direct import
+    expect(files.has("index.ts")).toBe(true);     // barrel re-export
+    expect(files.has("report.ts")).toBe(true);    // import via barrel
+
+    expect(refs.some((ref) => ref.is_definition)).toBe(true);
   });
 });
 
@@ -103,6 +134,48 @@ describe("moveSymbol", () => {
 
     // NOT auto-saved.
     expect(fs.existsSync(path.join(tmp, "src/totals.ts"))).toBe(false);
+  });
+});
+
+describe("auto-locate declaring file error cases", () => {
+  it("throws 'no declaration found' when symbol is unknown", () => {
+    const r = new TsRefactor();
+    const tsconfig = path.join(tmp, "tsconfig.json");
+    expect(() => r.renameSymbol(tsconfig, undefined, "unknownSymbol", "newName")).toThrow(
+      /no declaration found for symbol 'unknownSymbol'/,
+    );
+  });
+
+  it("throws 'multiple files' error when symbol is declared in two files", () => {
+    // Add a duplicate declaration in checkout.ts
+    const checkoutPath = path.join(tmp, "src/checkout.ts");
+    fs.writeFileSync(
+      checkoutPath,
+      `import { computeTotal } from "./order.js";\nexport function computeTotal(): number { return 20; }\n`,
+      "utf-8",
+    );
+
+    const r = new TsRefactor();
+    const tsconfig = path.join(tmp, "tsconfig.json");
+    expect(() => r.findReferences(tsconfig, undefined, "computeTotal")).toThrow(
+      /symbol 'computeTotal' is declared in multiple files.*pass `file` to disambiguate/,
+    );
+  });
+
+  it("allows explicit file when symbol is declared in multiple files", () => {
+    // Add a duplicate declaration in checkout.ts
+    const checkoutPath = path.join(tmp, "src/checkout.ts");
+    fs.writeFileSync(
+      checkoutPath,
+      `import { computeTotal as computeTotal2 } from "./order.js";\nexport function computeTotal(): number { return 20; }\n`,
+      "utf-8",
+    );
+
+    const r = new TsRefactor();
+    const tsconfig = path.join(tmp, "tsconfig.json");
+    // Should NOT throw when explicitly passing the file
+    const refs = r.findReferences(tsconfig, path.join(tmp, "src/order.ts"), "computeTotal");
+    expect(refs.length).toBeGreaterThan(0);
   });
 });
 

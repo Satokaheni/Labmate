@@ -109,6 +109,44 @@ export class TsRefactor {
     return sf;
   }
 
+  /** Find the single source file that DECLARES `symbol`. Searches all project source
+   * files for a top-level declaration (function/class/variable/interface/type alias/enum)
+   * named `symbol`. Returns its absolute file path.
+   * Throws a clear error on 0 matches ("no declaration found for symbol '<s>'") or
+   * >1 matches ("symbol '<s>' is declared in multiple files: <list> — pass `file` to disambiguate").
+   */
+  private resolveDeclaringFile(project: Project, symbol: string): string {
+    const matches: string[] = [];
+    for (const sf of project.getSourceFiles()) {
+      // Ignore node_modules and declaration files
+      if (sf.isInNodeModules() || sf.isDeclarationFile()) continue;
+
+      // Check for top-level declaration matching the symbol
+      const found =
+        sf.getFunction(symbol) ??
+        sf.getClass(symbol) ??
+        sf.getVariableDeclaration(symbol) ??
+        sf.getInterface(symbol) ??
+        sf.getTypeAlias(symbol) ??
+        sf.getEnum(symbol);
+
+      if (found !== undefined) {
+        matches.push(sf.getFilePath());
+      }
+    }
+
+    if (matches.length === 0) {
+      throw new Error(`no declaration found for symbol '${symbol}'`);
+    }
+    if (matches.length > 1) {
+      const list = matches.map((f) => path.basename(f)).join(", ");
+      throw new Error(
+        `symbol '${symbol}' is declared in multiple files: ${list} — pass \`file\` to disambiguate`,
+      );
+    }
+    return matches[0];
+  }
+
   /** Locate a renameable/named declaration node for `symbol` in `file`. */
   private locateDeclaration(project: Project, file: string, symbol: string) {
     const sf = this.getSourceFile(project, file);
@@ -131,9 +169,10 @@ export class TsRefactor {
     return local;
   }
 
-  findReferences(tsconfig: string, file: string, symbol: string): Reference[] {
+  findReferences(tsconfig: string, file: string | undefined, symbol: string): Reference[] {
     const project = this.getProject(tsconfig);
-    const decl = this.locateDeclaration(project, file, symbol);
+    const resolvedFile = file || this.resolveDeclaringFile(project, symbol);
+    const decl = this.locateDeclaration(project, resolvedFile, symbol);
 
     // The declaration node may be a NameableNode; get the identifier to search from.
     const nameNode =
@@ -162,10 +201,11 @@ export class TsRefactor {
     return results;
   }
 
-  renameSymbol(tsconfig: string, file: string, symbol: string, newName: string): Diff {
+  renameSymbol(tsconfig: string, file: string | undefined, symbol: string, newName: string): Diff {
     const project = this.getProject(tsconfig);
     const baseline = this.snapshot(project);
-    const decl = this.locateDeclaration(project, file, symbol);
+    const resolvedFile = file || this.resolveDeclaringFile(project, symbol);
+    const decl = this.locateDeclaration(project, resolvedFile, symbol);
 
     if (!("rename" in decl) || typeof (decl as any).rename !== "function") {
       throw new Error(`symbol '${symbol}' in ${file} is not renameable`);
