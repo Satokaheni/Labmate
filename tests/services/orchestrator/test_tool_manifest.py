@@ -392,6 +392,52 @@ def test_build_tool_list_client_attached_mcp_tools_skipped_without_schema():
 
 
 @pytest.mark.mocked
+def test_build_tool_list_client_attached_mcp_tools_skipped_with_malformed_schema():
+    """build_tool_list skips mcp/skill tools with a schema missing 'function' key."""
+    manifest: ClientManifest = {
+        "tools": [
+            {
+                "name": "toolx",
+                "source": "mcp",
+                "namespace": "srv1",
+                "schema": {"type": "function"},  # missing 'function' key
+            },
+        ]
+    }
+    static_tail = _static_tail_schemas()
+    tools = build_tool_list(
+        manifest, skill_router=None, codegraph_enabled=False, static_tail=static_tail
+    )
+    names = [t["function"]["name"] for t in tools]
+    assert "mcp__srv1__toolx" not in names
+
+
+@pytest.mark.mocked
+def test_build_tool_list_client_attached_mcp_tools_accepted_with_valid_schema():
+    """build_tool_list advertises mcp/skill tools with a valid schema (dict with 'function')."""
+    schema = {
+        "type": "function",
+        "function": {"name": "toolx", "description": "Tool X", "parameters": {}},
+    }
+    manifest: ClientManifest = {
+        "tools": [
+            {
+                "name": "toolx",
+                "source": "mcp",
+                "namespace": "srv1",
+                "schema": schema,
+            },
+        ]
+    }
+    static_tail = _static_tail_schemas()
+    tools = build_tool_list(
+        manifest, skill_router=None, codegraph_enabled=False, static_tail=static_tail
+    )
+    names = [t["function"]["name"] for t in tools]
+    assert "mcp__srv1__toolx" in names
+
+
+@pytest.mark.mocked
 def test_build_tool_list_finish_always_last():
     """build_tool_list always places finish as the last tool."""
     manifest: ClientManifest = {
@@ -506,7 +552,12 @@ def test_manifest_local_tool_names_mcp_tool_with_namespace():
     manifest: ClientManifest = {
         "tools": [
             {"name": "read_file", "source": "builtin"},
-            {"name": "foo", "source": "mcp", "namespace": "srv", "schema": {}},
+            {
+                "name": "foo",
+                "source": "mcp",
+                "namespace": "srv",
+                "schema": {"type": "function", "function": {"name": "foo"}},
+            },
         ]
     }
     result = manifest_local_tool_names(manifest, set())
@@ -518,7 +569,11 @@ def test_manifest_local_tool_names_mcp_tool_no_namespace():
     """manifest_local_tool_names uses tool name as-is when namespace is absent."""
     manifest: ClientManifest = {
         "tools": [
-            {"name": "my_tool", "source": "mcp", "schema": {}},
+            {
+                "name": "my_tool",
+                "source": "mcp",
+                "schema": {"type": "function", "function": {"name": "my_tool"}},
+            },
         ]
     }
     result = manifest_local_tool_names(manifest, set())
@@ -641,13 +696,70 @@ def test_manifest_local_tool_names_dispatch_routing():
     local_names = manifest_local_tool_names(None, fallback)
     assert local_names == fallback
 
-    # Case 3: Client declares an MCP tool with namespace.
+    # Case 3: Client declares an MCP tool with namespace and VALID schema.
     # The dispatch check must use the final namespaced name.
     manifest = {
         "tools": [
-            {"name": "search", "source": "mcp", "namespace": "fs", "schema": {}},
+            {
+                "name": "search",
+                "source": "mcp",
+                "namespace": "fs",
+                "schema": {"type": "function", "function": {"name": "search"}},
+            },
         ]
     }
     local_names = manifest_local_tool_names(manifest, set())
     assert "mcp__fs__search" in local_names  # Dispatch check looks for this exact name.
     assert "search" not in local_names  # NOT the bare name.
+
+
+@pytest.mark.mocked
+def test_manifest_local_tool_names_skips_mcp_without_schema():
+    """manifest_local_tool_names excludes mcp/skill tools without a schema."""
+    manifest: ClientManifest = {
+        "tools": [
+            {"name": "read_file", "source": "builtin"},
+            {"name": "toolx", "source": "mcp", "namespace": "srv1"},  # no schema
+        ]
+    }
+    local_names = manifest_local_tool_names(manifest, set())
+    assert "read_file" in local_names
+    assert "mcp__srv1__toolx" not in local_names
+
+
+@pytest.mark.mocked
+def test_manifest_local_tool_names_skips_mcp_with_malformed_schema():
+    """manifest_local_tool_names excludes mcp/skill tools with a schema missing 'function' key."""
+    manifest: ClientManifest = {
+        "tools": [
+            {"name": "read_file", "source": "builtin"},
+            {
+                "name": "toolx",
+                "source": "mcp",
+                "namespace": "srv1",
+                "schema": {"type": "function"},  # missing 'function' key
+            },
+        ]
+    }
+    local_names = manifest_local_tool_names(manifest, set())
+    assert "read_file" in local_names
+    assert "mcp__srv1__toolx" not in local_names
+
+
+@pytest.mark.mocked
+def test_manifest_local_tool_names_accepts_mcp_with_valid_schema():
+    """manifest_local_tool_names includes mcp/skill tools with a valid schema."""
+    manifest: ClientManifest = {
+        "tools": [
+            {"name": "read_file", "source": "builtin"},
+            {
+                "name": "toolx",
+                "source": "mcp",
+                "namespace": "srv1",
+                "schema": {"type": "function", "function": {"name": "toolx"}},
+            },
+        ]
+    }
+    local_names = manifest_local_tool_names(manifest, set())
+    assert "read_file" in local_names
+    assert "mcp__srv1__toolx" in local_names

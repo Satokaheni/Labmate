@@ -133,6 +133,27 @@ CANONICAL_BUILTIN_SCHEMAS: dict[str, dict] = {
 }
 
 
+def _is_usable_descriptor(descriptor: ToolDescriptor) -> bool:
+    """
+    Check if a descriptor is usable (can be advertised and dispatched).
+
+    An mcp/skill descriptor is usable ONLY if it carries a valid schema:
+    a dict with a "function" key (the OpenAI tool object).
+    Builtin descriptors are ALWAYS usable (backend supplies schema; descriptor
+    has no schema by design).
+
+    Returns:
+        True if the descriptor should be advertised and included in dispatch routing.
+    """
+    source = descriptor.get("source", "builtin")
+    # Builtin descriptors are always usable (schema supplied by backend).
+    if source == "builtin":
+        return True
+    # mcp/skill descriptors must have a valid schema.
+    schema = descriptor.get("schema")
+    return isinstance(schema, dict) and isinstance(schema.get("function"), dict)
+
+
 def _final_tool_name(descriptor: ToolDescriptor) -> str:
     """
     Compute the final dispatch name for a tool descriptor.
@@ -158,8 +179,11 @@ def manifest_local_tool_names(manifest: ClientManifest | None, fallback: set[str
     Extract the set of tool names that route to the local client.
 
     If manifest is None (no client attached), returns the fallback set.
-    Otherwise, returns the set of final dispatch names for every tool
+    Otherwise, returns the set of final dispatch names for every usable tool
     declared in the manifest, using _final_tool_name to compute each name.
+
+    A tool is usable if it is a builtin OR carries a valid schema (dict with "function" key).
+    Schema-less mcp/skill descriptors are excluded.
 
     This set is used in dispatch routing to check `if name in local_tool_names`.
     """
@@ -168,7 +192,7 @@ def manifest_local_tool_names(manifest: ClientManifest | None, fallback: set[str
 
     names: set[str] = set()
     for descriptor in manifest.get("tools", []):
-        if "name" in descriptor:
+        if "name" in descriptor and _is_usable_descriptor(descriptor):
             names.add(_final_tool_name(descriptor))
 
     return names
@@ -292,13 +316,15 @@ def build_tool_list(
         if name in manifest_tool_names:
             tools.append(CANONICAL_BUILTIN_SCHEMAS[name])
 
-    # 5. Client mcp/skill tools (with schemas): sorted by final name for determinism.
+    # 5. Client mcp/skill tools (with valid schemas): sorted by final name for determinism.
+    # A schema is valid if it's a dict with a "function" key (OpenAI tool object).
     client_tools: list[tuple[str, dict]] = []
     for descriptor in manifest["tools"]:
         source = descriptor.get("source", "builtin")
         if source not in ("mcp", "skill"):
             continue
-        if "schema" not in descriptor or descriptor["schema"] is None:
+        # Skip mcp/skill descriptors without a valid schema.
+        if not _is_usable_descriptor(descriptor):
             continue
         # Compute final name using the shared helper.
         final_name = _final_tool_name(descriptor)
