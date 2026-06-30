@@ -7,6 +7,8 @@ import { WorkspaceStore } from './workspace.js';
 import { searchWorkspace } from './fs-search.js';
 import { McpHostManager } from './mcp-registry.js';
 import { resolveMcpPathArgs } from './mcp-path-rooting.js';
+import { skillDescriptors } from './skill-discovery.js';
+import { skillsDir } from './mcp-registry.js';
 
 const DEV_URL = 'http://localhost:8080';
 const IS_DEV = process.env.ELECTRON_DEV === '1';
@@ -343,6 +345,16 @@ ipcMain.handle('labmate:mcp-tools', async () => {
     return mcpManager.getToolDescriptors();
   } catch (err) {
     console.error('failed to get mcp tools:', err);
+    return [];
+  }
+});
+
+ipcMain.handle('labmate:skill-descriptors', async () => {
+  try {
+    const skills = skillDescriptors(skillsDir());
+    return skills;
+  } catch (err) {
+    console.error('failed to get skill descriptors:', err);
     return [];
   }
 });

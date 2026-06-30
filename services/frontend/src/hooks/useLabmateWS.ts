@@ -411,16 +411,23 @@ export function useLabmateWS(
           return;
         }
 
-        // Send capabilities frame after auth succeeds, including MCP tools
+        // Send capabilities frame after auth succeeds, including MCP tools and skills
         if (frame.type === 'auth.ok') {
           const sendCapabilities = async () => {
             try {
-              const electronAPI = (window as unknown as { electronAPI?: { getMcpTools?: () => Promise<ToolDescriptor[]> } }).electronAPI;
+              const electronAPI = (window as unknown as {
+                electronAPI?: {
+                  getMcpTools?: () => Promise<ToolDescriptor[]>;
+                  getSkillDescriptors?: () => Promise<ToolDescriptor[]>;
+                };
+              }).electronAPI;
               const mcpTools = (await electronAPI?.getMcpTools?.()) ?? [];
-              ws.send(JSON.stringify(capabilitiesFrame(mcpTools)));
+              const skillTools = (await electronAPI?.getSkillDescriptors?.()) ?? [];
+              const allTools = [...mcpTools, ...skillTools];
+              ws.send(JSON.stringify(capabilitiesFrame(allTools)));
             } catch (err) {
-              console.error('Failed to fetch MCP tools:', err);
-              // Send capabilities with just builtins if MCP fetch fails
+              console.error('Failed to fetch tools:', err);
+              // Send capabilities with just builtins if fetch fails
               ws.send(JSON.stringify(capabilitiesFrame([])));
             }
           };
