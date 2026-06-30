@@ -852,7 +852,7 @@ class TestReactExecute:
             side_effect=[r],
         ):
             # This should hit max_steps=6, but we're testing one tool dispatch
-            result = await orch.react_execute("echo hello")
+            await orch.react_execute("echo hello")
             # The tool response goes to the model, model likely replies
             # Just ensure the call path works
             mcp.call_tool.assert_awaited()
@@ -1551,7 +1551,7 @@ class TestReactExecuteBudget:
         ):
             token = events.current_emitter.set(FakeEmitter())
             try:
-                result = await orch.react_execute("fix the bug in a.py")  # edit intent
+                await orch.react_execute("fix the bug in a.py")  # edit intent
             finally:
                 events.current_emitter.reset(token)
 
@@ -2074,9 +2074,9 @@ async def test_run_tests_client_routed_fail(monkeypatch):
     # and the verification predicate must agree it did not pass.
     assert shaped["ok"] is False, f"failing run_tests was credited as ok=True: {shaped}"
     assert shaped["exit_code"] != 0, f"failing run_tests got a zero exit code: {shaped}"
-    assert _run_tests_passed(json.dumps(shaped)) is False, (
-        "verification predicate counted a failing run as a pass"
-    )
+    assert (
+        _run_tests_passed(json.dumps(shaped)) is False
+    ), "verification predicate counted a failing run as a pass"
 
 
 @pytest.mark.asyncio
@@ -2171,9 +2171,7 @@ async def test_gating_run_bash_and_code_semantic_search_not_advertised_when_clie
     # {"type": "function", "function": {"name": ...}} — the name is NESTED,
     # never top-level. Extract it correctly so the set is non-empty.
     tool_names = {
-        t["function"]["name"]
-        for t in tools
-        if isinstance(t, dict) and t.get("type") == "function"
+        t["function"]["name"] for t in tools if isinstance(t, dict) and t.get("type") == "function"
     }
 
     # Positive assertions — prove the manifest-declared builtins ARE advertised.
@@ -2288,15 +2286,17 @@ async def test_react_loop_tolerates_two_identical_write_file_calls(monkeypatch):
     monkeypatch.setattr("services.orchestrator.coding_orchestrator.request_local_tool", _local)
     orch.redis = MagicMock()
 
-    write_msg = lambda: MagicMock(
-        choices=[
-            MagicMock(
-                message=_msg_with_tool_call(
-                    "write_file", json.dumps({"path": "a.py", "content": "x"})
+    def write_msg():
+        return MagicMock(
+            choices=[
+                MagicMock(
+                    message=_msg_with_tool_call(
+                        "write_file", json.dumps({"path": "a.py", "content": "x"})
+                    )
                 )
-            )
-        ]
-    )
+            ]
+        )
+
     finish_msg = MagicMock(tool_calls=None, content="done")
     finish_msg.model_dump = lambda: {"role": "assistant", "content": "done"}
     finish_resp = MagicMock(choices=[MagicMock(message=finish_msg)])
