@@ -1055,6 +1055,106 @@ class AsyncOrchestrator:
                         if _sb_writes:
                             edited_files |= _sb_writes
 
+                    elif name == "run_tests":
+                        # First-class test runner. Two paths:
+                        # 1. Client-routed when the client declared run_tests.
+                        # 2. Pod code-sandbox fallback (when no client attached).
+                        # In both cases, apply the same verification accounting
+                        # (tests_passed, infra_error_streak, _bug_exposed).
+                        if self.redis is not None and "run_tests" in local_tool_names:
+                            # Client-routed: tests run on the client side via local
+                            # tool handler; we get back {ok, exit_code, raw_output}.
+                            try:
+                                # Tests can run for minutes — give the round-trip a long
+                                # deadline. The client enforces its own timeout and returns
+                                # a 124 exit code if it times out.
+                                _tms = args.get("timeout_ms")
+                                _ms = (
+                                    float(_tms)
+                                    if isinstance(_tms, int | float) and _tms
+                                    else float(os.getenv("LABMATE_TEST_TIMEOUT_MS", "120000"))
+                                )
+                                _test_timeout_s = max(30.0, _ms / 1000.0 + 15.0)
+                                result = await request_local_tool(
+                                    self.redis, "run_tests", args, timeout=_test_timeout_s
+                                )
+                                if isinstance(result, dict):
+                                    shaped = {
+                                        "ok": bool(result.get("ok")),
+                                        "exit_code": int(result.get("exit_code", 1)),
+                                        "raw_output": str(result.get("raw_output", ""))[-8000:],
+                                    }
+                                else:
+                                    shaped = {
+                                        "ok": False,
+                                        "exit_code": 1,
+                                        "raw_output": str(result)[-8000:],
+                                    }
+                                content = ground_tool_result(
+                                    json.dumps(shaped), LABMATE_TOOL_RESULT_BUDGET
+                                )
+                                # SAME verification accounting as the pod path (kept in sync).
+                                if _run_tests_passed(content):
+                                    tests_passed = True
+                                _outcome = classify_test_attempt(content)
+                                if _outcome.infra_error:
+                                    infra_error_streak += 1
+                                    _last_infra_reason = _outcome.reason
+                                elif _outcome.ran:
+                                    infra_error_streak = 0
+                                # Expose-bug inversion: a test that RAN and FAILED
+                                # exposes the bug -> that IS the verification.
+                                if (
+                                    _expose_bug
+                                    and _outcome.ran
+                                    and not _outcome.passed
+                                    and not _outcome.infra_error
+                                ):
+                                    _bug_exposed = True
+                                    tests_passed = True
+                            except Exception as exc:
+                                content = json.dumps({"error": str(exc)})
+                        elif self.skill_router is not None:
+                            # Pod code-sandbox fallback (no client attached).
+                            # pytest is BLOCKED through the generic exec_run bash seam
+                            # (sandbox rule), so route to the code-sandbox skill's run_tests
+                            # tool, which runs the REAL pytest suite (LocalSubprocessExecutor
+                            # on RunPod). Always an ABSOLUTE test_path rooted at the workspace.
+                            sb_args = build_sandbox_test_args(args, self.workspace)
+                            try:
+                                envelope = await self.skill_router.execute(
+                                    "code-sandbox",
+                                    "run_tests",
+                                    sb_args,
+                                    timeout=min(sb_args["timeout"] + 15, SKILL_CALL_TIMEOUT),
+                                )
+                                shaped = shape_sandbox_test_result(envelope)
+                                content = ground_tool_result(
+                                    json.dumps(shaped), LABMATE_TOOL_RESULT_BUDGET
+                                )
+                                if _run_tests_passed(content):
+                                    tests_passed = True
+                                _outcome = classify_test_attempt(content)
+                                if _outcome.infra_error:
+                                    infra_error_streak += 1
+                                    _last_infra_reason = _outcome.reason
+                                elif _outcome.ran:
+                                    infra_error_streak = 0
+                                # Expose-bug inversion: a test that RAN and FAILED
+                                # exposes the bug -> that IS the verification.
+                                if (
+                                    _expose_bug
+                                    and _outcome.ran
+                                    and not _outcome.passed
+                                    and not _outcome.infra_error
+                                ):
+                                    _bug_exposed = True
+                                    tests_passed = True
+                            except Exception as exc:
+                                content = json.dumps({"error": str(exc)})
+                        else:
+                            content = json.dumps({"error": "no test runner available"})
+
                     elif name in local_tool_names:
                         if self.redis is not None:
                             try:
@@ -1138,48 +1238,6 @@ class AsyncOrchestrator:
                                 content = json.dumps({"error": str(exc)})
                         else:
                             content = json.dumps({"error": "no bash runner available"})
-
-                    elif name == "run_tests":
-                        # First-class test runner. pytest is BLOCKED through the
-                        # generic exec_run bash seam (sandbox rule), so route to the
-                        # code-sandbox skill's run_tests tool, which runs the REAL
-                        # pytest suite (LocalSubprocessExecutor on RunPod). Always an
-                        # ABSOLUTE test_path rooted at the workspace.
-                        if self.skill_router is not None:
-                            sb_args = build_sandbox_test_args(args, self.workspace)
-                            try:
-                                envelope = await self.skill_router.execute(
-                                    "code-sandbox",
-                                    "run_tests",
-                                    sb_args,
-                                    timeout=min(sb_args["timeout"] + 15, SKILL_CALL_TIMEOUT),
-                                )
-                                shaped = shape_sandbox_test_result(envelope)
-                                content = ground_tool_result(
-                                    json.dumps(shaped), LABMATE_TOOL_RESULT_BUDGET
-                                )
-                                if _run_tests_passed(content):
-                                    tests_passed = True
-                                _outcome = classify_test_attempt(content)
-                                if _outcome.infra_error:
-                                    infra_error_streak += 1
-                                    _last_infra_reason = _outcome.reason
-                                elif _outcome.ran:
-                                    infra_error_streak = 0
-                                # Expose-bug inversion: a test that RAN and FAILED
-                                # exposes the bug -> that IS the verification.
-                                if (
-                                    _expose_bug
-                                    and _outcome.ran
-                                    and not _outcome.passed
-                                    and not _outcome.infra_error
-                                ):
-                                    _bug_exposed = True
-                                    tests_passed = True
-                            except Exception as exc:
-                                content = json.dumps({"error": str(exc)})
-                        else:
-                            content = json.dumps({"error": "no test runner available"})
 
                     elif name == "code_semantic_search":
                         if self.codegraph_mcp is not None:
