@@ -160,6 +160,22 @@ doc-skill to its stored `body` (status `loaded`), pod skills unchanged.
 > Bottom line: the P2-B.2 question ("does the model auto-select the right hosted tool without being
 > named?") is **answered YES for disambiguation**; arg-heavy-tool one-shot triggering is a separate,
 > optional skill-ergonomics track.
+>
+> **SKILL-ERGONOMICS + PRODUCTION-FAITHFUL EVAL — IMPLEMENTED 2026-06-30** (all Opus-judged; awaiting
+> the live re-run to confirm the gate). Genuine fixes, not description-gaming:
+> - `ast-ts-refactor` (`ed207e9`): `rename_symbol`/`find_references` make `file` OPTIONAL —
+>   `resolveDeclaringFile` auto-locates the symbol's declaration in the ts-morph project; ambiguous →
+>   ERROR (never renames the wrong one). `tsconfig` stays required. So "rename X to Y" is now callable
+>   without naming the file.
+> - `component-doc-gen` (`a457549` + test fix `4fc795a`): `generate`'s `component_path` accepts an
+>   absolute path, a component NAME, or a relative path — `resolveComponentPath` globs the workspace
+>   (recovering the root via `dirname` so it composes with P2-B.0 dispatch rooting).
+> - eval (`e5164e1`): `HOSTED_SYSTEM` gains a workspace-root clause (mirrors production's
+>   `WORKSPACE_ROOT_CLAUSE`) so the model constructs `tsconfig` instead of abstaining; fixtures synced
+>   to the loosened schemas. Pod-skill scoring path provably unchanged.
+> Expected on re-run: `rename_symbol` (was 0.0) and `generate` (was 0.5) now fire → ts_refactor +
+> doc_gen ≥ 0.80. Re-run cmd unchanged (§ "RUN 2026-06-30" above). Tiny deferred nit: rename's
+> "not renameable" error prints `undefined` for an auto-located file (cosmetic).
 
 **Problem (from P2-B.0 live testing):** the user still prefixes prompts with "use ast-ts-refactor"
 because auto-selection of a **hosted MCP tool** is unproven on the Q4 Gemma model. The harness
