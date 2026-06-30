@@ -2,9 +2,9 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, Tray, nativeImage, safeStora
 import path from 'node:path';
 import fs from 'node:fs';
 import { deflateSync } from 'node:zlib';
-import { executeTool, LOCAL_TOOL_NAMES, type LocalToolName } from './tool-executor';
-import { WorkspaceStore } from './workspace';
-import { searchWorkspace } from './fs-search';
+import { executeTool, LOCAL_TOOL_NAMES, type LocalToolName } from './tool-executor.js';
+import { WorkspaceStore } from './workspace.js';
+import { searchWorkspace } from './fs-search.js';
 
 const DEV_URL = 'http://localhost:8080';
 const IS_DEV = process.env.ELECTRON_DEV === '1';
