@@ -106,6 +106,24 @@ describe('useLabmateWS', () => {
     );
   });
 
+  it('send() includes workspaceRoot when provided', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    result.current.send('hello', 's-1', '/abs/workspace');
+    expect(mockWs.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'send', sessionId: 's-1', mode: 'chat', text: 'hello', workspaceRoot: '/abs/workspace' }),
+    );
+  });
+
+  it('send() omits workspaceRoot when not provided', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    result.current.send('hello', 's-1', undefined);
+    const sent = JSON.parse(mockWs.send.mock.calls[0][0] as string);
+    expect(sent.workspaceRoot).toBeUndefined();
+    expect(sent).not.toHaveProperty('workspaceRoot');
+  });
+
   it('services tool.request via electronAPI and replies tool.result', async () => {
     const executeTool = vi.fn().mockResolvedValue({ result: { content: "hi" } });
     // Set electronAPI directly to avoid replacing window (which breaks React DOM instanceof checks)

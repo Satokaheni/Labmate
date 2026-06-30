@@ -338,7 +338,7 @@ export function useLabmateWS(
   reconnectKey?: number
 ): {
   state: LabmateWSStatePublic;
-  send: (text: string, sessionId: string) => void;
+  send: (text: string, sessionId: string, workspaceRoot?: string) => void;
   newSession?: (mode: string) => void;
   newChat: () => string;
   setActiveSession: (sessionId: string) => void;
@@ -481,9 +481,9 @@ export function useLabmateWS(
     }
   };
 
-  const send = (text: string, sessionId: string) => {
+  const send = (text: string, sessionId: string, workspaceRoot?: string) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'send', sessionId, mode: 'chat', text }));
+      wsRef.current.send(JSON.stringify({ type: 'send', sessionId, mode: 'chat', text, ...(workspaceRoot ? { workspaceRoot } : {}) }));
     }
   };
 

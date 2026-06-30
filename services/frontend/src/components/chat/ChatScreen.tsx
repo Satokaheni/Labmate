@@ -1591,7 +1591,7 @@ function DebugConsole({ nodeLabel, budget }: { nodeLabel: string; budget: number
 
 export interface ChatScreenProps {
   state: LabmateWSStatePublic;
-  send: (text: string, sessionId: string) => void;
+  send: (text: string, sessionId: string, workspaceRoot?: string) => void;
   newSession?: (mode: string) => void;
   newChat: () => string;
   openSession?: (sessionId: string) => void;
@@ -1798,7 +1798,7 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug }: Chat
             mode={mode}
             budget={budget}
             sessionId={wsId}
-            onSend={(text) => send(text, wsId)}
+            onSend={(text) => send(text, wsId, roots[0])}
           />
         </div>
 
