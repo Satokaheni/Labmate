@@ -14,9 +14,33 @@ We currently have **no visibility** into where the tokens go: the context-window
 attributes the WHOLE fill to `conversation` (`main.py` `_context_window`: `systemPrompt: 0`,
 `skillInstructions: 0`, `conversation: ctx_used`). So the strip can't tell us the breakdown.
 
-**Task 1: real per-segment token accounting.** Attribute the measured fill to actual segments
-(system prompt, tool schemas, skill catalog, tool results, reasoning) using the tokenizer, and
-surface it in the existing context-strip segments. Only then do we know which lever pays off.
+**Task 1 (engineering): real per-segment token accounting.** Attribute the measured fill to
+actual segments (system prompt, tool schemas, skill catalog, tool results, reasoning) using the
+tokenizer, and surface it in the existing context-strip segments. Only then do we know which
+lever pays off.
+
+## Task 2 (RESEARCH): survey + evaluate reduction techniques for the dominant segment
+Once task 1 names the dominant cost (likely the skill catalog and/or tool results), this becomes
+a **research task** — not just an engineering tweak. Investigate the state of the art for that
+segment and evaluate candidates against Labmate's constraints (local Q4 model, byte-stable
+prefix cache, latency budget) BEFORE committing to an implementation. Output a short research
+report (fits `research/llm-harness-research/`) recommending an approach with before/after numbers.
+
+Research directions by what dominates (pick after task 1):
+- **If the skill catalog dominates** — dynamic / retrieval-based tool advertising (embed the 29
+  skill descriptions, advertise only top-k relevant to the goal), deferred tool loading + a
+  tool-search tool (the Claude Code `defer_loading` + tool-search MCP pattern), learned/cheap
+  routing to a skill subset, and how each interacts with prefix-cache determinism.
+- **If tool results dominate** — context compression / summarization (e.g. LLMLingua-style prompt
+  compression), symbol/function-scoped extraction vs raw head+tail, structured (AST-aware) reads,
+  and de-duplicating content already in context.
+- **General** — context distillation, retrieval-augmented tool/skill selection, and the
+  accuracy/recall cost of each (a technique that drops 40% of tokens but misses the right skill
+  10% of the time is a net loss).
+
+Evaluate each candidate on: **token reduction %**, **correctness/recall impact** (does it still
+find the right code/skill), **latency on the Q4 host**, and **implementation + prefix-cache
+cost**. Recommend one, then spec + implement it.
 
 ## Suspected culprits (hypotheses — confirm with task 1)
 - **The skill catalog.** All **29 skills** are advertised (name + description) in the prefix on
@@ -54,6 +78,13 @@ surface it in the existing context-strip segments. Only then do we know which le
 - The same find→read turn costs materially less (target: well under half the ~14k) with no loss
   of correctness; per-segment telemetry shows the breakdown in the context strip.
 
-## Dependencies / ordering
-After local-execution Phase 1/2. Co-design with [[wire-ui-mode-to-behavior]] and the
-skill-gate. See [[project-local-execution-surface]].
+## Flow & dependencies
+1. **Task 1 — measure** (engineering): per-segment token accounting.
+2. **Task 2 — research** the dominant segment: survey + evaluate techniques → short report with
+   before/after numbers and a recommendation.
+3. **Spec** the recommended lever (brainstorm → spec).
+4. **Implement + verify** the before/after numbers hold.
+
+Do AFTER local-execution Phase 1/2. Co-design with [[wire-ui-mode-to-behavior]] and the
+skill-gate — all three touch *what gets advertised to the model*. See
+[[project-local-execution-surface]].
