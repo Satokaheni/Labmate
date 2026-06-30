@@ -1,0 +1,91 @@
+# Local-Execution Phase 2 — Implementation Plan (client MCP/skill host + CodeGraph)
+
+> Continues `2026-06-30-local-execution-impl.md` (Phase 0+1 = PR #22). Branch:
+> `feat/local-execution-phase2`. Monorepo. Build loop: Haiku implements → Opus judges (backend
+> AND frontend) → fix until pass; phase close = Opus project review + react-doctor if React touched.
+
+**Goal:** the frontend becomes a **local MCP host + `SKILL.md` discovery** surface (the
+"install superpowers-style plugins locally" experience), and serves **client-side semantic
+search**. The backend already routes any client-declared `mcp`/`skill` tool via the Phase-0
+manifest seam — so most of P2-A is frontend.
+
+## Key design decisions (locked)
+- **Use `@modelcontextprotocol/sdk` `Client` + `StdioClientTransport`** in the Electron main
+  process to spawn + speak to local stdio MCP servers. The TS skills are already MCP stdio
+  servers (`Server` + `StdioServerTransport`, `node dist/index.js`) — same SDK both sides.
+- **First slice hosts the bundled TS skills** (`ast-ts-refactor`, `component-doc-gen`,
+  `a11y-audit`) as built-in MCP servers, pointed at `services/skills/<name>/dist/index.js`. A
+  user-facing "add MCP server" config UI is a FOLLOW-UP (like ripgrep bundling). Prod packaging
+  of the skill `dist/` is also a follow-up; dev runs from the repo path.
+- **Namespacing** `mcp__<server>__<tool>` — already in the Phase-0 contract; advertise + dispatch
+  derive from the same manifest (can't drift).
+- **Security:** the bundled skills are first-party/trusted. User-added servers need a trust gate —
+  deferred with the config UI.
+
+---
+
+## P2-A — frontend as a local MCP host (the focus)
+
+### T2.1 [frontend] Minimal MCP stdio client
+- Add `@modelcontextprotocol/sdk` to `services/frontend` deps.
+- `electron/mcp-host.ts`: a `McpHost` that, given a server spec `{name, command, args, cwd?}`,
+  spawns it via `StdioClientTransport`, `connect`s an SDK `Client`, lists tools (`tools/list`),
+  and calls a tool (`tools/call`). Lifecycle: `start()`, `listTools()`, `callTool(tool, args)`,
+  `stop()`. Errors (server won't start, tool error) surface as structured results, never crash.
+- **Tests:** spin up ONE real bundled skill (`node services/skills/ast-ts-refactor/dist/index.js`)
+  in a test, assert `listTools()` returns its advertised tools and `callTool` round-trips; a
+  bad spec → clean error. (Gate behind a "dist present" check so CI without a build SKIPS.)
+
+### T2.2 [frontend] Host registry + tool collection
+- A built-in server registry (the 3 TS skills → their `dist/index.js`; skip any whose `dist` is
+  missing). Spawn all on app ready; collect each server's tools as **namespaced** descriptors
+  `{name: mcp__<server>__<tool>, source:'mcp', namespace:<server>, schema:<the tool's input schema as an OpenAI tool object>}`.
+  Expose `getMcpToolDescriptors()`. Stop all servers on app quit.
+- **Tests:** registry collects + namespaces tools from a fake/real server; a missing-`dist`
+  server is skipped, not fatal.
+
+### T2.3 [frontend] Wire MCP tools into the manifest + dispatch
+- `capabilities.ts` becomes dynamic: `capabilitiesFrame()` = builtins + `getMcpToolDescriptors()`
+  (so the frame the client sends after auth includes the hosted MCP tools, with schemas).
+- `tool-executor.ts` `executeTool`: when `name` starts with `mcp__`, route to
+  `mcpHost.callTool(...)` (resolve server+tool from the namespaced name); builtins unchanged.
+- **Tests:** an `mcp__ast-ts-refactor__<tool>` call routes to the host; the frame carries the
+  MCP descriptors; builtins still work.
+
+### T2.4 [backend] Harden + cover mcp routing
+- Apply the Phase-0 review nit: in `build_tool_list`, only advertise an `mcp`/`skill` descriptor
+  when it carries a valid `schema` with a `function` (the schema-less guard); keep
+  `manifest_local_tool_names` in sync.
+- **Tests:** a schema-carrying `mcp` tool is advertised (namespaced) AND in the dispatch set; a
+  schema-less one is in neither.
+
+### T2.5 [integration / live] Host one skill end-to-end
+- With the 3 skills hosted, confirm the model can call e.g. `mcp__ast-ts-refactor__<tool>` and it
+  executes on the client. Live test on RunPod. **Stop point for Phase-2-A live test.**
+
+---
+
+## P2-B — local `SKILL.md` discovery (after P2-A merges)
+Frontend discovers `SKILL.md` files (frontmatter name/description) in the workspace / a skills
+dir; declares them as `source:'skill'` in the manifest (metadata only). The orchestrator
+advertises the metadata; on use, the body is loaded and the model uses the local tools the skill
+describes — **no skill runtime on the client** (the documentation model). Reclassify the Python
+repo-reading skills (supersede via client primitives, or treat as candidates for a future client
+runtime); keep content+model skills server-side fed client content.
+
+## P2-C — client-side semantic search (CodeGraph)
+`code_semantic_search` becomes a client-routed tool when the client declares `codegraph`: the
+frontend queries the local CodeGraph daemon (`<workspace>/.codegraph/daemon.sock`) and returns
+ranked hits. Retire the pod `codegraph_embedder` to no-client fallback only. Adds the CodeGraph
+CLI prereq (track in `docs/local-execution-prerequisites.md`).
+
+## P2-D — decommission pod discovery to fallback-only
+Pod CodeGraph + `WORKSPACE_PATH` access exist ONLY for no-client/headless; never reached while a
+capable client is attached.
+
+## Constraints
+Prefix byte-stability (manifest sorted/canonical); MCP stdout-is-sacred; tests mirror services/;
+no-client pod fallback never broken; client deps tracked in the prerequisites doc.
+
+## Stop points
+End of P2-A → live test (host a TS skill). Then P2-B, then P2-C, each its own slice + review.
