@@ -32,6 +32,7 @@ so it is safe to run repeatedly.
     --per-tool 3 \
     --no-llm
 """
+
 import argparse
 import json
 import os
@@ -140,7 +141,7 @@ def extract_json(text: str):
         i, j = text.find(opener), text.rfind(closer)
         if i != -1 and j != -1 and j > i:
             try:
-                return json.loads(text[i:j + 1])
+                return json.loads(text[i : j + 1])
             except json.JSONDecodeError:
                 continue
     return None
@@ -189,8 +190,11 @@ def gen_disambiguation(client, model, skill, desc, neighbors, catalog) -> list[d
     )
     out = chat_json(client, model, prompt, temperature=0.6)
     valid = set(neighbors) | {skill}
-    return [o for o in (out or [])
-            if isinstance(o, dict) and o.get("task") and o.get("expected") in valid]
+    return [
+        o
+        for o in (out or [])
+        if isinstance(o, dict) and o.get("task") and o.get("expected") in valid
+    ]
 
 
 def templated_positive(skill, desc, n) -> list[str]:
@@ -261,7 +265,11 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="print, do not write")
     args = ap.parse_args()
 
-    catalog = load_catalog(args.skills_dir, args.catalog_json) if (args.skills_dir or args.catalog_json) else {}
+    catalog = (
+        load_catalog(args.skills_dir, args.catalog_json)
+        if (args.skills_dir or args.catalog_json)
+        else {}
+    )
     eval_path = Path(args.eval)
     cases = load_eval(eval_path)
     covered = covered_skills(cases)
@@ -310,17 +318,29 @@ def main():
                 continue
             seen_tasks.add(norm(task))
             idx += 1
-            additions.append({"id": f"{cluster}_{slug(skill)}_gen_{idx}", "task": task,
-                              "expected": skill, "cluster": cluster, "source": "generated"})
+            additions.append(
+                {
+                    "id": f"{cluster}_{slug(skill)}_gen_{idx}",
+                    "task": task,
+                    "expected": skill,
+                    "cluster": cluster,
+                    "source": "generated",
+                }
+            )
         for o in disambig:
             if norm(o["task"]) in seen_tasks:
                 continue
             seen_tasks.add(norm(o["task"]))
             idx += 1
-            row = {"id": f"{cluster}_{slug(skill)}_disambig_{idx}", "task": o["task"],
-                   "expected": o["expected"], "cluster": cluster, "source": "generated"}
+            row = {
+                "id": f"{cluster}_{slug(skill)}_disambig_{idx}",
+                "task": o["task"],
+                "expected": o["expected"],
+                "cluster": cluster,
+                "source": "generated",
+            }
             if o["expected"] != skill:
-                row["acceptable"] = [skill]   # boundary case won by a neighbor
+                row["acceptable"] = [skill]  # boundary case won by a neighbor
             additions.append(row)
 
     for tool_name, tool_desc in new_tools:
@@ -328,8 +348,7 @@ def main():
         if args.no_llm:
             positives = templated_hosted_positive(tool_name, tool_desc, args.per_tool)
         else:
-            positives = gen_hosted_positive(client, args.model, tool_name, tool_desc,
-                                           args.per_tool)
+            positives = gen_hosted_positive(client, args.model, tool_name, tool_desc, args.per_tool)
         cluster = slug(tool_name.split("__")[1]) if "__" in tool_name else "hosted"
         idx = 0
         for task in positives:
@@ -337,20 +356,24 @@ def main():
                 continue
             seen_tasks.add(norm(task))
             idx += 1
-            additions.append({
-                "id": f"{cluster}_{slug(tool_name)}_gen_{idx}",
-                "task": task,
-                "expected": tool_name,
-                "kind": "hosted",
-                "cluster": cluster,
-                "source": "generated",
-            })
+            additions.append(
+                {
+                    "id": f"{cluster}_{slug(tool_name)}_gen_{idx}",
+                    "task": task,
+                    "expected": tool_name,
+                    "kind": "hosted",
+                    "cluster": cluster,
+                    "source": "generated",
+                }
+            )
 
     summary_parts = []
     if new_skills:
         summary_parts.append(f"{len(additions)} cases for {len(new_skills)} skill(s)")
     if new_tools:
-        summary_parts.append(f"{sum(1 for a in additions if a.get('kind') == 'hosted')} hosted cases for {len(new_tools)} tool(s)")
+        summary_parts.append(
+            f"{sum(1 for a in additions if a.get('kind') == 'hosted')} hosted cases for {len(new_tools)} tool(s)"
+        )
     print(f"\nGenerated {', '.join(summary_parts) if summary_parts else 'no new cases'}")
 
     if args.dry_run:
