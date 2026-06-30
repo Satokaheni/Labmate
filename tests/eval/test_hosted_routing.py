@@ -3,6 +3,7 @@ Unit tests for hosted MCP-tool routing evaluation.
 
 Tests the hosted-tool scoring path with stubbed model calls (no network).
 """
+
 import json
 import sys
 import tempfile
@@ -138,6 +139,7 @@ async def test_route_hosted_one_with_stub():
 
     async def stub_call_model(client, model, task, hosted_tools, system_prompt, temperature):
         """Stub that returns a tool call for find_references."""
+
         # Simulate the API response structure
         class FakeToolCall:
             def __init__(self, name):
@@ -149,9 +151,7 @@ async def test_route_hosted_one_with_stub():
 
         class FakeChoice:
             def __init__(self):
-                self.message = FakeMessage(
-                    [FakeToolCall("mcp__ast-ts-refactor__find_references")]
-                )
+                self.message = FakeMessage([FakeToolCall("mcp__ast-ts-refactor__find_references")])
 
         class FakeResponse:
             def __init__(self):
@@ -302,13 +302,83 @@ def test_load_hosted_tools_from_file():
 def test_load_hosted_tools_fixture(sample_hosted_tools):
     """Test that sample fixture parses correctly."""
     assert len(sample_hosted_tools) == 2
-    assert (
-        sample_hosted_tools[0]["function"]["name"]
-        == "mcp__ast-ts-refactor__find_references"
+    assert sample_hosted_tools[0]["function"]["name"] == "mcp__ast-ts-refactor__find_references"
+    assert sample_hosted_tools[1]["function"]["name"] == "mcp__ast-ts-refactor__rename_symbol"
+
+
+def test_hosted_tools_example_file_parses():
+    """Test that the real hosted_tools.example.json file loads and parses."""
+    from pathlib import Path
+
+    tools_path = (
+        Path(__file__).parent.parent.parent / "eval" / "fixtures" / "hosted_tools.example.json"
     )
-    assert (
-        sample_hosted_tools[1]["function"]["name"] == "mcp__ast-ts-refactor__rename_symbol"
+    tools = extend_load_hosted_tools(str(tools_path))
+
+    assert tools is not None
+    assert len(tools) > 0
+    assert all(t["type"] == "function" for t in tools)
+    assert all("name" in t["function"] for t in tools)
+
+
+def test_ast_ts_refactor_file_parameter_optional():
+    """Test that file parameter is optional for ast-ts-refactor tools."""
+    from pathlib import Path
+
+    tools_path = (
+        Path(__file__).parent.parent.parent / "eval" / "fixtures" / "hosted_tools.example.json"
     )
+    tools = extend_load_hosted_tools(str(tools_path))
+
+    # Find the tools
+    find_refs = next(
+        (t for t in tools if t["function"]["name"] == "mcp__ast-ts-refactor__find_references"), None
+    )
+    rename = next(
+        (t for t in tools if t["function"]["name"] == "mcp__ast-ts-refactor__rename_symbol"), None
+    )
+
+    assert find_refs is not None, "find_references tool not found"
+    assert rename is not None, "rename_symbol tool not found"
+
+    # Check that 'file' is NOT in required for find_references
+    find_refs_required = find_refs["function"]["parameters"]["required"]
+    assert "file" not in find_refs_required
+    assert "tsconfig" in find_refs_required
+    assert "symbol" in find_refs_required
+
+    # Check that 'file' is NOT in required for rename_symbol
+    rename_required = rename["function"]["parameters"]["required"]
+    assert "file" not in rename_required
+    assert "tsconfig" in rename_required
+    assert "symbol" in rename_required
+    assert "new_name" in rename_required
+
+    # Verify 'file' still exists in properties (just not required)
+    assert "file" in find_refs["function"]["parameters"]["properties"]
+    assert "file" in rename["function"]["parameters"]["properties"]
+
+
+def test_component_doc_gen_path_parameter_broadened():
+    """Test that component_path parameter accepts name/relative paths."""
+    from pathlib import Path
+
+    tools_path = (
+        Path(__file__).parent.parent.parent / "eval" / "fixtures" / "hosted_tools.example.json"
+    )
+    tools = extend_load_hosted_tools(str(tools_path))
+
+    generate = next(
+        (t for t in tools if t["function"]["name"] == "mcp__component-doc-gen__generate"), None
+    )
+    assert generate is not None, "generate tool not found"
+
+    # Check description includes workspace-relative path guidance
+    desc = generate["function"]["parameters"]["properties"]["component_path"]["description"]
+    assert "workspace-relative path" in desc.lower() or "component name" in desc.lower()
+
+    # Verify component_path is still required
+    assert "component_path" in generate["function"]["parameters"]["required"]
 
 
 # =========================================================================== #
@@ -372,6 +442,24 @@ def test_no_tool_name_in_generated_tasks():
     assert all(tool_name not in t for t in tasks)
     # None should reference "mcp__" patterns
     assert all("mcp__" not in t for t in tasks)
+
+
+# =========================================================================== #
+# Workspace root context tests
+# =========================================================================== #
+
+
+def test_hosted_system_includes_workspace_context():
+    """Test that HOSTED_SYSTEM includes workspace-root guidance."""
+    assert "/workspace/project" in HOSTED_SYSTEM
+    assert "absolute" in HOSTED_SYSTEM.lower()
+    assert "join" in HOSTED_SYSTEM.lower() or "construct" in HOSTED_SYSTEM.lower()
+
+
+def test_hosted_system_retains_tool_selector_guidance():
+    """Test that HOSTED_SYSTEM still contains the core tool-selection guidance."""
+    assert "tool selector" in HOSTED_SYSTEM
+    assert "single best tool" in HOSTED_SYSTEM
 
 
 # =========================================================================== #

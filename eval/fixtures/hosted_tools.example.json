@@ -8,10 +8,10 @@
         "type": "object",
         "properties": {
           "tsconfig": {"type": "string", "description": "Absolute path to tsconfig.json"},
-          "file": {"type": "string", "description": "File where the symbol is declared"},
+          "file": {"type": "string", "description": "Optional — declaring file; auto-located if omitted"},
           "symbol": {"type": "string", "description": "Symbol name to find usages of"}
         },
-        "required": ["tsconfig", "file", "symbol"]
+        "required": ["tsconfig", "symbol"]
       }
     }
   },
@@ -24,11 +24,11 @@
         "type": "object",
         "properties": {
           "tsconfig": {"type": "string", "description": "Absolute path to tsconfig.json"},
-          "file": {"type": "string", "description": "File where the symbol is declared"},
+          "file": {"type": "string", "description": "Optional — declaring file; auto-located if omitted"},
           "symbol": {"type": "string", "description": "Current symbol name"},
           "new_name": {"type": "string", "description": "New symbol name"}
         },
-        "required": ["tsconfig", "file", "symbol", "new_name"]
+        "required": ["tsconfig", "symbol", "new_name"]
       }
     }
   },
@@ -57,7 +57,7 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "component_path": {"type": "string", "description": "Absolute path to one component file"},
+          "component_path": {"type": "string", "description": "Absolute path to the component .tsx, OR a component name / workspace-relative path (searched if not an existing file)"},
           "include_stories": {"type": "boolean", "description": "Also emit a Storybook story"}
         },
         "required": ["component_path"]

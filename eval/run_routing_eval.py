@@ -34,6 +34,7 @@ PRODUCTION FIDELITY: route_one() below is a faithful copy of select(). For a
 true production test, replace its body with a call to your real
 services.orchestrator.skill_router.select (see the SEAM marker).
 """
+
 import argparse
 import asyncio
 import json
@@ -60,7 +61,11 @@ HOSTED_SYSTEM = (
     "You are a tool selector. Given a user task and a set of available tools, "
     "call the single best tool for the task. Choose based on the tool's description "
     "and your understanding of what the user is trying to accomplish. Only call a tool "
-    "if one is genuinely relevant."
+    "if one is genuinely relevant.\n\n"
+    "The user's workspace root is: /workspace/project\n"
+    "When a tool requires an ABSOLUTE path (e.g. a tsconfig or a file path), construct it by joining this "
+    "root with the relative path (e.g. /workspace/project/tsconfig.json). Always provide such required "
+    "absolute-path arguments rather than declining to call a tool."
 )
 
 
@@ -97,25 +102,28 @@ def catalog_prompt(catalog: dict[str, str]) -> str:
 
 
 def load_skill_tool(catalog: dict[str, str]) -> list[dict]:
-    return [{
-        "type": "function",
-        "function": {
-            "name": "load_skill",
-            "description": "Load the single most relevant skill for the task.",
-            "parameters": {
-                "type": "object",
-                "properties": {"name": {"type": "string", "enum": list(catalog)}},
-                "required": ["name"],
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "load_skill",
+                "description": "Load the single most relevant skill for the task.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string", "enum": list(catalog)}},
+                    "required": ["name"],
+                },
             },
-        },
-    }]
+        }
+    ]
 
 
 # --------------------------------------------------------------------------- #
 # Routing — SEAM: swap this for the real select() for production fidelity
 # --------------------------------------------------------------------------- #
-async def route_one(client, model, task, catalog, tools, system_prompt,
-                    attempts, temperature) -> str | None:
+async def route_one(
+    client, model, task, catalog, tools, system_prompt, attempts, temperature
+) -> str | None:
     """Return the selected skill name, or None if the router declined. Mirrors
     select(): up to `attempts` independent samples at thinking_budget=0, accept
     the first valid enum name."""
@@ -147,9 +155,16 @@ async def route_one(client, model, task, catalog, tools, system_prompt,
     return None
 
 
-async def route_hosted_one(client, model, task, hosted_tools, system_prompt,
-                           attempts, temperature,
-                           call_model: Callable | None = None) -> str | None:
+async def route_hosted_one(
+    client,
+    model,
+    task,
+    hosted_tools,
+    system_prompt,
+    attempts,
+    temperature,
+    call_model: Callable | None = None,
+) -> str | None:
     """Return the selected hosted tool name (e.g. 'mcp__ast-ts-refactor__find_references'),
     or None if declined. Scores flat tool auto-selection.
 
@@ -160,8 +175,7 @@ async def route_hosted_one(client, model, task, hosted_tools, system_prompt,
 
     for _ in range(attempts):
         try:
-            resp = await call_model(client, model, task, hosted_tools, system_prompt,
-                                    temperature)
+            resp = await call_model(client, model, task, hosted_tools, system_prompt, temperature)
         except Exception as e:  # noqa: BLE001
             print(f"  ! request error: {e}", file=sys.stderr)
             continue
@@ -169,7 +183,11 @@ async def route_hosted_one(client, model, task, hosted_tools, system_prompt,
         if not resp:
             continue
 
-        calls = resp.choices[0].message.tool_calls if hasattr(resp.choices[0].message, 'tool_calls') else None
+        calls = (
+            resp.choices[0].message.tool_calls
+            if hasattr(resp.choices[0].message, "tool_calls")
+            else None
+        )
         if not calls:
             continue  # declined this sample → resample
 
@@ -182,8 +200,7 @@ async def route_hosted_one(client, model, task, hosted_tools, system_prompt,
     return None
 
 
-async def _default_call_hosted_model(client, model, task, hosted_tools,
-                                      system_prompt, temperature):
+async def _default_call_hosted_model(client, model, task, hosted_tools, system_prompt, temperature):
     """Default implementation for calling the model with hosted tools."""
     return await client.chat.completions.create(
         model=model,
@@ -216,8 +233,18 @@ def is_correct_hosted(case: dict, pred: str | None) -> bool:
     return pred == expected or pred in case.get("acceptable", [])
 
 
-async def evaluate(cases, client, model, catalog, repeats, attempts,
-                   temperature, concurrency, hosted_tools=None, call_model=None):
+async def evaluate(
+    cases,
+    client,
+    model,
+    catalog,
+    repeats,
+    attempts,
+    temperature,
+    concurrency,
+    hosted_tools=None,
+    call_model=None,
+):
     """Evaluate cases, routing them to the right scorer based on kind.
 
     If call_model is provided, it will be used instead of the real client
@@ -235,18 +262,38 @@ async def evaluate(cases, client, model, catalog, repeats, attempts,
 
             if kind == "hosted":
                 if not hosted_tools:
-                    print(f"  ! skipping hosted case {case['id']}: no hosted_tools loaded",
-                          file=sys.stderr)
+                    print(
+                        f"  ! skipping hosted case {case['id']}: no hosted_tools loaded",
+                        file=sys.stderr,
+                    )
                     return None
                 for _ in range(repeats):
-                    preds.append(await route_hosted_one(
-                        client, model, case["task"], hosted_tools,
-                        hosted_system, attempts, temperature, call_model=call_model))
+                    preds.append(
+                        await route_hosted_one(
+                            client,
+                            model,
+                            case["task"],
+                            hosted_tools,
+                            hosted_system,
+                            attempts,
+                            temperature,
+                            call_model=call_model,
+                        )
+                    )
             else:  # skill
                 for _ in range(repeats):
-                    preds.append(await route_one(client, model, case["task"], catalog,
-                                                 skill_tools, skill_system,
-                                                 attempts, temperature))
+                    preds.append(
+                        await route_one(
+                            client,
+                            model,
+                            case["task"],
+                            catalog,
+                            skill_tools,
+                            skill_system,
+                            attempts,
+                            temperature,
+                        )
+                    )
 
             if not preds:
                 return None
@@ -254,10 +301,13 @@ async def evaluate(cases, client, model, catalog, repeats, attempts,
             majority, count = Counter(preds).most_common(1)[0]
             score_fn = is_correct_hosted if kind == "hosted" else is_correct
             return {
-                "id": case["id"], "task": case["task"], "expected": case["expected"],
+                "id": case["id"],
+                "task": case["task"],
+                "expected": case["expected"],
                 "kind": kind,
                 "cluster": case.get("cluster", "uncategorized"),
-                "preds": preds, "prediction": majority,
+                "preds": preds,
+                "prediction": majority,
                 "correct": score_fn(case, majority),
                 "stability": count / repeats,
             }
@@ -310,15 +360,20 @@ def write_reports(results, summary, report_dir, repeats):
     Path(report_dir).mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     (Path(report_dir) / f"routing-eval-{stamp}.json").write_text(
-        json.dumps({"summary": summary, "results": results}, indent=2, ensure_ascii=False))
+        json.dumps({"summary": summary, "results": results}, indent=2, ensure_ascii=False)
+    )
 
-    lines = [f"# Routing eval — {stamp}", "",
-             f"- cases: {summary['n']}  |  repeats: {repeats}",
-             f"- overall accuracy: {summary['overall']:.3f}",
-             f"- mean stability: {summary['mean_stability']:.3f}",
-             f"- false-positive rate (negatives): "
-             f"{summary['false_positive_rate']:.3f}" if summary['false_positive_rate']
-             is not None else "- false-positive rate: n/a", ""]
+    lines = [
+        f"# Routing eval — {stamp}",
+        "",
+        f"- cases: {summary['n']}  |  repeats: {repeats}",
+        f"- overall accuracy: {summary['overall']:.3f}",
+        f"- mean stability: {summary['mean_stability']:.3f}",
+        f"- false-positive rate (negatives): " f"{summary['false_positive_rate']:.3f}"
+        if summary["false_positive_rate"] is not None
+        else "- false-positive rate: n/a",
+        "",
+    ]
 
     if len(summary.get("by_kind", {})) > 1:
         lines += ["", "## Per-kind", ""]
@@ -380,23 +435,42 @@ def main():
 
     # Cases expecting a skill that is not in the live catalog will always fail —
     # warn so unimplemented skills (e.g. ones you are mid-adding) are visible.
-    missing = {c["expected"] for c in cases
-               if c.get("kind", "skill") == "skill"
-               and c["expected"] not in catalog and c["expected"] != "none"}
+    missing = {
+        c["expected"]
+        for c in cases
+        if c.get("kind", "skill") == "skill"
+        and c["expected"] not in catalog
+        and c["expected"] != "none"
+    }
     if missing:
-        print(f"NOTE: eval references skills not in the catalog (will score 0 until "
-              f"registered): {', '.join(sorted(missing))}\n", file=sys.stderr)
+        print(
+            f"NOTE: eval references skills not in the catalog (will score 0 until "
+            f"registered): {', '.join(sorted(missing))}\n",
+            file=sys.stderr,
+        )
 
     client = make_client(args.base_url)
-    results = asyncio.run(evaluate(cases, client, args.model, catalog, args.repeats,
-                                   args.select_attempts, args.temperature, args.concurrency,
-                                   hosted_tools=hosted_tools))
+    results = asyncio.run(
+        evaluate(
+            cases,
+            client,
+            args.model,
+            catalog,
+            args.repeats,
+            args.select_attempts,
+            args.temperature,
+            args.concurrency,
+            hosted_tools=hosted_tools,
+        )
+    )
     summary = summarize(results)
     md = write_reports(results, summary, args.report, args.repeats)
 
-    print(f"\noverall: {summary['overall']:.3f}  "
-          f"stability: {summary['mean_stability']:.3f}  "
-          f"FP-rate: {summary['false_positive_rate'] if summary['false_positive_rate'] is not None else 'n/a'}")
+    print(
+        f"\noverall: {summary['overall']:.3f}  "
+        f"stability: {summary['mean_stability']:.3f}  "
+        f"FP-rate: {summary['false_positive_rate'] if summary['false_positive_rate'] is not None else 'n/a'}"
+    )
     if len(summary.get("by_kind", {})) > 1:
         print("per-kind:")
         for k, v in sorted(summary["by_kind"].items()):
