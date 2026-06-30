@@ -421,20 +421,26 @@ describe('User MCP server hosting', () => {
     const configPath = path.join(tmpDir, 'mcp.json');
     fs.writeFileSync(configPath, JSON.stringify(config));
 
-    // Stub _startServer to track what gets called
-    const startedServers: string[] = [];
+    // Stub _startServer to capture the FULL specs it is asked to start. The user
+    // server is identified by its distinctive args (the built-in 'ast-ts-refactor'
+    // is started with a node dist path, not '/path/to/user-server.js').
+    const startedSpecs: Array<{ name: string; args?: string[] }> = [];
     const originalStartServer = (manager as any)._startServer;
     (manager as any)._startServer = async (spec: any) => {
-      startedServers.push(spec.name);
+      startedSpecs.push(spec);
       // Don't actually start
     };
 
     await manager.startAll();
 
-    // The built-in 'ast-ts-refactor' should be attempted, but the user one should be skipped
-    // We should see only built-in starts (the user one should be skipped in the loop)
+    // The built-in host stays.
     expect((manager as any).hosts.has('ast-ts-refactor')).toBe(true);
     expect((manager as any).hosts.get('ast-ts-refactor')).toBe(builtinHost);
+
+    // CRITICAL (built-ins win): the colliding USER server must NEVER be started.
+    // This fails if the `this.hosts.has(name)` collision guard is removed — without
+    // it, the user spec (with these distinctive args) would be passed to _startServer.
+    expect(startedSpecs.some((s) => s.args?.includes('/path/to/user-server.js'))).toBe(false);
 
     // Restore
     (manager as any)._startServer = originalStartServer;
