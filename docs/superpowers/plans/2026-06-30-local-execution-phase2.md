@@ -125,8 +125,18 @@ doc-skill to its stored `body` (status `loaded`), pod skills unchanged.
 > description and loads it unprompted. The planned "first-class router-candidate voting" machinery was
 > NOT needed and was NOT built (measure-first win). If a future doc-skill with a weak/overlapping
 > description mis-routes, the lever is the description (or the repeatable doc-skill routing eval below),
-> NOT new routing machinery. **The HOSTED-MCP-tool half below is still open** (eval built in `39f86db`,
-> not yet run live).
+> NOT new routing machinery.
+>
+> **HOSTED-MCP-tool half — VALIDATED LIVE 2026-06-30.** Ran the `39f86db` hosted routing eval on the
+> Q4 model (6 cases × 3 repeats, ast-ts-refactor `find_references`/`rename_symbol`): **hosted accuracy
+> 1.000 (18/18), zero misroutes, mean stability 1.000** (every case identical across repeats; the
+> same-server find_references/rename pair never swapped). Report:
+> `eval/reports/routing-eval-20260630-194907.md` (local on the pod, not committed). The
+> description-driven auto-selection mechanism works. **CAVEAT — strong but NARROW:** one server, two
+> tools, one cluster — it does NOT yet stress cross-server / near-neighbor disambiguation. To turn this
+> into a real regression GATE, expand `eval/fixtures/hosted_routing.example.jsonl` +
+> `hosted_tools.example.json` with the other bundled servers (`component-doc-gen`, `a11y-audit`) and
+> near-neighbor tools across clusters, then re-run. Optional polish — the mechanism is already proven.
 
 **Problem (from P2-B.0 live testing):** the user still prefixes prompts with "use ast-ts-refactor"
 because auto-selection of a **hosted MCP tool** is unproven on the Q4 Gemma model. The harness
