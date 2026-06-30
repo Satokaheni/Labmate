@@ -533,23 +533,9 @@ class OrchestratorProcess:
             _counter_token = call_counter.start()
             # Per-task client capability manifest: parse from payload and set in context.
             # When no manifest is present, behavior is unchanged (full tool list).
-            _parsed_manifest = parse_manifest(payload.get("client_capabilities"))
-            _manifest_token = client_context.set_manifest(_parsed_manifest)
-            # DIAGNOSTIC (P2-B.1): log what the orchestrator actually received so a
-            # doc-skill that never reaches the catalog can be localized. Names only.
-            try:
-                from services.orchestrator.tool_manifest import client_doc_skills
-
-                _mtools = (_parsed_manifest or {}).get("tools", []) if _parsed_manifest else []
-                _doc = sorted(client_doc_skills(_parsed_manifest).keys())
-                _log.info(
-                    "manifest-diag: present=%s tool_count=%d doc_skills=%s",
-                    _parsed_manifest is not None,
-                    len(_mtools),
-                    _doc,
-                )
-            except Exception as _diag_exc:  # never let diagnostics break a task
-                _log.warning("manifest-diag failed: %s", _diag_exc)
+            _manifest_token = client_context.set_manifest(
+                parse_manifest(payload.get("client_capabilities"))
+            )
             # Per-task workspace root: set in context for skills that need absolute paths.
             _ws_root_token = client_context.set_workspace_root(
                 payload.get("workspace_root") or None

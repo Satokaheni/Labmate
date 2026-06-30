@@ -115,12 +115,19 @@ def test_prompt_assembler_catalog_has_description_not_body():
 
 
 def test_load_skill_resolution_returns_the_body():
-    """The dispatch path (client_doc_skills lookup) returns the exact frontend body."""
+    """The dispatch path (client_doc_skills lookup) returns the exact frontend body
+    via doc_skill_load_response, with a documentation-usage steer."""
+    from services.orchestrator.tool_manifest import doc_skill_load_response
+
     doc = client_doc_skills(_manifest()).get(SKILL_NAME)
     assert doc is not None
-    # Mirror the coding_orchestrator load_skill dispatch result shape.
-    obs = {
-        "name": "load_skill",
-        "response": {"status": "loaded", "name": SKILL_NAME, "body": doc["body"]},
-    }
-    assert obs["response"]["body"] == SKILL_BODY
+    # This is exactly what the coding_orchestrator load_skill dispatch returns.
+    obs = doc_skill_load_response(SKILL_NAME, doc["body"])
+    resp = obs["response"]
+    assert resp["status"] == "loaded"
+    assert resp["name"] == SKILL_NAME
+    assert resp["kind"] == "documentation"
+    assert resp["body"] == SKILL_BODY
+    # The usage steer must tell the model NOT to call_skill_tool a doc-skill.
+    assert "DOCUMENTATION skill" in resp["usage"]
+    assert "do NOT call call_skill_tool" in resp["usage"]

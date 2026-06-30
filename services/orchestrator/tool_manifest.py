@@ -290,6 +290,34 @@ def client_doc_skills(manifest: ClientManifest | None) -> dict[str, dict]:
     return doc_skills
 
 
+def doc_skill_load_response(name: str, body: str) -> dict:
+    """Build the load_skill result for a CLIENT documentation skill.
+
+    Documentation skills have NO callable tools — the model must follow the
+    instructions in `body` directly (using the builtin primitives, or just by
+    answering). The `usage` note steers the model away from inventing a
+    call_skill_tool call for a doc-skill (an invented tool fails and wastes a
+    turn — observed live: a greeting doc-skill prompted a phantom
+    `repo-greeting.write_greeting` call_skill_tool that returned False before the
+    model recovered). Shape mirrors SkillRunner.load_skill's 'loaded' response.
+    """
+    return {
+        "name": "load_skill",
+        "response": {
+            "status": "loaded",
+            "name": name,
+            "kind": "documentation",
+            "body": body,
+            "usage": (
+                f"'{name}' is a DOCUMENTATION skill: follow the instructions in 'body' "
+                "directly to produce your answer (use read_file/write_file/search_files only "
+                "if the instructions require files). It has NO callable tools of its own — do "
+                "NOT call call_skill_tool for it."
+            ),
+        },
+    }
+
+
 def hosted_skill_namespaces(manifest: ClientManifest | None) -> set[str]:
     """
     Extract the skill namespaces that a client hosts directly via mcp/skill descriptors.

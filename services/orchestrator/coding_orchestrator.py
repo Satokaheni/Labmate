@@ -36,7 +36,7 @@ from .sandbox_edits import detect_sandbox_writes
 from .steer_inject import inject_steer
 from .test_outcome import classify_test_attempt
 from .tool_grounding import DEFAULT_TOOL_RESULT_BUDGET, ground_tool_result
-from .tool_manifest import client_doc_skills, manifest_local_tool_names
+from .tool_manifest import client_doc_skills, doc_skill_load_response, manifest_local_tool_names
 from .types import State
 from .verification_stop import (
     MAX_VERIFY_INFRA_ERRORS,
@@ -993,15 +993,10 @@ class AsyncOrchestrator:
                             )
 
                             if _doc is not None:
-                                # Client documentation skill: return its body directly.
-                                obs = {
-                                    "name": "load_skill",
-                                    "response": {
-                                        "status": "loaded",
-                                        "name": _skill_name,
-                                        "body": _doc["body"],
-                                    },
-                                }
+                                # Client documentation skill: return its body + a usage
+                                # steer so the model follows it directly instead of
+                                # inventing a (non-existent) call_skill_tool for it.
+                                obs = doc_skill_load_response(_skill_name, _doc["body"])
                                 content = json.dumps(obs)
                                 loaded_skills.add(_skill_name)
                             else:
