@@ -94,8 +94,590 @@ function langBadge(language: string): string {
 }
 
 // ====================================================================
-// Top bar
+// Static style objects (module-level to avoid rebuild on every render)
 // ====================================================================
+
+const TOPBAR_CONTAINER_STYLE: CSSProperties = {
+  height: 46,
+  flex: 'none',
+  display: 'flex',
+  alignItems: 'center',
+  padding: '0 16px',
+  background: '#0a0c10',
+  borderBottom: '1px solid #20242c',
+  gap: 14,
+};
+
+const TOPBAR_DOT_GROUP_STYLE: CSSProperties = {
+  display: 'flex',
+  gap: 7,
+};
+
+const TOPBAR_TITLE_GROUP_STYLE: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  marginLeft: 8,
+  flex: 'none',
+};
+
+const TOPBAR_TITLE_STYLE: CSSProperties = {
+  fontSize: 13.5,
+  fontWeight: 600,
+  color: '#e6e8ec',
+};
+
+const TOPBAR_SLASH_STYLE: CSSProperties = {
+  fontSize: 12,
+  color: '#5e6671',
+};
+
+const TOPBAR_SESSION_TITLE_STYLE: CSSProperties = {
+  fontSize: 12.5,
+  color: '#939ba7',
+  fontWeight: 500,
+  maxWidth: 220,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
+
+const TOPBAR_DIVIDER_STYLE: CSSProperties = {
+  width: 1,
+  height: 18,
+  background: '#20242c',
+  flex: 'none',
+};
+
+const TOPBAR_WORKSPACE_STYLE: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  minWidth: 0,
+  flex: '1 1 auto',
+  overflow: 'hidden',
+};
+
+const TOPBAR_STATUS_GROUP_STYLE: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 7,
+  background: '#13161c',
+  border: '1px solid #20242c',
+  borderRadius: 8,
+  padding: '6px 11px',
+};
+
+const TOPBAR_STATUS_DOT_STYLE: CSSProperties = {
+  width: 6,
+  height: 6,
+  borderRadius: '50%',
+  background: '#56c08d',
+};
+
+const TOPBAR_STATUS_TEXT_STYLE: CSSProperties = {
+  fontFamily: "'IBM Plex Mono'",
+  fontSize: 11,
+  color: '#939ba7',
+};
+
+const TOPBAR_TABS_GROUP_STYLE: CSSProperties = {
+  display: 'flex',
+  background: '#13161c',
+  border: '1px solid #20242c',
+  borderRadius: 8,
+  padding: 3,
+  gap: 2,
+};
+
+const SIDEBAR_CONTAINER_STYLE: CSSProperties = {
+  width: 288,
+  flex: 'none',
+  background: '#0a0c10',
+  borderRight: '1px solid #20242c',
+  display: 'flex',
+  flexDirection: 'column',
+  minHeight: 0,
+};
+
+const SIDEBAR_TOP_SECTION_STYLE: CSSProperties = {
+  flex: 'none',
+  padding: '14px 14px 0',
+};
+
+const MODE_TABS_CONTAINER_STYLE: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 3,
+  background: '#0f1115',
+  border: '1px solid #20242c',
+  borderRadius: 10,
+  padding: 4,
+  marginBottom: 14,
+};
+
+const NEW_SESSION_BUTTON_STYLE: CSSProperties = {
+  width: '100%',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  background: 'transparent',
+  border: '1px solid #2a2f39',
+  color: '#c7ccd3',
+  fontFamily: 'inherit',
+  fontSize: 13,
+  fontWeight: 500,
+  padding: '9px 12px',
+  borderRadius: 8,
+  cursor: 'pointer',
+};
+
+const CHATS_LABEL_STYLE: CSSProperties = {
+  fontFamily: "'IBM Plex Mono'",
+  fontSize: 10.5,
+  letterSpacing: '.12em',
+  textTransform: 'uppercase',
+  color: '#5e6671',
+  margin: '16px 4px 8px',
+};
+
+const CHAT_SCROLL_STYLE: CSSProperties = {
+  flex: 1,
+  minHeight: 0,
+  overflowY: 'auto',
+  padding: '0 14px 12px',
+};
+
+const SIDEBAR_BOTTOM_SECTION_STYLE: CSSProperties = {
+  flex: 'none',
+  borderTop: '1px solid #20242c',
+  background: '#0c0e12',
+  padding: '13px 14px',
+};
+
+const SYSTEM_LABEL_STYLE: CSSProperties = {
+  fontFamily: "'IBM Plex Mono'",
+  fontSize: 10,
+  letterSpacing: '.12em',
+  textTransform: 'uppercase',
+  color: '#5e6671',
+  marginBottom: 11,
+};
+
+const SYSTEM_ROWS_GROUP_STYLE: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 8,
+};
+
+const USER_BUBBLE_CONTAINER_STYLE: CSSProperties = {
+  display: 'flex',
+  justifyContent: 'flex-end',
+  marginBottom: 30,
+};
+
+const USER_BUBBLE_STYLE: CSSProperties = {
+  maxWidth: '82%',
+  background: '#15181e',
+  border: '1px solid #232831',
+  borderRadius: '15px 15px 5px 15px',
+  padding: '12px 16px',
+  fontSize: 15,
+  lineHeight: 1.62,
+  color: '#e6e8ec',
+};
+
+const THINKING_LINE_STYLE: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 9,
+  marginBottom: 16,
+};
+
+const THINKING_DOT_STYLE: CSSProperties = {
+  width: 6,
+  height: 6,
+  borderRadius: '50%',
+  background: '#6aa6ff',
+  animation: 'pulse 1.4s infinite',
+};
+
+const THINKING_TEXT_STYLE: CSSProperties = {
+  fontSize: 13.5,
+  color: '#939ba7',
+  animation: 'pulse 1.8s infinite',
+};
+
+const THINKING_TIME_STYLE: CSSProperties = {
+  fontFamily: "'IBM Plex Mono'",
+  fontSize: 11,
+  color: '#5e6671',
+};
+
+const ASSISTANT_TURN_CONTAINER_STYLE: CSSProperties = {
+  marginBottom: 30,
+};
+
+const ASSISTANT_HEADER_STYLE: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  marginBottom: 13,
+};
+
+const ASSISTANT_LABEL_STYLE: CSSProperties = {
+  fontFamily: "'IBM Plex Mono'",
+  fontSize: 10.5,
+  letterSpacing: '.1em',
+  textTransform: 'uppercase',
+  color: '#5e6671',
+};
+
+const THOUGHT_CONTAINER_STYLE: CSSProperties = {
+  borderLeft: '2px solid #2a2f39',
+  padding: '3px 0 3px 14px',
+  marginBottom: 16,
+  cursor: 'pointer',
+};
+
+const THOUGHT_HEADER_STYLE: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 9,
+};
+
+const THOUGHT_TOGGLE_ICON_STYLE: CSSProperties = {
+  fontSize: 11,
+  color: '#5e6671',
+  width: 9,
+};
+
+const THOUGHT_TEXT_STYLE: CSSProperties = {
+  fontSize: 13,
+  lineHeight: 1.6,
+  color: '#6b727d',
+  marginTop: 9,
+  paddingRight: 8,
+};
+
+const SKILLS_CHIP_STYLE: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  border: '1px solid #20242c',
+  background: '#13161c',
+  borderRadius: 10,
+  padding: '11px 13px',
+  marginBottom: 16,
+  cursor: 'pointer',
+};
+
+const SKILLS_COUNT_STYLE: CSSProperties = {
+  fontSize: 14,
+};
+
+const SKILLS_LABEL_STYLE: CSSProperties = {
+  fontSize: 12.5,
+  color: '#c7ccd3',
+  fontWeight: 600,
+  whiteSpace: 'nowrap',
+};
+
+const SKILLS_LIST_STYLE: CSSProperties = {
+  fontFamily: "'IBM Plex Mono'",
+  fontSize: 11,
+  color: '#6b727d',
+  flex: 1,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
+
+const SKILLS_VIEW_LINK_STYLE: CSSProperties = {
+  fontSize: 11.5,
+  color: '#6aa6ff',
+  fontWeight: 500,
+  whiteSpace: 'nowrap',
+};
+
+const ANSWER_CONTAINER_STYLE: CSSProperties = {
+  marginBottom: 15,
+};
+
+const FILE_INFO_STYLE: CSSProperties = {
+  minWidth: 0,
+};
+
+const FILE_NAME_STYLE: CSSProperties = {
+  fontSize: 13.5,
+  fontWeight: 600,
+  color: '#e6e8ec',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
+
+const FILE_META_STYLE: CSSProperties = {
+  fontFamily: "'IBM Plex Mono'",
+  fontSize: 11,
+  color: '#6b727d',
+  marginTop: 2,
+};
+
+const FILE_SPACER_STYLE: CSSProperties = {
+  flex: 1,
+};
+
+const FILE_PREVIEW_LINK_STYLE: CSSProperties = {
+  fontSize: 11.5,
+  color: '#6aa6ff',
+  fontWeight: 500,
+};
+
+const FILE_DOWNLOAD_BUTTON_STYLE: CSSProperties = {
+  width: 28,
+  height: 28,
+  borderRadius: 7,
+  background: '#1b1f26',
+  border: '1px solid #2a2f39',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  color: '#939ba7',
+  fontSize: 13,
+};
+
+const PANEL_LABEL_STYLE: CSSProperties = {
+  fontFamily: "'IBM Plex Mono'",
+  fontSize: 9,
+  letterSpacing: '.1em',
+  textTransform: 'uppercase',
+  color: '#5e6671',
+  marginBottom: 5,
+};
+
+const CODEBLOCK_BASE_STYLE: CSSProperties = {
+  fontFamily: "'IBM Plex Mono'",
+  fontSize: 11,
+  background: '#0c0e12',
+  border: '1px solid #20242c',
+  borderRadius: 6,
+  padding: '7px 9px',
+  marginBottom: 10,
+  overflowX: 'auto',
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-word',
+};
+
+const FILE_PREVIEW_HEADER_STYLE: CSSProperties = {
+  flex: 'none',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 11,
+  padding: '12px 14px',
+  borderBottom: '1px solid #20242c',
+};
+
+const FILE_PREVIEW_BADGE_STYLE: CSSProperties = {
+  width: 32,
+  height: 32,
+  flex: 'none',
+  borderRadius: 7,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  fontFamily: "'IBM Plex Mono'",
+  fontSize: 10,
+  fontWeight: 600,
+};
+
+const FILE_PREVIEW_INFO_STYLE: CSSProperties = {
+  minWidth: 0,
+  flex: 1,
+};
+
+const FILE_PREVIEW_NAME_STYLE: CSSProperties = {
+  fontSize: 13,
+  fontWeight: 600,
+  color: '#e6e8ec',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
+
+const FILE_PREVIEW_PATH_STYLE: CSSProperties = {
+  fontFamily: "'IBM Plex Mono'",
+  fontSize: 10.5,
+  color: '#6b727d',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
+
+const FILE_PREVIEW_DOWNLOAD_LINK_STYLE: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 7,
+  background: '#1b1f26',
+  border: '1px solid #2a2f39',
+  borderRadius: 8,
+  padding: '6px 11px',
+  cursor: 'pointer',
+  textDecoration: 'none',
+};
+
+const FILE_PREVIEW_DOWNLOAD_ICON_STYLE: CSSProperties = {
+  fontSize: 12,
+  color: '#c7ccd3',
+};
+
+const FILE_PREVIEW_DOWNLOAD_TEXT_STYLE: CSSProperties = {
+  fontSize: 11.5,
+  color: '#c7ccd3',
+  fontWeight: 500,
+};
+
+const FILE_PREVIEW_METADATA_STYLE: CSSProperties = {
+  flex: 'none',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  padding: '7px 14px',
+  borderBottom: '1px solid #20242c',
+  background: '#0c0e12',
+  fontFamily: "'IBM Plex Mono'",
+  fontSize: 10.5,
+  color: '#5e6671',
+};
+
+const EMPTY_FILES_CONTAINER_STYLE: CSSProperties = {
+  height: '100%',
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center',
+  justifyContent: 'center',
+  padding: 30,
+  textAlign: 'center',
+};
+
+const EMPTY_FILES_ICON_STYLE: CSSProperties = {
+  width: 48,
+  height: 48,
+  borderRadius: 12,
+  border: '1.5px dashed #2a2f39',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  fontSize: 20,
+  color: '#3c434e',
+  marginBottom: 16,
+};
+
+const EMPTY_FILES_TITLE_STYLE: CSSProperties = {
+  fontSize: 13.5,
+  fontWeight: 600,
+  color: '#939ba7',
+  marginBottom: 6,
+};
+
+const EMPTY_FILES_DESCRIPTION_STYLE: CSSProperties = {
+  fontSize: 12.5,
+  lineHeight: 1.55,
+  color: '#5e6671',
+  maxWidth: 220,
+};
+
+const DEBUG_CONSOLE_CONTAINER_STYLE: CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  minHeight: 0,
+  height: '100%',
+};
+
+const DEBUG_CONSOLE_HEADER_STYLE: CSSProperties = {
+  flex: 'none',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  padding: '13px 16px',
+  borderBottom: '1px solid #20242c',
+};
+
+const DEBUG_CONSOLE_DOT_STYLE: CSSProperties = {
+  width: 6,
+  height: 6,
+  borderRadius: '50%',
+  background: '#56c08d',
+  animation: 'pulse 1.4s infinite',
+};
+
+const DEBUG_CONSOLE_LABEL_STYLE: CSSProperties = {
+  fontFamily: "'IBM Plex Mono'",
+  fontSize: 11,
+  letterSpacing: '.1em',
+  textTransform: 'uppercase',
+  color: '#56c08d',
+};
+
+const DEBUG_CONSOLE_SCROLL_STYLE: CSSProperties = {
+  flex: 1,
+  overflowY: 'auto',
+  padding: '14px 16px',
+};
+
+const DEBUG_INFO_BOX_STYLE: CSSProperties = {
+  background: '#0c0e12',
+  border: '1px dashed #2a2f39',
+  borderRadius: 8,
+  padding: 13,
+  marginBottom: 13,
+  fontSize: 11.5,
+  lineHeight: 1.5,
+  color: '#5e6671',
+};
+
+const DEBUG_LIVE_BOX_STYLE: CSSProperties = {
+  background: '#0c0e12',
+  border: '1px solid #20242c',
+  borderRadius: 8,
+  padding: '10px 11px',
+  fontFamily: "'IBM Plex Mono'",
+  fontSize: 11,
+  lineHeight: 1.85,
+  color: '#8a93a0',
+};
+
+const COMPOSER_SUBMIT_BUTTON_STYLE: CSSProperties = {
+  width: 32,
+  height: 32,
+  borderRadius: 9,
+  background: '#6aa6ff',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  color: '#0a0c10',
+  fontSize: 15,
+  cursor: 'pointer',
+};
+
+// ====================================================================
+// Top bar
+// ====================================================================/
+
+/** Traffic-light dot + segmented-tab styles — pure, hoisted so they aren't rebuilt per render. */
+const dot = (bg: string): CSSProperties => ({ width: 11, height: 11, borderRadius: '50%', background: bg });
+const segTab = (active: boolean): CSSProperties => ({
+  display: 'flex',
+  alignItems: 'center',
+  gap: 5,
+  fontFamily: "'IBM Plex Mono'",
+  fontSize: 11,
+  color: active ? '#e6e8ec' : '#8a93a0',
+  background: active ? '#1b1f26' : 'transparent',
+  boxShadow: active ? 'inset 0 0 0 1px #2f3742' : 'none',
+  borderRadius: 6,
+  padding: '5px 10px',
+  cursor: 'pointer',
+});
 
 function TopBar(props: {
   sessionTitle: string;
@@ -113,35 +695,10 @@ function TopBar(props: {
 }) {
   const { sessionTitle, rightView, debug, roots, workspaceAvailable, sidebarCollapsed, onToggleSidebar, onAddRoot, onRemoveRoot, onSkills, onFiles, onToggleDebug } = props;
 
-  const dot = (bg: string): CSSProperties => ({ width: 11, height: 11, borderRadius: '50%', background: bg });
-  const segTab = (active: boolean): CSSProperties => ({
-    display: 'flex',
-    alignItems: 'center',
-    gap: 5,
-    fontFamily: "'IBM Plex Mono'",
-    fontSize: 11,
-    color: active ? '#e6e8ec' : '#8a93a0',
-    background: active ? '#1b1f26' : 'transparent',
-    boxShadow: active ? 'inset 0 0 0 1px #2f3742' : 'none',
-    borderRadius: 6,
-    padding: '5px 10px',
-    cursor: 'pointer',
-  });
 
   return (
-    <div
-      style={{
-        height: 46,
-        flex: 'none',
-        display: 'flex',
-        alignItems: 'center',
-        padding: '0 16px',
-        background: '#0a0c10',
-        borderBottom: '1px solid #20242c',
-        gap: 14,
-      }}
-    >
-      <div style={{ display: 'flex', gap: 7 }}>
+    <div style={TOPBAR_CONTAINER_STYLE}>
+      <div style={TOPBAR_DOT_GROUP_STYLE}>
         <div style={dot('#37404c')} />
         <div style={dot('#37404c')} />
         <div style={dot('#37404c')} />
@@ -185,44 +742,24 @@ function TopBar(props: {
           <line x1="9" y1="4" x2="9" y2="20" />
         </svg>
       </button>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 8, flex: 'none' }}>
+      <div style={TOPBAR_TITLE_GROUP_STYLE}>
         <LabmateMark size={18} variant="tile" spin="none" />
-        <span style={{ fontSize: 13.5, fontWeight: 600, color: '#e6e8ec' }}>Labmate</span>
-        <span style={{ fontSize: 12, color: '#5e6671' }}>/</span>
-        <span
-          style={{
-            fontSize: 12.5,
-            color: '#939ba7',
-            fontWeight: 500,
-            maxWidth: 220,
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}
-        >
+        <span style={TOPBAR_TITLE_STYLE}>Labmate</span>
+        <span style={TOPBAR_SLASH_STYLE}>/</span>
+        <span style={TOPBAR_SESSION_TITLE_STYLE}>
           {sessionTitle}
         </span>
       </div>
       {/* working directories this chat covers (Claude-Desktop style) */}
-      <div style={{ width: 1, height: 18, background: '#20242c', flex: 'none' }} />
-      <div style={{ display: 'flex', alignItems: 'center', minWidth: 0, flex: '1 1 auto', overflow: 'hidden' }}>
+      <div style={TOPBAR_DIVIDER_STYLE} />
+      <div style={TOPBAR_WORKSPACE_STYLE}>
         <WorkspaceRoots roots={roots} available={workspaceAvailable} onAdd={onAddRoot} onRemove={onRemoveRoot} />
       </div>
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 7,
-          background: '#13161c',
-          border: '1px solid #20242c',
-          borderRadius: 8,
-          padding: '6px 11px',
-        }}
-      >
-        <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#56c08d' }} />
-        <span style={{ fontFamily: "'IBM Plex Mono'", fontSize: 11, color: '#939ba7' }}>llama.cpp :8000</span>
+      <div style={TOPBAR_STATUS_GROUP_STYLE}>
+        <span style={TOPBAR_STATUS_DOT_STYLE} />
+        <span style={TOPBAR_STATUS_TEXT_STYLE}>llama.cpp :8000</span>
       </div>
-      <div style={{ display: 'flex', background: '#13161c', border: '1px solid #20242c', borderRadius: 8, padding: 3, gap: 2 }}>
+      <div style={TOPBAR_TABS_GROUP_STYLE}>
         <div onClick={onSkills} onKeyDown={keyActivate(onSkills)} role="button" tabIndex={0} style={segTab(rightView === 'skills')}>
           ⚡ Skills
         </div>
@@ -302,30 +839,9 @@ function Sidebar(props: {
   );
 
   return (
-    <div
-      style={{
-        width: 288,
-        flex: 'none',
-        background: '#0a0c10',
-        borderRight: '1px solid #20242c',
-        display: 'flex',
-        flexDirection: 'column',
-        minHeight: 0,
-      }}
-    >
-      <div style={{ flex: 'none', padding: '14px 14px 0' }}>
-        <div
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 3,
-            background: '#0f1115',
-            border: '1px solid #20242c',
-            borderRadius: 10,
-            padding: 4,
-            marginBottom: 14,
-          }}
-        >
+    <div style={SIDEBAR_CONTAINER_STYLE}>
+      <div style={SIDEBAR_TOP_SECTION_STYLE}>
+        <div style={MODE_TABS_CONTAINER_STYLE}>
           <div onClick={() => onSetMode('chat')} onKeyDown={keyActivate(() => onSetMode('chat'))} role="button" tabIndex={0} style={tab('chat')}>
             <span style={{ fontSize: 14 }}>💬</span>Chat
           </div>
@@ -336,42 +852,13 @@ function Sidebar(props: {
             <span style={{ fontSize: 14 }}>⌘</span>Coding
           </div>
         </div>
-        <button
-          type="button"
-          onClick={onNewSession}
-          style={{
-            width: '100%',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            background: 'transparent',
-            border: '1px solid #2a2f39',
-            color: '#c7ccd3',
-            fontFamily: 'inherit',
-            fontSize: 13,
-            fontWeight: 500,
-            padding: '9px 12px',
-            borderRadius: 8,
-            cursor: 'pointer',
-          }}
-        >
+        <button type="button" onClick={onNewSession} style={NEW_SESSION_BUTTON_STYLE}>
           ＋ New {MODE_META[mode].noun} session
         </button>
-        <div
-          style={{
-            fontFamily: "'IBM Plex Mono'",
-            fontSize: 10.5,
-            letterSpacing: '.12em',
-            textTransform: 'uppercase',
-            color: '#5e6671',
-            margin: '16px 4px 8px',
-          }}
-        >
-          Chats
-        </div>
+        <div style={CHATS_LABEL_STYLE}>Chats</div>
       </div>
 
-      <div className="lm-scroll" style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 14px 12px' }}>
+      <div className="lm-scroll" style={CHAT_SCROLL_STYLE}>
         {sessions.length === 0 && (
           <div style={{ fontSize: 12, color: '#5e6671', padding: '8px 12px' }}>No chats yet.</div>
         )}
@@ -419,20 +906,9 @@ function Sidebar(props: {
         })}
       </div>
 
-      <div style={{ flex: 'none', borderTop: '1px solid #20242c', background: '#0c0e12', padding: '13px 14px' }}>
-        <div
-          style={{
-            fontFamily: "'IBM Plex Mono'",
-            fontSize: 10,
-            letterSpacing: '.12em',
-            textTransform: 'uppercase',
-            color: '#5e6671',
-            marginBottom: 11,
-          }}
-        >
-          System
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={SIDEBAR_BOTTOM_SECTION_STYLE}>
+        <div style={SYSTEM_LABEL_STYLE}>System</div>
+        <div style={SYSTEM_ROWS_GROUP_STYLE}>
           {sysRow('#6aa6ff', 'Brain', nodeLabel, true)}
           {sysRow('#a78bfa', 'MCP bridge', `${toolCount} tools`)}
           {sysRow('#56c08d', 'Hands', handsSummary)}
@@ -448,19 +924,8 @@ function Sidebar(props: {
 
 function UserBubble({ text }: { text: string }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 30 }}>
-      <div
-        style={{
-          maxWidth: '82%',
-          background: '#15181e',
-          border: '1px solid #232831',
-          borderRadius: '15px 15px 5px 15px',
-          padding: '12px 16px',
-          fontSize: 15,
-          lineHeight: 1.62,
-          color: '#e6e8ec',
-        }}
-      >
+    <div style={USER_BUBBLE_CONTAINER_STYLE}>
+      <div style={USER_BUBBLE_STYLE}>
         {text}
       </div>
     </div>
@@ -475,10 +940,10 @@ function ThinkingLine({ turn, active }: { turn: Turn; active: boolean }) {
   const label = running ? `Running ${running.name}` : turn.reasoning ? 'Reasoning' : 'Thinking';
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 16 }}>
-      <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#6aa6ff', animation: 'pulse 1.4s infinite' }} />
-      <span style={{ fontSize: 13.5, color: '#939ba7', animation: 'pulse 1.8s infinite' }}>{label}…</span>
-      <span style={{ fontFamily: "'IBM Plex Mono'", fontSize: 11, color: '#5e6671' }}>{(elapsed / 1000).toFixed(1)}s</span>
+    <div style={THINKING_LINE_STYLE}>
+      <span style={THINKING_DOT_STYLE} />
+      <span style={THINKING_TEXT_STYLE}>{label}…</span>
+      <span style={THINKING_TIME_STYLE}>{(elapsed / 1000).toFixed(1)}s</span>
     </div>
   );
 }
@@ -497,21 +962,11 @@ function AssistantTurnView(props: {
   const reasoning = turn.reasoning;
 
   return (
-    <div style={{ marginBottom: 30 }}>
+    <div style={ASSISTANT_TURN_CONTAINER_STYLE}>
       {/* avatar + label */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 13 }}>
+      <div style={ASSISTANT_HEADER_STYLE}>
         <LabmateMark size={18} variant="tile" spin={active ? 'fast' : 'none'} />
-        <span
-          style={{
-            fontFamily: "'IBM Plex Mono'",
-            fontSize: 10.5,
-            letterSpacing: '.1em',
-            textTransform: 'uppercase',
-            color: '#5e6671',
-          }}
-        >
-          Labmate
-        </span>
+        <span style={ASSISTANT_LABEL_STYLE}>Labmate</span>
       </div>
 
       {/* live thinking indicator (no answer text yet) */}
@@ -519,71 +974,31 @@ function AssistantTurnView(props: {
 
       {/* thought block */}
       {reasoning && (
-        <div
-          onClick={onToggleThought}
-          onKeyDown={keyActivate(onToggleThought)}
-          role="button"
-          tabIndex={0}
-          style={{ borderLeft: '2px solid #2a2f39', padding: '3px 0 3px 14px', marginBottom: 16, cursor: 'pointer' }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-            <span style={{ fontSize: 11, color: '#5e6671', width: 9 }}>{thoughtOpen ? '▾' : '▸'}</span>
+        <div onClick={onToggleThought} onKeyDown={keyActivate(onToggleThought)} role="button" tabIndex={0} style={THOUGHT_CONTAINER_STYLE}>
+          <div style={THOUGHT_HEADER_STYLE}>
+            <span style={THOUGHT_TOGGLE_ICON_STYLE}>{thoughtOpen ? '▾' : '▸'}</span>
             <span style={{ fontSize: 13, color: '#939ba7' }}>Thought for {fmtDur(reasoning.durationMs) || `${reasoning.tokens} tok`}</span>
             <span style={{ fontFamily: "'IBM Plex Mono'", fontSize: 10.5, color: '#5e6671' }}>
               · {reasoning.node} · {reasoning.tokens.toLocaleString()} / {reasoning.budget.toLocaleString()}
             </span>
           </div>
-          {thoughtOpen && (
-            <div style={{ fontSize: 13, lineHeight: 1.6, color: '#6b727d', marginTop: 9, paddingRight: 8 }}>
-              {reasoning.text}
-            </div>
-          )}
+          {thoughtOpen && <div style={THOUGHT_TEXT_STYLE}>{reasoning.text}</div>}
         </div>
       )}
 
       {/* skills chip */}
       {calls.length > 0 && (
-        <div
-          onClick={onOpenSkills}
-          onKeyDown={keyActivate(onOpenSkills)}
-          role="button"
-          tabIndex={0}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 10,
-            border: '1px solid #20242c',
-            background: '#13161c',
-            borderRadius: 10,
-            padding: '11px 13px',
-            marginBottom: 16,
-            cursor: 'pointer',
-          }}
-        >
-          <span style={{ fontSize: 14 }}>⚡</span>
-          <span style={{ fontSize: 12.5, color: '#c7ccd3', fontWeight: 600, whiteSpace: 'nowrap' }}>
-            {calls.length} skills used
-          </span>
-          <span
-            style={{
-              fontFamily: "'IBM Plex Mono'",
-              fontSize: 11,
-              color: '#6b727d',
-              flex: 1,
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {calls.map((c) => c.name).join(' · ')}
-          </span>
-          <span style={{ fontSize: 11.5, color: '#6aa6ff', fontWeight: 500, whiteSpace: 'nowrap' }}>View →</span>
+        <div onClick={onOpenSkills} onKeyDown={keyActivate(onOpenSkills)} role="button" tabIndex={0} style={SKILLS_CHIP_STYLE}>
+          <span style={SKILLS_COUNT_STYLE}>⚡</span>
+          <span style={SKILLS_LABEL_STYLE}>{calls.length} skills used</span>
+          <span style={SKILLS_LIST_STYLE}>{calls.map((c) => c.name).join(' · ')}</span>
+          <span style={SKILLS_VIEW_LINK_STYLE}>View →</span>
         </div>
       )}
 
       {/* answer */}
       {turn.text && (
-        <div style={{ marginBottom: 15 }}>
+        <div style={ANSWER_CONTAINER_STYLE}>
           <Markdown text={turn.text} />
         </div>
       )}
@@ -640,39 +1055,15 @@ function FileCard({ artifact, active, onClick }: { artifact: Artifact; active: b
       >
         {badge}
       </div>
-      <div style={{ minWidth: 0 }}>
-        <div
-          style={{
-            fontSize: 13.5,
-            fontWeight: 600,
-            color: '#e6e8ec',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {artifact.name}
-        </div>
-        <div style={{ fontFamily: "'IBM Plex Mono'", fontSize: 11, color: '#6b727d', marginTop: 2 }}>
+      <div style={FILE_INFO_STYLE}>
+        <div style={FILE_NAME_STYLE}>{artifact.name}</div>
+        <div style={FILE_META_STYLE}>
           {artifact.language} · {formatBytes(artifact.sizeBytes)} · generated
         </div>
       </div>
-      <div style={{ flex: 1 }} />
-      <span style={{ fontSize: 11.5, color: '#6aa6ff', fontWeight: 500 }}>Preview</span>
-      <div
-        style={{
-          width: 28,
-          height: 28,
-          borderRadius: 7,
-          background: '#1b1f26',
-          border: '1px solid #2a2f39',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          color: '#939ba7',
-          fontSize: 13,
-        }}
-      >
+      <div style={FILE_SPACER_STYLE} />
+      <span style={FILE_PREVIEW_LINK_STYLE}>Preview</span>
+      <div style={FILE_DOWNLOAD_BUTTON_STYLE}>
         ⤓
       </div>
     </div>
@@ -910,24 +1301,7 @@ function Composer(props: { mode: Mode; budget: number; sessionId: string; onSend
               thinking {budget.toLocaleString()}
             </span>
             <div style={{ flex: 1 }} />
-            <div
-              onClick={submit}
-              onKeyDown={keyActivate(submit)}
-              role="button"
-              tabIndex={0}
-              style={{
-                width: 32,
-                height: 32,
-                borderRadius: 9,
-                background: '#6aa6ff',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: '#0a0c10',
-                fontSize: 15,
-                cursor: 'pointer',
-              }}
-            >
+            <div onClick={submit} onKeyDown={keyActivate(submit)} role="button" tabIndex={0} style={COMPOSER_SUBMIT_BUTTON_STYLE}>
               ↑
             </div>
           </div>
@@ -1072,42 +1446,11 @@ function SkillsPanel({
 }
 
 function PanelLabel({ children }: { children: React.ReactNode }) {
-  return (
-    <div
-      style={{
-        fontFamily: "'IBM Plex Mono'",
-        fontSize: 9,
-        letterSpacing: '.1em',
-        textTransform: 'uppercase',
-        color: '#5e6671',
-        marginBottom: 5,
-      }}
-    >
-      {children}
-    </div>
-  );
+  return <div style={PANEL_LABEL_STYLE}>{children}</div>;
 }
 
 function CodeBlock({ children, color }: { children: React.ReactNode; color: string }) {
-  return (
-    <div
-      style={{
-        fontFamily: "'IBM Plex Mono'",
-        fontSize: 11,
-        color,
-        background: '#0c0e12',
-        border: '1px solid #20242c',
-        borderRadius: 6,
-        padding: '7px 9px',
-        marginBottom: 10,
-        overflowX: 'auto',
-        whiteSpace: 'pre-wrap',
-        wordBreak: 'break-word',
-      }}
-    >
-      {children}
-    </div>
-  );
+  return <div style={{ ...CODEBLOCK_BASE_STYLE, color }}>{children}</div>;
 }
 
 function stringify(v: unknown): string {
@@ -1129,56 +1472,22 @@ function FilePreviewPanel({ artifact }: { artifact: Artifact }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%' }}>
-      <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 11, padding: '12px 14px', borderBottom: '1px solid #20242c' }}>
-        <div
-          style={{
-            width: 32,
-            height: 32,
-            flex: 'none',
-            borderRadius: 7,
-            background: badgeBg,
-            border: `1px solid ${badgeBorder}`,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            fontFamily: "'IBM Plex Mono'",
-            fontSize: 10,
-            fontWeight: 600,
-            color: badgeColor,
-          }}
-        >
+      <div style={FILE_PREVIEW_HEADER_STYLE}>
+        <div style={{ ...FILE_PREVIEW_BADGE_STYLE, background: badgeBg, border: `1px solid ${badgeBorder}`, color: badgeColor }}>
           {badge}
         </div>
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: '#e6e8ec', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {artifact.name}
-          </div>
-          <div style={{ fontFamily: "'IBM Plex Mono'", fontSize: 10.5, color: '#6b727d', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {dir || artifact.path}
-          </div>
+        <div style={FILE_PREVIEW_INFO_STYLE}>
+          <div style={FILE_PREVIEW_NAME_STYLE}>{artifact.name}</div>
+          <div style={FILE_PREVIEW_PATH_STYLE}>{dir || artifact.path}</div>
         </div>
         {artifact.downloadUrl && (
-          <a
-            href={artifact.downloadUrl}
-            download={artifact.name}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 7,
-              background: '#1b1f26',
-              border: '1px solid #2a2f39',
-              borderRadius: 8,
-              padding: '6px 11px',
-              cursor: 'pointer',
-              textDecoration: 'none',
-            }}
-          >
-            <span style={{ fontSize: 12, color: '#c7ccd3' }}>⤓</span>
-            <span style={{ fontSize: 11.5, color: '#c7ccd3', fontWeight: 500 }}>Download</span>
+          <a href={artifact.downloadUrl} download={artifact.name} style={FILE_PREVIEW_DOWNLOAD_LINK_STYLE}>
+            <span style={FILE_PREVIEW_DOWNLOAD_ICON_STYLE}>⤓</span>
+            <span style={FILE_PREVIEW_DOWNLOAD_TEXT_STYLE}>Download</span>
           </a>
         )}
       </div>
-      <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 10, padding: '7px 14px', borderBottom: '1px solid #20242c', background: '#0c0e12', fontFamily: "'IBM Plex Mono'", fontSize: 10.5, color: '#5e6671' }}>
+      <div style={FILE_PREVIEW_METADATA_STYLE}>
         <span>{artifact.language}</span>
         <span>·</span>
         {artifact.lineCount != null && (
@@ -1211,25 +1520,10 @@ function FilePreviewPanel({ artifact }: { artifact: Artifact }) {
 
 function EmptyFiles() {
   return (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 30, textAlign: 'center' }}>
-      <div
-        style={{
-          width: 48,
-          height: 48,
-          borderRadius: 12,
-          border: '1.5px dashed #2a2f39',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          fontSize: 20,
-          color: '#3c434e',
-          marginBottom: 16,
-        }}
-      >
-        ⤓
-      </div>
-      <div style={{ fontSize: 13.5, fontWeight: 600, color: '#939ba7', marginBottom: 6 }}>No files yet</div>
-      <div style={{ fontSize: 12.5, lineHeight: 1.55, color: '#5e6671', maxWidth: 220 }}>
+    <div style={EMPTY_FILES_CONTAINER_STYLE}>
+      <div style={EMPTY_FILES_ICON_STYLE}>⤓</div>
+      <div style={EMPTY_FILES_TITLE_STYLE}>No files yet</div>
+      <div style={EMPTY_FILES_DESCRIPTION_STYLE}>
         When Labmate generates a file, it appears in the chat — open it here to preview and download.
       </div>
     </div>
@@ -1238,42 +1532,18 @@ function EmptyFiles() {
 
 function DebugConsole({ nodeLabel, budget }: { nodeLabel: string; budget: number }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%' }}>
-      <div style={{ flex: 'none', display: 'flex', alignItems: 'center', gap: 8, padding: '13px 16px', borderBottom: '1px solid #20242c' }}>
-        <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#56c08d', animation: 'pulse 1.4s infinite' }} />
-        <span style={{ fontFamily: "'IBM Plex Mono'", fontSize: 11, letterSpacing: '.1em', textTransform: 'uppercase', color: '#56c08d' }}>
-          Debug · live trace
-        </span>
+    <div style={DEBUG_CONSOLE_CONTAINER_STYLE}>
+      <div style={DEBUG_CONSOLE_HEADER_STYLE}>
+        <span style={DEBUG_CONSOLE_DOT_STYLE} />
+        <span style={DEBUG_CONSOLE_LABEL_STYLE}>Debug · live trace</span>
       </div>
-      <div className="lm-scroll" style={{ flex: 1, overflowY: 'auto', padding: '14px 16px' }}>
+      <div className="lm-scroll" style={DEBUG_CONSOLE_SCROLL_STYLE}>
         <PanelLabel>Selected call</PanelLabel>
-        <div
-          style={{
-            background: '#0c0e12',
-            border: '1px dashed #2a2f39',
-            borderRadius: 8,
-            padding: 13,
-            marginBottom: 13,
-            fontSize: 11.5,
-            lineHeight: 1.5,
-            color: '#5e6671',
-          }}
-        >
+        <div style={DEBUG_INFO_BOX_STYLE}>
           Click any skill in the conversation to inspect its full trace — reasoning tokens, timing, args, and result.
         </div>
         <PanelLabel>Live</PanelLabel>
-        <div
-          style={{
-            background: '#0c0e12',
-            border: '1px solid #20242c',
-            borderRadius: 8,
-            padding: '10px 11px',
-            fontFamily: "'IBM Plex Mono'",
-            fontSize: 11,
-            lineHeight: 1.85,
-            color: '#8a93a0',
-          }}
-        >
+        <div style={DEBUG_LIVE_BOX_STYLE}>
           <div>
             node <span style={{ color: '#6aa6ff' }}>{nodeLabel}</span>
           </div>
