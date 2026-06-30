@@ -546,7 +546,21 @@ def test_manifest_local_tool_names_matches_advertised_names():
     This sync guard ensures dispatch routing cannot drift from advertisement.
     The set should equal all advertised tool names EXCEPT control/server tools
     (finish, load_skill, call_skill_tool, code_semantic_search, memory_search).
+
+    Strengthened: now includes a skill_router so load_skill and call_skill_tool are
+    advertised, making the control_tools subtraction load-bearing and catching regressions
+    where a control tool leaks into manifest_local_tool_names.
     """
+    # Build a fake skill_router so load_skill and call_skill_tool are advertised.
+    runner = MagicMock()
+    runner.tool_schema.return_value = {
+        "type": "function",
+        "function": {"name": "load_skill", "parameters": {}},
+    }
+    runner.catalog_prompt.return_value = None
+    fake_router = MagicMock()
+    fake_router.runner = runner
+
     manifest: ClientManifest = {
         "tools": [
             {"name": "read_file", "source": "builtin"},
@@ -565,7 +579,7 @@ def test_manifest_local_tool_names_matches_advertised_names():
     }
     static_tail = _static_tail_schemas()
     advertised_tools = build_tool_list(
-        manifest, skill_router=None, codegraph_enabled=False, static_tail=static_tail
+        manifest, skill_router=fake_router, codegraph_enabled=False, static_tail=static_tail
     )
     advertised_names = {t["function"]["name"] for t in advertised_tools}
 
@@ -573,6 +587,8 @@ def test_manifest_local_tool_names_matches_advertised_names():
     local_names = manifest_local_tool_names(manifest, set())
 
     # Control/server tools that should NOT be in local_names.
+    # These are explicitly managed by the orchestrator and should not be routed
+    # to the client even if they appear in the advertised tool list.
     control_tools = {
         "finish",
         "load_skill",
@@ -586,6 +602,13 @@ def test_manifest_local_tool_names_matches_advertised_names():
 
     # They must match.
     assert local_names == expected, f"Expected {expected}, got {local_names}"
+    # Sanity check: control_tools should actually be in advertised (otherwise the
+    # subtraction is vacuous and the test is weak). With a fake_router, load_skill
+    # and call_skill_tool should definitely be present.
+    assert {"load_skill", "call_skill_tool"} & advertised_names, (
+        "load_skill and/or call_skill_tool should be in advertised_names for the sync guard to be "
+        "load-bearing; otherwise the control_tools subtraction is partially a no-op"
+    )
 
 
 @pytest.mark.mocked

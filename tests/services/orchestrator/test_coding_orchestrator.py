@@ -1626,6 +1626,77 @@ async def test_react_routes_read_file_to_local_tool():
 
 
 @pytest.mark.asyncio
+async def test_react_routes_search_files_to_local_tool():
+    """ReAct loop routes search_files through request_local_tool and returns hits."""
+    import fakeredis.aioredis
+
+    from services.orchestrator import events
+    from services.orchestrator.local_tools import TOOL_RESULTS_PREFIX
+
+    redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    task_id = "task-react-search"
+    emitter = events.EventEmitter(redis, task_id)
+    token = events.current_emitter.set(emitter)
+
+    orch = AsyncOrchestrator(skill_router=None, max_steps=3)
+    orch.redis = redis
+
+    # Responder: posts a tool.result as soon as tool.request lands on event stream
+    async def responder():
+        ev_stream = f"{events.EVENTS_STREAM_PREFIX}{task_id}"
+        for _ in range(100):
+            resp = await redis.xread({ev_stream: "0"}, count=20, block=100)
+            if not resp:
+                continue
+            for _s, entries in resp:
+                for _id, f in entries:
+                    ev = json.loads(f["event"])
+                    if ev.get("type") == "tool.request":
+                        await redis.xadd(
+                            f"{TOOL_RESULTS_PREFIX}{task_id}",
+                            {
+                                "result": json.dumps(
+                                    {
+                                        "tool_request_id": ev["tool_request_id"],
+                                        "result": {
+                                            "hits": [
+                                                {"file": "a.py", "line": 1, "text": "def foo():"},
+                                                {"file": "b.py", "line": 42, "text": "def bar():"},
+                                            ],
+                                            "truncated": False,
+                                        },
+                                        "error": None,
+                                    }
+                                )
+                            },
+                        )
+                        return
+
+    # Turn 1: LLM calls search_files. Turn 2: LLM calls finish.
+    search_msg = _msg_with_tool_call("search_files", '{"query": "def foo"}')
+    finish_msg_obj = _msg_with_tool_call("finish", '{"summary": "found functions"}')
+
+    resp1 = MagicMock(choices=[MagicMock(message=search_msg)])
+    resp2 = MagicMock(choices=[MagicMock(message=finish_msg_obj)])
+
+    responder_task = asyncio.create_task(responder())
+    try:
+        with patch(
+            "services.orchestrator.coding_orchestrator.litellm.acompletion",
+            new_callable=AsyncMock,
+            side_effect=[resp1, resp2],
+        ):
+            out = await orch.react_execute("search for foo")
+        await responder_task
+    finally:
+        events.current_emitter.reset(token)
+        await redis.aclose()
+
+    assert out["ok"] is True
+    assert out["summary"] == "found functions"
+
+
+@pytest.mark.asyncio
 async def test_react_file_tool_with_no_redis_returns_error():
     """When redis is None, file tools return a structured error rather than raising."""
     orch = AsyncOrchestrator(skill_router=None, max_steps=2)

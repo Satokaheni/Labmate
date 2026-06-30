@@ -32,6 +32,18 @@ BASE_SYSTEM_PROMPT = (
     "verbatim via call_skill_tool; do NOT guess other names."
 )
 
+# Steer for when a local-execution client is attached.
+# Appended to BASE_SYSTEM_PROMPT when client_manifest is not None.
+CLIENT_PRIMITIVES_STEER = (
+    "LOCAL-EXECUTION MODE: A local workspace client is attached. For ALL file work — "
+    "locating code, reading files, listing directories, editing files, and running tests — "
+    "you MUST use the local tools (search_files, read_file, list_dir, write_file, run_tests) "
+    "which execute directly on the user's machine against the real repo. Use search_files FIRST "
+    "to locate code by pattern, then read_file to read it. Do NOT use code-search / repo-reading / "
+    "parsing skills for file work — they run on the server and CANNOT see the user's files. "
+    "Skills remain available only for specialized NON-file operations."
+)
+
 
 def _call_skill_tool_schema() -> dict:
     return {
@@ -250,6 +262,11 @@ class PromptAssembler:
         system_text = base_system if base_system is not None else BASE_SYSTEM_PROMPT
         if catalog:
             system_text = f"{system_text}\n\n{catalog}"
+
+        # If a local-execution client is attached, steer the model to prefer local tools.
+        if client_manifest is not None:
+            system_text = f"{system_text}\n\n{CLIENT_PRIMITIVES_STEER}"
+
         self._system_msg: dict = {"role": "system", "content": system_text}
 
         # Delegate tool assembly to build_tool_list to handle manifest logic.
