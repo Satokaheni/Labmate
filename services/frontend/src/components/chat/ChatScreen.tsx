@@ -61,6 +61,16 @@ function parseStart(createdAt?: string): number {
   return Date.now();
 }
 
+/** Keyboard activation (Enter/Space) for a div/span acting as a button. */
+function keyActivate(fn: () => void) {
+  return (e: KeyboardEvent<HTMLElement>) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      fn();
+    }
+  };
+}
+
 /** Per-call accent: skills green, plain tools blue (mirrors the comp dots). */
 function callColor(c: ToolCall): string {
   return c.kind === 'skill' ? '#56c08d' : '#6aa6ff';
@@ -213,15 +223,18 @@ function TopBar(props: {
         <span style={{ fontFamily: "'IBM Plex Mono'", fontSize: 11, color: '#939ba7' }}>llama.cpp :8000</span>
       </div>
       <div style={{ display: 'flex', background: '#13161c', border: '1px solid #20242c', borderRadius: 8, padding: 3, gap: 2 }}>
-        <div onClick={onSkills} style={segTab(rightView === 'skills')}>
+        <div onClick={onSkills} onKeyDown={keyActivate(onSkills)} role="button" tabIndex={0} style={segTab(rightView === 'skills')}>
           ⚡ Skills
         </div>
-        <div onClick={onFiles} style={segTab(rightView === 'files')}>
+        <div onClick={onFiles} onKeyDown={keyActivate(onFiles)} role="button" tabIndex={0} style={segTab(rightView === 'files')}>
           ⎋ Files
         </div>
       </div>
       <div
         onClick={onToggleDebug}
+        onKeyDown={keyActivate(onToggleDebug)}
+        role="button"
+        tabIndex={0}
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -313,13 +326,13 @@ function Sidebar(props: {
             marginBottom: 14,
           }}
         >
-          <div onClick={() => onSetMode('chat')} style={tab('chat')}>
+          <div onClick={() => onSetMode('chat')} onKeyDown={keyActivate(() => onSetMode('chat'))} role="button" tabIndex={0} style={tab('chat')}>
             <span style={{ fontSize: 14 }}>💬</span>Chat
           </div>
-          <div onClick={() => onSetMode('paper')} style={tab('paper')}>
+          <div onClick={() => onSetMode('paper')} onKeyDown={keyActivate(() => onSetMode('paper'))} role="button" tabIndex={0} style={tab('paper')}>
             <span style={{ fontSize: 14 }}>📄</span>Paper writing
           </div>
-          <div onClick={() => onSetMode('code')} style={tab('code')}>
+          <div onClick={() => onSetMode('code')} onKeyDown={keyActivate(() => onSetMode('code'))} role="button" tabIndex={0} style={tab('code')}>
             <span style={{ fontSize: 14 }}>⌘</span>Coding
           </div>
         </div>
@@ -372,6 +385,9 @@ function Sidebar(props: {
             <div
               key={s.id}
               onClick={() => onOpenSession(s.id)}
+              onKeyDown={keyActivate(() => onOpenSession(s.id))}
+              role="button"
+              tabIndex={0}
               style={{
                 background: active ? '#15181e' : 'transparent',
                 borderRadius: 8,
@@ -505,6 +521,9 @@ function AssistantTurnView(props: {
       {reasoning && (
         <div
           onClick={onToggleThought}
+          onKeyDown={keyActivate(onToggleThought)}
+          role="button"
+          tabIndex={0}
           style={{ borderLeft: '2px solid #2a2f39', padding: '3px 0 3px 14px', marginBottom: 16, cursor: 'pointer' }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
@@ -526,6 +545,9 @@ function AssistantTurnView(props: {
       {calls.length > 0 && (
         <div
           onClick={onOpenSkills}
+          onKeyDown={keyActivate(onOpenSkills)}
+          role="button"
+          tabIndex={0}
           style={{
             display: 'flex',
             alignItems: 'center',
@@ -584,6 +606,9 @@ function FileCard({ artifact, active, onClick }: { artifact: Artifact; active: b
   return (
     <div
       onClick={onClick}
+      onKeyDown={keyActivate(onClick)}
+      role="button"
+      tabIndex={0}
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -679,6 +704,9 @@ function ContextStrip({ window: ctx, open, onToggle }: { window?: ContextWindow;
       <div style={{ maxWidth: 680, margin: '0 auto' }}>
         <div
           onClick={onToggle}
+          onKeyDown={keyActivate(onToggle)}
+          role="button"
+          tabIndex={0}
           style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', marginBottom: 9 }}
         >
           <span
@@ -884,6 +912,9 @@ function Composer(props: { mode: Mode; budget: number; sessionId: string; onSend
             <div style={{ flex: 1 }} />
             <div
               onClick={submit}
+              onKeyDown={keyActivate(submit)}
+              role="button"
+              tabIndex={0}
               style={{
                 width: 32,
                 height: 32,
@@ -975,7 +1006,7 @@ function SkillsPanel({
                 {!last && <span style={{ width: 1, flex: 1, background: '#20242c', marginTop: 6, minHeight: 16 }} />}
               </div>
               <div style={{ flex: 1, minWidth: 0, paddingBottom: 16 }}>
-                <div onClick={() => onToggle(c.id)} style={{ cursor: 'pointer' }}>
+                <div onClick={() => onToggle(c.id)} onKeyDown={keyActivate(() => onToggle(c.id))} role="button" tabIndex={0} style={{ cursor: 'pointer' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <span style={{ fontFamily: "'IBM Plex Mono'", fontSize: 12.5, fontWeight: 600, color }}>{c.name}</span>
                     <span

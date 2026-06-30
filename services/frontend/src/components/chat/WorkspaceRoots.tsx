@@ -53,6 +53,8 @@ export function WorkspaceRoots({
             role="button"
             aria-label={`Remove ${basename(root)}`}
             onClick={(e) => { e.stopPropagation(); onRemove(root); }}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onRemove(root); } }}
+            tabIndex={0}
             style={{ cursor: 'pointer', color: '#5e6671', paddingLeft: 1 }}
           >
             ×
@@ -63,6 +65,8 @@ export function WorkspaceRoots({
         role="button"
         aria-label="Add directory"
         onClick={onAdd}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onAdd(); } }}
+        tabIndex={0}
         title="Add a directory to this chat"
         style={{
           display: 'inline-flex',

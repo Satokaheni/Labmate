@@ -34,8 +34,11 @@ export function MentionPopup({
       {entries.map((e, i) => (
         <div
           key={e.absolute}
+          role="button"
           onMouseEnter={() => onHover(i)}
           onMouseDown={(ev) => { ev.preventDefault(); onPick(e); }}
+          onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); onPick(e); } }}
+          tabIndex={-1}
           style={{
             display: 'flex',
             alignItems: 'center',
