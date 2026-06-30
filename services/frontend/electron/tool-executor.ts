@@ -1,16 +1,29 @@
 import { promises as fs, statSync } from 'node:fs';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolveToolPath } from './workspace';
+import { checkTestCommand } from './permissions';
 
-export type LocalToolName = 'read_file' | 'write_file' | 'list_dir' | 'search_files';
-export const LOCAL_TOOL_NAMES: readonly LocalToolName[] = ['read_file', 'write_file', 'list_dir', 'search_files'];
+export type LocalToolName = 'read_file' | 'write_file' | 'list_dir' | 'search_files' | 'run_tests';
+export const LOCAL_TOOL_NAMES: readonly LocalToolName[] = [
+  'read_file',
+  'write_file',
+  'list_dir',
+  'search_files',
+  'run_tests',
+];
 
 // Exported as a namespace-accessible binding so tests can spy on it
 // (handleSearchFiles calls it via this module's namespace).
 export const rg = {
   execFileAsync: promisify(execFile),
+};
+
+// Exported as a namespace-accessible binding so tests can spy on it
+// (handleRunTests calls it via this module's namespace).
+export const proc = {
+  spawn,
 };
 
 /**
@@ -83,6 +96,9 @@ export async function executeTool(
   }
   if (name === 'search_files') {
     return await handleSearchFiles(args, roots);
+  }
+  if (name === 'run_tests') {
+    return await handleRunTests(args, roots);
   }
   throw new Error(`unknown local tool: ${String(name)}`);
 }
@@ -168,4 +184,134 @@ async function handleSearchFiles(args: Record<string, unknown>, roots: string[])
     const errMsg = (err as any).stderr || String(err);
     throw new Error(`ripgrep failed: ${errMsg}`);
   }
+}
+
+interface TestResult {
+  ok: boolean;
+  exit_code: number;
+  raw_output: string;
+}
+
+/**
+ * Run the project's test command in the workspace root.
+ * Args: { path?: string (file/dir/pytest nodeid), expr?: string (pytest -k), timeout_ms?: number }
+ * Returns { ok, exit_code, raw_output }.
+ * Exits with code 126 if the test command is blocked by permissions.
+ * Exits with code 124 if the command times out.
+ */
+async function handleRunTests(args: Record<string, unknown>, roots: string[]): Promise<TestResult> {
+  // Workspace root is always roots[0] (the primary root)
+  const cwd = resolveToolPath('.', roots);
+
+  // Build the command line from LABMATE_TEST_CMD or default to pytest
+  let argv: string[];
+  const testCmdEnv = process.env.LABMATE_TEST_CMD;
+  if (testCmdEnv) {
+    argv = testCmdEnv.split(/\s+/);
+  } else {
+    argv = ['pytest', '--tb=short', '-q'];
+  }
+
+  // Append the path argument if provided
+  if (args.path) {
+    argv.push(String(args.path));
+  }
+
+  // Append -k expr if provided
+  if (args.expr) {
+    argv.push('-k', String(args.expr));
+  }
+
+  // Permission check: ensure the binary is on the allowlist
+  if (checkTestCommand(argv) !== 'allow') {
+    const bin = String(argv[0] ?? '');
+    return {
+      ok: false,
+      exit_code: 126,
+      raw_output: `run_tests blocked: ${bin} is not an allowed test runner`,
+    };
+  }
+
+  // Parse timeout (default 120s)
+  const rawTimeoutMs = Number(args.timeout_ms);
+  const timeoutMs =
+    Number.isFinite(rawTimeoutMs) && rawTimeoutMs > 0 ? rawTimeoutMs : Number(process.env.LABMATE_TEST_TIMEOUT_MS ?? 120000);
+
+  return new Promise<TestResult>((resolve) => {
+    let timedOut = false;
+    let output = '';
+    const maxOutputBytes = 200 * 1024; // 200 KB cap
+
+    const child = proc.spawn(argv[0], argv.slice(1), {
+      cwd,
+      env: process.env,
+    });
+
+    const timeoutHandle = setTimeout(() => {
+      timedOut = true;
+      if (!child.killed) {
+        child.kill('SIGTERM');
+        // Grace period for graceful exit
+        const killTimeout = setTimeout(() => {
+          if (!child.killed) {
+            child.kill('SIGKILL');
+          }
+        }, 1000);
+        child.once('exit', () => clearTimeout(killTimeout));
+      }
+    }, timeoutMs);
+
+    // Collect stdout and stderr
+    if (child.stdout) {
+      child.stdout.on('data', (data: Buffer) => {
+        const chunk = data.toString('utf-8');
+        if (output.length < maxOutputBytes) {
+          output += chunk;
+          if (output.length > maxOutputBytes) {
+            output = output.substring(0, maxOutputBytes) + '\n[output truncated]';
+          }
+        }
+      });
+    }
+
+    if (child.stderr) {
+      child.stderr.on('data', (data: Buffer) => {
+        const chunk = data.toString('utf-8');
+        if (output.length < maxOutputBytes) {
+          output += chunk;
+          if (output.length > maxOutputBytes) {
+            output = output.substring(0, maxOutputBytes) + '\n[output truncated]';
+          }
+        }
+      });
+    }
+
+    child.on('close', (code: number | null) => {
+      clearTimeout(timeoutHandle);
+
+      if (timedOut) {
+        const timeoutMsg = `\n[run_tests timed out after ${timeoutMs}ms]`;
+        resolve({
+          ok: false,
+          exit_code: 124,
+          raw_output: output + timeoutMsg,
+        });
+      } else {
+        resolve({
+          ok: code === 0,
+          exit_code: code ?? -1,
+          raw_output: output,
+        });
+      }
+    });
+
+    child.on('error', (err: Error) => {
+      clearTimeout(timeoutHandle);
+      resolve({
+        ok: false,
+        exit_code: -1,
+        raw_output: `failed to spawn process: ${String(err.message)}`,
+      });
+    });
+  });
 }

@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { executeTool, rg } from './tool-executor';
+import { EventEmitter } from 'node:events';
+import { executeTool, rg, proc } from './tool-executor';
 
 let ws: string;
 
@@ -157,5 +158,225 @@ describe('search_files', () => {
         delete process.env.LABMATE_RG_PATH;
       }
     }
+  });
+});
+
+describe('run_tests', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('happy path: fake child emits stdout, exits 0 → {ok:true, exit_code:0}', async () => {
+    const fakeChild = new EventEmitter();
+    (fakeChild as any).stdout = new EventEmitter();
+    (fakeChild as any).stderr = new EventEmitter();
+    (fakeChild as any).killed = false;
+    (fakeChild as any).kill = vi.fn();
+
+    vi.spyOn(proc, 'spawn').mockReturnValue(fakeChild as never);
+
+    const promise = executeTool('run_tests', { path: 'test_file.py' }, [ws]);
+
+    // Simulate stdout
+    (fakeChild as any).stdout.emit('data', Buffer.from('collected 3 items\n'));
+    (fakeChild as any).stdout.emit('data', Buffer.from('3 passed\n'));
+
+    // Close with exit code 0
+    (fakeChild as any).emit('close', 0);
+
+    const result = (await promise) as { ok: boolean; exit_code: number; raw_output: string };
+    expect(result.ok).toBe(true);
+    expect(result.exit_code).toBe(0);
+    expect(result.raw_output).toContain('3 passed');
+  });
+
+  it('failing tests: exit 1 with output → {ok:false, exit_code:1}', async () => {
+    const fakeChild = new EventEmitter();
+    (fakeChild as any).stdout = new EventEmitter();
+    (fakeChild as any).stderr = new EventEmitter();
+    (fakeChild as any).killed = false;
+    (fakeChild as any).kill = vi.fn();
+
+    vi.spyOn(proc, 'spawn').mockReturnValue(fakeChild as never);
+
+    const promise = executeTool('run_tests', {}, [ws]);
+
+    (fakeChild as any).stdout.emit('data', Buffer.from('FAILED test_x.py::test_fail\n'));
+    (fakeChild as any).emit('close', 1);
+
+    const result = (await promise) as { ok: boolean; exit_code: number; raw_output: string };
+    expect(result.ok).toBe(false);
+    expect(result.exit_code).toBe(1);
+    expect(result.raw_output).toContain('FAILED');
+  });
+
+  it('blocked command: LABMATE_TEST_CMD="rm -rf /" → {ok:false, exit_code:126, does not spawn}', async () => {
+    const spawnSpy = vi.spyOn(proc, 'spawn');
+
+    const originalCmd = process.env.LABMATE_TEST_CMD;
+    process.env.LABMATE_TEST_CMD = 'rm -rf /';
+
+    try {
+      const result = (await executeTool('run_tests', {}, [ws])) as {
+        ok: boolean;
+        exit_code: number;
+        raw_output: string;
+      };
+
+      expect(result.ok).toBe(false);
+      expect(result.exit_code).toBe(126);
+      expect(result.raw_output).toMatch(/not an allowed test runner/);
+      expect(spawnSpy).not.toHaveBeenCalled();
+    } finally {
+      if (originalCmd !== undefined) {
+        process.env.LABMATE_TEST_CMD = originalCmd;
+      } else {
+        delete process.env.LABMATE_TEST_CMD;
+      }
+    }
+  });
+
+  it('timeout: fake child never closes + timeout_ms: 10 → {ok:false, exit_code:124, kill called}', async () => {
+    const fakeChild = new EventEmitter();
+    (fakeChild as any).stdout = new EventEmitter();
+    (fakeChild as any).stderr = new EventEmitter();
+    (fakeChild as any).killed = false;
+    const killSpy = vi.fn();
+    (fakeChild as any).kill = killSpy;
+
+    vi.spyOn(proc, 'spawn').mockReturnValue(fakeChild as never);
+
+    const promise = executeTool('run_tests', { timeout_ms: 10 }, [ws]);
+
+    // Emit some data but never close
+    (fakeChild as any).stdout.emit('data', Buffer.from('running...\n'));
+
+    // Wait for timeout to trigger and then emit close
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    (fakeChild as any).emit('close', -1);
+
+    const result = (await promise) as { ok: boolean; exit_code: number; raw_output: string };
+    expect(result.ok).toBe(false);
+    expect(result.exit_code).toBe(124);
+    expect(result.raw_output).toMatch(/timed out/);
+    expect(killSpy).toHaveBeenCalledWith('SIGTERM');
+  });
+
+  it('uses LABMATE_TEST_CMD if set, splitting on whitespace', async () => {
+    const fakeChild = new EventEmitter();
+    (fakeChild as any).stdout = new EventEmitter();
+    (fakeChild as any).stderr = new EventEmitter();
+    (fakeChild as any).killed = false;
+    (fakeChild as any).kill = vi.fn();
+
+    const spawnSpy = vi.spyOn(proc, 'spawn').mockReturnValue(fakeChild as never);
+
+    const originalCmd = process.env.LABMATE_TEST_CMD;
+    process.env.LABMATE_TEST_CMD = 'npm test --coverage';
+
+    try {
+      const promise = executeTool('run_tests', {}, [ws]);
+      (fakeChild as any).emit('close', 0);
+      await promise;
+
+      expect(spawnSpy).toHaveBeenCalledWith('npm', ['test', '--coverage'], expect.any(Object));
+    } finally {
+      if (originalCmd !== undefined) {
+        process.env.LABMATE_TEST_CMD = originalCmd;
+      } else {
+        delete process.env.LABMATE_TEST_CMD;
+      }
+    }
+  });
+
+  it('appends path argument to command if provided', async () => {
+    const fakeChild = new EventEmitter();
+    (fakeChild as any).stdout = new EventEmitter();
+    (fakeChild as any).stderr = new EventEmitter();
+    (fakeChild as any).killed = false;
+    (fakeChild as any).kill = vi.fn();
+
+    const spawnSpy = vi.spyOn(proc, 'spawn').mockReturnValue(fakeChild as never);
+
+    const promise = executeTool('run_tests', { path: 'tests/unit' }, [ws]);
+    (fakeChild as any).emit('close', 0);
+    await promise;
+
+    const call = spawnSpy.mock.calls[0];
+    expect(call[1]).toContain('tests/unit');
+  });
+
+  it('appends -k expr if expr provided', async () => {
+    const fakeChild = new EventEmitter();
+    (fakeChild as any).stdout = new EventEmitter();
+    (fakeChild as any).stderr = new EventEmitter();
+    (fakeChild as any).killed = false;
+    (fakeChild as any).kill = vi.fn();
+
+    const spawnSpy = vi.spyOn(proc, 'spawn').mockReturnValue(fakeChild as never);
+
+    const promise = executeTool('run_tests', { expr: 'test_login' }, [ws]);
+    (fakeChild as any).emit('close', 0);
+    await promise;
+
+    const call = spawnSpy.mock.calls[0];
+    const args = call[1];
+    expect(args).toContain('-k');
+    expect(args).toContain('test_login');
+  });
+
+  it('uses env LABMATE_TEST_TIMEOUT_MS for default timeout', async () => {
+    const fakeChild = new EventEmitter();
+    (fakeChild as any).stdout = new EventEmitter();
+    (fakeChild as any).stderr = new EventEmitter();
+    (fakeChild as any).killed = false;
+    const killSpy = vi.fn();
+    (fakeChild as any).kill = killSpy;
+
+    vi.spyOn(proc, 'spawn').mockReturnValue(fakeChild as never);
+
+    const originalEnv = process.env.LABMATE_TEST_TIMEOUT_MS;
+    process.env.LABMATE_TEST_TIMEOUT_MS = '50';
+
+    try {
+      const promise = executeTool('run_tests', {}, [ws]);
+
+      // Simulate timeout firing and killing the process
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      (fakeChild as any).emit('close', -1);
+
+      const result = (await promise) as { ok: boolean; exit_code: number; raw_output: string };
+      expect(result.ok).toBe(false);
+      expect(result.exit_code).toBe(124);
+      expect(killSpy).toHaveBeenCalledWith('SIGTERM');
+    } finally {
+      if (originalEnv !== undefined) {
+        process.env.LABMATE_TEST_TIMEOUT_MS = originalEnv;
+      } else {
+        delete process.env.LABMATE_TEST_TIMEOUT_MS;
+      }
+    }
+  });
+
+  it('collects both stdout and stderr into raw_output', async () => {
+    const fakeChild = new EventEmitter();
+    (fakeChild as any).stdout = new EventEmitter();
+    (fakeChild as any).stderr = new EventEmitter();
+    (fakeChild as any).killed = false;
+    (fakeChild as any).kill = vi.fn();
+
+    vi.spyOn(proc, 'spawn').mockReturnValue(fakeChild as never);
+
+    const promise = executeTool('run_tests', {}, [ws]);
+
+    (fakeChild as any).stdout.emit('data', Buffer.from('out line 1\n'));
+    (fakeChild as any).stderr.emit('data', Buffer.from('err line 1\n'));
+    (fakeChild as any).stdout.emit('data', Buffer.from('out line 2\n'));
+    (fakeChild as any).emit('close', 0);
+
+    const result = (await promise) as { ok: boolean; raw_output: string };
+    expect(result.raw_output).toContain('out line 1');
+    expect(result.raw_output).toContain('err line 1');
+    expect(result.raw_output).toContain('out line 2');
   });
 });

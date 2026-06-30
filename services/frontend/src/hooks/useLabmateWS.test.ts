@@ -438,6 +438,7 @@ describe('ensureActiveSession', () => {
           { name: 'write_file', source: 'builtin' },
           { name: 'list_dir', source: 'builtin' },
           { name: 'search_files', source: 'builtin' },
+          { name: 'run_tests', source: 'builtin' },
         ],
       })
     );
@@ -445,16 +446,17 @@ describe('ensureActiveSession', () => {
 });
 
 describe('capabilitiesFrame', () => {
-  it('returns a frame with type client.capabilities and four builtin tools', () => {
+  it('returns a frame with type client.capabilities and five builtin tools', () => {
     const frame = capabilitiesFrame();
     expect(frame.type).toBe('client.capabilities');
     expect(frame.protocolVersion).toBe(1);
-    expect(frame.tools).toHaveLength(4);
+    expect(frame.tools).toHaveLength(5);
     expect(frame.tools.map((t) => t.name)).toEqual([
       'read_file',
       'write_file',
       'list_dir',
       'search_files',
+      'run_tests',
     ]);
     expect(frame.tools.every((t) => t.source === 'builtin')).toBe(true);
   });
