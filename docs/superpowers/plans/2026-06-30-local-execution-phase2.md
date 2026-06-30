@@ -137,6 +137,29 @@ doc-skill to its stored `body` (status `loaded`), pod skills unchanged.
 > into a real regression GATE, expand `eval/fixtures/hosted_routing.example.jsonl` +
 > `hosted_tools.example.json` with the other bundled servers (`component-doc-gen`, `a11y-audit`) and
 > near-neighbor tools across clusters, then re-run. Optional polish — the mechanism is already proven.
+>
+> **EXPANDED FIXTURE (3 clusters, 8 real tools, 15 cases × 3 repeats) — RUN 2026-06-30** (`01338d5`,
+> report `routing-eval-20260630-200009.md`, local). **DISAMBIGUATION IS CLEAN — zero neighbor
+> confusion** across all clusters (find_references↔move_symbol, generate↔generate_batch,
+> audit_file↔audit_url all perfect; mean stability 0.978). Per-cluster: a11y **1.000 ✅**, doc_gen
+> 0.750, ts_refactor 0.667, overall 0.800. **The two below-gate clusters are NOT routing failures —
+> they are correct ABSTENTION**, never a wrong-neighbor pick: `rename_symbol` recall 0.0 and `generate`
+> recall 0.5 because their REAL schemas require args the arg-sparse task can't supply (`rename_symbol`
+> needs `tsconfig`+`file`=the declaring file; `generate` needs an absolute `component_path`), and the
+> model won't emit a one-shot call it can't populate. In production these are **multi-step** flows
+> (`find_references`/`search` to locate the declaration → `rename_symbol` with the file) — the
+> contextless one-shot eval can't represent that, so the abstention is an INSTRUMENT limitation, not a
+> description bug. **Decision: do NOT tune descriptions to chase the gate** (that would teach blind
+> under-specified calls). Two OPTIONAL follow-ups, both separate from routing:
+> 1. **Skill ergonomics** — make `rename_symbol`/`generate` auto-resolve their heavy params (find the
+>    declaring file from the symbol; accept a component *name* + search for the file). Lifts the gate
+>    naturally AND lowers real friction. A SKILL change, not a routing change.
+> 2. **Production-faithful eval** — measure the full AGENTIC flow (does the ReAct loop rename via
+>    find→rename?) instead of one-shot selection. That's what actually matters for "does rename work".
+>
+> Bottom line: the P2-B.2 question ("does the model auto-select the right hosted tool without being
+> named?") is **answered YES for disambiguation**; arg-heavy-tool one-shot triggering is a separate,
+> optional skill-ergonomics track.
 
 **Problem (from P2-B.0 live testing):** the user still prefixes prompts with "use ast-ts-refactor"
 because auto-selection of a **hosted MCP tool** is unproven on the Q4 Gemma model. The harness
