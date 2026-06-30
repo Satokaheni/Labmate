@@ -88,15 +88,20 @@ FULL_THRESH = int(CTX_TOKENS * 0.85)
 CONTEXT_REFRESH_S = float(os.getenv("CONTEXT_REFRESH_SECONDS", "2.0"))
 
 
-def _context_window() -> dict:
+def _context_window(used_fallback: int = 0) -> dict:
     """Build the context-window telemetry payload from the live token high-water mark.
 
-    `used` is the peak prompt_tokens seen across this task's LLM calls (0 before the
-    first call). The whole measured fill is attributed to `conversation` — the
-    dominant real component — since usage data carries no per-segment breakdown.
+    `used` is the peak prompt_tokens seen across THIS task's LLM calls. The per-task
+    counter resets each turn, so before this turn's first model call we fall back to
+    `used_fallback` — the carried fill from the prior turn in this session — so the
+    strip doesn't drop to 0% at the start of every new message. Once a real peak is
+    recorded it wins (so the value still reflects compaction, which shrinks the prompt).
+    The whole measured fill is attributed to `conversation` — the dominant real
+    component — since usage data carries no per-segment breakdown.
     """
     ctx_max = CTX_TOKENS
-    ctx_used = min(call_counter.get_peak_prompt_tokens(), ctx_max)
+    _peak = call_counter.get_peak_prompt_tokens()
+    ctx_used = min(_peak if _peak > 0 else max(used_fallback, 0), ctx_max)
     return {
         "max": ctx_max,
         "used": ctx_used,
@@ -112,19 +117,22 @@ def _context_window() -> dict:
 
 
 async def _context_refresh_loop(
-    emitter: events.EventEmitter, interval_s: float = CONTEXT_REFRESH_S
+    emitter: events.EventEmitter,
+    interval_s: float = CONTEXT_REFRESH_S,
+    used_fallback: int = 0,
 ) -> None:
     """Re-emit the context window every `interval_s` until cancelled at turn end.
 
     Created with asyncio.create_task AFTER the per-task counter contextvar is set,
-    so it inherits that context and reports the live peak. Best-effort: a failed
-    emit is swallowed; cancellation ends the loop cleanly.
+    so it inherits that context and reports the live peak. `used_fallback` carries
+    the prior turn's fill so the strip shows it until this turn's first model call.
+    Best-effort: a failed emit is swallowed; cancellation ends the loop cleanly.
     """
     try:
         while True:
             await asyncio.sleep(interval_s)
             try:
-                await emitter.emit("context", window=_context_window())
+                await emitter.emit("context", window=_context_window(used_fallback))
             except Exception:
                 pass
     except asyncio.CancelledError:
@@ -189,6 +197,9 @@ class OrchestratorProcess:
         self._codegraph_mcp: MCPClientManager | None = None
         self._recent_sequences = RecentSequences()
         self._last_goal_at: float = 0.0
+        # Per-session carried context fill (peak prompt tokens of the last turn), so
+        # the context-window strip doesn't reset to 0% at the start of each new message.
+        self._session_ctx_fill: dict[str, int] = {}
 
     # ── top-level run ──────────────────────────────────────────────────────
 
@@ -546,11 +557,15 @@ class OrchestratorProcess:
                 },
             )
             await _emitter.emit("turn.start", task=task_text)
-            # Populate the context-window strip immediately (max + 0 used) so it
-            # never sits at 0/0, then refresh it live while the turn runs.
-            await _emitter.emit("context", window=_context_window())
+            # Populate the strip immediately with the fill CARRIED from the prior turn
+            # in this session, so it shows the accumulated context (e.g. 11%) instead of
+            # resetting to 0% — then refresh live as this turn's real peak is measured.
+            _carried_fill = self._session_ctx_fill.get(session_id, 0)
+            await _emitter.emit("context", window=_context_window(_carried_fill))
             if CONTEXT_REFRESH_S > 0:
-                _ctx_task = asyncio.create_task(_context_refresh_loop(_emitter))
+                _ctx_task = asyncio.create_task(
+                    _context_refresh_loop(_emitter, used_fallback=_carried_fill)
+                )
 
             # Fix 2: Record session if user_id and workspace_id are present
             if user_id and workspace_id:
@@ -795,7 +810,12 @@ class OrchestratorProcess:
                     },
                 )
                 # Final, accurate context fill (peak prompt_tokens high-water mark).
-                await events.emit("context", window=_context_window())
+                # Persist it as this session's carried fill so the NEXT turn's strip
+                # starts from here instead of 0%.
+                _final_peak = call_counter.get_peak_prompt_tokens()
+                if _final_peak > 0 and session_id:
+                    self._session_ctx_fill[session_id] = _final_peak
+                await events.emit("context", window=_context_window(_final_peak))
                 await events.emit("turn.done", status=_status, final_answer=_answer)
             except Exception:
                 pass

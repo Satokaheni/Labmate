@@ -45,6 +45,32 @@ def test_context_window_clamps_used_to_max():
         call_counter.reset(token)
 
 
+def test_context_window_uses_fallback_when_no_peak():
+    # Before this turn's first model call (peak 0), show the carried prior-turn fill
+    # instead of 0 — so the strip doesn't reset to 0% on a new message.
+    w = main._context_window(used_fallback=5000)
+    assert w["used"] == 5000
+    assert w["segments"]["conversation"] == 5000
+
+
+def test_context_window_live_peak_overrides_fallback():
+    # Once a real peak is recorded it wins over the carried fallback (so the value
+    # still reflects compaction, which shrinks the prompt below the carried fill).
+    token = call_counter.start()
+    try:
+        call_counter.current_counter.get().observe_prompt_tokens(1234)
+        w = main._context_window(used_fallback=5000)
+        assert w["used"] == 1234
+    finally:
+        call_counter.reset(token)
+
+
+def test_context_window_fallback_clamped_to_max():
+    w = main._context_window(used_fallback=main.CTX_TOKENS + 5000)
+    assert w["used"] == main.CTX_TOKENS
+    assert w["free"] == 0
+
+
 @pytest.mark.asyncio
 async def test_context_refresh_loop_emits_until_cancelled():
     emitter = MagicMock()
