@@ -1,6 +1,15 @@
-{"id": "hosted_find_refs_1", "task": "I need to see everywhere that parseConfig is used in the codebase", "expected": "mcp__ast-ts-refactor__find_references", "kind": "hosted", "cluster": "ts_refactor"}
-{"id": "hosted_find_refs_2", "task": "Find all references to the UserService class so I can understand its dependencies", "expected": "mcp__ast-ts-refactor__find_references", "kind": "hosted", "cluster": "ts_refactor"}
-{"id": "hosted_find_refs_3", "task": "Where is the validateEmail function called throughout the TypeScript project?", "expected": "mcp__ast-ts-refactor__find_references", "kind": "hosted", "cluster": "ts_refactor"}
-{"id": "hosted_rename_1", "task": "I want to rename the calculateTotal function to computeSum across the entire project to better reflect what it does", "expected": "mcp__ast-ts-refactor__rename_symbol", "kind": "hosted", "cluster": "ts_refactor"}
-{"id": "hosted_rename_2", "task": "Please rename the deprecated fetchUserData method to fetchUser everywhere it appears", "expected": "mcp__ast-ts-refactor__rename_symbol", "kind": "hosted", "cluster": "ts_refactor"}
-{"id": "hosted_rename_3", "task": "Change all occurrences of the oldConfig variable name to modernConfig in our TypeScript files", "expected": "mcp__ast-ts-refactor__rename_symbol", "kind": "hosted", "cluster": "ts_refactor"}
+{"id": "find_refs_1", "task": "Where is the parseConfig function used across the codebase?", "expected": "mcp__ast-ts-refactor__find_references", "kind": "hosted", "cluster": "ts_refactor"}
+{"id": "find_refs_2", "task": "Show me every place the UserService class is referenced so I can understand its dependencies", "expected": "mcp__ast-ts-refactor__find_references", "kind": "hosted", "cluster": "ts_refactor"}
+{"id": "rename_1", "task": "Rename the calculateTotal function to computeSum across the entire project", "expected": "mcp__ast-ts-refactor__rename_symbol", "kind": "hosted", "cluster": "ts_refactor"}
+{"id": "rename_2", "task": "Change the deprecated fetchUserData method to fetchUser everywhere it appears", "expected": "mcp__ast-ts-refactor__rename_symbol", "kind": "hosted", "cluster": "ts_refactor"}
+{"id": "move_1", "task": "Move the formatDate helper out of utils.ts into a new dateUtils.ts and fix all the imports", "expected": "mcp__ast-ts-refactor__move_symbol", "kind": "hosted", "cluster": "ts_refactor"}
+{"id": "move_2", "task": "Relocate the OrderService class from order.ts into services/order.ts, updating every import", "expected": "mcp__ast-ts-refactor__move_symbol", "kind": "hosted", "cluster": "ts_refactor"}
+{"id": "doc_single_1", "task": "Generate the props documentation and a Storybook story for the Button.tsx component", "expected": "mcp__component-doc-gen__generate", "kind": "hosted", "cluster": "doc_gen"}
+{"id": "doc_single_2", "task": "Document the props of my Modal component file", "expected": "mcp__component-doc-gen__generate", "kind": "hosted", "cluster": "doc_gen"}
+{"id": "doc_batch_1", "task": "Generate docs for all of the components under src/components", "expected": "mcp__component-doc-gen__generate_batch", "kind": "hosted", "cluster": "doc_gen"}
+{"id": "doc_batch_2", "task": "I need documentation for every component in the ui folder", "expected": "mcp__component-doc-gen__generate_batch", "kind": "hosted", "cluster": "doc_gen"}
+{"id": "a11y_file_1", "task": "Check src/pages/Home.tsx for accessibility violations", "expected": "mcp__a11y-audit__audit_file", "kind": "hosted", "cluster": "a11y"}
+{"id": "a11y_file_2", "task": "Audit my landing.html file for WCAG issues", "expected": "mcp__a11y-audit__audit_file", "kind": "hosted", "cluster": "a11y"}
+{"id": "a11y_url_1", "task": "Run an accessibility audit against my dev server at http://localhost:3000", "expected": "mcp__a11y-audit__audit_url", "kind": "hosted", "cluster": "a11y"}
+{"id": "a11y_url_2", "task": "Check the accessibility of the live signup page at https://example.com/signup", "expected": "mcp__a11y-audit__audit_url", "kind": "hosted", "cluster": "a11y"}
+{"id": "a11y_rules_1", "task": "What accessibility rules can I check against, and what WCAG levels are they?", "expected": "mcp__a11y-audit__list_rules", "kind": "hosted", "cluster": "a11y"}

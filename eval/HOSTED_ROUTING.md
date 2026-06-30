@@ -54,7 +54,20 @@ Create a JSON file with OpenAI-compatible tool schemas:
 ]
 ```
 
-Example: `eval/fixtures/hosted_tools.example.json` (committed to the repo).
+Example: `eval/fixtures/hosted_tools.example.json` (committed to the repo). It mirrors the **real
+advertised tools of all three bundled servers** across three clusters, so the eval stresses
+*within-cluster near-neighbor* disambiguation (the hard cases), not just cross-domain:
+
+| Cluster | Server | Near-neighbor tools |
+|---|---|---|
+| `ts_refactor` | `ast-ts-refactor` | `find_references` · `rename_symbol` · `move_symbol` |
+| `doc_gen` | `component-doc-gen` | `generate` (single file) · `generate_batch` (whole dir) |
+| `a11y` | `a11y-audit` | `audit_file` (local path) · `audit_url` (http) · `list_rules` (discover, not audit) |
+
+`hosted_routing.example.jsonl` has ≥1 natural-language case per tool (15 total), each phrased WITHOUT
+naming the tool, with a `cluster` tag so the report breaks accuracy down per cluster. The traps are
+deliberate — e.g. `find_references` vs `move_symbol` (both name a symbol), `generate` vs
+`generate_batch` (single vs "every component"), `audit_file` vs `audit_url` (local path vs URL).
 
 ### 2. Prepare the Eval Cases
 
