@@ -1612,6 +1612,22 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug }: Chat
     ? allTurns.filter((t) => !t.sessionId || t.sessionId === activeSessionId)
     : allTurns;
 
+  // Auto-scroll the conversation to the bottom on a new message and as the
+  // assistant response streams in — but only when the user is already near the
+  // bottom, so scrolling up to read earlier messages isn't yanked back down.
+  const convScrollRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
+  const lastTurn = turns[turns.length - 1];
+  const scrollSignal =
+    `${turns.length}:${lastTurn?.text?.length ?? 0}:` +
+    `${lastTurn?.toolCalls?.length ?? 0}:${lastTurn?.status ?? ''}`;
+  useEffect(() => {
+    const el = convScrollRef.current;
+    if (el && stickToBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [scrollSignal]);
+
   const [mode, setMode] = useState<Mode>(() => normMode(activeSession?.mode));
   const [rightView, setRightView] = useState<'skills' | 'files' | null>('skills');
   const [debug, setLocalDebug] = useState(false);
@@ -1735,7 +1751,17 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug }: Chat
 
         {/* center conversation */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: '#0f1115', minWidth: 0 }}>
-          <div className="lm-scroll" style={{ flex: 1, overflowY: 'auto', padding: '34px 0 22px' }}>
+          <div
+            className="lm-scroll"
+            ref={convScrollRef}
+            onScroll={() => {
+              const el = convScrollRef.current;
+              if (el) {
+                stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+              }
+            }}
+            style={{ flex: 1, overflowY: 'auto', padding: '34px 0 22px' }}
+          >
             <div style={{ maxWidth: 680, margin: '0 auto', padding: '0 24px' }}>
               {turns.length === 0 && (
                 <div style={{ fontSize: 14, color: '#5e6671', textAlign: 'center', marginTop: 40 }}>
