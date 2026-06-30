@@ -13,6 +13,7 @@ from .coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
 from .error_classifier import ErrorClass, classify_error, is_terminal
 from .finalize_revision import build_revision_prompt, should_revise
 from .task_complexity import classify_complexity
+from .tool_manifest import client_doc_skills
 from .types import State, Status, create_goal, get_ready_goals, update_status
 
 _log = logging.getLogger("graph")
@@ -210,6 +211,20 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             #     execute (ReAct/one-shot handles any sub-steps in a single pass).
             #   - no skill matched -> direct-answer fast-path below.
             if route_result.skills:
+                tree = copy.deepcopy(state["goal_tree"])
+                child_id = uuid.uuid4().hex[:12]
+                create_goal(tree, child_id, root_id, route_result.sub_intents[0])
+                return {"goal_tree": tree, "awaiting_clarification": False}
+
+            # P2-B.1: route() is POD-catalog-only, so it can't see CLIENT documentation
+            # skills (load_skill bodies declared in the manifest). When the client hosts
+            # doc-skills, do NOT take the pod-only direct-answer fast-path — route to
+            # execute so the ReAct loop advertises load_skill and the model can apply a
+            # matching doc-skill (e.g. a house-style/greeting skill). The loop still
+            # answers directly via finish when no doc-skill applies, so trivial goals are
+            # unaffected in substance. No-client / no-doc-skill goals are byte-identical
+            # (client_doc_skills(None) == {}), preserving the existing fast-path.
+            if client_doc_skills(client_context.get_manifest()):
                 tree = copy.deepcopy(state["goal_tree"])
                 child_id = uuid.uuid4().hex[:12]
                 create_goal(tree, child_id, root_id, route_result.sub_intents[0])

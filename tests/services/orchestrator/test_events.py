@@ -1,6 +1,8 @@
 import json
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
 from services.orchestrator import events
 
 
@@ -73,19 +75,25 @@ async def test_module_emit_uses_contextvar_emitter():
 async def test_handle_emits_agent_status_active_and_idle():
     """_handle must emit agent_status active before run_task and idle in finally."""
     import json
-    import fakeredis.aioredis
     from unittest.mock import AsyncMock, MagicMock
+
+    import fakeredis.aioredis
+
     from services.orchestrator.main import OrchestratorProcess
 
     r = fakeredis.aioredis.FakeRedis(decode_responses=True)
 
-    fields = {"payload": json.dumps({
-        "task_id": "t-agent-status",
-        "task": "hello",
-        "session_id": "s-1",
-        "user_id": "",
-        "workspace_id": "",
-    })}
+    fields = {
+        "payload": json.dumps(
+            {
+                "task_id": "t-agent-status",
+                "task": "hello",
+                "session_id": "s-1",
+                "user_id": "",
+                "workspace_id": "",
+            }
+        )
+    }
 
     mock_orch = MagicMock()
     mock_orch.run_task = AsyncMock(return_value={"final_answer": "hi", "error": None})
@@ -122,7 +130,9 @@ async def test_handle_emits_agent_status_active_and_idle():
 @pytest.mark.asyncio
 async def test_is_cancelled_returns_true_when_flag_set():
     import fakeredis.aioredis
+
     from services.orchestrator.events import is_cancelled
+
     r = fakeredis.aioredis.FakeRedis(decode_responses=True)
     await r.set("labmate:cancel:task-x", "1", ex=60)
     assert await is_cancelled(r, "task-x") is True
@@ -131,6 +141,40 @@ async def test_is_cancelled_returns_true_when_flag_set():
 @pytest.mark.asyncio
 async def test_is_cancelled_returns_false_when_no_flag():
     import fakeredis.aioredis
+
     from services.orchestrator.events import is_cancelled
+
     r = fakeredis.aioredis.FakeRedis(decode_responses=True)
     assert await is_cancelled(r, "task-y") is False
+
+
+def test_tool_event_display_load_skill_shows_loaded_skill_name():
+    """load_skill must surface the LOADED skill (not the mechanism) as kind='skill'."""
+    from services.orchestrator.events import tool_event_display
+
+    assert tool_event_display("load_skill", {"name": "repo-greeting"}) == ("skill", "repo-greeting")
+
+
+def test_tool_event_display_call_skill_tool_shows_skill():
+    from services.orchestrator.events import tool_event_display
+
+    assert tool_event_display("call_skill_tool", {"skill": "ast-search", "tool": "find"}) == (
+        "skill",
+        "ast-search",
+    )
+
+
+def test_tool_event_display_plain_tool_is_kind_tool():
+    from services.orchestrator.events import tool_event_display
+
+    assert tool_event_display("read_file", {"path": "a.py"}) == ("tool", "read_file")
+    assert tool_event_display("run_tests", {}) == ("tool", "run_tests")
+
+
+def test_tool_event_display_falls_back_when_arg_missing():
+    """Missing/empty expected arg falls back to the mechanism name (never crashes)."""
+    from services.orchestrator.events import tool_event_display
+
+    assert tool_event_display("load_skill", {}) == ("skill", "load_skill")
+    assert tool_event_display("load_skill", None) == ("skill", "load_skill")
+    assert tool_event_display("call_skill_tool", {"skill": ""}) == ("skill", "call_skill_tool")

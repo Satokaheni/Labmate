@@ -105,6 +105,25 @@ describe('WorkspaceStore', () => {
     expect(new WorkspaceStore(file).roots('s1')).toEqual(['/repo-b']);
   });
 
+  it('removing the only (seeded default) root sticks and does not reappear on add', () => {
+    // Repro of the live bug: remove the default, then add a new dir — the removed
+    // default must NOT come back.
+    const store = new WorkspaceStore(file, '/default');
+    expect(store.roots('s1')).toEqual(['/default']); // seeded
+    expect(store.removeRoot('s1', '/default')).toEqual([]); // removed
+    expect(store.roots('s1')).toEqual([]); // STAYS empty — no fallback to default
+    // adding a new root must not re-materialize the removed default
+    expect(store.addRoot('s1', '/labmate-skills')).toEqual(['/labmate-skills']);
+    expect(store.roots('s1')).toEqual(['/labmate-skills']);
+  });
+
+  it('an explicitly emptied session persists as [] across reload (no default fallback)', () => {
+    const store = new WorkspaceStore(file, '/default');
+    store.removeRoot('s1', '/default');
+    const reloaded = new WorkspaceStore(file, '/default');
+    expect(reloaded.roots('s1')).toEqual([]); // not ['/default']
+  });
+
   it('reports no default and empty roots on a fresh store', () => {
     const store = new WorkspaceStore(path.join(dir, 'nope.json'));
     expect(store.hasDefault()).toBe(false);

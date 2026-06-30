@@ -17,8 +17,8 @@ log = logging.getLogger("skill_runner")
 class SkillMeta:
     name: str
     description: str
-    path: Path                       # resolved, confined path to SKILL.md
-    tier: str                        # 'project' | 'personal' | 'bundled'
+    path: Path  # resolved, confined path to SKILL.md
+    tier: str  # 'project' | 'personal' | 'bundled'
     frontmatter: dict[str, Any] = field(default_factory=dict)
 
 
@@ -38,7 +38,7 @@ class SkillRunner:
         # roots ordered HIGHEST precedence first: project, personal, bundled
         self.roots: list[Path] = [Path(r).expanduser().resolve() for r in roots]
         self.catalog: dict[str, SkillMeta] = {}
-        self.loaded: dict[str, str] = {}     # name -> body (activation cache)
+        self.loaded: dict[str, str] = {}  # name -> body (activation cache)
         self.max_chain = max_chain
         self._activations = 0
 
@@ -51,7 +51,7 @@ class SkillRunner:
         catalog pollution from vendored dependencies.
         """
         self.catalog.clear()
-        for tier, root in zip(self.TIER_NAMES, self.roots):
+        for tier, root in zip(self.TIER_NAMES, self.roots, strict=False):
             if not root.is_dir():
                 continue
             for skill_md in sorted(root.rglob("SKILL.md")):
@@ -60,22 +60,19 @@ class SkillRunner:
                 # (services/skills/.proposed/<name>/) — drafts there must NEVER
                 # be cataloged or activated until a human moves them out.
                 parts = skill_md.parts
-                if any(
-                    p in ("node_modules", ".git", "dist", ".proposed")
-                    for p in parts
-                ):
+                if any(p in ("node_modules", ".git", "dist", ".proposed") for p in parts):
                     continue
                 self._index(skill_md, tier, root)
         log.info("cataloged %d skills", len(self.catalog))  # -> stderr
 
     def _index(self, skill_md: Path, tier: str, root: Path) -> None:
         real = skill_md.resolve()
-        if not self._within(real, root):             # symlink-escape guard
+        if not self._within(real, root):  # symlink-escape guard
             log.warning("skipping out-of-root skill: %s", skill_md)
             return
         try:
             meta, _body = frontmatter.parse(real.read_text(encoding="utf-8"))
-        except Exception as exc:                      # malformed YAML or IO error
+        except Exception as exc:  # malformed YAML or IO error
             log.warning("bad frontmatter in %s: %s", real, exc)
             return
         name = meta.get("name")
@@ -86,7 +83,9 @@ class SkillRunner:
         if name in self.catalog:
             log.warning(
                 "skill name '%s' shadowed: %s overrides %s",
-                name, self.catalog[name].path, real,
+                name,
+                self.catalog[name].path,
+                real,
             )
             return
         self.catalog[name] = SkillMeta(name, desc, real, tier, dict(meta))
@@ -112,13 +111,15 @@ class SkillRunner:
 
     # ---------- STAGE 2: catalog -> system prompt + tool schema ----------
 
-    def catalog_prompt(self) -> str:
+    def catalog_prompt(self, exclude: frozenset[str] | set[str] = frozenset()) -> str:
         lines = ["Available skills (call load_skill(name) to activate one):"]
         for m in sorted(self.catalog.values(), key=lambda s: s.name):
-            lines.append(f"- {m.name}: {m.description}")
+            if m.name not in exclude:
+                lines.append(f"- {m.name}: {m.description}")
         return "\n".join(lines)
 
-    def tool_schema(self) -> dict[str, Any]:
+    def tool_schema(self, exclude: frozenset[str] | set[str] = frozenset()) -> dict[str, Any]:
+        enum_skills = sorted(n for n in self.catalog if n not in exclude)
         return {
             "type": "function",
             "function": {
@@ -129,7 +130,7 @@ class SkillRunner:
                     "properties": {
                         "name": {
                             "type": "string",
-                            "enum": sorted(self.catalog),
+                            "enum": enum_skills,
                         }
                     },
                     "required": ["name"],
@@ -150,15 +151,13 @@ class SkillRunner:
                 available=sorted(self.catalog),
             )
         if name in self.loaded:
-            return {"name": "load_skill",
-                    "response": {"status": "already_loaded", "name": name}}
+            return {"name": "load_skill", "response": {"status": "already_loaded", "name": name}}
         # Re-validate confinement after any potential filesystem change.
         if not self._within(meta.path, *self.roots):
             return self._err(f"path confinement violation for skill: {name}")
         _meta, body = frontmatter.parse(meta.path.read_text(encoding="utf-8"))
         self.loaded[name] = body
-        return {"name": "load_skill",
-                "response": {"status": "loaded", "name": name, "body": body}}
+        return {"name": "load_skill", "response": {"status": "loaded", "name": name, "body": body}}
 
     def dispatch(self, tool_call: dict[str, Any]) -> dict[str, Any]:
         """Entry point for model-issued tool calls."""
@@ -178,5 +177,4 @@ class SkillRunner:
 
     @staticmethod
     def _err(msg: str, **extra: Any) -> dict[str, Any]:
-        return {"name": "load_skill",
-                "response": {"status": "error", "message": msg, **extra}}
+        return {"name": "load_skill", "response": {"status": "error", "message": msg, **extra}}

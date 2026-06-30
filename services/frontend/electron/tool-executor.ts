@@ -2,8 +2,8 @@ import { promises as fs, statSync } from 'node:fs';
 import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { resolveToolPath } from './workspace';
-import { checkTestCommand } from './permissions';
+import { resolveToolPath } from './workspace.js';
+import { checkTestCommand } from './permissions.js';
 
 export type LocalToolName = 'read_file' | 'write_file' | 'list_dir' | 'search_files' | 'run_tests';
 export const LOCAL_TOOL_NAMES: readonly LocalToolName[] = [

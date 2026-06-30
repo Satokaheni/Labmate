@@ -13,14 +13,14 @@ const refactor = new TsRefactor();
 
 const renameInput = z.object({
   tsconfig: z.string().describe("Absolute path to tsconfig.json"),
-  file: z.string().describe("File containing the symbol declaration"),
+  file: z.string().optional().describe("Optional — file declaring the symbol; auto-located across the project if omitted"),
   symbol: z.string().describe("Name of the symbol to rename"),
   new_name: z.string().describe("New name for the symbol"),
 });
 
 const findRefsInput = z.object({
   tsconfig: z.string().describe("Absolute path to tsconfig.json"),
-  file: z.string().describe("File containing the symbol declaration"),
+  file: z.string().optional().describe("Optional — file declaring the symbol; auto-located across the project if omitted"),
   symbol: z.string().describe("Name of the symbol to find references for"),
 });
 
@@ -35,11 +35,11 @@ const RENAME_SCHEMA = {
   type: "object",
   properties: {
     tsconfig: { type: "string", description: "Absolute path to tsconfig.json" },
-    file: { type: "string", description: "File containing the symbol declaration" },
+    file: { type: "string", description: "Optional — file declaring the symbol; auto-located across the project if omitted" },
     symbol: { type: "string", description: "Name of the symbol to rename" },
     new_name: { type: "string", description: "New name for the symbol" },
   },
-  required: ["tsconfig", "file", "symbol", "new_name"],
+  required: ["tsconfig", "symbol", "new_name"],
   additionalProperties: false,
 } as const;
 
@@ -47,10 +47,10 @@ const FIND_REFS_SCHEMA = {
   type: "object",
   properties: {
     tsconfig: { type: "string", description: "Absolute path to tsconfig.json" },
-    file: { type: "string", description: "File containing the symbol declaration" },
+    file: { type: "string", description: "Optional — file declaring the symbol; auto-located across the project if omitted" },
     symbol: { type: "string", description: "Name of the symbol to find references for" },
   },
-  required: ["tsconfig", "file", "symbol"],
+  required: ["tsconfig", "symbol"],
   additionalProperties: false,
 } as const;
 
@@ -76,13 +76,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "rename_symbol",
       description:
-        "Type-aware cross-file rename of a TypeScript/JS symbol via the TS type checker. Returns a pending unified diff (NOT saved). tsconfig must be an absolute path.",
+        "Type-aware cross-file rename of a TypeScript/JS symbol via the TS type checker. Returns a pending unified diff (NOT saved). If 'file' is omitted, the declaring file is found automatically. tsconfig must be an absolute path.",
       inputSchema: RENAME_SCHEMA,
     },
     {
       name: "find_references",
       description:
-        "Find all references to a TypeScript/JS symbol across the project, including re-exports and barrel imports. tsconfig must be an absolute path.",
+        "Find all references to a TypeScript/JS symbol across the project, including re-exports and barrel imports. If 'file' is omitted, the declaring file is found automatically. tsconfig must be an absolute path.",
       inputSchema: FIND_REFS_SCHEMA,
     },
     {

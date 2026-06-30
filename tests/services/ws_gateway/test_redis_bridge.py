@@ -254,3 +254,31 @@ async def test_check_cancel_returns_false_when_not_set(redis):
     from services.ws_gateway.redis_bridge import check_cancel
 
     assert await check_cancel(redis, "task-not-cancelled") is False
+
+
+@pytest.mark.asyncio
+async def test_push_task_includes_workspace_root_when_provided(redis):
+    """push_task(..., workspace_root='/path') includes workspace_root in payload."""
+    await push_task(
+        redis,
+        "task-4",
+        task="do thing",
+        session_id="s1",
+        workspace_root="/Users/zach/Work/myproject",
+    )
+    entries = await redis.xrange(GOALS_STREAM)
+    assert len(entries) == 1
+    _id, fields = entries[0]
+    payload = json.loads(fields["payload"])
+    assert payload["workspace_root"] == "/Users/zach/Work/myproject"
+
+
+@pytest.mark.asyncio
+async def test_push_task_workspace_root_defaults_to_empty_string(redis):
+    """push_task(...) without workspace_root yields empty string in payload."""
+    await push_task(redis, "task-5", task="do thing", session_id="s1")
+    entries = await redis.xrange(GOALS_STREAM)
+    assert len(entries) == 1
+    _id, fields = entries[0]
+    payload = json.loads(fields["payload"])
+    assert payload["workspace_root"] == ""

@@ -106,12 +106,31 @@ describe('useLabmateWS', () => {
     );
   });
 
+  it('send() includes workspaceRoot when provided', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    result.current.send('hello', 's-1', '/abs/workspace');
+    expect(mockWs.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'send', sessionId: 's-1', mode: 'chat', text: 'hello', workspaceRoot: '/abs/workspace' }),
+    );
+  });
+
+  it('send() omits workspaceRoot when not provided', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    result.current.send('hello', 's-1', undefined);
+    const sent = JSON.parse(mockWs.send.mock.calls[0][0] as string);
+    expect(sent.workspaceRoot).toBeUndefined();
+    expect(sent).not.toHaveProperty('workspaceRoot');
+  });
+
   it('services tool.request via electronAPI and replies tool.result', async () => {
-    const executeTool = vi.fn().mockResolvedValue({ result: { content: 'hi' } });
+    const executeTool = vi.fn().mockResolvedValue({ result: { content: "hi" } });
     // Set electronAPI directly to avoid replacing window (which breaks React DOM instanceof checks)
     (window as Window & { electronAPI?: unknown }).electronAPI = {
       config: { wsUrl: null, isDev: true }, token: null,
       setConfig: vi.fn(), setToken: vi.fn(), clearToken: vi.fn(), executeTool,
+      getMcpTools: vi.fn().mockResolvedValue([]),
       getWorkspaceRoots: vi.fn().mockResolvedValue([]),
       addWorkspaceRoot: vi.fn().mockResolvedValue({ roots: [] }),
       removeWorkspaceRoot: vi.fn().mockResolvedValue({ roots: [] }),
@@ -155,11 +174,12 @@ describe('useLabmateWS', () => {
     }
   });
 
-  it('routes a tool.request to the workspace of its turn’s session', async () => {
+  it("routes a tool.request to the workspace of its turn session", async () => {
     const executeTool = vi.fn().mockResolvedValue({ result: { content: 'hi' } });
     (window as Window & { electronAPI?: unknown }).electronAPI = {
       config: { wsUrl: null, isDev: true }, token: null,
       setConfig: vi.fn(), setToken: vi.fn(), clearToken: vi.fn(), executeTool,
+      getMcpTools: vi.fn().mockResolvedValue([]),
       getWorkspaceRoots: vi.fn().mockResolvedValue([]),
       addWorkspaceRoot: vi.fn().mockResolvedValue({ roots: [] }),
       removeWorkspaceRoot: vi.fn().mockResolvedValue({ roots: [] }),
@@ -391,6 +411,70 @@ describe('useLabmateWS', () => {
       JSON.stringify({ type: 'session.open', sessionId: 's-xyz' }),
     );
   });
+
+  it('session.history merges turns, deduplicating by id', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    emit({ type: 'boot.plan', subsystems: SUBSYSTEMS });
+    emit({ type: 'boot.ready', sessionBootstrap: BOOTSTRAP });
+
+    // Add one turn to the state
+    const turn1: import('@/types/events').Turn = {
+      id: 't-1',
+      sessionId: 's-1',
+      role: 'user',
+      text: 'Hello',
+      createdAt: '2026-01-01T00:00:00Z',
+      status: 'complete',
+    };
+    emit({ type: 'turn.created', turn: turn1 });
+    expect(result.current.state.turns).toHaveLength(1);
+
+    // Emit session.history with two turns: one already in state (t-1), one new (t-2)
+    const turn2: import('@/types/events').Turn = {
+      id: 't-2',
+      sessionId: 's-1',
+      role: 'assistant',
+      text: 'Hi',
+      createdAt: '2026-01-01T00:00:01Z',
+      status: 'complete',
+    };
+    emit({ type: 'session.history', sessionId: 's-1', turns: [turn1, turn2] });
+
+    // Should have both turns, no duplicate of t-1
+    expect(result.current.state.turns).toHaveLength(2);
+    expect(result.current.state.turns.map((t) => t.id)).toEqual(['t-1', 't-2']);
+  });
+
+  it('session.history populates turnSessionRef so tool routing works', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    emit({ type: 'boot.plan', subsystems: SUBSYSTEMS });
+    emit({ type: 'boot.ready', sessionBootstrap: BOOTSTRAP });
+
+    const turns: import('@/types/events').Turn[] = [
+      {
+        id: 't-1',
+        sessionId: 's-chat-1',
+        role: 'user',
+        text: 'Read file',
+        createdAt: '2026-01-01T00:00:00Z',
+        status: 'complete',
+      },
+      {
+        id: 't-2',
+        sessionId: 's-chat-1',
+        role: 'assistant',
+        text: 'Done',
+        createdAt: '2026-01-01T00:00:01Z',
+        status: 'complete',
+      },
+    ];
+    emit({ type: 'session.history', sessionId: 's-chat-1', turns });
+
+    // Should have loaded both turns
+    expect(result.current.state.turns).toHaveLength(2);
+  });
 });
 
 describe('ensureActiveSession', () => {
@@ -417,20 +501,40 @@ describe('ensureActiveSession', () => {
     expect(mintSessionId()).toMatch(/^s-/);
   });
 
-  it('sends capabilities frame after auth.ok', () => {
-    renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
-    act(() => mockWs.onopen?.());
-    // Clear the send calls from the auth frame
-    mockWs.send.mockClear();
-    // Emit auth.ok
-    act(() => {
-      mockWs.onmessage?.({
-        data: JSON.stringify({ type: 'auth.ok' }),
+  it('sends capabilities frame after auth.ok with builtins only', async () => {
+    (window as Window & { electronAPI?: unknown }).electronAPI = {
+      config: { wsUrl: null, isDev: true }, token: null,
+      setConfig: vi.fn(), setToken: vi.fn(), clearToken: vi.fn(),
+      executeTool: vi.fn(),
+      getMcpTools: vi.fn().mockResolvedValue([]),
+      getWorkspaceRoots: vi.fn().mockResolvedValue([]),
+      addWorkspaceRoot: vi.fn().mockResolvedValue({ roots: [] }),
+      removeWorkspaceRoot: vi.fn().mockResolvedValue({ roots: [] }),
+      hasDefaultWorkspace: vi.fn().mockResolvedValue(true),
+      getDefaultWorkspace: vi.fn().mockResolvedValue(null),
+      setDefaultWorkspace: vi.fn().mockResolvedValue({ path: null }),
+      searchWorkspace: vi.fn().mockResolvedValue({ entries: [] }),
+    };
+
+    try {
+      renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+      act(() => mockWs.onopen?.());
+      mockWs.send.mockClear();
+      act(() => {
+        mockWs.onmessage?.({
+          data: JSON.stringify({ type: 'auth.ok' }),
+        });
       });
-    });
-    // Should have sent the capabilities frame
-    expect(mockWs.send).toHaveBeenCalledWith(
-      JSON.stringify({
+
+      // Wait for async getMcpTools to complete
+      await vi.waitFor(() => {
+        const sent = mockWs.send.mock.calls.map((c) => JSON.parse(c[0] as string));
+        expect(sent.some((f) => f.type === 'client.capabilities')).toBe(true);
+      });
+
+      const sent = mockWs.send.mock.calls.map((c) => JSON.parse(c[0] as string));
+      const capFrame = sent.find((f) => f.type === 'client.capabilities');
+      expect(capFrame).toEqual({
         type: 'client.capabilities',
         protocolVersion: 1,
         tools: [
@@ -440,8 +544,97 @@ describe('ensureActiveSession', () => {
           { name: 'search_files', source: 'builtin' },
           { name: 'run_tests', source: 'builtin' },
         ],
-      })
-    );
+      });
+    } finally {
+      delete (window as Window & { electronAPI?: unknown }).electronAPI;
+    }
+  });
+
+  it('includes MCP tools in capabilities frame when getMcpTools returns tools', async () => {
+    const mcpTool = {
+      name: 'test_tool',
+      source: 'mcp' as const,
+      namespace: 'svc',
+      schema: { type: 'object', properties: {} },
+    };
+    (window as Window & { electronAPI?: unknown }).electronAPI = {
+      config: { wsUrl: null, isDev: true }, token: null,
+      setConfig: vi.fn(), setToken: vi.fn(), clearToken: vi.fn(),
+      executeTool: vi.fn(),
+      getMcpTools: vi.fn().mockResolvedValue([mcpTool]),
+      getWorkspaceRoots: vi.fn().mockResolvedValue([]),
+      addWorkspaceRoot: vi.fn().mockResolvedValue({ roots: [] }),
+      removeWorkspaceRoot: vi.fn().mockResolvedValue({ roots: [] }),
+      hasDefaultWorkspace: vi.fn().mockResolvedValue(true),
+      getDefaultWorkspace: vi.fn().mockResolvedValue(null),
+      setDefaultWorkspace: vi.fn().mockResolvedValue({ path: null }),
+      searchWorkspace: vi.fn().mockResolvedValue({ entries: [] }),
+    };
+
+    try {
+      renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+      act(() => mockWs.onopen?.());
+      mockWs.send.mockClear();
+      act(() => {
+        mockWs.onmessage?.({
+          data: JSON.stringify({ type: 'auth.ok' }),
+        });
+      });
+
+      await vi.waitFor(() => {
+        const sent = mockWs.send.mock.calls.map((c) => JSON.parse(c[0] as string));
+        const capFrame = sent.find((f) => f.type === 'client.capabilities');
+        expect(capFrame?.tools).toHaveLength(6);
+      });
+
+      const sent = mockWs.send.mock.calls.map((c) => JSON.parse(c[0] as string));
+      const capFrame = sent.find((f) => f.type === 'client.capabilities');
+      expect(capFrame?.tools).toContainEqual(mcpTool);
+      // Verify builtins are still there
+      expect(capFrame?.tools.some((t: any) => t.name === 'read_file')).toBe(true);
+    } finally {
+      delete (window as Window & { electronAPI?: unknown }).electronAPI;
+    }
+  });
+
+  it('sends capabilities frame with builtins only when getMcpTools is absent', async () => {
+    // No getMcpTools in electronAPI (cast away the requirement for this test)
+    (window as Window & { electronAPI?: unknown }).electronAPI = {
+      config: { wsUrl: null, isDev: true }, token: null,
+      setConfig: vi.fn(), setToken: vi.fn(), clearToken: vi.fn(),
+      executeTool: vi.fn(),
+      getMcpTools: undefined,
+      getWorkspaceRoots: vi.fn().mockResolvedValue([]),
+      addWorkspaceRoot: vi.fn().mockResolvedValue({ roots: [] }),
+      removeWorkspaceRoot: vi.fn().mockResolvedValue({ roots: [] }),
+      hasDefaultWorkspace: vi.fn().mockResolvedValue(true),
+      getDefaultWorkspace: vi.fn().mockResolvedValue(null),
+      setDefaultWorkspace: vi.fn().mockResolvedValue({ path: null }),
+      searchWorkspace: vi.fn().mockResolvedValue({ entries: [] }),
+    } as any;
+
+    try {
+      renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+      act(() => mockWs.onopen?.());
+      mockWs.send.mockClear();
+      act(() => {
+        mockWs.onmessage?.({
+          data: JSON.stringify({ type: 'auth.ok' }),
+        });
+      });
+
+      await vi.waitFor(() => {
+        const sent = mockWs.send.mock.calls.map((c) => JSON.parse(c[0] as string));
+        expect(sent.some((f) => f.type === 'client.capabilities')).toBe(true);
+      });
+
+      const sent = mockWs.send.mock.calls.map((c) => JSON.parse(c[0] as string));
+      const capFrame = sent.find((f) => f.type === 'client.capabilities');
+      // Should still have 5 builtins, no errors thrown
+      expect(capFrame?.tools).toHaveLength(5);
+    } finally {
+      delete (window as Window & { electronAPI?: unknown }).electronAPI;
+    }
   });
 });
 

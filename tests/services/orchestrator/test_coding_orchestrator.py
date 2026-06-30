@@ -2062,6 +2062,9 @@ async def test_run_tests_client_routed_pass(monkeypatch):
         def get_manifest(self):
             return manifest
 
+        def get_workspace_root(self):
+            return None
+
     # Mock the client_context to return our manifest
     monkeypatch.setattr("services.orchestrator.coding_orchestrator.client_context", FakeContext())
 
@@ -2125,6 +2128,9 @@ async def test_run_tests_client_routed_fail(monkeypatch):
     class FakeContext:
         def get_manifest(self):
             return manifest
+
+        def get_workspace_root(self):
+            return None
 
     monkeypatch.setattr("services.orchestrator.coding_orchestrator.client_context", FakeContext())
 
@@ -2200,6 +2206,9 @@ async def test_run_tests_no_client_uses_pod_path(monkeypatch):
     # Mock client_context to return None (no manifest)
     class FakeContext:
         def get_manifest(self):
+            return None
+
+        def get_workspace_root(self):
             return None
 
     monkeypatch.setattr("services.orchestrator.coding_orchestrator.client_context", FakeContext())

@@ -2,9 +2,13 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, Tray, nativeImage, safeStora
 import path from 'node:path';
 import fs from 'node:fs';
 import { deflateSync } from 'node:zlib';
-import { executeTool, LOCAL_TOOL_NAMES, type LocalToolName } from './tool-executor';
-import { WorkspaceStore } from './workspace';
-import { searchWorkspace } from './fs-search';
+import { executeTool, LOCAL_TOOL_NAMES, type LocalToolName } from './tool-executor.js';
+import { WorkspaceStore } from './workspace.js';
+import { searchWorkspace } from './fs-search.js';
+import { McpHostManager } from './mcp-registry.js';
+import { resolveMcpPathArgs } from './mcp-path-rooting.js';
+import { skillDescriptors } from './skill-discovery.js';
+import { userSkillsDir, ensureUserSkillsDir } from './labmate-home.js';
 
 const DEV_URL = 'http://localhost:8080';
 const IS_DEV = process.env.ELECTRON_DEV === '1';
@@ -189,12 +193,20 @@ function buildMenu(): Menu {
   ]);
 }
 
+// ── MCP Host Manager (hosted MCP skill servers) ──────────────────────────────
+
+const mcpManager = new McpHostManager();
+let mcpReady: Promise<void> = Promise.resolve();
+
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
 let tray: Tray | null = null;
 let isQuitting = false;
 
-app.on('before-quit', () => { isQuitting = true; });
+app.on('before-quit', (_event) => {
+  isQuitting = true;
+  void mcpManager.stopAll();
+});
 
 function createWindow(): BrowserWindow {
   const state = loadWindowState();
@@ -327,6 +339,26 @@ ipcMain.handle(
   },
 );
 
+ipcMain.handle('labmate:mcp-tools', async () => {
+  try {
+    await mcpReady;
+    return mcpManager.getToolDescriptors();
+  } catch (err) {
+    console.error('failed to get mcp tools:', err);
+    return [];
+  }
+});
+
+ipcMain.handle('labmate:skill-descriptors', async () => {
+  try {
+    const skills = skillDescriptors(userSkillsDir());
+    return skills;
+  } catch (err) {
+    console.error('failed to get skill descriptors:', err);
+    return [];
+  }
+});
+
 ipcMain.handle(
   'labmate:tool-execute',
   async (_evt, payload: unknown) => {
@@ -337,6 +369,14 @@ ipcMain.handle(
         args: Record<string, unknown>;
         sessionId?: string | null;
       };
+
+      // Route mcp__ prefixed tools to McpHostManager
+      if (name.startsWith('mcp__')) {
+        const roots = workspaceStore().roots(sessionId ?? null);
+        const rootedArgs = resolveMcpPathArgs(args ?? {}, roots);
+        return { result: await mcpManager.callTool(name, rootedArgs) };
+      }
+
       if (!LOCAL_TOOL_NAMES.includes(name as LocalToolName)) {
         return { error: `unknown local tool: ${name}` };
       }
@@ -349,6 +389,10 @@ ipcMain.handle(
 );
 
 void app.whenReady().then(() => {
+  ensureUserSkillsDir();
+  mcpReady = mcpManager.startAll().catch((e) => {
+    console.error('mcp startAll failed:', e);
+  });
   createWindow();
 });
 

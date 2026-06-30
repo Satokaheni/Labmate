@@ -14,6 +14,7 @@ every signature. No emitter set (e.g. unit tests) => emit is a no-op.
 CRITICAL: emission is best-effort. A Redis failure must never break a task, so
 every XADD is wrapped in try/except. Never write to stdout — log to stderr.
 """
+
 from __future__ import annotations
 
 import json
@@ -40,12 +41,11 @@ def clean_reasoning(text: str) -> str:
         return ""
     return _THINK_TAG_RE.sub("", text).strip()
 
+
 EVENTS_STREAM_PREFIX = "labmate:events:"
 EVENTS_MAXLEN = 2000
 
-current_emitter: ContextVar["EventEmitter | None"] = ContextVar(
-    "current_emitter", default=None
-)
+current_emitter: ContextVar[EventEmitter | None] = ContextVar("current_emitter", default=None)
 
 
 def extract_reasoning(response: Any) -> str:
@@ -69,6 +69,24 @@ def reasoning_summary(text: str) -> str:
         if line:
             return line[:120]
     return (text or "")[:120]
+
+
+def tool_event_display(tool_name: str, args: dict | None) -> tuple[str, str]:
+    """Return (kind, display_name) for a tool.start event.
+
+    Skill-loading/using tools are surfaced as kind='skill' and labelled with the
+    SKILL's name (not the mechanism), so the UI shows what was actually used:
+      - load_skill       -> the loaded skill (args['name'])
+      - call_skill_tool  -> the skill whose tool ran (args['skill'])
+    Every other tool is a plain kind='tool' shown by its own name. Falls back to
+    the mechanism name when the expected arg is missing.
+    """
+    args = args or {}
+    if tool_name == "call_skill_tool":
+        return "skill", str(args.get("skill") or tool_name)
+    if tool_name == "load_skill":
+        return "skill", str(args.get("name") or tool_name)
+    return "tool", tool_name
 
 
 class EventEmitter:

@@ -250,12 +250,17 @@ class PromptAssembler:
         base_system: str | None = None,
         catalog: str | None = None,
         client_manifest: ClientManifest | None = None,
+        workspace_root: str | None = None,
     ) -> None:
         # Resolve the skill catalog deterministically: explicit catalog wins;
         # otherwise pull it from the runner if a skill_router is present.
         if catalog is None and skill_router is not None:
             try:
-                catalog = skill_router.runner.catalog_prompt()
+                from services.orchestrator.tool_manifest import hosted_skill_namespaces
+
+                # When a client is attached, exclude skills it hosts to avoid duplication.
+                exclude = hosted_skill_namespaces(client_manifest)
+                catalog = skill_router.runner.catalog_prompt(exclude=exclude)
             except Exception:
                 catalog = None
 
@@ -263,9 +268,37 @@ class PromptAssembler:
         if catalog:
             system_text = f"{system_text}\n\n{catalog}"
 
+        # Append client documentation skills to the catalog text.
+        if client_manifest is not None:
+            from services.orchestrator.tool_manifest import client_doc_skills
+
+            doc_skills = client_doc_skills(client_manifest)
+            if doc_skills:
+                # Format: "- name: description" for each doc-skill, sorted by name.
+                doc_skills_lines = [
+                    f"- {name}: {doc_skills[name]['description']}"
+                    for name in sorted(doc_skills.keys())
+                ]
+                doc_skills_text = "\n".join(doc_skills_lines)
+                if system_text.endswith(catalog or ""):
+                    # Append to the catalog if it exists; otherwise insert after base system.
+                    system_text = f"{system_text}\n{doc_skills_text}"
+                else:
+                    system_text = f"{system_text}\n\n{doc_skills_text}"
+
         # If a local-execution client is attached, steer the model to prefer local tools.
         if client_manifest is not None:
             system_text = f"{system_text}\n\n{CLIENT_PRIMITIVES_STEER}"
+
+        # If a workspace root is provided with a local-execution client, add the absolute-path clause.
+        if client_manifest is not None and workspace_root:
+            workspace_root_clause = (
+                f"The user's workspace root on their machine is: {workspace_root}\n"
+                "When a tool requires an ABSOLUTE path (e.g. an AST/refactor skill that wants a tsconfig "
+                "or file path), construct it by joining this root with the workspace-relative path. The "
+                "local file tools (read_file/write_file/search_files) still take workspace-relative paths."
+            )
+            system_text = f"{system_text}\n\n{workspace_root_clause}"
 
         self._system_msg: dict = {"role": "system", "content": system_text}
 

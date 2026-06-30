@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { capabilitiesFrame, CLIENT_CAPABILITIES } from './capabilities';
+import { capabilitiesFrame, CLIENT_CAPABILITIES, type ToolDescriptor } from './capabilities';
 
 describe('capabilities', () => {
   it('capabilitiesFrame returns a frame with type client.capabilities and five builtin tools', () => {
@@ -43,5 +43,25 @@ describe('capabilities', () => {
     const frame = capabilitiesFrame();
     const { type, ...frameRest } = frame;
     expect(frameRest).toEqual(CLIENT_CAPABILITIES);
+  });
+
+  it('capabilitiesFrame merges extraTools after builtins', () => {
+    const mcpTool: ToolDescriptor = {
+      name: 'foo',
+      source: 'mcp',
+      namespace: 'svc',
+      schema: { type: 'object', properties: {} },
+    };
+    const frame = capabilitiesFrame([mcpTool]);
+    expect(frame.tools).toHaveLength(6);
+    expect(frame.tools[5]).toEqual(mcpTool);
+    // Builtins still come first
+    expect(frame.tools.slice(0, 5).every((t) => t.source === 'builtin')).toBe(true);
+  });
+
+  it('capabilitiesFrame with no extraTools still has five builtins', () => {
+    const frame = capabilitiesFrame([]);
+    expect(frame.tools).toHaveLength(5);
+    expect(frame.tools.every((t) => t.source === 'builtin')).toBe(true);
   });
 });

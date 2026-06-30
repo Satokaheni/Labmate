@@ -1,3 +1,10 @@
+export interface ToolDescriptor {
+  name: string;
+  source: 'builtin' | 'mcp' | 'skill';
+  namespace?: string;
+  schema?: unknown;
+}
+
 declare global {
   interface Window {
     electronAPI?: {
@@ -11,6 +18,7 @@ declare global {
         args: Record<string, unknown>,
         sessionId?: string | null,
       ) => Promise<{ result?: unknown; error?: string }>;
+      getMcpTools: () => Promise<ToolDescriptor[]>;
       getWorkspaceRoots: (sessionId: string | null) => Promise<string[]>;
       addWorkspaceRoot: (sessionId: string) => Promise<{ roots: string[] }>;
       removeWorkspaceRoot: (sessionId: string, path: string) => Promise<{ roots: string[] }>;

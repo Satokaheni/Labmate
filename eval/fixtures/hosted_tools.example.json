@@ -1,0 +1,120 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp__ast-ts-refactor__find_references",
+      "description": "Find every usage site of a TypeScript symbol (function, class, variable, or interface) across the whole project, including re-exports and barrel imports. Use to LOCATE where a symbol is referenced/used.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "tsconfig": {"type": "string", "description": "Absolute path to tsconfig.json"},
+          "file": {"type": "string", "description": "Optional — declaring file; auto-located if omitted"},
+          "symbol": {"type": "string", "description": "Symbol name to find usages of"}
+        },
+        "required": ["tsconfig", "symbol"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp__ast-ts-refactor__rename_symbol",
+      "description": "Rename a TypeScript symbol across the entire project, safely updating every reference so all usages stay in sync. Use to RENAME a function/class/variable/interface everywhere.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "tsconfig": {"type": "string", "description": "Absolute path to tsconfig.json"},
+          "file": {"type": "string", "description": "Optional — declaring file; auto-located if omitted"},
+          "symbol": {"type": "string", "description": "Current symbol name"},
+          "new_name": {"type": "string", "description": "New symbol name"}
+        },
+        "required": ["tsconfig", "symbol", "new_name"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp__ast-ts-refactor__move_symbol",
+      "description": "Move a TypeScript symbol from one file to another, rewriting the imports in all affected files. Use to RELOCATE a function/class/type to a different module/file.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "tsconfig": {"type": "string", "description": "Absolute path to tsconfig.json"},
+          "source_file": {"type": "string", "description": "File the symbol currently lives in"},
+          "dest_file": {"type": "string", "description": "File to move the symbol into"},
+          "symbol": {"type": "string", "description": "Symbol name to move"}
+        },
+        "required": ["tsconfig", "source_file", "dest_file", "symbol"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp__component-doc-gen__generate",
+      "description": "Generate documentation (a props table, markdown docs, and optionally a Storybook story) for a SINGLE React component file.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "component_path": {"type": "string", "description": "Absolute path to the component .tsx, OR a component name / workspace-relative path (searched if not an existing file)"},
+          "include_stories": {"type": "boolean", "description": "Also emit a Storybook story"}
+        },
+        "required": ["component_path"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp__component-doc-gen__generate_batch",
+      "description": "Generate documentation for EVERY React component matching a glob under a directory (bulk). Returns one doc per component file. Use for a whole folder of components, not a single file.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "dir_path": {"type": "string", "description": "Absolute path to a directory of components"},
+          "pattern": {"type": "string", "description": "Glob to match (e.g. **/*.tsx)"}
+        },
+        "required": ["dir_path"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp__a11y-audit__audit_file",
+      "description": "Run an accessibility (axe-core) audit on a LOCAL HTML or React component file path and return WCAG violations.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "html_or_component_path": {"type": "string", "description": "Absolute path to a local .html or component file"},
+          "rules": {"type": "array", "items": {"type": "string"}, "description": "Optional axe rule IDs to restrict the run"}
+        },
+        "required": ["html_or_component_path"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp__a11y-audit__audit_url",
+      "description": "Run an accessibility (axe-core) audit on a running URL (e.g. a dev server at http(s)://...) and return WCAG violations.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "url": {"type": "string", "description": "An http(s) URL to audit"},
+          "rules": {"type": "array", "items": {"type": "string"}, "description": "Optional axe rule IDs to restrict the run"}
+        },
+        "required": ["url"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp__a11y-audit__list_rules",
+      "description": "List every available axe accessibility rule ID with its description and WCAG level (A / AA / AAA). Use to DISCOVER which rules exist — does NOT audit anything.",
+      "parameters": {"type": "object", "properties": {}, "required": []}
+    }
+  }
+]

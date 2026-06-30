@@ -285,6 +285,54 @@ def test_session_open_emits_session_updated(client, app):
         assert opened["session"]["id"] == sid
 
 
+def test_session_open_replays_stored_turns(client, app):
+    """session.open should replay a session's stored turns in a session.history frame."""
+    with client.websocket_connect("/ws") as ws:
+        _boot_to_ready(ws, app)
+        ws.send_json({"type": "session.new", "mode": "chat"})
+        created = ws.receive_json()
+        sid = created["session"]["id"]
+
+        # Simulate adding turns to the store (inject directly for testing)
+        store = app.state.store
+        store.add_turn(
+            sid,
+            {
+                "id": "t-1",
+                "role": "user",
+                "text": "Hello",
+                "sessionId": sid,
+                "createdAt": "2026-01-01T00:00:00Z",
+                "status": "complete",
+            },
+        )
+        store.add_turn(
+            sid,
+            {
+                "id": "t-2",
+                "role": "assistant",
+                "text": "Hi there",
+                "sessionId": sid,
+                "createdAt": "2026-01-01T00:00:01Z",
+                "status": "complete",
+            },
+        )
+
+        ws.send_json({"type": "session.open", "sessionId": sid})
+        opened = ws.receive_json()
+        assert opened["type"] == "session.updated"
+
+        # Next frame should be session.history with the turns
+        history = ws.receive_json()
+        assert history["type"] == "session.history"
+        assert history["sessionId"] == sid
+        assert len(history["turns"]) == 2
+        assert history["turns"][0]["id"] == "t-1"
+        assert history["turns"][0]["text"] == "Hello"
+        assert history["turns"][1]["id"] == "t-2"
+        assert history["turns"][1]["text"] == "Hi there"
+
+
 def test_title_from_message():
     from services.ws_gateway.server import _title_from_message
 

@@ -5,6 +5,8 @@ export interface ToolDescriptor {
   source: ToolSource;
   namespace?: string;
   schema?: unknown; // OpenAI tool object; required for mcp/skill (Phase 2), omitted for builtins
+  description?: string; // Tool description (routing signal for skills)
+  body?: string; // Skill instructions/body (for skills only)
 }
 
 export interface ClientCapabilities {
@@ -24,6 +26,10 @@ export const CLIENT_CAPABILITIES: ClientCapabilities = {
   ],
 };
 
-export function capabilitiesFrame(): { type: 'client.capabilities' } & ClientCapabilities {
-  return { type: 'client.capabilities', ...CLIENT_CAPABILITIES };
+export function capabilitiesFrame(extraTools: ToolDescriptor[] = []): { type: 'client.capabilities' } & ClientCapabilities {
+  return {
+    type: 'client.capabilities',
+    protocolVersion: CLIENT_CAPABILITIES.protocolVersion,
+    tools: [...CLIENT_CAPABILITIES.tools, ...extraTools],
+  };
 }

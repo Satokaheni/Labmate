@@ -11,7 +11,7 @@ import type {
   SessionBootstrap,
   LabmateWSStatePublic,
 } from '@/types/events';
-import { capabilitiesFrame } from '@/protocol/capabilities';
+import { capabilitiesFrame, type ToolDescriptor } from '@/protocol/capabilities';
 
 type LabmateWSStateBase = {
   subsystems?: Subsystem[];
@@ -50,6 +50,7 @@ type WSFrame =
   | { type: 'reasoning.done'; turnId: string; reasoning: Reasoning }
   | { type: 'artifact.created'; turnId: string; artifact: Artifact }
   | { type: 'session.updated'; session: Session }
+  | { type: 'session.history'; sessionId: string; turns: Turn[] }
   | { type: 'context.update'; window: ContextWindow }
   | { type: 'agent.status'; status: AgentStatus }
   | { type: 'turn.done'; turnId: string; status: string }
@@ -244,6 +245,18 @@ function labmateWSReducer(state: LabmateWSState, action: DispatchAction): Labmat
         return state;
       }
 
+      if (frame.type === 'session.history') {
+        if (state.phase === 'ready') {
+          // Merge turns from session history, deduplicating by turn id.
+          // Append any turn whose id is not already in state.turns.
+          const existingIds = new Set((state.turns ?? []).map((t) => t.id));
+          const newTurns = frame.turns.filter((t) => !existingIds.has(t.id));
+          const turns = [...(state.turns ?? []), ...newTurns];
+          return { ...state, turns };
+        }
+        return state;
+      }
+
       if (frame.type === 'context.update') {
         if (state.phase === 'ready') {
           return { ...state, contextWindow: frame.window };
@@ -338,7 +351,7 @@ export function useLabmateWS(
   reconnectKey?: number
 ): {
   state: LabmateWSStatePublic;
-  send: (text: string, sessionId: string) => void;
+  send: (text: string, sessionId: string, workspaceRoot?: string) => void;
   newSession?: (mode: string) => void;
   newChat: () => string;
   setActiveSession: (sessionId: string) => void;
@@ -383,15 +396,43 @@ export function useLabmateWS(
           turnSessionRef.current[frame.turn.id] = frame.turn.sessionId ?? '';
         }
 
+        // Also populate turnSessionRef for turns replayed via session.history
+        if (frame.type === 'session.history') {
+          for (const turn of frame.turns) {
+            if (turn?.id) {
+              turnSessionRef.current[turn.id] = turn.sessionId ?? frame.sessionId ?? '';
+            }
+          }
+        }
+
         // Handle tool.request asynchronously (outside reducer)
         if (frame.type === 'tool.request') {
           handleToolRequest(frame, ws);
           return;
         }
 
-        // Send capabilities frame after auth succeeds
+        // Send capabilities frame after auth succeeds, including MCP tools and skills
         if (frame.type === 'auth.ok') {
-          ws.send(JSON.stringify(capabilitiesFrame()));
+          const sendCapabilities = async () => {
+            try {
+              const electronAPI = (window as unknown as {
+                electronAPI?: {
+                  getMcpTools?: () => Promise<ToolDescriptor[]>;
+                  getSkillDescriptors?: () => Promise<ToolDescriptor[]>;
+                };
+              }).electronAPI;
+              const mcpTools = (await electronAPI?.getMcpTools?.()) ?? [];
+              const skillTools = (await electronAPI?.getSkillDescriptors?.()) ?? [];
+              const allTools = [...mcpTools, ...skillTools];
+              ws.send(JSON.stringify(capabilitiesFrame(allTools)));
+            } catch (err) {
+              console.error('Failed to fetch tools:', err);
+              // Send capabilities with just builtins if fetch fails
+              ws.send(JSON.stringify(capabilitiesFrame([])));
+            }
+          };
+          void sendCapabilities();
+          return; // Don't dispatch yet; let auth flow through after capabilities are sent
         }
 
         // Fill in a fresh active session at the source when boot delivers none,
@@ -469,9 +510,9 @@ export function useLabmateWS(
     }
   };
 
-  const send = (text: string, sessionId: string) => {
+  const send = (text: string, sessionId: string, workspaceRoot?: string) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'send', sessionId, mode: 'chat', text }));
+      wsRef.current.send(JSON.stringify({ type: 'send', sessionId, mode: 'chat', text, ...(workspaceRoot ? { workspaceRoot } : {}) }));
     }
   };
 

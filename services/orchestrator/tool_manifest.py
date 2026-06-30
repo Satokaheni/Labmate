@@ -18,6 +18,8 @@ class ToolDescriptor(TypedDict, total=False):
     source: str  # "builtin" | "mcp" | "skill"; default "builtin"
     namespace: str | None  # optional: mcp/skill namespace
     schema: dict | None  # optional: full OpenAI tool object
+    description: str  # optional: documentation skill description
+    body: str  # optional: documentation skill body
 
 
 class ClientManifest(TypedDict, total=False):
@@ -133,6 +135,27 @@ CANONICAL_BUILTIN_SCHEMAS: dict[str, dict] = {
 }
 
 
+def _is_usable_descriptor(descriptor: ToolDescriptor) -> bool:
+    """
+    Check if a descriptor is usable (can be advertised and dispatched).
+
+    An mcp/skill descriptor is usable ONLY if it carries a valid schema:
+    a dict with a "function" key (the OpenAI tool object).
+    Builtin descriptors are ALWAYS usable (backend supplies schema; descriptor
+    has no schema by design).
+
+    Returns:
+        True if the descriptor should be advertised and included in dispatch routing.
+    """
+    source = descriptor.get("source", "builtin")
+    # Builtin descriptors are always usable (schema supplied by backend).
+    if source == "builtin":
+        return True
+    # mcp/skill descriptors must have a valid schema.
+    schema = descriptor.get("schema")
+    return isinstance(schema, dict) and isinstance(schema.get("function"), dict)
+
+
 def _final_tool_name(descriptor: ToolDescriptor) -> str:
     """
     Compute the final dispatch name for a tool descriptor.
@@ -158,8 +181,11 @@ def manifest_local_tool_names(manifest: ClientManifest | None, fallback: set[str
     Extract the set of tool names that route to the local client.
 
     If manifest is None (no client attached), returns the fallback set.
-    Otherwise, returns the set of final dispatch names for every tool
+    Otherwise, returns the set of final dispatch names for every usable tool
     declared in the manifest, using _final_tool_name to compute each name.
+
+    A tool is usable if it is a builtin OR carries a valid schema (dict with "function" key).
+    Schema-less mcp/skill descriptors are excluded.
 
     This set is used in dispatch routing to check `if name in local_tool_names`.
     """
@@ -168,7 +194,7 @@ def manifest_local_tool_names(manifest: ClientManifest | None, fallback: set[str
 
     names: set[str] = set()
     for descriptor in manifest.get("tools", []):
-        if "name" in descriptor:
+        if "name" in descriptor and _is_usable_descriptor(descriptor):
             names.add(_final_tool_name(descriptor))
 
     return names
@@ -208,6 +234,10 @@ def parse_manifest(payload: dict | None) -> ClientManifest | None:
             descriptor["namespace"] = tool_raw["namespace"]
         if "schema" in tool_raw and tool_raw["schema"] is not None:
             descriptor["schema"] = tool_raw["schema"]
+        if "description" in tool_raw and tool_raw["description"] is not None:
+            descriptor["description"] = tool_raw["description"]
+        if "body" in tool_raw and tool_raw["body"] is not None:
+            descriptor["body"] = tool_raw["body"]
         tools.append(descriptor)
 
     if not tools:
@@ -218,6 +248,99 @@ def parse_manifest(payload: dict | None) -> ClientManifest | None:
         manifest["protocol_version"] = protocol_version
 
     return manifest
+
+
+def client_doc_skills(manifest: ClientManifest | None) -> dict[str, dict]:
+    """
+    Extract documentation skills from a client manifest.
+
+    A documentation skill is a descriptor with:
+    - source == "skill" (documentation skills are never "mcp" or "builtin")
+    - NO valid schema (i.e. missing schema or schema without "function" key)
+    - A name
+    - Optional description and body
+
+    Returns a dict mapping skill name to {description: str, body: str}.
+    Returns {} if manifest is None or has no documentation skills.
+    """
+    if manifest is None:
+        return {}
+
+    doc_skills: dict[str, dict] = {}
+    for descriptor in manifest.get("tools", []):
+        # Only consider source="skill" descriptors.
+        source = descriptor.get("source", "builtin")
+        if source != "skill":
+            continue
+
+        # Skip if it has a valid schema (that means it's a hosted pod skill, not documentation).
+        if _is_usable_descriptor(descriptor):
+            continue
+
+        name = descriptor.get("name")
+        if not name:
+            continue
+
+        # Extract description and body (with defaults).
+        description = descriptor.get("description", "")
+        body = descriptor.get("body", "")
+
+        doc_skills[name] = {"description": description, "body": body}
+
+    return doc_skills
+
+
+def doc_skill_load_response(name: str, body: str) -> dict:
+    """Build the load_skill result for a CLIENT documentation skill.
+
+    Documentation skills have NO callable tools — the model must follow the
+    instructions in `body` directly (using the builtin primitives, or just by
+    answering). The `usage` note steers the model away from inventing a
+    call_skill_tool call for a doc-skill (an invented tool fails and wastes a
+    turn — observed live: a greeting doc-skill prompted a phantom
+    `repo-greeting.write_greeting` call_skill_tool that returned False before the
+    model recovered). Shape mirrors SkillRunner.load_skill's 'loaded' response.
+    """
+    return {
+        "name": "load_skill",
+        "response": {
+            "status": "loaded",
+            "name": name,
+            "kind": "documentation",
+            "body": body,
+            "usage": (
+                f"'{name}' is a DOCUMENTATION skill: follow the instructions in 'body' "
+                "directly to produce your answer (use read_file/write_file/search_files only "
+                "if the instructions require files). It has NO callable tools of its own — do "
+                "NOT call call_skill_tool for it."
+            ),
+        },
+    }
+
+
+def hosted_skill_namespaces(manifest: ClientManifest | None) -> set[str]:
+    """
+    Extract the skill namespaces that a client hosts directly via mcp/skill descriptors.
+
+    Used to drop duplicate pod-catalog entries so the model doesn't see a skill twice
+    (once as client-hosted mcp/skill tool, once as pod-side load_skill).
+
+    Args:
+        manifest: Parsed ClientManifest or None.
+
+    Returns:
+        Set of skill namespace strings (e.g., {'ast-ts-refactor', 'code-review'}).
+        Empty set if manifest is None.
+    """
+    if manifest is None:
+        return set()
+    out: set[str] = set()
+    for descriptor in manifest.get("tools", []):
+        source = descriptor.get("source", "builtin")
+        namespace = descriptor.get("namespace")
+        if source in ("mcp", "skill") and namespace and _is_usable_descriptor(descriptor):
+            out.add(namespace)
+    return out
 
 
 def _call_skill_tool_schema() -> dict:
@@ -269,10 +392,73 @@ def build_tool_list(
     tools = []
     manifest_tool_names = {t["name"] for t in manifest["tools"]}
 
-    # 1. Skill interface (if router present).
-    if skill_router is not None:
-        tools.append(skill_router.runner.tool_schema())  # load_skill
-        tools.append(_call_skill_tool_schema())  # call_skill_tool
+    # Compute the set of skill namespaces the client hosts directly (mcp/skill).
+    # These should be dropped from the pod-side load_skill enum to prevent duplication.
+    hosted_skills = hosted_skill_namespaces(manifest)
+
+    # 1. Skill interface (if router present or client has doc-skills).
+    doc_skills = client_doc_skills(manifest)
+    if skill_router is not None or doc_skills:
+        if skill_router is not None:
+            # Exclude hosted skills from the pod catalog.
+            load_skill_schema = skill_router.runner.tool_schema(exclude=hosted_skills)
+            enum_skills = (
+                load_skill_schema.get("function", {})
+                .get("parameters", {})
+                .get("properties", {})
+                .get("name", {})
+                .get("enum", [])
+            )
+        else:
+            # No skill_router; use empty enum from pod.
+            enum_skills = []
+
+        # Merge client doc-skill names into the enum.
+        enum_skills_merged = sorted(set(enum_skills) | set(doc_skills.keys()))
+
+        # Only advertise load_skill if there are available skills after exclusion + merge.
+        if enum_skills_merged:
+            if not doc_skills:
+                # Pod skills only: tool_schema(exclude=...) already carries the correct
+                # sorted enum — advertise it unchanged (no rebuild). Reaching here with no
+                # doc-skills implies skill_router is not None (outer guard).
+                tools.append(load_skill_schema)
+            else:
+                # Client doc-skills present: rebuild the schema with the merged enum.
+                if skill_router is not None:
+                    base = load_skill_schema  # from tool_schema(exclude=...) above
+                else:
+                    # No pod router; build a minimal load_skill schema for doc-skills.
+                    base = {
+                        "type": "function",
+                        "function": {
+                            "name": "load_skill",
+                            "description": "Load a skill (documentation or pod-based).",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {"type": "string", "enum": enum_skills_merged}
+                                },
+                                "required": ["name"],
+                            },
+                        },
+                    }
+                merged_schema = base.copy()
+                merged_schema["function"] = base["function"].copy()
+                params = merged_schema["function"].get("parameters", {}).copy()
+                props = params.get("properties", {}).copy()
+                name_prop = props.get("name", {}).copy()
+                name_prop["enum"] = enum_skills_merged
+                props["name"] = name_prop
+                params["properties"] = props
+                merged_schema["function"]["parameters"] = params
+                tools.append(merged_schema)
+
+            # call_skill_tool applies ONLY to pod skills — documentation skills expose no
+            # callable tools (the model uses the local primitives after load_skill returns
+            # the body). Don't advertise a dead call_skill_tool to a doc-skills-only client.
+            if skill_router is not None:
+                tools.append(_call_skill_tool_schema())
 
     # 2. code_semantic_search (only if declared in manifest).
     if "code_semantic_search" in manifest_tool_names:
@@ -292,13 +478,15 @@ def build_tool_list(
         if name in manifest_tool_names:
             tools.append(CANONICAL_BUILTIN_SCHEMAS[name])
 
-    # 5. Client mcp/skill tools (with schemas): sorted by final name for determinism.
+    # 5. Client mcp/skill tools (with valid schemas): sorted by final name for determinism.
+    # A schema is valid if it's a dict with a "function" key (OpenAI tool object).
     client_tools: list[tuple[str, dict]] = []
     for descriptor in manifest["tools"]:
         source = descriptor.get("source", "builtin")
         if source not in ("mcp", "skill"):
             continue
-        if "schema" not in descriptor or descriptor["schema"] is None:
+        # Skip mcp/skill descriptors without a valid schema.
+        if not _is_usable_descriptor(descriptor):
             continue
         # Compute final name using the shared helper.
         final_name = _final_tool_name(descriptor)

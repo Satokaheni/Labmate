@@ -1,12 +1,10 @@
 import logging
-import sys
 from pathlib import Path
 
 import pytest
 
-from services.skill_runner.skill_runner import SkillRunner, SkillMeta
 import services.skill_runner.skill_runner as skill_runner
-
+from services.skill_runner.skill_runner import SkillMeta, SkillRunner
 
 VALID_SKILL = """---
 name: {name}
@@ -20,8 +18,12 @@ This is the body of {name}.
 
 @pytest.mark.mocked
 def test_discover_parses_frontmatter_only(write_skill, tmp_path):
-    proj_root, _ = write_skill("project", "deploy", VALID_SKILL.format(name="deploy", desc="Deploys things."))
-    pers_root, _ = write_skill("personal", "web-search", VALID_SKILL.format(name="web-search", desc="Searches the web."))
+    proj_root, _ = write_skill(
+        "project", "deploy", VALID_SKILL.format(name="deploy", desc="Deploys things.")
+    )
+    pers_root, _ = write_skill(
+        "personal", "web-search", VALID_SKILL.format(name="web-search", desc="Searches the web.")
+    )
 
     runner = SkillRunner(roots=[proj_root, pers_root, tmp_path / "bundled"])
     runner.discover()
@@ -54,8 +56,8 @@ def test_malformed_frontmatter_skipped_and_warns(write_skill, tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="skill_runner"):
         runner.discover()
 
-    assert "broken" not in runner.catalog        # excluded
-    assert "ok" in runner.catalog                # other skills still discovered
+    assert "broken" not in runner.catalog  # excluded
+    assert "ok" in runner.catalog  # other skills still discovered
     # A warning naming the offending file path was logged.
     assert any(str(bad_md.resolve()) in rec.getMessage() for rec in caplog.records)
 
@@ -76,7 +78,7 @@ def test_project_tier_overrides_personal_on_collision(tmp_path, caplog):
         runner.discover()
 
     entry = runner.catalog["deploy"]
-    assert entry.path == proj_md.resolve()       # project wins
+    assert entry.path == proj_md.resolve()  # project wins
     assert entry.tier == "project"
     # Shadowing warning identifies the overridden personal path.
     assert any(str(pers_md.resolve()) in rec.getMessage() for rec in caplog.records)
@@ -107,7 +109,9 @@ def test_safe_loader_blocks_yaml_object_injection(write_skill, tmp_path):
 
 @pytest.mark.mocked
 def test_catalog_prompt_renders_sorted_compact_block(write_skill, tmp_path):
-    proj_root, _ = write_skill("project", "deploy", VALID_SKILL.format(name="deploy", desc="Deploys things."))
+    proj_root, _ = write_skill(
+        "project", "deploy", VALID_SKILL.format(name="deploy", desc="Deploys things.")
+    )
     write_skill("project", "alpha", VALID_SKILL.format(name="alpha", desc="Alpha skill."))
 
     runner = SkillRunner(roots=[proj_root, tmp_path / "personal", tmp_path / "bundled"])
@@ -116,13 +120,15 @@ def test_catalog_prompt_renders_sorted_compact_block(write_skill, tmp_path):
 
     lines = prompt.splitlines()
     assert lines[0] == "Available skills (call load_skill(name) to activate one):"
-    assert lines[1] == "- alpha: Alpha skill."       # sorted by name
+    assert lines[1] == "- alpha: Alpha skill."  # sorted by name
     assert lines[2] == "- deploy: Deploys things."
 
 
 @pytest.mark.mocked
 def test_tool_schema_exposes_load_skill_with_enum(write_skill, tmp_path):
-    proj_root, _ = write_skill("project", "deploy", VALID_SKILL.format(name="deploy", desc="Deploys things."))
+    proj_root, _ = write_skill(
+        "project", "deploy", VALID_SKILL.format(name="deploy", desc="Deploys things.")
+    )
     write_skill("project", "alpha", VALID_SKILL.format(name="alpha", desc="Alpha skill."))
 
     runner = SkillRunner(roots=[proj_root, tmp_path / "personal", tmp_path / "bundled"])
@@ -133,13 +139,15 @@ def test_tool_schema_exposes_load_skill_with_enum(write_skill, tmp_path):
     fn = schema["function"]
     assert fn["name"] == "load_skill"
     props = fn["parameters"]["properties"]
-    assert props["name"]["enum"] == ["alpha", "deploy"]   # sorted
+    assert props["name"]["enum"] == ["alpha", "deploy"]  # sorted
     assert fn["parameters"]["required"] == ["name"]
 
 
 @pytest.mark.mocked
 def test_load_skill_returns_body(write_skill, tmp_path):
-    proj_root, _ = write_skill("project", "deploy", VALID_SKILL.format(name="deploy", desc="Deploys things."))
+    proj_root, _ = write_skill(
+        "project", "deploy", VALID_SKILL.format(name="deploy", desc="Deploys things.")
+    )
     runner = SkillRunner(roots=[proj_root, tmp_path / "personal", tmp_path / "bundled"])
     runner.discover()
 
@@ -153,19 +161,23 @@ def test_load_skill_returns_body(write_skill, tmp_path):
 
 @pytest.mark.mocked
 def test_load_skill_dedup_returns_already_loaded(write_skill, tmp_path):
-    proj_root, _ = write_skill("project", "deploy", VALID_SKILL.format(name="deploy", desc="Deploys things."))
+    proj_root, _ = write_skill(
+        "project", "deploy", VALID_SKILL.format(name="deploy", desc="Deploys things.")
+    )
     runner = SkillRunner(roots=[proj_root, tmp_path / "personal", tmp_path / "bundled"])
     runner.discover()
 
     runner.load_skill("deploy")
     second = runner.load_skill("deploy")
     assert second["response"]["status"] == "already_loaded"
-    assert "body" not in second["response"]      # not re-appended
+    assert "body" not in second["response"]  # not re-appended
 
 
 @pytest.mark.mocked
 def test_load_skill_unknown_returns_error_with_available(write_skill, tmp_path):
-    proj_root, _ = write_skill("project", "deploy", VALID_SKILL.format(name="deploy", desc="Deploys things."))
+    proj_root, _ = write_skill(
+        "project", "deploy", VALID_SKILL.format(name="deploy", desc="Deploys things.")
+    )
     runner = SkillRunner(roots=[proj_root, tmp_path / "personal", tmp_path / "bundled"])
     runner.discover()
 
@@ -185,7 +197,9 @@ def test_chain_limit_blocks_further_activations(tmp_path):
             VALID_SKILL.format(name=n, desc=f"Skill {n}."), encoding="utf-8"
         )
 
-    runner = SkillRunner(roots=[proj_root, tmp_path / "personal", tmp_path / "bundled"], max_chain=3)
+    runner = SkillRunner(
+        roots=[proj_root, tmp_path / "personal", tmp_path / "bundled"], max_chain=3
+    )
     runner.discover()
 
     assert runner.load_skill("a")["response"]["status"] == "loaded"
@@ -207,16 +221,14 @@ def test_discover_skips_node_modules_paths(write_skill, tmp_path):
     real_skill = proj_root / "real-skill"
     real_skill.mkdir()
     (real_skill / "SKILL.md").write_text(
-        VALID_SKILL.format(name="real-skill", desc="A real skill."),
-        encoding="utf-8"
+        VALID_SKILL.format(name="real-skill", desc="A real skill."), encoding="utf-8"
     )
 
     # Create a vendored skill under node_modules (should be skipped)
     vendor = proj_root / "some-lib" / "node_modules" / "vendored-skill"
     vendor.mkdir(parents=True)
     (vendor / "SKILL.md").write_text(
-        VALID_SKILL.format(name="vendored-skill", desc="Vendored skill."),
-        encoding="utf-8"
+        VALID_SKILL.format(name="vendored-skill", desc="Vendored skill."), encoding="utf-8"
     )
 
     runner = SkillRunner(roots=[proj_root, tmp_path / "personal", tmp_path / "bundled"])
@@ -236,16 +248,14 @@ def test_discover_skips_git_paths(tmp_path):
     real_skill = proj_root / "real-skill"
     real_skill.mkdir()
     (real_skill / "SKILL.md").write_text(
-        VALID_SKILL.format(name="real-skill", desc="A real skill."),
-        encoding="utf-8"
+        VALID_SKILL.format(name="real-skill", desc="A real skill."), encoding="utf-8"
     )
 
     # Create a skill under .git/dist (should be skipped)
     git_dir = proj_root / ".git" / "dist" / "hidden-skill"
     git_dir.mkdir(parents=True)
     (git_dir / "SKILL.md").write_text(
-        VALID_SKILL.format(name="hidden-skill", desc="Hidden skill."),
-        encoding="utf-8"
+        VALID_SKILL.format(name="hidden-skill", desc="Hidden skill."), encoding="utf-8"
     )
 
     runner = SkillRunner(roots=[proj_root, tmp_path / "personal", tmp_path / "bundled"])
@@ -265,16 +275,14 @@ def test_discover_skips_dist_paths(tmp_path):
     real_skill = proj_root / "real-skill"
     real_skill.mkdir()
     (real_skill / "SKILL.md").write_text(
-        VALID_SKILL.format(name="real-skill", desc="A real skill."),
-        encoding="utf-8"
+        VALID_SKILL.format(name="real-skill", desc="A real skill."), encoding="utf-8"
     )
 
     # Create a skill under dist (should be skipped)
     dist_dir = proj_root / "dist" / "compiled-skill"
     dist_dir.mkdir(parents=True)
     (dist_dir / "SKILL.md").write_text(
-        VALID_SKILL.format(name="compiled-skill", desc="Compiled skill."),
-        encoding="utf-8"
+        VALID_SKILL.format(name="compiled-skill", desc="Compiled skill."), encoding="utf-8"
     )
 
     runner = SkillRunner(roots=[proj_root, tmp_path / "personal", tmp_path / "bundled"])
@@ -286,7 +294,9 @@ def test_discover_skips_dist_paths(tmp_path):
 
 @pytest.mark.mocked
 def test_path_confinement_rejects_after_fs_tamper(write_skill, tmp_path, monkeypatch):
-    proj_root, md = write_skill("project", "deploy", VALID_SKILL.format(name="deploy", desc="Deploys things."))
+    proj_root, md = write_skill(
+        "project", "deploy", VALID_SKILL.format(name="deploy", desc="Deploys things.")
+    )
     runner = SkillRunner(roots=[proj_root, tmp_path / "personal", tmp_path / "bundled"])
     runner.discover()
 
@@ -305,7 +315,9 @@ def test_path_confinement_rejects_after_fs_tamper(write_skill, tmp_path, monkeyp
 
 @pytest.mark.mocked
 def test_dispatch_rejects_unknown_tool_and_routes_load_skill(write_skill, tmp_path):
-    proj_root, _ = write_skill("project", "deploy", VALID_SKILL.format(name="deploy", desc="Deploys things."))
+    proj_root, _ = write_skill(
+        "project", "deploy", VALID_SKILL.format(name="deploy", desc="Deploys things.")
+    )
     runner = SkillRunner(roots=[proj_root, tmp_path / "personal", tmp_path / "bundled"])
     runner.discover()
 
@@ -330,7 +342,9 @@ def test_package_exports():
 
 @pytest.mark.mocked
 def test_reload_catalog_rescans(write_skill, tmp_path):
-    proj_root, _ = write_skill("project", "deploy", VALID_SKILL.format(name="deploy", desc="Deploys things."))
+    proj_root, _ = write_skill(
+        "project", "deploy", VALID_SKILL.format(name="deploy", desc="Deploys things.")
+    )
     runner = SkillRunner(roots=[proj_root, tmp_path / "personal", tmp_path / "bundled"])
     runner.discover()
     assert set(runner.catalog) == {"deploy"}
@@ -339,3 +353,121 @@ def test_reload_catalog_rescans(write_skill, tmp_path):
     write_skill("project", "newskill", VALID_SKILL.format(name="newskill", desc="Brand new."))
     runner.reload_catalog()
     assert set(runner.catalog) == {"deploy", "newskill"}
+
+
+@pytest.mark.mocked
+def test_catalog_prompt_exclude_empty_is_identical(write_skill, tmp_path):
+    """catalog_prompt(exclude=set()) is byte-identical to catalog_prompt()."""
+    proj_root, _ = write_skill(
+        "project", "deploy", VALID_SKILL.format(name="deploy", desc="Deploys things.")
+    )
+    write_skill("project", "alpha", VALID_SKILL.format(name="alpha", desc="Alpha skill."))
+
+    runner = SkillRunner(roots=[proj_root, tmp_path / "personal", tmp_path / "bundled"])
+    runner.discover()
+
+    prompt1 = runner.catalog_prompt()
+    prompt2 = runner.catalog_prompt(exclude=set())
+    prompt3 = runner.catalog_prompt(exclude=frozenset())
+
+    assert prompt1 == prompt2 == prompt3
+
+
+@pytest.mark.mocked
+def test_catalog_prompt_exclude_single_skill(write_skill, tmp_path):
+    """catalog_prompt(exclude={'deploy'}) removes deploy from the list."""
+    proj_root, _ = write_skill(
+        "project", "deploy", VALID_SKILL.format(name="deploy", desc="Deploys things.")
+    )
+    write_skill("project", "alpha", VALID_SKILL.format(name="alpha", desc="Alpha skill."))
+
+    runner = SkillRunner(roots=[proj_root, tmp_path / "personal", tmp_path / "bundled"])
+    runner.discover()
+
+    prompt = runner.catalog_prompt(exclude={"deploy"})
+    lines = prompt.splitlines()
+
+    assert lines[0] == "Available skills (call load_skill(name) to activate one):"
+    assert lines[1] == "- alpha: Alpha skill."
+    # deploy should NOT be present
+    assert not any("deploy" in line for line in lines[1:])
+    assert len(lines) == 2  # header + alpha only
+
+
+@pytest.mark.mocked
+def test_catalog_prompt_exclude_multiple_skills(write_skill, tmp_path):
+    """catalog_prompt(exclude={'deploy', 'alpha'}) excludes both skills."""
+    proj_root, _ = write_skill(
+        "project", "deploy", VALID_SKILL.format(name="deploy", desc="Deploys things.")
+    )
+    write_skill("project", "alpha", VALID_SKILL.format(name="alpha", desc="Alpha skill."))
+    write_skill("project", "beta", VALID_SKILL.format(name="beta", desc="Beta skill."))
+
+    runner = SkillRunner(roots=[proj_root, tmp_path / "personal", tmp_path / "bundled"])
+    runner.discover()
+
+    prompt = runner.catalog_prompt(exclude={"deploy", "alpha"})
+    lines = prompt.splitlines()
+
+    assert lines[0] == "Available skills (call load_skill(name) to activate one):"
+    assert lines[1] == "- beta: Beta skill."
+    assert len(lines) == 2  # header + beta only
+
+
+@pytest.mark.mocked
+def test_tool_schema_exclude_empty_is_identical(write_skill, tmp_path):
+    """tool_schema(exclude=set()) is byte-identical to tool_schema()."""
+    proj_root, _ = write_skill(
+        "project", "deploy", VALID_SKILL.format(name="deploy", desc="Deploys things.")
+    )
+    write_skill("project", "alpha", VALID_SKILL.format(name="alpha", desc="Alpha skill."))
+
+    runner = SkillRunner(roots=[proj_root, tmp_path / "personal", tmp_path / "bundled"])
+    runner.discover()
+
+    schema1 = runner.tool_schema()
+    schema2 = runner.tool_schema(exclude=set())
+    schema3 = runner.tool_schema(exclude=frozenset())
+
+    import json
+
+    assert json.dumps(schema1, sort_keys=True) == json.dumps(schema2, sort_keys=True)
+    assert json.dumps(schema1, sort_keys=True) == json.dumps(schema3, sort_keys=True)
+
+
+@pytest.mark.mocked
+def test_tool_schema_exclude_single_skill(write_skill, tmp_path):
+    """tool_schema(exclude={'deploy'}) removes deploy from the enum."""
+    proj_root, _ = write_skill(
+        "project", "deploy", VALID_SKILL.format(name="deploy", desc="Deploys things.")
+    )
+    write_skill("project", "alpha", VALID_SKILL.format(name="alpha", desc="Alpha skill."))
+
+    runner = SkillRunner(roots=[proj_root, tmp_path / "personal", tmp_path / "bundled"])
+    runner.discover()
+
+    schema = runner.tool_schema(exclude={"deploy"})
+    enum = schema["function"]["parameters"]["properties"]["name"]["enum"]
+
+    assert enum == ["alpha"]
+    assert "deploy" not in enum
+
+
+@pytest.mark.mocked
+def test_tool_schema_exclude_multiple_skills(write_skill, tmp_path):
+    """tool_schema(exclude={'deploy', 'alpha'}) excludes both from enum."""
+    proj_root, _ = write_skill(
+        "project", "deploy", VALID_SKILL.format(name="deploy", desc="Deploys things.")
+    )
+    write_skill("project", "alpha", VALID_SKILL.format(name="alpha", desc="Alpha skill."))
+    write_skill("project", "beta", VALID_SKILL.format(name="beta", desc="Beta skill."))
+
+    runner = SkillRunner(roots=[proj_root, tmp_path / "personal", tmp_path / "bundled"])
+    runner.discover()
+
+    schema = runner.tool_schema(exclude={"deploy", "alpha"})
+    enum = schema["function"]["parameters"]["properties"]["name"]["enum"]
+
+    assert enum == ["beta"]
+    assert "deploy" not in enum
+    assert "alpha" not in enum

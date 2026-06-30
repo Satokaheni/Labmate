@@ -1,4 +1,12 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type ReactNode,
+} from 'react';
 import type {
   LabmateWSStatePublic,
   Session,
@@ -375,14 +383,13 @@ const SKILLS_LABEL_STYLE: CSSProperties = {
   whiteSpace: 'nowrap',
 };
 
-const SKILLS_LIST_STYLE: CSSProperties = {
+const SKILLS_CURRENT_STYLE: CSSProperties = {
   fontFamily: "'IBM Plex Mono'",
   fontSize: 11,
   color: '#6b727d',
-  flex: 1,
+  whiteSpace: 'nowrap',
   overflow: 'hidden',
   textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
 };
 
 const SKILLS_VIEW_LINK_STYLE: CSSProperties = {
@@ -894,7 +901,7 @@ function TopBar(props: {
 // Left sidebar
 // ====================================================================
 
-function sysRow(color: string, label: string, value: string, pulse = false): JSX.Element {
+function sysRow(color: string, label: string, value: string, pulse = false): ReactNode {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
       <span style={sysRowDotStyle(color, pulse)} />
@@ -1027,14 +1034,13 @@ function AssistantTurnView(props: {
   const calls = turn.toolCalls ?? [];
   const reasoning = turn.reasoning;
 
-  // The chip is a compact summary — the full per-call log lives in the Skills
-  // panel. Dedupe names (a tool called N times shows once) and cap the list so
-  // it can't grow unbounded (e.g. run_bash · run_bash · …).
-  const skillNames = [...new Set(calls.map((c) => c.name))];
-  const CHIP_MAX_NAMES = 4;
-  const skillSummary =
-    skillNames.slice(0, CHIP_MAX_NAMES).join(' · ') +
-    (skillNames.length > CHIP_MAX_NAMES ? ` · +${skillNames.length - CHIP_MAX_NAMES} more` : '');
+  // The chip shows the COUNT of distinct SKILLS (kind === 'skill') + the one
+  // CURRENTLY running (if any). Plain primitive tools (read_file/run_tests/...)
+  // are kind === 'tool' and are NOT counted as skills — they still appear in the
+  // full per-call timeline in the Skills panel (open via "View →").
+  const skillCalls = calls.filter((c) => c.kind === 'skill');
+  const skillNames = [...new Set(skillCalls.map((c) => c.name))];
+  const runningCall = skillCalls.find((c) => c.status === 'running');
 
   return (
     <div style={ASSISTANT_TURN_CONTAINER_STYLE}>
@@ -1066,7 +1072,8 @@ function AssistantTurnView(props: {
         <button type="button" className="lm-btn" onClick={onOpenSkills} style={SKILLS_CHIP_STYLE}>
           <span style={SKILLS_COUNT_STYLE}>⚡</span>
           <span style={SKILLS_LABEL_STYLE}>{skillNames.length} skill{skillNames.length === 1 ? '' : 's'} used</span>
-          <span style={SKILLS_LIST_STYLE}>{skillSummary}</span>
+          {runningCall && <span style={SKILLS_CURRENT_STYLE}>: {runningCall.name}</span>}
+          <span style={{ flex: 1 }} />
           <span style={SKILLS_VIEW_LINK_STYLE}>View →</span>
         </button>
       )}
@@ -1351,7 +1358,7 @@ function Composer(props: { mode: Mode; budget: number; sessionId: string; onSend
 // Right panel: skills timeline / file preview / debug / empty
 // ====================================================================
 
-function panelHeader(dot: string, label: string, right?: string, pulse = true): JSX.Element {
+function panelHeader(dot: string, label: string, right?: string, pulse = true): ReactNode {
   return (
     <div
       style={{
@@ -1591,7 +1598,7 @@ function DebugConsole({ nodeLabel, budget }: { nodeLabel: string; budget: number
 
 export interface ChatScreenProps {
   state: LabmateWSStatePublic;
-  send: (text: string, sessionId: string) => void;
+  send: (text: string, sessionId: string, workspaceRoot?: string) => void;
   newSession?: (mode: string) => void;
   newChat: () => string;
   openSession?: (sessionId: string) => void;
@@ -1798,7 +1805,7 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug }: Chat
             mode={mode}
             budget={budget}
             sessionId={wsId}
-            onSend={(text) => send(text, wsId)}
+            onSend={(text) => send(text, wsId, roots[0])}
           />
         </div>
 

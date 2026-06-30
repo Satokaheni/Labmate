@@ -486,6 +486,7 @@ class OrchestratorProcess:
         _token = None
         _counter_token = None
         _manifest_token = None
+        _ws_root_token = None
         _ctx_task: asyncio.Task | None = None
 
         try:
@@ -535,6 +536,10 @@ class OrchestratorProcess:
             _manifest_token = client_context.set_manifest(
                 parse_manifest(payload.get("client_capabilities"))
             )
+            # Per-task workspace root: set in context for skills that need absolute paths.
+            _ws_root_token = client_context.set_workspace_root(
+                payload.get("workspace_root") or None
+            )
 
             # Emit active status so the frontend agent indicator lights up
             await _emitter.emit(
@@ -561,6 +566,7 @@ class OrchestratorProcess:
             # in this session, so it shows the accumulated context (e.g. 11%) instead of
             # resetting to 0% — then refresh live as this turn's real peak is measured.
             _carried_fill = self._session_ctx_fill.get(session_id, 0)
+            _log.info("ctx-carry: session=%s carried=%d", session_id, _carried_fill)
             await _emitter.emit("context", window=_context_window(_carried_fill))
             if CONTEXT_REFRESH_S > 0:
                 _ctx_task = asyncio.create_task(
@@ -813,6 +819,7 @@ class OrchestratorProcess:
                 # Persist it as this session's carried fill so the NEXT turn's strip
                 # starts from here instead of 0%.
                 _final_peak = call_counter.get_peak_prompt_tokens()
+                _log.info("ctx-persist: session=%s final_peak=%d", session_id, _final_peak)
                 if _final_peak > 0 and session_id:
                     self._session_ctx_fill[session_id] = _final_peak
                 await events.emit("context", window=_context_window(_final_peak))
@@ -825,6 +832,8 @@ class OrchestratorProcess:
                 call_counter.reset(_counter_token)
             if _manifest_token is not None:
                 client_context.reset_manifest(_manifest_token)
+            if _ws_root_token is not None:
+                client_context.reset_workspace_root(_ws_root_token)
             await self._redis.xack(GOALS_STREAM, GOALS_GROUP, msg_id)
 
     async def _write_result(self, task_id: str, result: dict) -> None:

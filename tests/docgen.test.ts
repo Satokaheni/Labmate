@@ -120,3 +120,142 @@ describe("batch shape", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });
+
+describe("resolveComponentPath", () => {
+  it("existing absolute path is returned unchanged (REGRESSION-CRITICAL)", async () => {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const { resolveComponentPath } = await import(
+      "../services/skills/component-doc-gen/src/index.js"
+    );
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "component-abs-"));
+    const componentFile = path.join(dir, "Button.tsx");
+    fs.writeFileSync(
+      componentFile,
+      `export interface ButtonProps { label: string }\nexport function Button(p: ButtonProps){return null}\nexport default Button;\n`,
+      "utf-8",
+    );
+
+    const result = resolveComponentPath(componentFile);
+    expect(result).toBe(path.resolve(componentFile));
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("absolute non-existent path is searched by basename", async () => {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const { resolveComponentPath } = await import(
+      "../services/skills/component-doc-gen/src/index.js"
+    );
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "component-search-"));
+    const srcDir = path.join(dir, "src");
+    fs.mkdirSync(srcDir);
+    const componentFile = path.join(srcDir, "Button.tsx");
+    fs.writeFileSync(
+      componentFile,
+      `export function Button(){return null}\n`,
+      "utf-8",
+    );
+
+    // Dispatch-rooting case: absolute but non-existent path to a dir, search by basename
+    const result = resolveComponentPath(path.join(dir, "Button"));
+    expect(result).toBe(path.resolve(componentFile));
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("throws when component name has no matches", async () => {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const { resolveComponentPath } = await import(
+      "../services/skills/component-doc-gen/src/index.js"
+    );
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "component-nomatch-"));
+    // Create no component files
+
+    expect(() => {
+      resolveComponentPath(path.join(dir, "NoSuchComp"));
+    }).toThrow(/no component file found/);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("throws when multiple files match the basename", async () => {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const { resolveComponentPath } = await import(
+      "../services/skills/component-doc-gen/src/index.js"
+    );
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "component-multi-"));
+    const subdir1 = path.join(dir, "a");
+    const subdir2 = path.join(dir, "b");
+    fs.mkdirSync(subdir1);
+    fs.mkdirSync(subdir2);
+
+    fs.writeFileSync(
+      path.join(subdir1, "Button.tsx"),
+      `export function Button(){return null}\n`,
+      "utf-8",
+    );
+    fs.writeFileSync(
+      path.join(subdir2, "Button.tsx"),
+      `export function Button(){return null}\n`,
+      "utf-8",
+    );
+
+    expect(() => {
+      resolveComponentPath(path.join(dir, "Button"));
+    }).toThrow(/multiple files match/);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("end-to-end: resolves and generates doc with correct component_name", async () => {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const { resolveComponentPath } = await import(
+      "../services/skills/component-doc-gen/src/index.js"
+    );
+    const { ComponentParser } = await import(
+      "../services/skills/component-doc-gen/src/parser.js"
+    );
+    const { DocGenerator } = await import(
+      "../services/skills/component-doc-gen/src/docgen.js"
+    );
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "component-e2e-"));
+    const srcDir = path.join(dir, "src");
+    fs.mkdirSync(srcDir);
+    const componentFile = path.join(srcDir, "Checkbox.tsx");
+    fs.writeFileSync(
+      componentFile,
+      `export interface CheckboxProps { checked: boolean }\nexport function Checkbox(p: CheckboxProps){return null}\nexport default Checkbox;\n`,
+      "utf-8",
+    );
+
+    // Resolve by name (absolute non-existent path)
+    const resolved = resolveComponentPath(path.join(dir, "Checkbox"));
+    expect(resolved).toBe(path.resolve(componentFile));
+
+    // Parse and generate doc
+    const parser = new ComponentParser();
+    const { componentName, props, filePath } = parser.extractProps(resolved);
+    expect(componentName).toBe("Checkbox");
+
+    const gen = new DocGenerator();
+    const doc = gen.generate(componentName, filePath, props, true);
+    expect(doc.component_name).toBe("Checkbox");
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});

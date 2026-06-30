@@ -25,6 +25,7 @@ from .local_tools import (
     shape_sandbox_test_result,
     verify_written_content,
 )
+from .loop_checkpoint import LoopCheckpoint
 from .loop_detection import LoopDetector, call_signature, repeat_limit_for
 from .memory_search import MemorySearch
 from .message_repair import message_repair_enabled, sanitize_messages
@@ -35,7 +36,7 @@ from .sandbox_edits import detect_sandbox_writes
 from .steer_inject import inject_steer
 from .test_outcome import classify_test_attempt
 from .tool_grounding import DEFAULT_TOOL_RESULT_BUDGET, ground_tool_result
-from .tool_manifest import manifest_local_tool_names
+from .tool_manifest import client_doc_skills, doc_skill_load_response, manifest_local_tool_names
 from .types import State
 from .verification_stop import (
     MAX_VERIFY_INFRA_ERRORS,
@@ -74,10 +75,6 @@ SEQUENCING_MODE = os.getenv("SEQUENCING_MODE", "skill_first")
 # 0, the redundant reload is still short-circuited but the budget is NOT
 # refunded (lets an operator A/B the refund half in isolation).
 REFUND_REPEAT_LOAD_SKILL = os.getenv("LABMATE_REFUND_REPEAT_LOAD_SKILL", "1") == "1"
-
-from .loop_checkpoint import (
-    LoopCheckpoint,
-)
 
 # Durable per-turn inner-loop checkpoint (Option A). OFF by default — the inner
 # loop was just stabilized, so this is regression-safe; flip ON after the
@@ -522,6 +519,7 @@ class AsyncOrchestrator:
             codegraph_enabled=self.codegraph_mcp is not None,
             memory_enabled=self.memory_search is not None,
             client_manifest=client_context.get_manifest(),
+            workspace_root=client_context.get_workspace_root(),
         )
         tools = assembler.tools()  # frozen list — never rebuilt per step
         # Compute the set of tools that route to the local client (if attached).
@@ -956,8 +954,7 @@ class AsyncOrchestrator:
 
                     # Emit tool.start for all non-finish tools
                     _tool_id = uuid.uuid4().hex[:12]
-                    _kind = "skill" if name == "call_skill_tool" else "tool"
-                    _emit_name = args.get("skill", name) if name == "call_skill_tool" else name
+                    _kind, _emit_name = events.tool_event_display(name, args)
                     _t0 = time.monotonic()
                     await events.emit(
                         "tool.start",
@@ -968,7 +965,9 @@ class AsyncOrchestrator:
                         reasoning_why=_turn_reasoning,
                     )
 
-                    if name == "load_skill" and self.skill_router is not None:
+                    if name == "load_skill" and (
+                        self.skill_router is not None or client_context.get_manifest() is not None
+                    ):
                         _skill_name = args.get("name", "")
                         if is_repeat_load(_skill_name, loaded_skills):
                             # Already loaded this goal: do NOT reload. Return a
@@ -986,16 +985,44 @@ class AsyncOrchestrator:
                                 refunded=REFUND_REPEAT_LOAD_SKILL,
                             )
                         else:
-                            obs = self.skill_router.runner.load_skill(_skill_name)
-                            content = json.dumps(obs)
-                            # Record a successful first load so a later repeat is
-                            # deduped. Only record on a real 'loaded'/'already_loaded'
-                            # status — an error (unknown skill / cap) must NOT be
-                            # remembered as loaded.
-                            _resp = obs.get("response") if isinstance(obs, dict) else None
-                            _status = _resp.get("status") if isinstance(_resp, dict) else None
-                            if _skill_name and _status in ("loaded", "already_loaded"):
+                            # Check if this is a client documentation skill.
+                            manifest = client_context.get_manifest()
+                            _doc = (
+                                client_doc_skills(manifest).get(_skill_name) if manifest else None
+                            )
+
+                            if _doc is not None:
+                                # Client documentation skill: return its body + a usage
+                                # steer so the model follows it directly instead of
+                                # inventing a (non-existent) call_skill_tool for it.
+                                obs = doc_skill_load_response(_skill_name, _doc["body"])
+                                content = json.dumps(obs)
                                 loaded_skills.add(_skill_name)
+                            else:
+                                # Pod skill: dispatch to runner.
+                                if self.skill_router is not None:
+                                    obs = self.skill_router.runner.load_skill(_skill_name)
+                                    content = json.dumps(obs)
+                                    # Record a successful first load so a later repeat is
+                                    # deduped. Only record on a real 'loaded'/'already_loaded'
+                                    # status — an error (unknown skill / cap) must NOT be
+                                    # remembered as loaded.
+                                    _resp = obs.get("response") if isinstance(obs, dict) else None
+                                    _status = (
+                                        _resp.get("status") if isinstance(_resp, dict) else None
+                                    )
+                                    if _skill_name and _status in ("loaded", "already_loaded"):
+                                        loaded_skills.add(_skill_name)
+                                else:
+                                    # No skill_router and not a doc-skill: skill not found.
+                                    obs = {
+                                        "name": "load_skill",
+                                        "response": {
+                                            "status": "error",
+                                            "message": f"Unknown skill: {_skill_name}",
+                                        },
+                                    }
+                                    content = json.dumps(obs)
 
                     elif name == "call_skill_tool" and self.skill_router is not None:
                         res = await self.skill_router.execute(

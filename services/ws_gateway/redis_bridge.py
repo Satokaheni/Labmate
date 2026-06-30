@@ -19,6 +19,7 @@ async def push_task(
     user_id: str = "",
     workspace_id: str = "",
     client_capabilities: dict | None = None,
+    workspace_root: str = "",
 ) -> None:
     """Submit a goal to the orchestrator exactly like services/cli/redis_client.py."""
     payload = json.dumps(
@@ -29,6 +30,7 @@ async def push_task(
             "user_id": user_id,
             "workspace_id": workspace_id,
             "client_capabilities": client_capabilities,
+            "workspace_root": workspace_root,
         }
     )
     await redis.xadd(GOALS_STREAM, {"payload": payload})
