@@ -140,6 +140,48 @@ add machinery**:
 - **Constraint:** any enrichment must keep prefix byte-stability (hosted tool schemas are sorted by
   final name in `build_tool_list`) and not break the no-client pod-routing path.
 
+### P2-B.3 — global user-installed MCP servers (`~/.labmate/mcp.json`) — PLANNED, build after live test
+**Motivation:** mirrors how Claude scopes MCP — a `--scope user` server is GLOBAL (available in every
+session regardless of folder). Today Labmate hosts only the **built-in/first-party** TS skills
+(`BUILTIN_MCP_SERVERS` hardcoded in `electron/mcp-registry.ts`) — the analog of Claude's built-in
+tools (ship with the app, no install). What's missing is the **user-installed** path: drop/declare an
+MCP server once and have it hosted for every session. Same global home as doc-skills (`~/.labmate/`,
+established in P2-B.1) — unify the "install" surface:
+```
+~/.labmate/
+  skills/                ← global doc-skills            (DONE, P2-B.1)
+  mcp.json               ← global user MCP servers      (THIS SLICE)
+```
+
+**Design (locked enough to plan; confirm details at build time):**
+- **Config shape** (`~/.labmate/mcp.json`, mirror Claude's `.mcp.json`):
+  `{ "mcpServers": { "<name>": { "command": "node", "args": ["/abs/path/index.js"], "cwd"?, "env"? } } }`.
+  Parse defensively (tolerate missing/corrupt file → empty; never crash startup).
+- **Hosting:** `McpHostManager.startAll()` already spawns from a `{name, command, args, cwd?}` spec — it
+  only needs to ALSO iterate the parsed `mcp.json` servers in addition to `BUILTIN_MCP_SERVERS`. Same
+  `mcp__<server>__<tool>` namespacing, same `getToolDescriptors()` merge into `capabilitiesFrame`, same
+  dispatch-side path rooting (P2-B.0). A user server failing to start is skipped + logged, never fatal
+  (built-ins keep working).
+- **Reuse, don't rebuild:** the whole backend manifest seam (advertise/route/round-trip) is
+  source-agnostic — a user MCP tool is just another `source:'mcp'` descriptor with a schema. No backend
+  changes expected; this is frontend (host registry) + a config reader. Keep `labmate-home.ts` as the
+  one place that resolves `~/.labmate/` (`labmateMcpConfigPath()` = `<labmateHome>/mcp.json`).
+- **Name-collision rule:** if a user server name collides with a built-in (`ast-ts-refactor` etc.),
+  define precedence (recommend: built-ins win, log the shadow) so a user can't silently override a
+  first-party skill.
+- **Trust:** user-declared servers are arbitrary local executables. For now they're first-party-trusted
+  (the user wrote the config); a trust/allowlist gate is a follow-up (same deferral as the P2-A "add MCP
+  server" UI). Do NOT auto-discover executables — ONLY spawn what `mcp.json` explicitly declares.
+
+**Tasks (when built):** T-B3.1 [frontend] `mcp.json` reader in `labmate-home.ts` (+defensive parse tests);
+T-B3.2 [frontend] `McpHostManager` hosts the user servers alongside built-ins, collision rule, skip-on-
+fail (+tests with a fake server spec); T-B3.3 [integration/live] declare a real local MCP server in
+`~/.labmate/mcp.json`, confirm its tools appear in the manifest and execute. **Stop point: live test.**
+
+**Later (not this slice):** project-scoped MCP (`<workspace>/.labmate/mcp.json`, Claude's `project`
+scope) + a UI "add server" flow + trust gate. Global-first matches the user's mental model; project
+scope layers on after.
+
 ## P2-C — client-side semantic search (CodeGraph)
 `code_semantic_search` becomes a client-routed tool when the client declares `codegraph`: the
 frontend queries the local CodeGraph daemon (`<workspace>/.codegraph/daemon.sock`) and returns
