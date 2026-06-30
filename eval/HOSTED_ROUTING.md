@@ -139,9 +139,12 @@ infrastructure/local/serve-model.sh  # wait for "model loaded"
 infrastructure/local/start.sh
 
 # Run the hosted eval
+# NOTE: --skills-dir is REQUIRED even for a hosted-only run (the catalog loader
+# needs it); omitting it raises a TypeError before any model call.
 python eval/run_routing_eval.py \
   --eval eval/fixtures/hosted_routing.example.jsonl \
   --hosted-tools eval/fixtures/hosted_tools.example.json \
+  --skills-dir services/skills \
   --base-url http://localhost:8000/v1 \
   --model gemma-4-31b \
   --repeats 3 \
