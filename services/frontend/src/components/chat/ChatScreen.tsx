@@ -1027,6 +1027,15 @@ function AssistantTurnView(props: {
   const calls = turn.toolCalls ?? [];
   const reasoning = turn.reasoning;
 
+  // The chip is a compact summary — the full per-call log lives in the Skills
+  // panel. Dedupe names (a tool called N times shows once) and cap the list so
+  // it can't grow unbounded (e.g. run_bash · run_bash · …).
+  const skillNames = [...new Set(calls.map((c) => c.name))];
+  const CHIP_MAX_NAMES = 4;
+  const skillSummary =
+    skillNames.slice(0, CHIP_MAX_NAMES).join(' · ') +
+    (skillNames.length > CHIP_MAX_NAMES ? ` · +${skillNames.length - CHIP_MAX_NAMES} more` : '');
+
   return (
     <div style={ASSISTANT_TURN_CONTAINER_STYLE}>
       {/* avatar + label */}
@@ -1056,8 +1065,8 @@ function AssistantTurnView(props: {
       {calls.length > 0 && (
         <button type="button" className="lm-btn" onClick={onOpenSkills} style={SKILLS_CHIP_STYLE}>
           <span style={SKILLS_COUNT_STYLE}>⚡</span>
-          <span style={SKILLS_LABEL_STYLE}>{calls.length} skills used</span>
-          <span style={SKILLS_LIST_STYLE}>{calls.map((c) => c.name).join(' · ')}</span>
+          <span style={SKILLS_LABEL_STYLE}>{skillNames.length} skill{skillNames.length === 1 ? '' : 's'} used</span>
+          <span style={SKILLS_LIST_STYLE}>{skillSummary}</span>
           <span style={SKILLS_VIEW_LINK_STYLE}>View →</span>
         </button>
       )}
