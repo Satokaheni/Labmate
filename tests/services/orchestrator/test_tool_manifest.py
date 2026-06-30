@@ -1375,7 +1375,12 @@ def test_build_tool_list_doc_skill_merged_with_pod_enum():
 
 @pytest.mark.mocked
 def test_build_tool_list_doc_skills_only_no_router():
-    """build_tool_list advertises load_skill with doc-skills only when no router."""
+    """build_tool_list advertises load_skill (but NOT call_skill_tool) with doc-skills only.
+
+    Documentation skills expose no callable tools — the model uses the local primitives
+    after load_skill returns the body — so call_skill_tool must not be advertised to a
+    doc-skills-only client (it would be a dead tool with no pod router to service it).
+    """
     manifest: ClientManifest = {
         "tools": [
             {"name": "read_file", "source": "builtin"},
@@ -1393,7 +1398,7 @@ def test_build_tool_list_doc_skills_only_no_router():
     )
     names = [t["function"]["name"] for t in tools]
     assert "load_skill" in names
-    assert "call_skill_tool" in names
+    assert "call_skill_tool" not in names
     load_skill = next((t for t in tools if t["function"]["name"] == "load_skill"), None)
     enum = load_skill["function"]["parameters"]["properties"]["name"]["enum"]
     assert enum == ["repo-tips"]

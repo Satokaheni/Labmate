@@ -390,46 +390,47 @@ def build_tool_list(
 
         # Only advertise load_skill if there are available skills after exclusion + merge.
         if enum_skills_merged:
-            # Build or update the load_skill schema with the merged enum.
-            if skill_router is not None:
-                load_skill_schema = skill_router.runner.tool_schema(exclude=hosted_skills)
+            if not doc_skills:
+                # Pod skills only: tool_schema(exclude=...) already carries the correct
+                # sorted enum — advertise it unchanged (no rebuild). Reaching here with no
+                # doc-skills implies skill_router is not None (outer guard).
+                tools.append(load_skill_schema)
             else:
-                # No pod router; build a minimal schema with just the doc-skills enum.
-                load_skill_schema = {
-                    "type": "function",
-                    "function": {
-                        "name": "load_skill",
-                        "description": "Load a skill (documentation or pod-based).",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "name": {
-                                    "type": "string",
-                                    "enum": enum_skills_merged,
-                                }
+                # Client doc-skills present: rebuild the schema with the merged enum.
+                if skill_router is not None:
+                    base = load_skill_schema  # from tool_schema(exclude=...) above
+                else:
+                    # No pod router; build a minimal load_skill schema for doc-skills.
+                    base = {
+                        "type": "function",
+                        "function": {
+                            "name": "load_skill",
+                            "description": "Load a skill (documentation or pod-based).",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {"type": "string", "enum": enum_skills_merged}
+                                },
+                                "required": ["name"],
                             },
-                            "required": ["name"],
                         },
-                    },
-                }
+                    }
+                merged_schema = base.copy()
+                merged_schema["function"] = base["function"].copy()
+                params = merged_schema["function"].get("parameters", {}).copy()
+                props = params.get("properties", {}).copy()
+                name_prop = props.get("name", {}).copy()
+                name_prop["enum"] = enum_skills_merged
+                props["name"] = name_prop
+                params["properties"] = props
+                merged_schema["function"]["parameters"] = params
+                tools.append(merged_schema)
 
-            # Update the enum in the schema.
-            load_skill_schema = load_skill_schema.copy()
-            if "function" in load_skill_schema:
-                load_skill_schema["function"] = load_skill_schema["function"].copy()
-                if "parameters" in load_skill_schema["function"]:
-                    params = load_skill_schema["function"]["parameters"].copy()
-                    if "properties" in params:
-                        props = params["properties"].copy()
-                        if "name" in props:
-                            name_prop = props["name"].copy()
-                            name_prop["enum"] = enum_skills_merged
-                            props["name"] = name_prop
-                        params["properties"] = props
-                    load_skill_schema["function"]["parameters"] = params
-
-            tools.append(load_skill_schema)
-            tools.append(_call_skill_tool_schema())
+            # call_skill_tool applies ONLY to pod skills — documentation skills expose no
+            # callable tools (the model uses the local primitives after load_skill returns
+            # the body). Don't advertise a dead call_skill_tool to a doc-skills-only client.
+            if skill_router is not None:
+                tools.append(_call_skill_tool_schema())
 
     # 2. code_semantic_search (only if declared in manifest).
     if "code_semantic_search" in manifest_tool_names:

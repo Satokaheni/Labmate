@@ -25,6 +25,7 @@ from .local_tools import (
     shape_sandbox_test_result,
     verify_written_content,
 )
+from .loop_checkpoint import LoopCheckpoint
 from .loop_detection import LoopDetector, call_signature, repeat_limit_for
 from .memory_search import MemorySearch
 from .message_repair import message_repair_enabled, sanitize_messages
@@ -74,10 +75,6 @@ SEQUENCING_MODE = os.getenv("SEQUENCING_MODE", "skill_first")
 # 0, the redundant reload is still short-circuited but the budget is NOT
 # refunded (lets an operator A/B the refund half in isolation).
 REFUND_REPEAT_LOAD_SKILL = os.getenv("LABMATE_REFUND_REPEAT_LOAD_SKILL", "1") == "1"
-
-from .loop_checkpoint import (
-    LoopCheckpoint,
-)
 
 # Durable per-turn inner-loop checkpoint (Option A). OFF by default — the inner
 # loop was just stabilized, so this is regression-safe; flip ON after the
