@@ -383,6 +383,15 @@ const SKILLS_LABEL_STYLE: CSSProperties = {
   whiteSpace: 'nowrap',
 };
 
+const SKILLS_CURRENT_STYLE: CSSProperties = {
+  fontFamily: "'IBM Plex Mono'",
+  fontSize: 11,
+  color: '#6b727d',
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+};
+
 const SKILLS_VIEW_LINK_STYLE: CSSProperties = {
   fontSize: 11.5,
   color: '#6aa6ff',
@@ -1025,9 +1034,10 @@ function AssistantTurnView(props: {
   const calls = turn.toolCalls ?? [];
   const reasoning = turn.reasoning;
 
-  // The chip shows only the COUNT of distinct skills used — the per-call list
-  // lives in the Skills panel (open via "View →"), not in the chat box.
+  // The chip shows the COUNT of distinct skills + the one CURRENTLY running (if
+  // any) — the full per-call list lives in the Skills panel (open via "View →").
   const skillNames = [...new Set(calls.map((c) => c.name))];
+  const runningCall = calls.find((c) => c.status === 'running');
 
   return (
     <div style={ASSISTANT_TURN_CONTAINER_STYLE}>
@@ -1059,6 +1069,7 @@ function AssistantTurnView(props: {
         <button type="button" className="lm-btn" onClick={onOpenSkills} style={SKILLS_CHIP_STYLE}>
           <span style={SKILLS_COUNT_STYLE}>⚡</span>
           <span style={SKILLS_LABEL_STYLE}>{skillNames.length} skill{skillNames.length === 1 ? '' : 's'} used</span>
+          {runningCall && <span style={SKILLS_CURRENT_STYLE}>: {runningCall.name}</span>}
           <span style={{ flex: 1 }} />
           <span style={SKILLS_VIEW_LINK_STYLE}>View →</span>
         </button>
