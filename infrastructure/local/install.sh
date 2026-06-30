@@ -39,6 +39,12 @@ MODEL_DIR="${MODEL_DIR:-/workspace/models/gemma-4-gguf}"
 GGUF_REPO="${GGUF_REPO:-unsloth/gemma-4-31B-it-GGUF}"
 GGUF_FILE="${GGUF_FILE:-gemma-4-31B-it-UD-Q4_K_XL.gguf}"
 
+# Tokenizer for the ast-repo-map skill's token budgeting. We download only the
+# tokenizer FILES of the served model (not the weights), so it costs no VRAM and
+# ~31MB on disk. The skill loads it from this dir via REPO_MAP_TOKENIZER (local.env).
+TOKENIZER_REPO="${TOKENIZER_REPO:-google/gemma-4-31B-it}"
+TOKENIZER_DIR="${TOKENIZER_DIR:-${MODEL_DIR}/tokenizer}"
+
 # SearXNG (native metasearch for the web-search skill).
 SEARXNG_DIR="${SEARXNG_DIR:-/workspace/searxng}"
 SEARXNG_PORT="${SEARXNG_PORT:-8080}"
@@ -183,6 +189,23 @@ else
     mkdir -p "$MODEL_DIR"
     hf download "$GGUF_REPO" "$GGUF_FILE" --local-dir "$MODEL_DIR"
   fi
+fi
+
+# ─── 4b. Tokenizer (ast-repo-map token budgeting) ─────────────────────────────
+# The ast-repo-map skill counts tokens with the SERVED model's tokenizer to
+# enforce its output budget (Gemma SentencePiece — never tiktoken). Only the
+# tokenizer FILES are fetched (~31MB, CPU-only); the model weights are NOT
+# downloaded, so this uses no VRAM. NOT gated by --no-model: it's tiny and the
+# skill needs it even when you bring your own weights. The skill loads it from
+# REPO_MAP_TOKENIZER (set in local.env) so no network is needed at runtime.
+if [[ -f "${TOKENIZER_DIR}/tokenizer.json" ]]; then
+  log "tokenizer already present: ${TOKENIZER_DIR}"
+else
+  have hf || $PIP "huggingface-hub>=0.34"
+  log "downloading tokenizer ${TOKENIZER_REPO} (tokenizer files only, ~31MB) ..."
+  mkdir -p "$TOKENIZER_DIR"
+  hf download "$TOKENIZER_REPO" tokenizer.json tokenizer_config.json --local-dir "$TOKENIZER_DIR" \
+    || log "  WARN: tokenizer download failed — ast-repo-map falls back to the HF id, then a char estimate"
 fi
 
 # ─── 5. SearXNG (native metasearch for the web-search skill) ──────────────────

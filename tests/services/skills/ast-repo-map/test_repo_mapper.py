@@ -45,10 +45,9 @@ def test_pagerank_boosts_chat_files(repo_mapper, sample_repo):
 def test_output_within_token_budget(repo_mapper, sample_repo):
     mapper = repo_mapper.RepoMapper(str(sample_repo))
     out = mapper.get_repo_map(chat_files=["service.py"], max_tokens=10)
-    data_lines = [l for l in out.splitlines() if not l.startswith("// ...")]
-    total = sum(len(l.split()) + 1 for l in data_lines)  # +1 for newline word? see note
+    data_lines = [line for line in out.splitlines() if not line.startswith("// ...")]
     # budget is a HARD cap: emitted data tokens never exceed max_tokens
-    emitted_cost = sum(mapper._count_tokens(l + "\n") for l in data_lines)
+    emitted_cost = sum(mapper._count_tokens(line + "\n") for line in data_lines)
     assert emitted_cost <= 10
 
 
@@ -56,8 +55,7 @@ def test_output_within_token_budget(repo_mapper, sample_repo):
 def test_truncation_marker_appears(repo_mapper, sample_repo):
     mapper = repo_mapper.RepoMapper(str(sample_repo))
     out = mapper.get_repo_map(chat_files=["service.py"], max_tokens=1)
-    assert any(l.startswith("// ...") and "symbols omitted" in l
-               for l in out.splitlines())
+    assert any(line.startswith("// ...") and "symbols omitted" in line for line in out.splitlines())
 
 
 @pytest.mark.mocked
@@ -77,10 +75,64 @@ def test_mtime_cache_parses_once(repo_mapper, sample_repo):
 
 @pytest.mark.mocked
 def test_broken_code_is_error_tolerant(repo_mapper, tmp_path):
-    (tmp_path / "broken.py").write_text(
-        "def good():\n    return 1\n\ndef bad(  :\n    oops\n"
-    )
+    (tmp_path / "broken.py").write_text("def good():\n    return 1\n\ndef bad(  :\n    oops\n")
     mapper = repo_mapper.RepoMapper(str(tmp_path))
     tags = mapper._parse_file("broken.py")  # must not raise
     names = {t.name for t in tags if t.kind == "def"}
     assert "good" in names
+
+
+@pytest.mark.mocked
+def test_javascript_file_does_not_crash_repo_map(repo_mapper, tmp_path):
+    # Regression: JavaScript reused the TypeScript tree-sitter query, but
+    # `type_identifier` is a TS-only node type, so any .js file raised
+    # tree_sitter.QueryError and aborted the WHOLE repo map. JS class names are
+    # (identifier), not (type_identifier) — JS needs its own query.
+    (tmp_path / "widget.js").write_text(
+        "function makeWidget() {\n  return new Widget();\n}\n\n"
+        "class Widget {\n  build() {\n    return makeWidget();\n  }\n}\n"
+    )
+    mapper = repo_mapper.RepoMapper(str(tmp_path))
+    tags = mapper._parse_file("widget.js")  # must not raise
+    names = {t.name for t in tags if t.kind == "def"}
+    assert "makeWidget" in names
+    assert "Widget" in names
+
+
+@pytest.mark.mocked
+def test_unparseable_file_is_isolated(repo_mapper, sample_repo, monkeypatch):
+    # Regression: a single file that fails to parse (e.g. a grammar/query
+    # mismatch) used to abort the entire repo map. It must be skipped, not fatal.
+    mapper = repo_mapper.RepoMapper(str(sample_repo))
+    real_extract = mapper._extract_tags
+
+    def boom(language, tree, source, path):
+        if path == "service.py":
+            raise RuntimeError("simulated grammar/query mismatch")
+        return real_extract(language, tree, source, path)
+
+    monkeypatch.setattr(mapper, "_extract_tags", boom)
+
+    # service.py blows up, but util.py still contributes — no exception escapes.
+    out = mapper.get_repo_map(chat_files=[], max_tokens=1000)
+    names = {
+        json.loads(line)["name"]
+        for line in out.splitlines()
+        if line and not line.startswith("// ...")
+    }
+    assert "helper" in names  # from util.py
+    assert mapper._parse_file("service.py") == []  # isolated -> empty (cached)
+
+
+@pytest.mark.mocked
+def test_count_tokens_char_fallback_when_no_tokenizer(repo_mapper, sample_repo):
+    # Regression: an unavailable tokenizer must not crash the map; _count_tokens
+    # falls back to a ~4-chars/token estimate (still no tiktoken).
+    mapper = repo_mapper.RepoMapper(str(sample_repo))
+    repo_mapper.RepoMapper._tokenizer = None
+    repo_mapper.RepoMapper._tokenizer_failed = True
+    try:
+        assert mapper._count_tokens("abcdefgh") == 2  # 8 // 4
+        assert mapper._count_tokens("") == 1  # max(1, 0)
+    finally:
+        repo_mapper.RepoMapper._tokenizer_failed = False

@@ -42,6 +42,11 @@ by personalized PageRank and bounded by a configurable token budget.
 }
 ```
 
+Both fields are **optional**. For discovery / orientation at the start of a task
+(e.g. "locate a function by name", before you are editing anything), call it with
+no arguments — `{}` — to get a whole-repo map. Pass `chat_files` only once you have
+files you are actively editing, to bias the ranking toward them.
+
 Each output line: `{"name": "...", "kind": "function|class|method", "signature": "...", "parent": "...", "loc": "path/to/file:42"}`
 
 ### `get_symbols`
@@ -54,7 +59,8 @@ Returns all symbols defined in a specific file.
 
 ## Workflow
 
-1. Call `get_repo_map` with the files you are actively editing in `chat_files`.
+1. Call `get_repo_map` (no args for discovery, or with the files you are actively
+   editing in `chat_files` to bias the ranking).
 2. Review the JSONL output to understand the symbol landscape.
 3. Use `loc` fields to target reads precisely — read only the functions you
    need, not entire files.

@@ -1,4 +1,5 @@
 import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -43,7 +44,9 @@ def test_unauthenticated_message_before_auth_closes(client):
 
 
 def test_valid_auth_then_boot_plan_and_ready(client, app):
-    token = app.state.auth.mint_token({"id": "u-001", "email": "admin@labmate.local", "role": "admin"})
+    token = app.state.auth.mint_token(
+        {"id": "u-001", "email": "admin@labmate.local", "role": "admin"}
+    )
     with client.websocket_connect("/ws") as ws:
         ws.send_json({"type": "auth", "token": token})
         assert ws.receive_json()["type"] == "auth.ok"
@@ -67,7 +70,9 @@ def test_bad_token_returns_auth_error(client):
 
 
 def test_send_pushes_task_and_relays_events(client, app, redis):
-    token = app.state.auth.mint_token({"id": "u-001", "email": "admin@labmate.local", "role": "admin"})
+    token = app.state.auth.mint_token(
+        {"id": "u-001", "email": "admin@labmate.local", "role": "admin"}
+    )
     with client.websocket_connect("/ws") as ws:
         ws.send_json({"type": "auth", "token": token})
         assert ws.receive_json()["type"] == "auth.ok"
@@ -77,8 +82,10 @@ def test_send_pushes_task_and_relays_events(client, app, redis):
             ev = ws.receive_json()
 
         ws.send_json({"type": "send", "sessionId": "s1", "mode": "chat", "text": "do it"})
-        # server emits user turn then assistant turn (separate IDs)
+        # s1 is unknown, so the server auto-creates + titles it first, then emits turns
         created_user = ws.receive_json()
+        if created_user["type"] == "session.updated":
+            created_user = ws.receive_json()
         assert created_user["type"] == "turn.created"
         assert created_user["turn"]["role"] == "user"
         created_asst = ws.receive_json()
@@ -88,6 +95,7 @@ def test_send_pushes_task_and_relays_events(client, app, redis):
 
         # a task must have been pushed to labmate:goals
         import asyncio
+
         entries = asyncio.get_event_loop().run_until_complete(redis.xrange("labmate:goals"))
         assert len(entries) == 1
         payload = json.loads(entries[0][1]["payload"])
@@ -96,8 +104,23 @@ def test_send_pushes_task_and_relays_events(client, app, redis):
         # simulate the orchestrator publishing events for that task
         async def seed():
             stream = f"labmate:events:{task_id}"
-            await redis.xadd(stream, {"event": json.dumps({"type": "answer.delta", "task_id": task_id, "seq": 1, "text": "ok"})})
-            await redis.xadd(stream, {"event": json.dumps({"type": "turn.done", "task_id": task_id, "seq": 2, "status": "complete"})})
+            await redis.xadd(
+                stream,
+                {
+                    "event": json.dumps(
+                        {"type": "answer.delta", "task_id": task_id, "seq": 1, "text": "ok"}
+                    )
+                },
+            )
+            await redis.xadd(
+                stream,
+                {
+                    "event": json.dumps(
+                        {"type": "turn.done", "task_id": task_id, "seq": 2, "status": "complete"}
+                    )
+                },
+            )
+
         asyncio.get_event_loop().run_until_complete(seed())
 
         delta = ws.receive_json()
@@ -109,7 +132,10 @@ def test_send_pushes_task_and_relays_events(client, app, redis):
 def test_tool_result_message_writes_to_redis(client, app, redis):
     """A tool.result message from the client is written to labmate:tool-results:<task_id>."""
     import asyncio
-    token = app.state.auth.mint_token({"id": "u-001", "email": "admin@labmate.local", "role": "admin"})
+
+    token = app.state.auth.mint_token(
+        {"id": "u-001", "email": "admin@labmate.local", "role": "admin"}
+    )
     with client.websocket_connect("/ws") as ws:
         # auth + boot
         ws.send_json({"type": "auth", "token": token})
@@ -121,6 +147,8 @@ def test_tool_result_message_writes_to_redis(client, app, redis):
         # send a task to establish an active_task_id
         ws.send_json({"type": "send", "sessionId": "s1", "mode": "chat", "text": "read a file"})
         created = ws.receive_json()
+        if created["type"] == "session.updated":  # auto-created session for s1
+            created = ws.receive_json()
         assert created["type"] == "turn.created"
 
         # get the task_id from the goals stream
@@ -129,12 +157,14 @@ def test_tool_result_message_writes_to_redis(client, app, redis):
         task_id = payload["task_id"]
 
         # send a tool.result (simulating Electron completing a local tool)
-        ws.send_json({
-            "type": "tool.result",
-            "toolRequestId": "req-42",
-            "result": {"content": "file contents"},
-            "error": None,
-        })
+        ws.send_json(
+            {
+                "type": "tool.result",
+                "toolRequestId": "req-42",
+                "result": {"content": "file contents"},
+                "error": None,
+            }
+        )
 
         # yield control so the server can process the tool.result
         asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.05))
@@ -154,10 +184,13 @@ def test_cancel_writes_redis_flag_and_emits_turn_done_error(client, app, redis):
     """cancel must write the Redis cancel key and emit turn.done:error."""
     import asyncio
     import json as _json
+
     import fakeredis as _fakeredis
     from fakeredis._server import FakeServer
 
-    token = app.state.auth.mint_token({"id": "u-001", "email": "admin@labmate.local", "role": "admin"})
+    token = app.state.auth.mint_token(
+        {"id": "u-001", "email": "admin@labmate.local", "role": "admin"}
+    )
     with client.websocket_connect("/ws") as ws:
         ws.send_json({"type": "auth", "token": token})
         assert ws.receive_json()["type"] == "auth.ok"
@@ -205,7 +238,9 @@ def test_cancel_writes_redis_flag_and_emits_turn_done_error(client, app, redis):
 
 def _boot_to_ready(ws, app):
     """Authenticate and drain all boot frames. Returns the boot.ready event."""
-    token = app.state.auth.mint_token({"id": "u-001", "email": "admin@labmate.local", "role": "admin"})
+    token = app.state.auth.mint_token(
+        {"id": "u-001", "email": "admin@labmate.local", "role": "admin"}
+    )
     ws.send_json({"type": "auth", "token": token})
     assert ws.receive_json()["type"] == "auth.ok"
     ev = ws.receive_json()
@@ -250,10 +285,49 @@ def test_session_open_emits_session_updated(client, app):
         assert opened["session"]["id"] == sid
 
 
+def test_title_from_message():
+    from services.ws_gateway.server import _title_from_message
+
+    assert _title_from_message("hello world") == "hello world"
+    assert _title_from_message("") == "New session"
+    assert _title_from_message("\n\n  first line  \nsecond") == "first line"
+    out = _title_from_message("x" * 60)
+    assert out.endswith("…") and len(out) <= 49
+
+
+def test_send_auto_creates_and_titles_session(client, app, redis):
+    """A send to an unknown session id auto-creates it, titled from the message."""
+    token = app.state.auth.mint_token(
+        {"id": "u-001", "email": "admin@labmate.local", "role": "admin"}
+    )
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "auth", "token": token})
+        assert ws.receive_json()["type"] == "auth.ok"
+        ev = ws.receive_json()
+        while ev["type"] != "boot.ready":
+            ev = ws.receive_json()
+
+        ws.send_json(
+            {
+                "type": "send",
+                "sessionId": "s-fresh",
+                "mode": "code",
+                "text": "Implement the MCP bridge\nover stdio",
+            }
+        )
+        first = ws.receive_json()
+        assert first["type"] == "session.updated"
+        assert first["session"]["id"] == "s-fresh"
+        assert first["session"]["title"] == "Implement the MCP bridge"
+        assert first["session"]["mode"] == "code"
+
+
 def test_debug_set_is_processed_without_crash(client, app):
     """debug.set must be handled (not crash); server stays alive for the next message."""
     with client.websocket_connect("/ws") as ws:
-        token = app.state.auth.mint_token({"id": "u-001", "email": "admin@labmate.local", "role": "admin"})
+        token = app.state.auth.mint_token(
+            {"id": "u-001", "email": "admin@labmate.local", "role": "admin"}
+        )
         ws.send_json({"type": "auth", "token": token})
         assert ws.receive_json()["type"] == "auth.ok"
         ev = ws.receive_json()
@@ -282,7 +356,9 @@ def test_relay_emits_reasoning_done_before_turn_done(client, app, redis):
     import asyncio
     import json as _json
 
-    token = app.state.auth.mint_token({"id": "u-001", "email": "admin@labmate.local", "role": "admin"})
+    token = app.state.auth.mint_token(
+        {"id": "u-001", "email": "admin@labmate.local", "role": "admin"}
+    )
     with client.websocket_connect("/ws") as ws:
         ws.send_json({"type": "auth", "token": token})
         assert ws.receive_json()["type"] == "auth.ok"
@@ -301,15 +377,48 @@ def test_relay_emits_reasoning_done_before_turn_done(client, app, redis):
 
         # Inject reasoning events + turn.done into the events stream
         stream = f"labmate:events:{task_id}"
-        asyncio.get_event_loop().run_until_complete(redis.xadd(stream, {"event": _json.dumps(
-            {"type": "reasoning", "task_id": task_id, "seq": 1, "node": "plan_node", "text": "I think"}
-        )}))
-        asyncio.get_event_loop().run_until_complete(redis.xadd(stream, {"event": _json.dumps(
-            {"type": "reasoning", "task_id": task_id, "seq": 2, "node": "plan_node", "text": " carefully"}
-        )}))
-        asyncio.get_event_loop().run_until_complete(redis.xadd(stream, {"event": _json.dumps(
-            {"type": "turn.done", "task_id": task_id, "seq": 3, "status": "complete"}
-        )}))
+        asyncio.get_event_loop().run_until_complete(
+            redis.xadd(
+                stream,
+                {
+                    "event": _json.dumps(
+                        {
+                            "type": "reasoning",
+                            "task_id": task_id,
+                            "seq": 1,
+                            "node": "plan_node",
+                            "text": "I think",
+                        }
+                    )
+                },
+            )
+        )
+        asyncio.get_event_loop().run_until_complete(
+            redis.xadd(
+                stream,
+                {
+                    "event": _json.dumps(
+                        {
+                            "type": "reasoning",
+                            "task_id": task_id,
+                            "seq": 2,
+                            "node": "plan_node",
+                            "text": " carefully",
+                        }
+                    )
+                },
+            )
+        )
+        asyncio.get_event_loop().run_until_complete(
+            redis.xadd(
+                stream,
+                {
+                    "event": _json.dumps(
+                        {"type": "turn.done", "task_id": task_id, "seq": 3, "status": "complete"}
+                    )
+                },
+            )
+        )
 
         # Collect events until turn.done
         received = []

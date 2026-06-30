@@ -32,12 +32,14 @@ Result (24 h TTL):
   SET  labmate:result:<task_id>  <JSON>  EX 86400
   PUBLISH  labmate:result:<task_id>  "ready"
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
 import os
+import re as _re
 import signal
 import socket
 import sys
@@ -46,30 +48,28 @@ from pathlib import Path
 import redis.asyncio as aioredis
 from mcp import StdioServerParameters
 
-from services.orchestrator.graph import build_graph, GEMMA_BASE, QWEN_BASE
-from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
-from services.orchestrator.storage_manager import StorageManager
-from services.orchestrator.mcp_client_manager import MCPClientManager
-from services.orchestrator.skill_router import SkillRouter
-from services.orchestrator.memory_search import MemorySearch
+from services.orchestrator import call_counter, events, skill_curator
+from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
 from services.orchestrator.completion_guard import reconcile_final_answer
-from services.orchestrator import events
-from services.orchestrator import call_counter
-from services.orchestrator import skill_curator
+from services.orchestrator.graph import GEMMA_BASE, QWEN_BASE, build_graph
+from services.orchestrator.mcp_client_manager import MCPClientManager
+from services.orchestrator.memory_search import MemorySearch
 from services.orchestrator.skill_curator import (
-    RecentSequences,
     CapturedSequence,
+    RecentSequences,
     run_curator,
 )
+from services.orchestrator.skill_router import SkillRouter
+from services.orchestrator.storage_manager import StorageManager
 from services.skill_runner.skill_runner import SkillRunner
 
 _log = logging.getLogger("orchestrator")
 
 GOALS_STREAM = "labmate:goals"
-GOALS_GROUP  = "orchestrators"
+GOALS_GROUP = "orchestrators"
 RESULT_PREFIX = "labmate:result:"
-RESULT_TTL    = 86_400    # 24 h
-BLOCK_MS      = 5_000
+RESULT_TTL = 86_400  # 24 h
+BLOCK_MS = 5_000
 
 # Per-request context window the model actually serves = llama-server --ctx-size
 # DIVIDED BY --parallel (each slot gets ctx-size/n_parallel tokens). serve-model.sh
@@ -77,17 +77,63 @@ BLOCK_MS      = 5_000
 # the context gauge (used/free shown to the frontend) and the auto-compact thresholds,
 # so it must equal the PER-SLOT window, not the raw --ctx-size. Keep CTX_WINDOW in sync
 # with serve-model.sh whenever the slot math changes.
-CTX_TOKENS   = int(os.getenv("CTX_WINDOW", "131072"))
+CTX_TOKENS = int(os.getenv("CTX_WINDOW", "131072"))
 MICRO_THRESH = int(CTX_TOKENS * 0.70)
-FULL_THRESH  = int(CTX_TOKENS * 0.85)
+FULL_THRESH = int(CTX_TOKENS * 0.85)
+
+# How often, during a running turn, to re-emit the context-window telemetry so the
+# frontend strip climbs live instead of only updating once at turn end. 0 disables
+# the live refresher (a single emit at turn start + one at turn end still fire).
+CONTEXT_REFRESH_S = float(os.getenv("CONTEXT_REFRESH_SECONDS", "2.0"))
+
+
+def _context_window() -> dict:
+    """Build the context-window telemetry payload from the live token high-water mark.
+
+    `used` is the peak prompt_tokens seen across this task's LLM calls (0 before the
+    first call). The whole measured fill is attributed to `conversation` — the
+    dominant real component — since usage data carries no per-segment breakdown.
+    """
+    ctx_max = CTX_TOKENS
+    ctx_used = min(call_counter.get_peak_prompt_tokens(), ctx_max)
+    return {
+        "max": ctx_max,
+        "used": ctx_used,
+        "free": max(0, ctx_max - ctx_used),
+        "segments": {
+            "systemPrompt": 0,
+            "skillInstructions": 0,
+            "conversation": ctx_used,
+            "workingMemory": 0,
+            "reasoning": 0,
+        },
+    }
+
+
+async def _context_refresh_loop(
+    emitter: events.EventEmitter, interval_s: float = CONTEXT_REFRESH_S
+) -> None:
+    """Re-emit the context window every `interval_s` until cancelled at turn end.
+
+    Created with asyncio.create_task AFTER the per-task counter contextvar is set,
+    so it inherits that context and reports the live peak. Best-effort: a failed
+    emit is swallowed; cancellation ends the loop cleanly.
+    """
+    try:
+        while True:
+            await asyncio.sleep(interval_s)
+            try:
+                await emitter.emit("context", window=_context_window())
+            except Exception:
+                pass
+    except asyncio.CancelledError:
+        pass
+
 
 # Background proactive compaction: how often the sweeper wakes, and the cap on
 # sessions inspected per sweep (newest-active first) so one sweep stays bounded.
 BG_COMPACT_INTERVAL_S = int(os.getenv("BG_COMPACT_INTERVAL_S", "120"))
 BG_COMPACT_MAX_SESSIONS = int(os.getenv("BG_COMPACT_MAX_SESSIONS", "20"))
-
-
-import re as _re
 
 
 def _extract_tool_sequence(final_state) -> tuple[str, ...]:
@@ -100,7 +146,7 @@ def _extract_tool_sequence(final_state) -> tuple[str, ...]:
     if not isinstance(final_state, dict):
         return ()
     tools = final_state.get("tools_used") or []
-    if not isinstance(tools, (list, tuple)):
+    if not isinstance(tools, list | tuple):
         return ()
     return tuple(str(t) for t in tools if t)
 
@@ -118,9 +164,7 @@ def _worker_id() -> str:
 
 def _build_mcp_params() -> StdioServerParameters:
     cmd = os.getenv("MCP_BRIDGE_CMD", "node")
-    default_js = str(
-        Path(__file__).resolve().parent.parent / "mcp-bridge" / "dist" / "index.js"
-    )
+    default_js = str(Path(__file__).resolve().parent.parent / "mcp-bridge" / "dist" / "index.js")
     args_str = os.getenv("MCP_BRIDGE_ARGS", default_js)
     return StdioServerParameters(command=cmd, args=[args_str])
 
@@ -137,10 +181,10 @@ class OrchestratorProcess:
     """Owns the full lifecycle of all services and the goal-processing loop."""
 
     def __init__(self) -> None:
-        self._worker_id    = _worker_id()
-        self._shutdown     = asyncio.Event()
+        self._worker_id = _worker_id()
+        self._shutdown = asyncio.Event()
         self._redis: aioredis.Redis | None = None
-        self._mcp:   MCPClientManager | None = None
+        self._mcp: MCPClientManager | None = None
         self._codegraph_mcp: MCPClientManager | None = None
         self._recent_sequences = RecentSequences()
         self._last_goal_at: float = 0.0
@@ -149,7 +193,7 @@ class OrchestratorProcess:
 
     async def run(self) -> None:
         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-        workspace  = os.getenv("WORKSPACE_PATH", "/workspace")
+        workspace = os.getenv("WORKSPACE_PATH", "/workspace")
 
         async with StorageManager() as _sm:
             _log.info("storage ready")
@@ -159,16 +203,20 @@ class OrchestratorProcess:
             try:
                 await self._mcp.wait_ready(timeout=30.0)
                 _log.info("MCP bridge ready (%d tools)", len(self._mcp.tools))
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 _log.warning("MCP bridge did not become ready within 30 s — continuing")
 
             self._codegraph_mcp = MCPClientManager(_build_codegraph_params())
             await self._codegraph_mcp.start()
             try:
                 await self._codegraph_mcp.wait_ready(timeout=120.0)
-                _log.info("codegraph semantic search ready (%d tools)", len(self._codegraph_mcp.tools))
-            except asyncio.TimeoutError:
-                _log.warning("codegraph MCP did not become ready within 120 s (index still building?) — continuing")
+                _log.info(
+                    "codegraph semantic search ready (%d tools)", len(self._codegraph_mcp.tools)
+                )
+            except TimeoutError:
+                _log.warning(
+                    "codegraph MCP did not become ready within 120 s (index still building?) — continuing"
+                )
 
             # Note: skill_router is built below, so we'll update async_orch later
             async_orch = AsyncOrchestrator(
@@ -181,15 +229,16 @@ class OrchestratorProcess:
             # (the flag is read inside _run_react_loop) or no storage exists.
             try:
                 from .loop_checkpoint import CheckpointStore
-                async_orch.checkpoint_store = CheckpointStore(
-                    _sm.loop_checkpoint_collection
-                )
+
+                async_orch.checkpoint_store = CheckpointStore(_sm.loop_checkpoint_collection)
             except Exception:  # best-effort wiring; never block startup
                 async_orch.checkpoint_store = None
 
             # Initialize Redis BEFORE skill router (CLAUDE.md: "after self._redis is created")
             pool = aioredis.ConnectionPool.from_url(
-                redis_url, max_connections=8, decode_responses=True,
+                redis_url,
+                max_connections=8,
+                decode_responses=True,
             )
             self._redis = aioredis.Redis(connection_pool=pool)
             await self._ensure_group()
@@ -211,7 +260,9 @@ class OrchestratorProcess:
                 async_orch.workspace = workspace
                 _log.info("skill router ready (%d skills)", len(runner.catalog))
             except Exception:
-                _log.warning("failed to initialize skill router — continuing without skills", exc_info=True)
+                _log.warning(
+                    "failed to initialize skill router — continuing without skills", exc_info=True
+                )
 
             # Wire redis and codegraph_mcp outside the try/except (always available)
             async_orch.redis = self._redis
@@ -241,12 +292,14 @@ class OrchestratorProcess:
             _log.info("orchestrator %s ready", self._worker_id)
 
             bg_compactor = asyncio.create_task(
-                self._background_compactor(orch, _sm), name="background-compactor",
+                self._background_compactor(orch, _sm),
+                name="background-compactor",
             )
             bg_curator = None
             if skill_curator.ENABLE_SKILL_CURATOR:
                 bg_curator = asyncio.create_task(
-                    self._background_curator(orch), name="background-curator",
+                    self._background_curator(orch),
+                    name="background-curator",
                 )
                 _log.info("skill curator enabled (proposal-only, background)")
             try:
@@ -316,8 +369,10 @@ class OrchestratorProcess:
         candidate sessions and dispatches. Best-effort: one session's failure never
         stops the sweep, and the sweep never blocks goal handling.
         """
+
         async def _bg_llm(p: str) -> str:
             import litellm as _litellm
+
             r = await _litellm.acompletion(
                 model="openai/gemma-4-31b",
                 api_base=orch._gemma_base,
@@ -340,23 +395,27 @@ class OrchestratorProcess:
                     if not session_id:
                         continue
                     result = await storage.context_manager.maybe_background_compact(
-                        session_id, _bg_llm,
+                        session_id,
+                        _bg_llm,
                     )
                     if result and result.get("reflections"):
-                        asyncio.create_task(storage.consolidator.write_reflections(
-                            session_id, result["reflections"]
-                        ))
+                        asyncio.create_task(
+                            storage.consolidator.write_reflections(
+                                session_id, result["reflections"]
+                            )
+                        )
                     if result:
                         _log.info(
                             "background compact: session %s pruned %d messages",
-                            session_id, result.get("pruned_messages", 0),
+                            session_id,
+                            result.get("pruned_messages", 0),
                         )
             except asyncio.CancelledError:
                 raise
             except Exception:
                 _log.warning("background compactor sweep failed (non-fatal)", exc_info=True)
 
-    async def _background_curator(self, orch: "CodingOrchestrator") -> None:
+    async def _background_curator(self, orch: CodingOrchestrator) -> None:
         """Periodic, best-effort skill-curator loop (mirrors _background_compactor).
 
         Only created when ENABLE_SKILL_CURATOR is set. Each cycle is gated by
@@ -364,10 +423,9 @@ class OrchestratorProcess:
         there; this loop additionally guards its own sleep/iteration.
         """
         import time as _time
+
         skills_root = Path(__file__).resolve().parent.parent / "skills"
-        state_path = (
-            Path(os.getenv("CURATOR_STATE_DIR", ".data")) / "skill_curator.json"
-        )
+        state_path = Path(os.getenv("CURATOR_STATE_DIR", ".data")) / "skill_curator.json"
         # Wake roughly hourly; the real interval gate lives in run_curator.
         wake_s = int(os.getenv("CURATOR_WAKE_INTERVAL_S", "3600"))
 
@@ -415,15 +473,16 @@ class OrchestratorProcess:
         _emitter: events.EventEmitter | None = None
         _token = None
         _counter_token = None
+        _ctx_task: asyncio.Task | None = None
 
         try:
-            payload      = json.loads(fields.get("payload", "{}"))
-            task_id      = payload.get("task_id", msg_id)
-            task_text    = payload.get("task", "")
-            session_id   = payload.get("session_id") or task_id
-            user_id      = payload.get("user_id", "")
+            payload = json.loads(fields.get("payload", "{}"))
+            task_id = payload.get("task_id", msg_id)
+            task_text = payload.get("task", "")
+            session_id = payload.get("session_id") or task_id
+            user_id = payload.get("user_id", "")
             workspace_id = payload.get("workspace_id", "")
-            kind         = payload.get("kind", "task")
+            kind = payload.get("kind", "task")
 
             # User-triggered compact — no graph run needed
             if kind == "compact":
@@ -431,6 +490,7 @@ class OrchestratorProcess:
 
                 async def _compact_llm(p: str) -> str:
                     import litellm as _litellm
+
                     r = await _litellm.acompletion(
                         model="openai/gemma-4-31b",
                         api_base=_gemma_base,
@@ -446,9 +506,9 @@ class OrchestratorProcess:
                 )
                 # Write reflections extracted during compaction to semantic memory
                 if result.get("reflections"):
-                    asyncio.create_task(storage.consolidator.write_reflections(
-                        session_id, result["reflections"]
-                    ))
+                    asyncio.create_task(
+                        storage.consolidator.write_reflections(session_id, result["reflections"])
+                    )
                 await self._write_result(task_id, {"ok": True, **result})
                 return
 
@@ -479,17 +539,25 @@ class OrchestratorProcess:
                 },
             )
             await _emitter.emit("turn.start", task=task_text)
+            # Populate the context-window strip immediately (max + 0 used) so it
+            # never sits at 0/0, then refresh it live while the turn runs.
+            await _emitter.emit("context", window=_context_window())
+            if CONTEXT_REFRESH_S > 0:
+                _ctx_task = asyncio.create_task(_context_refresh_loop(_emitter))
 
             # Fix 2: Record session if user_id and workspace_id are present
             if user_id and workspace_id:
                 from .models import SessionMeta
+
                 try:
-                    await storage.workspaces.record_session(SessionMeta(
-                        session_id=session_id,
-                        user_id=user_id,
-                        workspace_id=workspace_id,
-                        task_preview=task_text[:120],
-                    ))
+                    await storage.workspaces.record_session(
+                        SessionMeta(
+                            session_id=session_id,
+                            user_id=user_id,
+                            workspace_id=workspace_id,
+                            task_preview=task_text[:120],
+                        )
+                    )
                 except Exception:
                     pass  # never let session recording block task execution
 
@@ -521,11 +589,17 @@ class OrchestratorProcess:
                         llm_fn=lambda p: orch.architect(p, thinking_budget=0),
                     )
                     await events.emit("compact.auto", freed=compact_result["pruned_messages"])
-                    _log.info("task %s: auto full-compact freed %d messages", task_id, compact_result["pruned_messages"])
+                    _log.info(
+                        "task %s: auto full-compact freed %d messages",
+                        task_id,
+                        compact_result["pruned_messages"],
+                    )
                     if compact_result.get("reflections"):
-                        asyncio.create_task(storage.consolidator.write_reflections(
-                            session_id, compact_result["reflections"]
-                        ))
+                        asyncio.create_task(
+                            storage.consolidator.write_reflections(
+                                session_id, compact_result["reflections"]
+                            )
+                        )
                 elif ctx_check.total_tokens >= MICRO_THRESH:
                     freed = await storage.context_manager.microcompact(session_id)
                     if freed:
@@ -544,7 +618,10 @@ class OrchestratorProcess:
 
             _log.info("task %s: %.80s", task_id, task_text)
             final_state = await orch.run_task(
-                task_text, session_id, user_id=user_id, workspace_id=workspace_id,
+                task_text,
+                session_id,
+                user_id=user_id,
+                workspace_id=workspace_id,
                 agent_instructions=agent_instructions,
             )
             task_succeeded = True
@@ -598,54 +675,74 @@ class OrchestratorProcess:
             ok_flag = final_state.get("error") is None
             # A/B instrumentation: llm_calls is the approximate per-task count of
             # successful litellm completions (see call_counter.py for exactly what it counts).
-            await self._write_result(task_id, {
-                "ok": ok_flag,
-                "state": final_state,
-                "llm_calls": call_counter.get_count(),
-            })
+            await self._write_result(
+                task_id,
+                {
+                    "ok": ok_flag,
+                    "state": final_state,
+                    "llm_calls": call_counter.get_count(),
+                },
+            )
             _log.info("task %s complete", task_id)
             # Skill-curator: record a SUCCESSFUL multi-tool sequence as a draft
             # candidate (best-effort; never blocks). RecentSequences itself drops
             # failed / too-short sequences.
             import time as _time
+
             self._last_goal_at = _time.time()
             try:
                 _tools = _extract_tool_sequence(final_state)
-                self._recent_sequences.record(CapturedSequence(
-                    name=_slug_for(task_text),
-                    goal=task_text[:500],
-                    tools=_tools,
-                    ok=ok_flag,
-                    ts=self._last_goal_at,
-                ))
+                self._recent_sequences.record(
+                    CapturedSequence(
+                        name=_slug_for(task_text),
+                        goal=task_text[:500],
+                        tools=_tools,
+                        ok=ok_flag,
+                        ts=self._last_goal_at,
+                    )
+                )
             except Exception:
                 pass  # capture is best-effort
             # Task-boundary reflection: write to semantic memory asynchronously
             _final_answer = (
                 final_state.get("final_answer", "") if isinstance(final_state, dict) else ""
             )
-            asyncio.create_task(storage.consolidator.on_task_complete(
-                session_id=session_id,
-                goal=task_text[:500],
-                success=ok_flag,
-                summary=_final_answer[:1_000],
-            ))
+            asyncio.create_task(
+                storage.consolidator.on_task_complete(
+                    session_id=session_id,
+                    goal=task_text[:500],
+                    success=ok_flag,
+                    summary=_final_answer[:1_000],
+                )
+            )
 
         except Exception:
             _log.exception("task %s failed", task_id)
-            await self._write_result(task_id, {
-                "ok": False,
-                "error": "task_failed",
-                "llm_calls": call_counter.get_count(),
-            })
+            await self._write_result(
+                task_id,
+                {
+                    "ok": False,
+                    "error": "task_failed",
+                    "llm_calls": call_counter.get_count(),
+                },
+            )
             # Failure reflection: always write — highest signal for learning
-            asyncio.create_task(storage.consolidator.on_task_complete(
-                session_id=session_id,
-                goal=task_text[:500],
-                success=False,
-                summary="Task raised an unhandled exception.",
-            ))
+            asyncio.create_task(
+                storage.consolidator.on_task_complete(
+                    session_id=session_id,
+                    goal=task_text[:500],
+                    success=False,
+                    summary="Task raised an unhandled exception.",
+                )
+            )
         finally:
+            # Stop the live context refresher before the final (accurate) emit below.
+            if _ctx_task is not None:
+                _ctx_task.cancel()
+                try:
+                    await _ctx_task
+                except BaseException:
+                    pass
             # Fix 2: Complete session in finally block
             if user_id and workspace_id:
                 try:
@@ -660,10 +757,15 @@ class OrchestratorProcess:
                 except Exception:
                     pass
             try:
-                _status = "complete" if task_succeeded and (
-                    not isinstance(final_state, dict) or final_state.get("error") is None
-                ) else "error"
-                _answer = final_state.get("final_answer", "") if isinstance(final_state, dict) else ""
+                _status = (
+                    "complete"
+                    if task_succeeded
+                    and (not isinstance(final_state, dict) or final_state.get("error") is None)
+                    else "error"
+                )
+                _answer = (
+                    final_state.get("final_answer", "") if isinstance(final_state, dict) else ""
+                )
                 # Emit idle status and stub context before turn.done so the frontend
                 # can update the agent indicator before the turn completes
                 await events.emit(
@@ -685,28 +787,8 @@ class OrchestratorProcess:
                         "hands": {"skills": []},
                     },
                 )
-                ctx_max = CTX_TOKENS
-                # Real context fill: the peak prompt_tokens across this task's LLM
-                # calls is the high-water mark of how full the window actually got.
-                # (We lack a per-segment breakdown from usage data, so the whole
-                # measured fill is attributed to `conversation` — the dominant
-                # real component — rather than fabricating a split.)
-                ctx_used = min(call_counter.get_peak_prompt_tokens(), ctx_max)
-                await events.emit(
-                    "context",
-                    window={
-                        "max": ctx_max,
-                        "used": ctx_used,
-                        "free": max(0, ctx_max - ctx_used),
-                        "segments": {
-                            "systemPrompt": 0,
-                            "skillInstructions": 0,
-                            "conversation": ctx_used,
-                            "workingMemory": 0,
-                            "reasoning": 0,
-                        },
-                    },
-                )
+                # Final, accurate context fill (peak prompt_tokens high-water mark).
+                await events.emit("context", window=_context_window())
                 await events.emit("turn.done", status=_status, final_answer=_answer)
             except Exception:
                 pass
@@ -724,7 +806,10 @@ class OrchestratorProcess:
     async def _ensure_group(self) -> None:
         try:
             await self._redis.xgroup_create(
-                GOALS_STREAM, GOALS_GROUP, id="0", mkstream=True,
+                GOALS_STREAM,
+                GOALS_GROUP,
+                id="0",
+                mkstream=True,
             )
         except aioredis.ResponseError as exc:
             if "BUSYGROUP" not in str(exc):

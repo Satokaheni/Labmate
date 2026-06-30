@@ -5,7 +5,7 @@ import json
 import os
 import time as _time
 import uuid
-from typing import Awaitable, Callable
+from datetime import UTC
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -27,8 +27,9 @@ from services.ws_gateway.user_store import MongoUserStore
 
 
 def _now_iso() -> str:
-    from datetime import datetime, timezone
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    from datetime import datetime
+
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 async def _relay_task(
@@ -65,18 +66,20 @@ async def _relay_task(
                 (ln.strip() for ln in full_text.splitlines() if ln.strip()),
                 full_text[:120],
             )
-            await ws.send_json({
-                "type": "reasoning.done",
-                "turnId": turn_id,
-                "reasoning": {
-                    "summary": first_line[:120],
-                    "text": full_text,
-                    "node": reasoning_node,
-                    "tokens": len(full_text) // 4,
-                    "budget": 0,
-                    "durationMs": duration_ms,
-                },
-            })
+            await ws.send_json(
+                {
+                    "type": "reasoning.done",
+                    "turnId": turn_id,
+                    "reasoning": {
+                        "summary": first_line[:120],
+                        "text": full_text,
+                        "node": reasoning_node,
+                        "tokens": len(full_text) // 4,
+                        "budget": 0,
+                        "durationMs": duration_ms,
+                    },
+                }
+            )
             reasoning_chunks = []
 
         # Emit tool.frame when debug mode is active
@@ -88,21 +91,31 @@ async def _relay_task(
             else:
                 frame_payload = {"result": raw.get("result"), "status": raw.get("status", "done")}
                 frame_dir = "in"
-            await ws.send_json({
-                "type": "tool.frame",
-                "turnId": turn_id,
-                "toolId": tool_id,
-                "frame": {
-                    "dir": frame_dir,
-                    "method": "tools/call",
-                    "payload": frame_payload,
-                    "ts": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
-                },
-            })
+            await ws.send_json(
+                {
+                    "type": "tool.frame",
+                    "turnId": turn_id,
+                    "toolId": tool_id,
+                    "frame": {
+                        "dir": frame_dir,
+                        "method": "tools/call",
+                        "payload": frame_payload,
+                        "ts": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+                    },
+                }
+            )
 
         framed = translate_event(raw, turn_id=turn_id)
         if framed is not None:
             await ws.send_json(framed)
+
+
+def _title_from_message(text: str, max_len: int = 48) -> str:
+    """Derive a chat title from the first user message (Claude-style auto-title)."""
+    first_line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+    if not first_line:
+        return "New session"
+    return first_line[:max_len].rstrip() + ("…" if len(first_line) > max_len else "")
 
 
 async def _handle_send(
@@ -119,6 +132,16 @@ async def _handle_send(
     assistant_turn_id = "turn-" + uuid.uuid4().hex[:12]
     session_id = msg.get("sessionId", "") or active_session_id or ""
     text = msg.get("text", "")
+
+    # Auto-create the session on first send (Claude-style new chat): if the
+    # client's session id is unknown, mint it now, titled from the first message.
+    # The add_turn block below then emits session.updated with the titled session.
+    if session_id and store.get(session_id) is None:
+        store.create(
+            title=_title_from_message(text),
+            mode=msg.get("mode", "chat"),
+            session_id=session_id,
+        )
 
     user_turn = {
         "id": user_turn_id,
@@ -167,7 +190,16 @@ async def _ws_loop(
         await ws.close()
         return
 
-    await ws.send_json({"type": "auth.ok", "user": {"id": claims["sub"], "email": claims["email"], "role": claims.get("role", "user")}})
+    await ws.send_json(
+        {
+            "type": "auth.ok",
+            "user": {
+                "id": claims["sub"],
+                "email": claims["email"],
+                "role": claims.get("role", "user"),
+            },
+        }
+    )
 
     # ── boot sequence ──────────────────────────────────────────────────────
     async def emit(ev: dict) -> None:
@@ -209,7 +241,9 @@ async def _ws_loop(
             # Write Redis cancel flag so the orchestrator can detect cancellation
             if active_task_id is not None:
                 await write_cancel(redis, active_task_id)
-            await ws.send_json({"type": "turn.done", "turnId": turn_id_to_cancel, "status": "error"})
+            await ws.send_json(
+                {"type": "turn.done", "turnId": turn_id_to_cancel, "status": "error"}
+            )
             relay = None
             active_task_id = None
         elif mtype == "steer":
@@ -258,17 +292,19 @@ async def _ws_loop(
                 await redis.xadd(
                     "labmate:goals",
                     {
-                        "payload": json.dumps({
-                            "task_id":     task_id,
-                            "kind":        "compact",
-                            "session_id":  active_session_id,
-                            "user_id":     claims["sub"],
-                            "workspace_id": "",
-                        }),
+                        "payload": json.dumps(
+                            {
+                                "task_id": task_id,
+                                "kind": "compact",
+                                "session_id": active_session_id,
+                                "user_id": claims["sub"],
+                                "workspace_id": "",
+                            }
+                        ),
                     },
                 )
 
-                async def _await_result() -> dict | None:
+                async def _await_result(pubsub=pubsub, result_key=result_key) -> dict | None:
                     async for pmsg in pubsub.listen():
                         if pmsg["type"] == "message":
                             raw = await redis.get(result_key)
@@ -277,7 +313,7 @@ async def _ws_loop(
 
                 try:
                     result_dict = await asyncio.wait_for(_await_result(), timeout=60.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     result_dict = None
             finally:
                 await pubsub.aclose()
