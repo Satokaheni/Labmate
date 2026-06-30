@@ -291,7 +291,7 @@ async def _ws_loop(
                     },
                 )
 
-                async def _await_result() -> dict | None:
+                async def _await_result(pubsub=pubsub, result_key=result_key) -> dict | None:
                     async for pmsg in pubsub.listen():
                         if pmsg["type"] == "message":
                             raw = await redis.get(result_key)

@@ -33,7 +33,7 @@ async def _client_with_admin(cfg):
     return TestClient(app), token
 
 
-async def test_create_user_disabled_returns_403(self_unused=None):
+async def test_create_user_disabled_returns_403():
     cfg = _cfg(enable_user_creation=False)
     client, token = await _client_with_admin(cfg)
     r = client.post(
