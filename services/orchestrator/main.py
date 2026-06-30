@@ -486,6 +486,7 @@ class OrchestratorProcess:
         _token = None
         _counter_token = None
         _manifest_token = None
+        _ws_root_token = None
         _ctx_task: asyncio.Task | None = None
 
         try:
@@ -534,6 +535,10 @@ class OrchestratorProcess:
             # When no manifest is present, behavior is unchanged (full tool list).
             _manifest_token = client_context.set_manifest(
                 parse_manifest(payload.get("client_capabilities"))
+            )
+            # Per-task workspace root: set in context for skills that need absolute paths.
+            _ws_root_token = client_context.set_workspace_root(
+                payload.get("workspace_root") or None
             )
 
             # Emit active status so the frontend agent indicator lights up
@@ -825,6 +830,8 @@ class OrchestratorProcess:
                 call_counter.reset(_counter_token)
             if _manifest_token is not None:
                 client_context.reset_manifest(_manifest_token)
+            if _ws_root_token is not None:
+                client_context.reset_workspace_root(_ws_root_token)
             await self._redis.xack(GOALS_STREAM, GOALS_GROUP, msg_id)
 
     async def _write_result(self, task_id: str, result: dict) -> None:

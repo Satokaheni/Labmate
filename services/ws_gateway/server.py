@@ -172,7 +172,12 @@ async def _handle_send(
     await ws.send_json({"type": "turn.created", "turn": assistant_turn})
 
     await push_task(
-        redis, task_id, task=text, session_id=session_id, client_capabilities=client_capabilities
+        redis,
+        task_id,
+        task=text,
+        session_id=session_id,
+        client_capabilities=client_capabilities,
+        workspace_root=msg.get("workspaceRoot", ""),
     )
     relay = asyncio.create_task(_relay_task(ws, redis, task_id, assistant_turn_id, debug=debug))
     return task_id, relay

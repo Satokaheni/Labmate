@@ -224,3 +224,128 @@ def test_client_manifest_prefix_stable_across_instances():
 
     assert a.canonical_prefix() == b.canonical_prefix()
     assert a.prefix_fingerprint() == b.prefix_fingerprint()
+
+
+@pytest.mark.mocked
+def test_workspace_root_without_client_manifest_not_included():
+    """When client_manifest is None, workspace_root is ignored (no-client prefix unchanged)."""
+    a = PromptAssembler(
+        skill_router=None,
+        codegraph_enabled=False,
+        client_manifest=None,
+        workspace_root="/abs/path",
+    )
+    content = a.system_message()["content"]
+    # Should equal BASE_SYSTEM_PROMPT exactly (workspace_root ignored, no manifest).
+    assert content == BASE_SYSTEM_PROMPT
+    assert "/abs/path" not in content
+
+
+@pytest.mark.mocked
+def test_workspace_root_without_client_manifest_prefix_unchanged():
+    """Passing workspace_root without client_manifest does not change the prefix."""
+    a = PromptAssembler(skill_router=None, codegraph_enabled=False, client_manifest=None)
+    b = PromptAssembler(
+        skill_router=None,
+        codegraph_enabled=False,
+        client_manifest=None,
+        workspace_root="/abs/path",
+    )
+    # Prefixes should be identical: workspace_root is ignored when no manifest.
+    assert a.canonical_prefix() == b.canonical_prefix()
+    assert a.prefix_fingerprint() == b.prefix_fingerprint()
+
+
+@pytest.mark.mocked
+def test_workspace_root_with_client_manifest_appends_clause():
+    """When client_manifest and workspace_root are both set, the workspace root clause is appended."""
+    from services.orchestrator.tool_manifest import parse_manifest
+
+    manifest = parse_manifest({"tools": [{"name": "read_file", "source": "builtin"}]})
+    a = PromptAssembler(
+        skill_router=None,
+        codegraph_enabled=False,
+        client_manifest=manifest,
+        workspace_root="/Users/zach/Work/myproject",
+    )
+    content = a.system_message()["content"]
+
+    # Should contain the base prompt.
+    assert BASE_SYSTEM_PROMPT in content
+    # Should contain the workspace root path.
+    assert "/Users/zach/Work/myproject" in content
+    # Should mention absolute paths and joining with workspace-relative paths.
+    assert "ABSOLUTE path" in content
+    assert "workspace-relative path" in content
+    # Clause should come after both base and steer.
+    assert content.find(BASE_SYSTEM_PROMPT) < content.find("/Users/zach/Work/myproject")
+
+
+@pytest.mark.mocked
+def test_workspace_root_stable_across_instances():
+    """Two assemblers with same manifest and workspace_root produce identical prefixes."""
+    from services.orchestrator.tool_manifest import parse_manifest
+
+    manifest = parse_manifest({"tools": [{"name": "read_file", "source": "builtin"}]})
+    ws_root = "/home/user/project"
+    a = PromptAssembler(
+        skill_router=None,
+        codegraph_enabled=False,
+        client_manifest=manifest,
+        workspace_root=ws_root,
+    )
+    b = PromptAssembler(
+        skill_router=None,
+        codegraph_enabled=False,
+        client_manifest=manifest,
+        workspace_root=ws_root,
+    )
+
+    assert a.canonical_prefix() == b.canonical_prefix()
+    assert a.prefix_fingerprint() == b.prefix_fingerprint()
+
+
+@pytest.mark.mocked
+def test_workspace_root_empty_string_no_clause_appended():
+    """When workspace_root is empty string, the workspace clause is not appended."""
+    from services.orchestrator.tool_manifest import parse_manifest
+
+    manifest = parse_manifest({"tools": [{"name": "read_file", "source": "builtin"}]})
+    a = PromptAssembler(
+        skill_router=None,
+        codegraph_enabled=False,
+        client_manifest=manifest,
+        workspace_root="",
+    )
+    b = PromptAssembler(
+        skill_router=None,
+        codegraph_enabled=False,
+        client_manifest=manifest,
+        workspace_root=None,
+    )
+    # Both should have the same prefix: empty string and None are equivalent (both falsy).
+    assert a.canonical_prefix() == b.canonical_prefix()
+
+
+@pytest.mark.mocked
+def test_workspace_root_different_paths_produce_different_prefixes():
+    """Two assemblers with different workspace_root values produce different prefixes."""
+    from services.orchestrator.tool_manifest import parse_manifest
+
+    manifest = parse_manifest({"tools": [{"name": "read_file", "source": "builtin"}]})
+    a = PromptAssembler(
+        skill_router=None,
+        codegraph_enabled=False,
+        client_manifest=manifest,
+        workspace_root="/path/one",
+    )
+    b = PromptAssembler(
+        skill_router=None,
+        codegraph_enabled=False,
+        client_manifest=manifest,
+        workspace_root="/path/two",
+    )
+
+    # Prefixes should differ because the workspace roots differ.
+    assert a.canonical_prefix() != b.canonical_prefix()
+    assert a.prefix_fingerprint() != b.prefix_fingerprint()
