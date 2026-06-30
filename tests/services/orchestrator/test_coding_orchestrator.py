@@ -1627,21 +1627,37 @@ async def test_react_routes_read_file_to_local_tool():
 
 @pytest.mark.asyncio
 async def test_react_routes_search_files_to_local_tool():
-    """ReAct loop routes search_files through request_local_tool and returns hits."""
+    """ReAct loop routes search_files through request_local_tool and the hits reach the model.
+
+    search_files only routes to the client when a manifest DECLARES it (it is NOT in
+    the static LOCAL_TOOL_NAMES fallback). Without the manifest the call would fall through
+    to the ``unknown tool`` branch, no tool.request would fire, and the test would still pass
+    off the turn-2 finish(). To give the test teeth we (a) install a manifest declaring
+    search_files, (b) assert the responder actually saw a search_files tool.request (proves
+    it routed to the client, not a pod/unknown path), and (c) assert the hits payload was fed
+    back into the turn-2 model call.
+    """
     import fakeredis.aioredis
 
-    from services.orchestrator import events
+    from services.orchestrator import client_context, events
     from services.orchestrator.local_tools import TOOL_RESULTS_PREFIX
+    from services.orchestrator.tool_manifest import parse_manifest
 
     redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
     task_id = "task-react-search"
     emitter = events.EventEmitter(redis, task_id)
     token = events.current_emitter.set(emitter)
 
+    # Install a manifest declaring search_files so the dispatcher routes it to the client.
+    manifest = parse_manifest({"tools": [{"name": "search_files", "source": "builtin"}]})
+    ctx_token = client_context.set_manifest(manifest)
+
     orch = AsyncOrchestrator(skill_router=None, max_steps=3)
     orch.redis = redis
 
-    # Responder: posts a tool.result as soon as tool.request lands on event stream
+    # Responder: records which tool.request names it saw and posts a tool.result for them.
+    seen: list[str] = []
+
     async def responder():
         ev_stream = f"{events.EVENTS_STREAM_PREFIX}{task_id}"
         for _ in range(100):
@@ -1652,6 +1668,7 @@ async def test_react_routes_search_files_to_local_tool():
                 for _id, f in entries:
                     ev = json.loads(f["event"])
                     if ev.get("type") == "tool.request":
+                        seen.append(ev.get("name", ""))
                         await redis.xadd(
                             f"{TOOL_RESULTS_PREFIX}{task_id}",
                             {
@@ -1685,15 +1702,32 @@ async def test_react_routes_search_files_to_local_tool():
             "services.orchestrator.coding_orchestrator.litellm.acompletion",
             new_callable=AsyncMock,
             side_effect=[resp1, resp2],
-        ):
+        ) as mock_acompletion:
             out = await orch.react_execute("search for foo")
         await responder_task
     finally:
+        client_context.reset_manifest(ctx_token)
         events.current_emitter.reset(token)
         await redis.aclose()
 
     assert out["ok"] is True
     assert out["summary"] == "found functions"
+
+    # Positive routing proof: a search_files tool.request actually fired, so the call
+    # routed to the client (NOT the unknown-tool / pod fallback path). If the manifest
+    # were missing, `seen` would be empty and this assertion would fail.
+    assert "search_files" in seen, f"expected a search_files tool.request, saw: {seen}"
+
+    # Payload proof: the hits returned by the client were fed back into the turn-2 model
+    # call as a tool result message. Inspect the messages passed to the 2nd acompletion call.
+    assert mock_acompletion.call_count == 2
+    turn2_messages = mock_acompletion.call_args_list[1].kwargs["messages"]
+    tool_msgs = [m for m in turn2_messages if m.get("role") == "tool"]
+    assert tool_msgs, "expected a tool-result message fed back into turn 2"
+    tool_result_blob = " ".join(str(m.get("content", "")) for m in tool_msgs)
+    assert (
+        "a.py" in tool_result_blob
+    ), f"expected the search hits (a.py) in the turn-2 tool result, got: {tool_result_blob}"
 
 
 @pytest.mark.asyncio
