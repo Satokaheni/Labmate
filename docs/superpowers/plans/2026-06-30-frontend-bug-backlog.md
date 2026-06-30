@@ -41,6 +41,32 @@ present on the branch). The **`View →` panel** intentionally shows EVERY tool 
 full timeline). **Confirm which is unbounded.** If the *chip line* itself grows without bound →
 real regression, fix. If it's the panel → working as designed (chip = summary, panel = full log).
 
+## 4. Cannot rename or delete chats
+**Symptom:** the sidebar lists chats but there's no way to **rename** or **delete** one.
+**What's needed:**
+- **UI (Sidebar):** a per-chat affordance — inline-rename (double-click / pencil) and delete
+  (trash / context-menu) with a confirm on delete.
+- **Frontend state:** dispatch rename/delete to the session reducer; if the deleted chat is the
+  active one, fall back to the next chat (or an empty state) — reuse the `activeSessionId` fallback
+  logic noted in #1.
+- **Gateway + store (likely required — sessions are server-held):** `InMemorySessionStore`
+  (`services/ws_gateway/sessions.py`, app-level via `app.state.store`) needs `rename(sid, title)` and
+  `delete(sid)` (drop the session **and** its `_turns[sid]`). Add `session.rename` / `session.delete`
+  WS frames in `server.py` mirroring how `session.open` is handled. Title is currently auto-set on
+  first send (commit `6a8a5a5`) — rename overrides that.
+**Cross-ref:** ties into #1 (session continuity / click-old-chat) — same Sidebar + session-store seam;
+fix them together.
+
+## 5. Chats should be ordered most-recently-active on top
+**Symptom:** the sidebar isn't ordered by recency — the chat you just used doesn't float to the top.
+**What's needed:**
+- **Store:** each session needs a `lastActivityAt` (or `updatedAt`) timestamp, bumped on every
+  send/receive (in `InMemorySessionStore` when a turn is appended). Include it in the session list the
+  gateway returns.
+- **Sidebar:** sort the chat list by `lastActivityAt` descending (most recent first). Tie-break by
+  creation order. New/empty chats sort by creation time until they get a first message.
+**Cross-ref:** depends on the same session-store work as #4; do them in one pass.
+
 ## Related future-work (separate docs, cross-referenced)
 - [[wire-ui-mode-to-behavior]] — make the Chat/Paper/Coding tabs actually affect routing.
 - Token-cost reduction (`2026-06-30-token-cost-reduction.md`) — incl. real per-segment context
