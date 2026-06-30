@@ -173,9 +173,13 @@ doc-skill to its stored `body` (status `loaded`), pod skills unchanged.
 > - eval (`e5164e1`): `HOSTED_SYSTEM` gains a workspace-root clause (mirrors production's
 >   `WORKSPACE_ROOT_CLAUSE`) so the model constructs `tsconfig` instead of abstaining; fixtures synced
 >   to the loosened schemas. Pod-skill scoring path provably unchanged.
-> Expected on re-run: `rename_symbol` (was 0.0) and `generate` (was 0.5) now fire → ts_refactor +
-> doc_gen ≥ 0.80. Re-run cmd unchanged (§ "RUN 2026-06-30" above). Tiny deferred nit: rename's
-> "not renameable" error prints `undefined` for an auto-located file (cosmetic).
+> **LIVE RE-RUN CONFIRMED 2026-06-30** (`1179e94`, report `routing-eval-20260630-204810.md`): a clean
+> **1.000 / 1.000 across ALL clusters** — a11y 1.0, doc_gen 0.75→**1.0**, ts_refactor 0.667→**1.0**,
+> overall 0.8→**1.0**, stability 0.978→**1.0**. The two abstaining tools now fire deterministically:
+> `rename_symbol` 0.0→**1.0**, `generate` 0.5→**1.0**, zero misroutes. The ergonomics rework (loosening
+> the demanding tsconfig/file/component_path requirements) worked exactly as predicted. **P2-B.2 fully
+> closed — both halves green.** Tiny deferred nit: rename's "not renameable" error prints `undefined`
+> for an auto-located file (cosmetic).
 
 **Problem (from P2-B.0 live testing):** the user still prefixes prompts with "use ast-ts-refactor"
 because auto-selection of a **hosted MCP tool** is unproven on the Q4 Gemma model. The harness
