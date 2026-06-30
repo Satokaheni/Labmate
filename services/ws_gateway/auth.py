@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Literal
 
 import jwt
 from argon2 import PasswordHasher
@@ -42,6 +42,10 @@ class AuthService:
         self._store = user_store
         self._ph = PasswordHasher()
         self._attempts: dict[str, _Attempts] = {}
+
+    @property
+    def user_creation_enabled(self) -> bool:
+        return self._cfg.enable_user_creation
 
     def is_locked(self, email: str) -> bool:
         a = self._attempts.get(email)
@@ -86,7 +90,7 @@ class AuthService:
             role=role,
         )
 
-    def mint_token(self, user: dict, now: Optional[float] = None, ttl: Optional[int] = None) -> str:
+    def mint_token(self, user: dict, now: float | None = None, ttl: int | None = None) -> str:
         issued = now if now is not None else time.time()
         expiry = ttl if ttl is not None else self._cfg.jwt_expiry_seconds
         payload = {
@@ -120,7 +124,11 @@ def build_auth_router(service: AuthService) -> APIRouter:
         claims = service.verify_token(token)
         return {
             "token": token,
-            "user": {"id": claims["sub"], "email": claims["email"], "role": claims.get("role", "user")},
+            "user": {
+                "id": claims["sub"],
+                "email": claims["email"],
+                "role": claims.get("role", "user"),
+            },
         }
 
     @router.post("/auth/logout")
@@ -137,6 +145,8 @@ def build_auth_router(service: AuthService) -> APIRouter:
 
     @router.post("/auth/users", status_code=201)
     async def create_user(body: CreateUserBody, authorization: str = Header(default="")) -> dict:
+        if not service.user_creation_enabled:
+            raise HTTPException(status_code=403, detail="user_creation_disabled")
         token = authorization.removeprefix("Bearer ").strip()
         claims = service.verify_token(token)
         if not claims or claims.get("role") != "admin":
