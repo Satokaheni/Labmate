@@ -3,20 +3,21 @@ from __future__ import annotations
 
 import asyncio
 import json
-import litellm
 import os
 import subprocess
 import time
 import uuid
+from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field
-from typing import AsyncGenerator, Callable
+
+import litellm
 from aiolimiter import AsyncLimiter
 
-from .types import Goal, State, Status, get_ready_goals, update_status, now_iso
-from . import events
-from .model_client import acompletion_with_failover, resolve_bases
-from .prompt_assembler import PromptAssembler
-from .memory_search import MemorySearch
+from . import client_context, events
+from .completion_guard import is_assertion_verification, reconcile_cutoff, reconcile_ok
+from .edit_intent import exposes_bug_intent, requires_editing
+from .iteration_budget import REFUNDABLE_TOOLS, IterationBudget
+from .load_skill_guard import already_loaded_message, is_repeat_load
 from .local_tools import (
     LOCAL_TOOL_NAMES,
     build_sandbox_test_args,
@@ -25,23 +26,23 @@ from .local_tools import (
     verify_written_content,
 )
 from .loop_detection import LoopDetector, call_signature, repeat_limit_for
-from .iteration_budget import IterationBudget, REFUNDABLE_TOOLS
-from .load_skill_guard import is_repeat_load, already_loaded_message
-from .steer_inject import inject_steer
+from .memory_search import MemorySearch
+from .message_repair import message_repair_enabled, sanitize_messages
+from .model_client import acompletion_with_failover, resolve_bases
 from .progress_breaker import ProgressBreaker, ProgressStep
-from .message_repair import sanitize_messages, message_repair_enabled
-from .tool_grounding import ground_tool_result, DEFAULT_TOOL_RESULT_BUDGET
-from .edit_intent import requires_editing, exposes_bug_intent
+from .prompt_assembler import PromptAssembler
+from .sandbox_edits import detect_sandbox_writes
+from .steer_inject import inject_steer
 from .test_outcome import classify_test_attempt
+from .tool_grounding import DEFAULT_TOOL_RESULT_BUDGET, ground_tool_result
+from .types import State
 from .verification_stop import (
-    needs_verification,
-    build_verify_nudge,
+    MAX_VERIFY_INFRA_ERRORS,
     build_expose_test_nudge,
     build_infra_unverified_note,
-    MAX_VERIFY_INFRA_ERRORS,
+    build_verify_nudge,
+    needs_verification,
 )
-from .completion_guard import reconcile_ok, reconcile_cutoff, is_assertion_verification
-from .sandbox_edits import detect_sandbox_writes
 
 # Max chars of RAW tool output (test results, file contents, bash stdout/stderr,
 # skill results) fed back into the ReAct context per tool call. Generous on
@@ -75,8 +76,6 @@ REFUND_REPEAT_LOAD_SKILL = os.getenv("LABMATE_REFUND_REPEAT_LOAD_SKILL", "1") ==
 
 from .loop_checkpoint import (
     LoopCheckpoint,
-    CheckpointStore,
-    from_dict as _cp_from_dict,
 )
 
 # Durable per-turn inner-loop checkpoint (Option A). OFF by default — the inner
@@ -84,7 +83,10 @@ from .loop_checkpoint import (
 # resilience A/B (sibling lite-orchestrator plan) validates it. When OFF,
 # _run_react_loop performs ZERO load/save/clear and is byte-identical to today.
 ENABLE_LOOP_CHECKPOINT = os.getenv("ENABLE_LOOP_CHECKPOINT", "0") not in (
-    "0", "false", "False", "",
+    "0",
+    "false",
+    "False",
+    "",
 )
 
 
@@ -92,21 +94,33 @@ ENABLE_LOOP_CHECKPOINT = os.getenv("ENABLE_LOOP_CHECKPOINT", "0") not in (
 # Artifact helpers
 # ---------------------------------------------------------------------------
 
+
 def _infer_language(path: str) -> str:
     ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
     return {
-        "py": "Python", "ts": "TypeScript", "js": "JavaScript",
-        "rs": "Rust", "go": "Go", "md": "Markdown", "txt": "Text",
-        "json": "JSON", "yaml": "YAML", "yml": "YAML", "sh": "Shell",
+        "py": "Python",
+        "ts": "TypeScript",
+        "js": "JavaScript",
+        "rs": "Rust",
+        "go": "Go",
+        "md": "Markdown",
+        "txt": "Text",
+        "json": "JSON",
+        "yaml": "YAML",
+        "yml": "YAML",
+        "sh": "Shell",
     }.get(ext, "Text")
 
 
 def _infer_mime(path: str) -> str:
     ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
     return {
-        "py": "text/x-python", "ts": "application/typescript",
-        "js": "application/javascript", "md": "text/markdown",
-        "json": "application/json", "sh": "text/x-sh",
+        "py": "text/x-python",
+        "ts": "application/typescript",
+        "js": "application/javascript",
+        "md": "text/markdown",
+        "json": "application/json",
+        "sh": "text/x-sh",
     }.get(ext, "text/plain")
 
 
@@ -118,6 +132,7 @@ def _run_tests_passed(content: str) -> bool:
     error result is treated as NOT passed (the guard stays armed).
     """
     import json as _json
+
     try:
         data = _json.loads(content)
     except (TypeError, ValueError):
@@ -159,14 +174,14 @@ def _run_bash_passed(content: str) -> bool:
     # A pytest summary with failures looks like "X failed" where X is non-zero.
     # Pattern to detect: digit + "failed" or "error(s)" — this matches "1 failed", "2 errors" etc.
     # We check if the count is non-zero by looking for non-zero leading digit.
-    has_failed = re.search(r'\b[1-9]\d*\s+(failed|errors?)\b', lowered) is not None
+    has_failed = re.search(r"\b[1-9]\d*\s+(failed|errors?)\b", lowered) is not None
 
     # If there are actual failures (count > 0), it failed.
     if has_failed:
         return False
 
     # Otherwise, look for a passing summary: "X passed" where X > 0.
-    has_passed = re.search(r'\b[1-9]\d*\s+passed\b', lowered) is not None
+    has_passed = re.search(r"\b[1-9]\d*\s+passed\b", lowered) is not None
 
     # If we see tests passing and no non-zero failure count, it passed.
     if has_passed:
@@ -181,9 +196,11 @@ def _run_bash_passed(content: str) -> bool:
 # Sub-agent result container
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class SubTask:
     """A parallel work unit derived from a ready Goal."""
+
     id: str
     prompt: str
     deps: set[str] = field(default_factory=set)
@@ -196,6 +213,7 @@ class Result:
     Condensed handback from a parallel sub-agent.
     NEVER return the raw transcript — it would overflow the orchestrator context.
     """
+
     id: str
     summary: str
     artifacts: dict = field(default_factory=dict)
@@ -212,6 +230,7 @@ class Result:
 # ---------------------------------------------------------------------------
 # Token budget (shared across concurrent workers)
 # ---------------------------------------------------------------------------
+
 
 class TokenBudget:
     """
@@ -238,6 +257,7 @@ class TokenBudget:
 # ---------------------------------------------------------------------------
 # Async parallel orchestrator (called by the StateGraph execute node)
 # ---------------------------------------------------------------------------
+
 
 class AsyncOrchestrator:
     """
@@ -279,7 +299,9 @@ class AsyncOrchestrator:
         self.skill_router = skill_router
         self.mcp = mcp
         self.codegraph_mcp = None  # set after construction if codegraph-embedder is running
-        self.memory_search: MemorySearch | None = None  # set after construction when a memory store is wired
+        self.memory_search: MemorySearch | None = (
+            None  # set after construction when a memory store is wired
+        )
         self.workspace = workspace
         self.max_steps = max_steps
         self.redis = redis
@@ -297,8 +319,7 @@ class AsyncOrchestrator:
         import graphlib
 
         subtasks = [
-            SubTask(id=g["id"], prompt=g["description"], est_tokens=512)
-            for g in ready_goals
+            SubTask(id=g["id"], prompt=g["description"], est_tokens=512) for g in ready_goals
         ]
         dep_graph: dict[str, set[str]] = {t.id: t.deps for t in subtasks}
 
@@ -387,7 +408,6 @@ class AsyncOrchestrator:
         the formatted result. Returns None when NO skill matched, so the caller can
         fall through to the ReAct loop.
         """
-        import json
 
         if self.skill_router is None:
             return None
@@ -414,7 +434,8 @@ class AsyncOrchestrator:
             if err == "tool_error" and res is not None:
                 if isinstance(res, dict) and isinstance(res.get("content"), list):
                     inner = "\n".join(
-                        c.get("text", "") for c in res["content"]
+                        c.get("text", "")
+                        for c in res["content"]
                         if isinstance(c, dict) and c.get("text")
                     )
                 else:
@@ -431,7 +452,8 @@ class AsyncOrchestrator:
             if isinstance(res, dict) and isinstance(res.get("content"), list):
                 # Extract text from content list items
                 text_parts = [
-                    c.get("text", "") for c in res["content"]
+                    c.get("text", "")
+                    for c in res["content"]
                     if isinstance(c, dict) and c.get("text")
                 ]
                 # If content list had items but no text fields, use placeholder
@@ -481,9 +503,7 @@ class AsyncOrchestrator:
         """Checkpointing runs only when the flag is ON, a store is wired, and a
         task_id is available. All three absent in unit tests -> complete no-op."""
         return bool(
-            ENABLE_LOOP_CHECKPOINT
-            and self.checkpoint_store is not None
-            and task_id is not None
+            ENABLE_LOOP_CHECKPOINT and self.checkpoint_store is not None and task_id is not None
         )
 
     async def _run_react_loop(self, goal: str, max_steps: int) -> dict:
@@ -492,7 +512,6 @@ class AsyncOrchestrator:
         Returns {"ok": bool, "summary": str}. Activation budget is reset by the
         caller (react_execute) at the start of each goal.
         """
-        import json
 
         # Build the prefix ONCE per goal. The same frozen system message and tools
         # list are reused on every ReAct step below, so llama-server's longest-common-
@@ -501,10 +520,11 @@ class AsyncOrchestrator:
             skill_router=self.skill_router,
             codegraph_enabled=self.codegraph_mcp is not None,
             memory_enabled=self.memory_search is not None,
+            client_manifest=client_context.get_manifest(),
         )
-        tools = assembler.tools()                 # frozen list — never rebuilt per step
+        tools = assembler.tools()  # frozen list — never rebuilt per step
         messages = [
-            assembler.system_message(),           # frozen system dict at index 0
+            assembler.system_message(),  # frozen system dict at index 0
             {"role": "user", "content": goal},
         ]
 
@@ -651,17 +671,29 @@ class AsyncOrchestrator:
                 if deadline_s > 0 and (self._now() - start) > deadline_s:
                     _ok, _sum = reconcile_cutoff(
                         "wall-clock deadline exceeded",
-                        edited_files=edited_files, tests_passed=tests_passed,
+                        edited_files=edited_files,
+                        tests_passed=tests_passed,
                     )
-                    return {"ok": _ok, "summary": _sum, "tools_used": _tools_used, "tests_passed": tests_passed}
+                    return {
+                        "ok": _ok,
+                        "summary": _sum,
+                        "tools_used": _tools_used,
+                        "tests_passed": tests_passed,
+                    }
 
                 # Hard absolute ceiling (prevents infinite loops of distinct cheap reads).
                 if not budget.record_turn():
                     _ok, _sum = reconcile_cutoff(
                         "absolute turn limit exceeded",
-                        edited_files=edited_files, tests_passed=tests_passed,
+                        edited_files=edited_files,
+                        tests_passed=tests_passed,
                     )
-                    return {"ok": _ok, "summary": _sum, "tools_used": _tools_used, "tests_passed": tests_passed}
+                    return {
+                        "ok": _ok,
+                        "summary": _sum,
+                        "tools_used": _tools_used,
+                        "tests_passed": tests_passed,
+                    }
 
                 # Consume one unit; on exhaustion take the single grace turn,
                 # else stop with a clear "budget exhausted" outcome.
@@ -669,9 +701,15 @@ class AsyncOrchestrator:
                     if not budget.grace():
                         _ok, _sum = reconcile_cutoff(
                             "budget exhausted",
-                            edited_files=edited_files, tests_passed=tests_passed,
+                            edited_files=edited_files,
+                            tests_passed=tests_passed,
                         )
-                        return {"ok": _ok, "summary": _sum, "tools_used": _tools_used, "tests_passed": tests_passed}
+                        return {
+                            "ok": _ok,
+                            "summary": _sum,
+                            "tools_used": _tools_used,
+                            "tests_passed": tests_passed,
+                        }
                     # grace turn: fall through and run one more iteration.
 
                 # Track tools used this turn so a cheap-only turn can be refunded.
@@ -714,7 +752,8 @@ class AsyncOrchestrator:
                 _turn_reasoning = events.extract_reasoning(r)
                 if _turn_reasoning:
                     await events.emit(
-                        "reasoning", node="execute",
+                        "reasoning",
+                        node="execute",
                         summary=events.reasoning_summary(_turn_reasoning),
                         text=_turn_reasoning,
                     )
@@ -783,8 +822,10 @@ class AsyncOrchestrator:
                             and infra_error_streak >= MAX_VERIFY_INFRA_ERRORS
                         )
                         if needs_verification(
-                            edited_files, tests_passed,
-                            verify_nudges_used, max_verify_nudges,
+                            edited_files,
+                            tests_passed,
+                            verify_nudges_used,
+                            max_verify_nudges,
                             infra_error_streak=infra_error_streak,
                         ):
                             verify_nudges_used += 1
@@ -797,24 +838,30 @@ class AsyncOrchestrator:
                             # Append synthetic tool result for the finish tool_call
                             # before re-entering the loop, so the message sequence
                             # is valid: assistant(finish) -> tool(finish) -> user(nudge)
-                            messages.append({
-                                "role": "tool",
-                                "tool_call_id": tc.id,
-                                "content": json.dumps({
-                                    "finish_deferred": True,
-                                    "reason": "verification required before completion"
-                                }),
-                            })
-                            messages.append({
-                                "role": "user",
-                                # Expose-bug goals get a nudge to RUN the test and
-                                # confirm it FAILS (not to make it pass).
-                                "content": (
-                                    build_expose_test_nudge(edited_files)
-                                    if _expose_bug
-                                    else build_verify_nudge(edited_files)
-                                ),
-                            })
+                            messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": tc.id,
+                                    "content": json.dumps(
+                                        {
+                                            "finish_deferred": True,
+                                            "reason": "verification required before completion",
+                                        }
+                                    ),
+                                }
+                            )
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    # Expose-bug goals get a nudge to RUN the test and
+                                    # confirm it FAILS (not to make it pass).
+                                    "content": (
+                                        build_expose_test_nudge(edited_files)
+                                        if _expose_bug
+                                        else build_verify_nudge(edited_files)
+                                    ),
+                                }
+                            )
                             # Re-enter the loop: do not return, do not run the
                             # remaining tool calls in this assistant turn.
                             break
@@ -822,9 +869,10 @@ class AsyncOrchestrator:
                         # reached. If we edited without ever verifying, annotate
                         # the summary honestly rather than claiming a pass.
                         if _infra_blocked:
-                            _summary = (args.get("summary") or "")
+                            _summary = args.get("summary") or ""
                             summary = (
-                                _summary + "\n\n"
+                                _summary
+                                + "\n\n"
                                 + build_infra_unverified_note(edited_files, _last_infra_reason)
                             ).strip()
                         elif _expose_bug and edited_files and not tests_passed:
@@ -844,12 +892,15 @@ class AsyncOrchestrator:
                         # success CLAIM ("I fixed it / tests pass") that was NOT
                         # backed by a passing run_tests this run is gated, and a
                         # punt summary is never reported as a success (§4.5).
-                        recon_ok, note = reconcile_ok(
-                            True, summary, tests_passed=tests_passed
-                        )
+                        recon_ok, note = reconcile_ok(True, summary, tests_passed=tests_passed)
                         if note:
                             summary = (summary + " " + note)[:2000]
-                        return {"ok": recon_ok, "summary": summary, "tools_used": _tools_used, "tests_passed": tests_passed}
+                        return {
+                            "ok": recon_ok,
+                            "summary": summary,
+                            "tools_used": _tools_used,
+                            "tests_passed": tests_passed,
+                        }
 
                     # No-progress / tool-loop detection. finish already returned
                     # above, so only genuinely dispatched tools reach here.
@@ -857,16 +908,12 @@ class AsyncOrchestrator:
                     # because we will dedupe them (short-circuit + refund). Still
                     # record the signature for backstop detection in case a true
                     # loop of failed loads occurs.
-                    _is_repeat_load_skill = (
-                        name == "load_skill"
-                        and is_repeat_load(args.get("name", ""), loaded_skills)
+                    _is_repeat_load_skill = name == "load_skill" and is_repeat_load(
+                        args.get("name", ""), loaded_skills
                     )
-                    if (
-                        not _is_repeat_load_skill
-                        and loop_detector.record(
-                            call_signature(name, args),
-                            repeat_limit=repeat_limit_for(name),
-                        )
+                    if not _is_repeat_load_skill and loop_detector.record(
+                        call_signature(name, args),
+                        repeat_limit=repeat_limit_for(name),
                     ):
                         _reason = loop_detector.reason()
                         await events.emit(
@@ -877,9 +924,12 @@ class AsyncOrchestrator:
                             steps=step + 1,
                         )
                         import logging as _logging
+
                         _logging.getLogger("orchestrator").warning(
                             "tool-loop detected (%s) on '%s' at step %d — halting",
-                            _reason, name, step + 1,
+                            _reason,
+                            name,
+                            step + 1,
                         )
                         return {
                             "ok": False,
@@ -947,12 +997,12 @@ class AsyncOrchestrator:
                             args.get("tool", ""),
                             args.get("arguments", {}),
                         )
-                        content = ground_tool_result(
-                            json.dumps(res), LABMATE_TOOL_RESULT_BUDGET
-                        )
+                        content = ground_tool_result(json.dumps(res), LABMATE_TOOL_RESULT_BUDGET)
                         # Emit artifact.created if the skill produced a file
                         if isinstance(res, dict):
-                            _result = res.get("result") if isinstance(res.get("result"), dict) else {}
+                            _result = (
+                                res.get("result") if isinstance(res.get("result"), dict) else {}
+                            )
                             _path = _result.get("path") or _result.get("file") or ""
                             _content_str = _result.get("content") or _result.get("output") or ""
                             if _path and _content_str and isinstance(_content_str, str):
@@ -967,7 +1017,9 @@ class AsyncOrchestrator:
                                             "mime": _infer_mime(_path),
                                             "sizeBytes": len(_content_str.encode()),
                                             "lineCount": _content_str.count("\n") + 1,
-                                            "preview": "code" if _path.endswith((".py", ".ts", ".js", ".rs", ".go")) else "doc",
+                                            "preview": "code"
+                                            if _path.endswith((".py", ".ts", ".js", ".rs", ".go"))
+                                            else "doc",
                                             "content": _content_str,
                                             "downloadUrl": f"/artifacts/{_path}",
                                         },
@@ -978,8 +1030,10 @@ class AsyncOrchestrator:
                         # that exits 0 is a real verification for tasks with no
                         # test suite (so a correct fix is not downgraded to ok=False).
                         if is_assertion_verification(
-                            args.get("skill", ""), args.get("tool", ""),
-                            args.get("arguments", {}), res,
+                            args.get("skill", ""),
+                            args.get("tool", ""),
+                            args.get("arguments", {}),
+                            res,
                         ):
                             tests_passed = True
                         # Edit-accounting: files written via code-sandbox (the
@@ -987,8 +1041,10 @@ class AsyncOrchestrator:
                         # must count as edits so reconcile_cutoff can credit a
                         # verified run.
                         _sb_writes = detect_sandbox_writes(
-                            args.get("skill", ""), args.get("tool", ""),
-                            args.get("arguments", {}), res,
+                            args.get("skill", ""),
+                            args.get("tool", ""),
+                            args.get("arguments", {}),
+                            res,
                         )
                         if _sb_writes:
                             edited_files |= _sb_writes
@@ -996,9 +1052,7 @@ class AsyncOrchestrator:
                     elif name in LOCAL_TOOL_NAMES:
                         if self.redis is not None:
                             try:
-                                result = await request_local_tool(
-                                    self.redis, name, args
-                                )
+                                result = await request_local_tool(self.redis, name, args)
                                 # Reliable write: after a write_file the client may
                                 # report success without the bytes landing. Read the
                                 # file back and confirm it matches what we asked to
@@ -1034,9 +1088,7 @@ class AsyncOrchestrator:
                             except Exception as exc:
                                 content = json.dumps({"error": str(exc)})
                         else:
-                            content = json.dumps(
-                                {"error": "no local tool client connected"}
-                            )
+                            content = json.dumps({"error": "no local tool client connected"})
 
                     elif name == "run_bash":
                         if self.mcp is not None:
@@ -1050,14 +1102,14 @@ class AsyncOrchestrator:
                                     },
                                 )
                                 content = ground_tool_result(
-                                    "\n".join(
-                                        c.text for c in obs.content if hasattr(c, "text")
-                                    ),
+                                    "\n".join(c.text for c in obs.content if hasattr(c, "text")),
                                     LABMATE_TOOL_RESULT_BUDGET,
                                 )
                                 # Verification-stop: a passing pytest via run_bash also
                                 # counts as a verification (secondary signal).
-                                if "pytest" in str(args.get("command", "")) and _run_bash_passed(content):
+                                if "pytest" in str(args.get("command", "")) and _run_bash_passed(
+                                    content
+                                ):
                                     tests_passed = True
                                 # Track infra errors only for pytest invocations
                                 if "pytest" in str(args.get("command", "")):
@@ -1068,7 +1120,12 @@ class AsyncOrchestrator:
                                     elif _bash_outcome.ran:
                                         infra_error_streak = 0
                                     # Expose-bug inversion (see run_tests handler).
-                                    if _expose_bug and _bash_outcome.ran and not _bash_outcome.passed and not _bash_outcome.infra_error:
+                                    if (
+                                        _expose_bug
+                                        and _bash_outcome.ran
+                                        and not _bash_outcome.passed
+                                        and not _bash_outcome.infra_error
+                                    ):
                                         _bug_exposed = True
                                         tests_passed = True
                             except Exception as exc:
@@ -1105,7 +1162,12 @@ class AsyncOrchestrator:
                                     infra_error_streak = 0
                                 # Expose-bug inversion: a test that RAN and FAILED
                                 # exposes the bug -> that IS the verification.
-                                if _expose_bug and _outcome.ran and not _outcome.passed and not _outcome.infra_error:
+                                if (
+                                    _expose_bug
+                                    and _outcome.ran
+                                    and not _outcome.passed
+                                    and not _outcome.infra_error
+                                ):
                                     _bug_exposed = True
                                     tests_passed = True
                             except Exception as exc:
@@ -1121,21 +1183,22 @@ class AsyncOrchestrator:
                                     {"query": args.get("query", ""), "k": args.get("k", 8)},
                                 )
                                 content = ground_tool_result(
-                                    "\n".join(
-                                        c.text for c in obs.content if hasattr(c, "text")
-                                    ),
+                                    "\n".join(c.text for c in obs.content if hasattr(c, "text")),
                                     LABMATE_TOOL_RESULT_BUDGET,
                                 )
                             except Exception as exc:
                                 content = json.dumps({"error": str(exc)})
                         else:
-                            content = json.dumps({"error": "codegraph semantic search not available"})
+                            content = json.dumps(
+                                {"error": "codegraph semantic search not available"}
+                            )
 
                     elif name == "memory_search":
                         if self.memory_search is not None:
                             try:
                                 content = await self.memory_search.search(
-                                    args.get("query", ""), args.get("k"),
+                                    args.get("query", ""),
+                                    args.get("k"),
                                 )
                             except Exception as exc:
                                 content = json.dumps({"error": str(exc)})
@@ -1148,7 +1211,9 @@ class AsyncOrchestrator:
                     # Emit tool.done — derive status from content (error key = error)
                     try:
                         _parsed = json.loads(content) if isinstance(content, str) else content
-                        _td_status = "error" if isinstance(_parsed, dict) and "error" in _parsed else "done"
+                        _td_status = (
+                            "error" if isinstance(_parsed, dict) and "error" in _parsed else "done"
+                        )
                     except Exception:
                         _td_status = "done"
                     await events.emit(
@@ -1161,11 +1226,13 @@ class AsyncOrchestrator:
                     )
 
                     # Append tool result
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": content,
-                    })
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": content,
+                        }
+                    )
 
                 # Refund this turn if EVERY tool call it made was a refundable read/verify/inspect (REFUNDABLE_TOOLS).
                 # Pure inspection (read_file / list_dir / code_semantic_search) and
@@ -1185,9 +1252,15 @@ class AsyncOrchestrator:
                 if pstep.tripped:
                     _ok, _sum = reconcile_cutoff(
                         f"no-progress breaker tripped ({pstep.consecutive} consecutive idle turns)",
-                        edited_files=edited_files, tests_passed=tests_passed,
+                        edited_files=edited_files,
+                        tests_passed=tests_passed,
                     )
-                    return {"ok": _ok, "summary": _sum, "tools_used": _tools_used, "tests_passed": tests_passed}
+                    return {
+                        "ok": _ok,
+                        "summary": _sum,
+                        "tools_used": _tools_used,
+                        "tests_passed": tests_passed,
+                    }
 
                 # Update pending steer for next iteration (defer injection by one turn).
                 # For pre-written steers: already handled above (set on turn 1, used on turn 2).
@@ -1198,22 +1271,24 @@ class AsyncOrchestrator:
                 # Best-effort end-of-turn snapshot. A crash before the next model
                 # call resumes here (Insertion A) on the next run_task().
                 if self._checkpoint_active(_cp_task_id):
-                    await self.checkpoint_store.save(LoopCheckpoint(
-                        task_id=_cp_task_id,
-                        goal=goal,
-                        messages=messages,
-                        used=budget.used,
-                        absolute_turns=budget.absolute_turns,
-                        grace_used=budget.grace_used,
-                        edited_files=sorted(edited_files),
-                        tests_passed=tests_passed,
-                        verify_nudges_used=verify_nudges_used,
-                        loop_signatures=list(loop_detector._sigs),
-                        tools_used=list(_tools_used),
-                        loaded_skills=sorted(loaded_skills),
-                        start_monotonic_offset=self._now() - start,
-                        turn=budget.used,
-                    ))
+                    await self.checkpoint_store.save(
+                        LoopCheckpoint(
+                            task_id=_cp_task_id,
+                            goal=goal,
+                            messages=messages,
+                            used=budget.used,
+                            absolute_turns=budget.absolute_turns,
+                            grace_used=budget.grace_used,
+                            edited_files=sorted(edited_files),
+                            tests_passed=tests_passed,
+                            verify_nudges_used=verify_nudges_used,
+                            loop_signatures=list(loop_detector._sigs),
+                            tools_used=list(_tools_used),
+                            loaded_skills=sorted(loaded_skills),
+                            start_monotonic_offset=self._now() - start,
+                            turn=budget.used,
+                        )
+                    )
 
         except Exception as exc:
             return {"ok": False, "summary": f"error: {str(exc)[:1000]}", "tools_used": _tools_used}
@@ -1311,6 +1386,7 @@ class AsyncOrchestrator:
 # Main coding orchestrator (wraps the StateGraph entry point)
 # ---------------------------------------------------------------------------
 
+
 class CodingOrchestrator:
     """
     Top-level entry point. Wraps the LangGraph StateGraph with convenience
@@ -1345,7 +1421,7 @@ class CodingOrchestrator:
         self._editor_bases = resolve_bases(qwen_api_base)
         self.max_iter = max_iter
         self.stuck_n = stuck_n
-        self.mcp = mcp          # MCPClientManager | None
+        self.mcp = mcp  # MCPClientManager | None
         self.agent_instructions: str = ""  # set per-task from AGENT.md
         self.skill_router = skill_router  # SkillRouter | None
         self._recent_actions: list[str] = []
@@ -1399,7 +1475,7 @@ class CodingOrchestrator:
         if self.agent_instructions:
             return [
                 {"role": "system", "content": self.agent_instructions},
-                {"role": "user",   "content": prompt},
+                {"role": "user", "content": prompt},
             ]
         return [{"role": "user", "content": prompt}]
 
@@ -1441,11 +1517,8 @@ class CodingOrchestrator:
         Triggers escalation from the inner ReAct loop to a fresh Plan-Execute pass.
         """
         self._recent_actions.append(action_key)
-        self._recent_actions = self._recent_actions[-self.stuck_n:]
-        return (
-            len(self._recent_actions) == self.stuck_n
-            and len(set(self._recent_actions)) == 1
-        )
+        self._recent_actions = self._recent_actions[-self.stuck_n :]
+        return len(self._recent_actions) == self.stuck_n and len(set(self._recent_actions)) == 1
 
     def execute_in_sandbox(self, cmd: str, timeout: int = 60) -> dict:
         """
@@ -1480,9 +1553,7 @@ class CodingOrchestrator:
                     "exec_run",
                     {"command": cmd, "cwd": self.workspace, "timeout": timeout_ms},
                 )
-                text = "\n".join(
-                    c.text for c in result.content if hasattr(c, "text")
-                )
+                text = "\n".join(c.text for c in result.content if hasattr(c, "text"))
                 is_error = bool(result.isError)
                 return {
                     "stdout": text,
@@ -1532,24 +1603,35 @@ class CodingOrchestrator:
             return acc or assembled
         except Exception as exc:
             import logging
+
             _log = logging.getLogger("orchestrator")
             _log.warning("stream_final_answer failed, using assembled answer: %s", exc)
             return assembled
 
-    async def stream(self, prompt: str, user_id: str = "", workspace_id: str = "") -> "AsyncGenerator[str, None]":
+    async def stream(
+        self, prompt: str, user_id: str = "", workspace_id: str = ""
+    ) -> AsyncGenerator[str, None]:
         """Async generator — run a task and yield the final answer as a single chunk.
 
         Used by the CLI connector and future frontend connectors.
         A future version may yield incremental tokens as they are produced.
         """
         if self.graph is None:
-            raise RuntimeError("graph not wired — call build_graph(orch) and assign orch.graph before streaming")
+            raise RuntimeError(
+                "graph not wired — call build_graph(orch) and assign orch.graph before streaming"
+            )
         import uuid
+
         session_id = str(uuid.uuid4())
         state = await self.run_task(prompt, session_id, user_id=user_id, workspace_id=workspace_id)
         root = state.get("goal_tree", {}).get("root", {})
         if state.get("awaiting_clarification"):
-            yield state.get("clarification_question", "") or state.get("final_answer") or root.get("result", "") or str(state)
+            yield (
+                state.get("clarification_question", "")
+                or state.get("final_answer")
+                or root.get("result", "")
+                or str(state)
+            )
             return
         yield state.get("final_answer") or root.get("result", "") or str(state)
 
@@ -1585,6 +1667,7 @@ class CodingOrchestrator:
         there are no staged changes), which is common for read-only skills
         like ast-repo-map or web-search that produce no working-tree changes.
         """
+
         def _commit() -> None:
             subprocess.run(["git", "-C", self.workspace, "add", "-A"], check=True)
             try:

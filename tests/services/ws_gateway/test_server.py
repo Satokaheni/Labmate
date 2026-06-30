@@ -322,6 +322,44 @@ def test_send_auto_creates_and_titles_session(client, app, redis):
         assert first["session"]["mode"] == "code"
 
 
+def test_client_capabilities_frame_is_threaded_into_task_payload(client, app, redis):
+    """A client.capabilities frame followed by send results in push_task receiving the manifest."""
+    import asyncio
+    import json as _json
+
+    token = app.state.auth.mint_token(
+        {"id": "u-001", "email": "admin@labmate.local", "role": "admin"}
+    )
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "auth", "token": token})
+        assert ws.receive_json()["type"] == "auth.ok"
+        ev = ws.receive_json()
+        while ev["type"] != "boot.ready":
+            ev = ws.receive_json()
+
+        # Send client capabilities frame
+        capabilities = {
+            "protocolVersion": 1,
+            "tools": [
+                {"name": "read_file", "source": "builtin"},
+                {"name": "write_file", "source": "builtin"},
+            ],
+        }
+        ws.send_json({"type": "client.capabilities", **capabilities})
+
+        # Now send a task
+        ws.send_json({"type": "send", "sessionId": "s1", "mode": "chat", "text": "do it"})
+        ev = ws.receive_json()
+        while ev["type"] != "turn.created":
+            ev = ws.receive_json()
+
+        # Get task_id from goals stream and verify payload includes client_capabilities
+        entries = asyncio.get_event_loop().run_until_complete(redis.xrange("labmate:goals"))
+        assert len(entries) >= 1
+        payload = _json.loads(entries[-1][1]["payload"])
+        assert payload["client_capabilities"] == capabilities
+
+
 def test_debug_set_is_processed_without_crash(client, app):
     """debug.set must be handled (not crash); server stays alive for the next message."""
     with client.websocket_connect("/ws") as ws:

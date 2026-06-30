@@ -48,7 +48,7 @@ from pathlib import Path
 import redis.asyncio as aioredis
 from mcp import StdioServerParameters
 
-from services.orchestrator import call_counter, events, skill_curator
+from services.orchestrator import call_counter, client_context, events, skill_curator
 from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
 from services.orchestrator.completion_guard import reconcile_final_answer
 from services.orchestrator.graph import GEMMA_BASE, QWEN_BASE, build_graph
@@ -61,6 +61,7 @@ from services.orchestrator.skill_curator import (
 )
 from services.orchestrator.skill_router import SkillRouter
 from services.orchestrator.storage_manager import StorageManager
+from services.orchestrator.tool_manifest import parse_manifest
 from services.skill_runner.skill_runner import SkillRunner
 
 _log = logging.getLogger("orchestrator")
@@ -473,6 +474,7 @@ class OrchestratorProcess:
         _emitter: events.EventEmitter | None = None
         _token = None
         _counter_token = None
+        _manifest_token = None
         _ctx_task: asyncio.Task | None = None
 
         try:
@@ -517,6 +519,11 @@ class OrchestratorProcess:
             # Per-task LLM call counter (A/B instrumentation): set a fresh counter for
             # this task's context; the litellm success callback increments it.
             _counter_token = call_counter.start()
+            # Per-task client capability manifest: parse from payload and set in context.
+            # When no manifest is present, behavior is unchanged (full tool list).
+            _manifest_token = client_context.set_manifest(
+                parse_manifest(payload.get("client_capabilities"))
+            )
 
             # Emit active status so the frontend agent indicator lights up
             await _emitter.emit(
@@ -796,6 +803,8 @@ class OrchestratorProcess:
                 events.current_emitter.reset(_token)
             if _counter_token is not None:
                 call_counter.reset(_counter_token)
+            if _manifest_token is not None:
+                client_context.reset_manifest(_manifest_token)
             await self._redis.xack(GOALS_STREAM, GOALS_GROUP, msg_id)
 
     async def _write_result(self, task_id: str, result: dict) -> None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import AsyncGenerator, Optional
+from collections.abc import AsyncGenerator
 
 import redis.asyncio as aioredis
 
@@ -18,6 +18,7 @@ async def push_task(
     session_id: str,
     user_id: str = "",
     workspace_id: str = "",
+    client_capabilities: dict | None = None,
 ) -> None:
     """Submit a goal to the orchestrator exactly like services/cli/redis_client.py."""
     payload = json.dumps(
@@ -27,6 +28,7 @@ async def push_task(
             "session_id": session_id,
             "user_id": user_id,
             "workspace_id": workspace_id,
+            "client_capabilities": client_capabilities,
         }
     )
     await redis.xadd(GOALS_STREAM, {"payload": payload})
@@ -61,7 +63,7 @@ async def tail_task_events(
                     return
 
 
-def translate_event(raw: dict, *, turn_id: str) -> Optional[dict]:
+def translate_event(raw: dict, *, turn_id: str) -> dict | None:
     """Translate an orchestrator snake_case event into a frontend StreamEvent.
 
     Returns None for events the frontend stream contract does not include
@@ -141,7 +143,7 @@ async def write_tool_result(
     task_id: str,
     tool_request_id: str,
     result,
-    error: Optional[str] = None,
+    error: str | None = None,
 ) -> None:
     """Write a local-tool result frame to labmate:tool-results:<task_id>."""
     await redis.xadd(

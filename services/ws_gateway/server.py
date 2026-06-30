@@ -126,6 +126,7 @@ async def _handle_send(
     store: InMemorySessionStore,
     active_session_id: str | None = None,
     debug: bool = False,
+    client_capabilities: dict | None = None,
 ) -> tuple[str, asyncio.Task]:
     task_id = "task-" + uuid.uuid4().hex[:12]
     user_turn_id = "turn-" + uuid.uuid4().hex[:12]
@@ -170,7 +171,9 @@ async def _handle_send(
     }
     await ws.send_json({"type": "turn.created", "turn": assistant_turn})
 
-    await push_task(redis, task_id, task=text, session_id=session_id)
+    await push_task(
+        redis, task_id, task=text, session_id=session_id, client_capabilities=client_capabilities
+    )
     relay = asyncio.create_task(_relay_task(ws, redis, task_id, assistant_turn_id, debug=debug))
     return task_id, relay
 
@@ -213,16 +216,30 @@ async def _ws_loop(
     relay: asyncio.Task | None = None
     # debug_mode tracks the last explicitly-set debug state for the active session
     debug_mode: bool = False
+    client_capabilities: dict | None = None
     while True:
         msg = await ws.receive_json()
         mtype = msg.get("type")
-        if mtype == "send":
+        if mtype == "client.capabilities":
+            # Capture the client's declared capabilities (tools/protocol version).
+            # Store without response; passed to next send frame.
+            client_capabilities = {
+                "protocolVersion": msg.get("protocolVersion", 1),
+                "tools": msg.get("tools", []),
+            }
+        elif mtype == "send":
             # Await the previous relay if one is still running (one turn at a time).
             if relay is not None and not relay.done():
                 await relay
             debug_on = store.get_debug(active_session_id or "") if active_session_id else debug_mode
             active_task_id, relay = await _handle_send(
-                ws, redis, msg, store=store, active_session_id=active_session_id, debug=debug_on
+                ws,
+                redis,
+                msg,
+                store=store,
+                active_session_id=active_session_id,
+                debug=debug_on,
+                client_capabilities=client_capabilities,
             )
         elif mtype == "tool.result":
             if active_task_id is not None:
