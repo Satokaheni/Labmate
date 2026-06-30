@@ -136,10 +136,12 @@ function TopBar(props: {
         <div style={dot('#37404c')} />
         <div style={dot('#37404c')} />
       </div>
-      {/* Sidebar collapse toggle (Claude-Desktop style) */}
-      <div
-        role="button"
+      {/* Sidebar collapse toggle (Claude-Desktop style). A native <button> so it's
+          keyboard-accessible (Enter/Space) and focusable for free. */}
+      <button
+        type="button"
         aria-label={sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}
+        aria-pressed={sidebarCollapsed}
         title={sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}
         onClick={onToggleSidebar}
         style={{
@@ -149,11 +151,13 @@ function TopBar(props: {
           width: 26,
           height: 26,
           marginLeft: 4,
+          padding: 0,
           borderRadius: 7,
           cursor: 'pointer',
           color: '#939ba7',
           background: sidebarCollapsed ? '#1b1f26' : 'transparent',
-          boxShadow: sidebarCollapsed ? 'inset 0 0 0 1px #2f3742' : 'none',
+          border: sidebarCollapsed ? '1px solid #2f3742' : '1px solid transparent',
+          font: 'inherit',
         }}
       >
         <svg
@@ -170,7 +174,7 @@ function TopBar(props: {
           <rect x="3" y="4" width="18" height="16" rx="2" />
           <line x1="9" y1="4" x2="9" y2="20" />
         </svg>
-      </div>
+      </button>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 8, flex: 'none' }}>
         <LabmateMark size={18} variant="tile" spin="none" />
         <span style={{ fontSize: 13.5, fontWeight: 600, color: '#e6e8ec' }}>Labmate</span>
