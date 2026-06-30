@@ -18,6 +18,13 @@ export interface WorkspaceEntry {
   isDir: boolean;
 }
 
+export interface ToolDescriptor {
+  name: string;
+  source: 'builtin' | 'mcp' | 'skill';
+  namespace?: string;
+  schema?: unknown;
+}
+
 // Read config and token synchronously so they're available before the renderer module graph runs.
 const config = ipcRenderer.sendSync('labmate:get-config') as AppConfig;
 const token = ipcRenderer.sendSync('labmate:get-token') as string | null;
@@ -37,6 +44,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     sessionId?: string | null,
   ): Promise<ExecuteToolResponse> =>
     ipcRenderer.invoke('labmate:tool-execute', { name, args, sessionId }),
+  getMcpTools: (): Promise<ToolDescriptor[]> =>
+    ipcRenderer.invoke('labmate:mcp-tools'),
 
   // ── Workspace (multi-root per chat) ──
   getWorkspaceRoots: (sessionId: string | null): Promise<string[]> =>

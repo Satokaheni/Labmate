@@ -24,6 +24,10 @@ export const CLIENT_CAPABILITIES: ClientCapabilities = {
   ],
 };
 
-export function capabilitiesFrame(): { type: 'client.capabilities' } & ClientCapabilities {
-  return { type: 'client.capabilities', ...CLIENT_CAPABILITIES };
+export function capabilitiesFrame(extraTools: ToolDescriptor[] = []): { type: 'client.capabilities' } & ClientCapabilities {
+  return {
+    type: 'client.capabilities',
+    protocolVersion: CLIENT_CAPABILITIES.protocolVersion,
+    tools: [...CLIENT_CAPABILITIES.tools, ...extraTools],
+  };
 }

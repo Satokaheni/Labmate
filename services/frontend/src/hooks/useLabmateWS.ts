@@ -11,7 +11,7 @@ import type {
   SessionBootstrap,
   LabmateWSStatePublic,
 } from '@/types/events';
-import { capabilitiesFrame } from '@/protocol/capabilities';
+import { capabilitiesFrame, type ToolDescriptor } from '@/protocol/capabilities';
 
 type LabmateWSStateBase = {
   subsystems?: Subsystem[];
@@ -389,9 +389,21 @@ export function useLabmateWS(
           return;
         }
 
-        // Send capabilities frame after auth succeeds
+        // Send capabilities frame after auth succeeds, including MCP tools
         if (frame.type === 'auth.ok') {
-          ws.send(JSON.stringify(capabilitiesFrame()));
+          const sendCapabilities = async () => {
+            try {
+              const electronAPI = (window as unknown as { electronAPI?: { getMcpTools?: () => Promise<ToolDescriptor[]> } }).electronAPI;
+              const mcpTools = (await electronAPI?.getMcpTools?.()) ?? [];
+              ws.send(JSON.stringify(capabilitiesFrame(mcpTools)));
+            } catch (err) {
+              console.error('Failed to fetch MCP tools:', err);
+              // Send capabilities with just builtins if MCP fetch fails
+              ws.send(JSON.stringify(capabilitiesFrame([])));
+            }
+          };
+          void sendCapabilities();
+          return; // Don't dispatch yet; let auth flow through after capabilities are sent
         }
 
         // Fill in a fresh active session at the source when boot delivers none,
