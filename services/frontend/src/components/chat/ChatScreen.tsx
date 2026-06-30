@@ -659,6 +659,33 @@ const COMPOSER_SUBMIT_BUTTON_STYLE: CSSProperties = {
   cursor: 'pointer',
 };
 
+const composerTextareaStyle = (maxH: number): CSSProperties => ({
+  display: 'block',
+  width: '100%',
+  resize: 'none',
+  border: 'none',
+  outline: 'none',
+  background: 'transparent',
+  fontFamily: 'inherit',
+  fontSize: 14.5,
+  lineHeight: 1.5,
+  color: '#e6e8ec',
+  maxHeight: maxH,
+  overflowY: 'auto',
+});
+
+const filePreviewContentStyle = (isCode: boolean): CSSProperties => ({
+  flex: 1,
+  overflow: 'auto',
+  padding: '16px 14px',
+  fontFamily: isCode ? "'IBM Plex Mono'" : 'inherit',
+  fontSize: isCode ? 12 : 14,
+  lineHeight: isCode ? 1.9 : 1.75,
+  color: '#cdd2d9',
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-word',
+});
+
 // ====================================================================
 // Top bar
 // ====================================================================/
@@ -677,6 +704,99 @@ const segTab = (active: boolean): CSSProperties => ({
   borderRadius: 6,
   padding: '5px 10px',
   cursor: 'pointer',
+});
+
+const sidebarToggleStyle = (collapsed: boolean): CSSProperties => ({
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: 26,
+  height: 26,
+  marginLeft: 4,
+  padding: 0,
+  borderRadius: 7,
+  cursor: 'pointer',
+  color: '#939ba7',
+  background: collapsed ? '#1b1f26' : 'transparent',
+  border: collapsed ? '1px solid #2f3742' : '1px solid transparent',
+  font: 'inherit',
+});
+
+const debugToggleStyle = (debug: boolean): CSSProperties => ({
+  display: 'flex',
+  alignItems: 'center',
+  gap: 7,
+  borderRadius: 8,
+  padding: '6px 11px',
+  cursor: 'pointer',
+  border: `1px solid ${debug ? '#2f4a3a' : '#20242c'}`,
+  background: debug ? '#11201a' : '#13161c',
+});
+
+const sidebarTab = (m: Mode, mode: Mode): CSSProperties => ({
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  padding: '9px 12px',
+  borderRadius: 7,
+  fontSize: 13.5,
+  fontWeight: m === mode ? 600 : 400,
+  color: m === mode ? '#e6e8ec' : '#939ba7',
+  background: m === mode ? '#1b1f26' : 'transparent',
+  boxShadow: m === mode ? 'inset 0 0 0 1px #2f3742' : 'none',
+  cursor: 'pointer',
+});
+
+const sysRowDotStyle = (color: string, pulse: boolean): CSSProperties => ({
+  width: 6,
+  height: 6,
+  borderRadius: '50%',
+  background: color,
+  animation: pulse ? 'pulse 1.6s infinite' : undefined,
+});
+
+const sessionItemStyle = (active: boolean): CSSProperties => ({
+  background: active ? '#15181e' : 'transparent',
+  borderRadius: 8,
+  padding: '11px 12px',
+  marginBottom: 3,
+  cursor: 'pointer',
+});
+
+const sessionTitleStyle = (active: boolean): CSSProperties => ({
+  fontSize: 13.5,
+  fontWeight: active ? 600 : 400,
+  color: active ? '#e6e8ec' : '#939ba7',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+});
+
+const fileCardStyle = (active: boolean): CSSProperties => ({
+  display: 'flex',
+  alignItems: 'center',
+  gap: 12,
+  border: `1px solid ${active ? '#2f4763' : '#2a2f39'}`,
+  background: active ? '#101824' : '#13161c',
+  borderRadius: 10,
+  padding: '12px 14px',
+  cursor: 'pointer',
+  marginBottom: 8,
+});
+
+const fileCardBadgeStyle = (badgeBg: string, badgeBorder: string): CSSProperties => ({
+  width: 38,
+  height: 38,
+  flex: 'none',
+  borderRadius: 8,
+  background: badgeBg,
+  border: `1px solid ${badgeBorder}`,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  fontFamily: "'IBM Plex Mono'",
+  fontSize: 11,
+  fontWeight: 600,
 });
 
 function TopBar(props: {
@@ -711,21 +831,7 @@ function TopBar(props: {
         aria-pressed={sidebarCollapsed}
         title={sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'}
         onClick={onToggleSidebar}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          width: 26,
-          height: 26,
-          marginLeft: 4,
-          padding: 0,
-          borderRadius: 7,
-          cursor: 'pointer',
-          color: '#939ba7',
-          background: sidebarCollapsed ? '#1b1f26' : 'transparent',
-          border: sidebarCollapsed ? '1px solid #2f3742' : '1px solid transparent',
-          font: 'inherit',
-        }}
+        style={sidebarToggleStyle(sidebarCollapsed)}
       >
         <svg
           width="16"
@@ -772,16 +878,7 @@ function TopBar(props: {
         onKeyDown={keyActivate(onToggleDebug)}
         role="button"
         tabIndex={0}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 7,
-          borderRadius: 8,
-          padding: '6px 11px',
-          cursor: 'pointer',
-          border: `1px solid ${debug ? '#2f4a3a' : '#20242c'}`,
-          background: debug ? '#11201a' : '#13161c',
-        }}
+        style={debugToggleStyle(debug)}
       >
         <span style={{ width: 6, height: 6, borderRadius: '50%', background: debug ? '#56c08d' : '#37404c' }} />
         <span style={{ fontFamily: "'IBM Plex Mono'", fontSize: 11, color: '#939ba7' }}>debug {debug ? 'on' : 'off'}</span>
@@ -793,6 +890,16 @@ function TopBar(props: {
 // ====================================================================
 // Left sidebar
 // ====================================================================
+
+function sysRow(color: string, label: string, value: string, pulse = false): JSX.Element {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+      <span style={sysRowDotStyle(color, pulse)} />
+      <span style={{ color: '#c7ccd3', flex: 1 }}>{label}</span>
+      <span style={{ fontFamily: "'IBM Plex Mono'", fontSize: 10.5, color: '#6b727d' }}>{value}</span>
+    </div>
+  );
+}
 
 function Sidebar(props: {
   mode: Mode;
@@ -808,47 +915,17 @@ function Sidebar(props: {
   const { mode, sessions, activeSessionId, nodeLabel, toolCount, handsSummary, onSetMode, onNewSession, onOpenSession } =
     props;
 
-  const tab = (m: Mode): CSSProperties => ({
-    display: 'flex',
-    alignItems: 'center',
-    gap: 10,
-    padding: '9px 12px',
-    borderRadius: 7,
-    fontSize: 13.5,
-    fontWeight: m === mode ? 600 : 400,
-    color: m === mode ? '#e6e8ec' : '#939ba7',
-    background: m === mode ? '#1b1f26' : 'transparent',
-    boxShadow: m === mode ? 'inset 0 0 0 1px #2f3742' : 'none',
-    cursor: 'pointer',
-  });
-
-  const sysRow = (color: string, label: string, value: string, pulse = false): JSX.Element => (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
-      <span
-        style={{
-          width: 6,
-          height: 6,
-          borderRadius: '50%',
-          background: color,
-          animation: pulse ? 'pulse 1.6s infinite' : undefined,
-        }}
-      />
-      <span style={{ color: '#c7ccd3', flex: 1 }}>{label}</span>
-      <span style={{ fontFamily: "'IBM Plex Mono'", fontSize: 10.5, color: '#6b727d' }}>{value}</span>
-    </div>
-  );
-
   return (
     <div style={SIDEBAR_CONTAINER_STYLE}>
       <div style={SIDEBAR_TOP_SECTION_STYLE}>
         <div style={MODE_TABS_CONTAINER_STYLE}>
-          <div onClick={() => onSetMode('chat')} onKeyDown={keyActivate(() => onSetMode('chat'))} role="button" tabIndex={0} style={tab('chat')}>
+          <div onClick={() => onSetMode('chat')} onKeyDown={keyActivate(() => onSetMode('chat'))} role="button" tabIndex={0} style={sidebarTab('chat', mode)}>
             <span style={{ fontSize: 14 }}>💬</span>Chat
           </div>
-          <div onClick={() => onSetMode('paper')} onKeyDown={keyActivate(() => onSetMode('paper'))} role="button" tabIndex={0} style={tab('paper')}>
+          <div onClick={() => onSetMode('paper')} onKeyDown={keyActivate(() => onSetMode('paper'))} role="button" tabIndex={0} style={sidebarTab('paper', mode)}>
             <span style={{ fontSize: 14 }}>📄</span>Paper writing
           </div>
-          <div onClick={() => onSetMode('code')} onKeyDown={keyActivate(() => onSetMode('code'))} role="button" tabIndex={0} style={tab('code')}>
+          <div onClick={() => onSetMode('code')} onKeyDown={keyActivate(() => onSetMode('code'))} role="button" tabIndex={0} style={sidebarTab('code', mode)}>
             <span style={{ fontSize: 14 }}>⌘</span>Coding
           </div>
         </div>
@@ -875,26 +952,11 @@ function Sidebar(props: {
               onKeyDown={keyActivate(() => onOpenSession(s.id))}
               role="button"
               tabIndex={0}
-              style={{
-                background: active ? '#15181e' : 'transparent',
-                borderRadius: 8,
-                padding: '11px 12px',
-                marginBottom: 3,
-                cursor: 'pointer',
-              }}
+              style={sessionItemStyle(active)}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                 <span style={{ fontSize: 12, opacity: 0.85 }}>{MODE_META[sMode].icon}</span>
-                <span
-                  style={{
-                    fontSize: 13.5,
-                    fontWeight: active ? 600 : 400,
-                    color: active ? '#e6e8ec' : '#939ba7',
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
-                  }}
-                >
+                <span style={sessionTitleStyle(active)}>
                   {s.title || `Session ${s.id.slice(0, 6)}`}
                 </span>
               </div>
@@ -1024,34 +1086,10 @@ function FileCard({ artifact, active, onClick }: { artifact: Artifact; active: b
       onKeyDown={keyActivate(onClick)}
       role="button"
       tabIndex={0}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 12,
-        border: `1px solid ${active ? '#2f4763' : '#2a2f39'}`,
-        background: active ? '#101824' : '#13161c',
-        borderRadius: 10,
-        padding: '12px 14px',
-        cursor: 'pointer',
-        marginBottom: 8,
-      }}
+      style={fileCardStyle(active)}
     >
       <div
-        style={{
-          width: 38,
-          height: 38,
-          flex: 'none',
-          borderRadius: 8,
-          background: badgeBg,
-          border: `1px solid ${badgeBorder}`,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          fontFamily: "'IBM Plex Mono'",
-          fontSize: 11,
-          fontWeight: 600,
-          color: badgeColor,
-        }}
+        style={{ ...fileCardBadgeStyle(badgeBg, badgeBorder), color: badgeColor }}
       >
         {badge}
       </div>
@@ -1279,20 +1317,7 @@ function Composer(props: { mode: Mode; budget: number; sessionId: string; onSend
             onKeyDown={onKeyDown}
             placeholder="Reply, paste a spec, or @ a file…"
             className="lm-scroll"
-            style={{
-              display: 'block',
-              width: '100%',
-              resize: 'none',
-              border: 'none',
-              outline: 'none',
-              background: 'transparent',
-              fontFamily: 'inherit',
-              fontSize: 14.5,
-              lineHeight: 1.5,
-              color: '#e6e8ec',
-              maxHeight: COMPOSER_MAX_H,
-              overflowY: 'auto',
-            }}
+            style={composerTextareaStyle(COMPOSER_MAX_H)}
           />
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 14 }}>
             <span style={{ fontFamily: "'IBM Plex Mono'", fontSize: 11, color: '#5e6671' }}>{MODE_META[mode].chip}</span>
@@ -1500,17 +1525,7 @@ function FilePreviewPanel({ artifact }: { artifact: Artifact }) {
       </div>
       <div
         className="lm-scroll"
-        style={{
-          flex: 1,
-          overflow: 'auto',
-          padding: '16px 14px',
-          fontFamily: isCode ? "'IBM Plex Mono'" : 'inherit',
-          fontSize: isCode ? 12 : 14,
-          lineHeight: isCode ? 1.9 : 1.75,
-          color: '#cdd2d9',
-          whiteSpace: 'pre-wrap',
-          wordBreak: 'break-word',
-        }}
+        style={filePreviewContentStyle(isCode)}
       >
         {artifact.content}
       </div>
