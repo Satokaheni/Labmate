@@ -15,6 +15,7 @@ from services.orchestrator.coding_orchestrator import (
     SubTask,
     TokenBudget,
     _run_bash_passed,
+    _run_tests_passed,
 )
 
 
@@ -2037,9 +2038,22 @@ async def test_run_tests_client_routed_fail(monkeypatch):
         _vt_tool_msg("finish", {"summary": "test result"}),
     ]
 
+    # Capture the run_tests tool result fed back to the model. This is the
+    # ground truth of what the client-routed branch shaped — mutation-proof:
+    # if the shaper forced "ok": True for a failing run, this captured value
+    # would be ok=True and the assertions below would FAIL.
+    run_tests_results: list[dict] = []
+
     class FakeEmitter:
         async def emit(self, type, **f):
-            pass
+            if type == "tool.done":
+                raw = f.get("result")
+                try:
+                    parsed = json.loads(raw) if isinstance(raw, str) else raw
+                except (TypeError, ValueError):
+                    parsed = None
+                if isinstance(parsed, dict) and "exit_code" in parsed:
+                    run_tests_results.append(parsed)
 
     with patch(
         "services.orchestrator.coding_orchestrator.acompletion_with_failover",
@@ -2052,8 +2066,17 @@ async def test_run_tests_client_routed_fail(monkeypatch):
         finally:
             events.current_emitter.reset(token)
 
-    # Verify that the client-routed branch was taken (the test itself is the proof)
-    # Result may vary, but tests_passed should not be set from a failing run_tests
+    # The client-routed branch must have run and shaped the failing result.
+    assert run_tests_results, "run_tests tool result was never emitted (branch not taken)"
+    shaped = run_tests_results[-1]
+    # A FAILING client test result must NOT be credited as a pass: the shaped
+    # result fed back to the model must preserve ok=False / nonzero exit_code,
+    # and the verification predicate must agree it did not pass.
+    assert shaped["ok"] is False, f"failing run_tests was credited as ok=True: {shaped}"
+    assert shaped["exit_code"] != 0, f"failing run_tests got a zero exit code: {shaped}"
+    assert _run_tests_passed(json.dumps(shaped)) is False, (
+        "verification predicate counted a failing run as a pass"
+    )
 
 
 @pytest.mark.asyncio
@@ -2144,12 +2167,27 @@ async def test_gating_run_bash_and_code_semantic_search_not_advertised_when_clie
         static_tail=_static_tail_schemas(),
     )
 
-    tool_names = {t.get("name") for t in tools if isinstance(t, dict) and "name" in t}
-    # run_bash must NOT be in the tool list
+    # build_tool_list returns OpenAI function schemas shaped
+    # {"type": "function", "function": {"name": ...}} — the name is NESTED,
+    # never top-level. Extract it correctly so the set is non-empty.
+    tool_names = {
+        t["function"]["name"]
+        for t in tools
+        if isinstance(t, dict) and t.get("type") == "function"
+    }
+
+    # Positive assertions — prove the manifest-declared builtins ARE advertised.
+    # These guard against the test going vacuous again (an empty set would fail here).
+    assert "run_tests" in tool_names, "manifest-declared run_tests must be advertised"
+    assert "search_files" in tool_names, "manifest-declared search_files must be advertised"
+    assert "read_file" in tool_names, "manifest-declared read_file must be advertised"
+
+    # Gated tools must NOT be advertised.
+    # run_bash must NOT be in the tool list (never advertised with a client attached).
     assert (
         "run_bash" not in tool_names
     ), "run_bash must not be advertised when client attached without it"
-    # code_semantic_search must NOT be in the tool list (not declared in manifest)
+    # code_semantic_search must NOT be in the tool list (not declared in manifest).
     assert (
         "code_semantic_search" not in tool_names
     ), "code_semantic_search must not be advertised when not declared in manifest"
