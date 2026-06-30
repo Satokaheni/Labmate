@@ -88,11 +88,32 @@ thrash. **P2-B.0 closed.**
 
 ### P2-B.1 — `SKILL.md` discovery (the documentation model)
 Frontend discovers `SKILL.md` files (frontmatter name/description) in the workspace / a skills
-dir; declares them as `source:'skill'` in the manifest (metadata only). The orchestrator
-advertises the metadata; on use, the body is loaded and the model uses the local tools the skill
-describes — **no skill runtime on the client** (the documentation model). Reclassify the Python
-repo-reading skills (supersede via client primitives, or treat as candidates for a future client
-runtime); keep content+model skills server-side fed client content.
+dir; declares them as `source:'skill'` in the manifest. The orchestrator advertises the metadata
+in the `load_skill` catalog; on `load_skill(name)` the SKILL.md **body** is returned and the model
+uses the local primitives (read/write/search/run_tests) the skill describes — **no skill runtime on
+the client** (the documentation model). Reclassify the Python repo-reading skills (supersede via
+client primitives, or treat as candidates for a future client runtime); keep content+model skills
+server-side fed client content.
+
+**Locked design — body delivery (no round-trip, prefix-safe):**
+A documentation skill is a manifest descriptor:
+```
+{ name: string, source: 'skill', description: string, body: string }   // NO namespace, NO schema
+```
+- `description` → the `load_skill` catalog line + enum (the routing signal). Deterministic per
+  client, so prefix-stable.
+- `body` → the full SKILL.md text, returned ONLY when `load_skill(name)` fires (enters the message
+  stream, NEVER the prefix). The manifest is a one-time connect frame, so carrying the body there is
+  free in prefix-cache terms — **no body round-trip needed**.
+- Schema-less `source:'skill'` ⇒ `_is_usable_descriptor` already returns False ⇒ NOT advertised as a
+  flat tool. Consistent split: schema-carrying mcp/skill = flat tool (P2-A hosted MCP);
+  schema-less skill = `load_skill` catalog entry (this slice).
+
+Tasks: **T-B1.1** [frontend] discover+parse `SKILL.md` → descriptors; **T-B1.2** [frontend] merge into
+`capabilitiesFrame`; **T-B1.3** [backend] `parse_manifest` preserves `description`/`body`, catalog
+merge (`catalog_prompt` text + `load_skill` enum include client doc-skills, **description only** — body
+never read here), byte-stable when none; **T-B1.4** [backend] `load_skill` dispatch resolves a client
+doc-skill to its stored `body` (status `loaded`), pod skills unchanged.
 
 ### P2-B.2 — hosted-skill auto-routing ("don't make me name the skill")
 **Problem (from P2-B.0 live testing):** the user still prefixes prompts with "use ast-ts-refactor"
