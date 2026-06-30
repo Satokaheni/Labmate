@@ -5,13 +5,15 @@ import json
 import logging
 import os
 
-from langgraph.graph import StateGraph, START, END
+from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from .types import State, Status, Goal, get_ready_goals, update_status, now_iso, create_goal
-from .coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
-from . import events
+from . import client_context, events
+from .coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
+from .error_classifier import ErrorClass, classify_error, is_terminal
+from .finalize_revision import build_revision_prompt, should_revise
 from .task_complexity import classify_complexity
+from .types import State, Status, create_goal, get_ready_goals, update_status
 
 _log = logging.getLogger("graph")
 
@@ -22,7 +24,7 @@ MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
 GEMMA_BASE = os.getenv("GEMMA_BASE", "http://localhost:8000/v1")
 # On single-GPU setups, QWEN_BASE defaults to GEMMA_BASE (Gemma 4 serves both roles).
 # On dual-GPU, set QWEN_BASE=http://localhost:8001/v1 to enable the specialist Qwen worker.
-QWEN_BASE  = os.getenv("QWEN_BASE",  GEMMA_BASE)
+QWEN_BASE = os.getenv("QWEN_BASE", GEMMA_BASE)
 
 # A1: tasks at or above this ambiguity score route to the approval gate before planning.
 AMBIGUITY_THRESHOLD = float(os.getenv("AMBIGUITY_THRESHOLD", "0.6"))
@@ -84,9 +86,6 @@ MAX_GOAL_ATTEMPTS = int(os.getenv("MAX_GOAL_ATTEMPTS", "2"))
 #   (was hardcoded 3000; lower is faster on the local Q4 model).
 REFLECT_THINKING_BUDGET = int(os.getenv("REFLECT_THINKING_BUDGET", "1500"))
 
-# Task 3: import the error classifier and add rate-limit knobs
-from .error_classifier import classify_error, ErrorClass, is_terminal
-
 # RATE_LIMITED handling: a 429 may be retried a bounded number of times with a
 # short backoff before being treated as exhausted. Keep these small — on the
 # local pod a sustained 429 (e.g. Semantic Scholar without a key) will recur.
@@ -105,11 +104,7 @@ ENABLE_FINALIZE_REVISION = os.getenv("ENABLE_FINALIZE_REVISION", "0") not in (
     "",
 )
 MAX_FINALIZE_REVISIONS = int(os.getenv("MAX_FINALIZE_REVISIONS", "1"))
-FINALIZE_REVISION_THINKING_BUDGET = int(
-    os.getenv("FINALIZE_REVISION_THINKING_BUDGET", "1024")
-)
-
-from .finalize_revision import should_revise, build_revision_prompt
+FINALIZE_REVISION_THINKING_BUDGET = int(os.getenv("FINALIZE_REVISION_THINKING_BUDGET", "1024"))
 
 
 def classify_artifact(text: str) -> str:
@@ -131,7 +126,7 @@ MAX_PRIOR_REFLECTIONS = 3
 
 
 def collect_prior_reflections(
-    state: "State",
+    state: State,
     goal_id: str,
     cap: int = MAX_PRIOR_REFLECTIONS,
 ) -> list[str]:
@@ -159,7 +154,7 @@ def collect_prior_reflections(
     return matches[-cap:]
 
 
-def _run_had_side_effects(state: "State") -> bool:
+def _run_had_side_effects(state: State) -> bool:
     """Conservative heuristic: did this run execute a side-effecting tool/skill?
 
     Revising after side effects is unsafe (the answer describes actions already
@@ -316,6 +311,7 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
                     else:
                         if RATE_LIMIT_BACKOFF_SECONDS > 0:
                             import asyncio
+
                             await asyncio.sleep(RATE_LIMIT_BACKOFF_SECONDS)
                         tree[gid]["attempts"] = prior + 1
                 else:
@@ -364,6 +360,7 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         (FIX #1/#2: Stop masking failures as success)
         """
         import copy
+
         tree = copy.deepcopy(state["goal_tree"])
         root_id = "root"
         root = tree.get(root_id, {})
@@ -401,7 +398,8 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         # So detect retryable FAILED descendants FIRST, regardless of all_terminal,
         # and route to reflect for the deepest-first one so it can be retried.
         failed_retryable = [
-            c for c in children
+            c
+            for c in children
             if tree.get(c, {}).get("status") == Status.FAILED.value
             and tree.get(c, {}).get("attempts", 0) < MAX_GOAL_ATTEMPTS  # FIX 9: was hardcoded 3
         ]
@@ -432,8 +430,7 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             # (attempts >= 3) descendant that permanently blocks it. Finalize as a
             # failure rather than silently ending with no answer.
             exhausted_failed = [
-                c for c in children
-                if tree.get(c, {}).get("status") == Status.FAILED.value
+                c for c in children if tree.get(c, {}).get("status") == Status.FAILED.value
             ]
             if not exhausted_failed:
                 # Genuinely still in progress (no failures): keep waiting.
@@ -448,8 +445,7 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             if tree.get(c, {}).get("result")
         ]
         failed_children = [
-            c for c in children
-            if tree.get(c, {}).get("status") == Status.FAILED.value
+            c for c in children if tree.get(c, {}).get("status") == Status.FAILED.value
         ]
         answer = "\n\n".join(completed_results) if completed_results else "Task completed."
         if failed_children:
@@ -492,6 +488,7 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         instead of repeating the same diagnosis.
         """
         import copy
+
         gid = state["current_goal_id"]
         goal = state["goal_tree"][gid]
 
@@ -535,6 +532,7 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         interrupt() checkpoints state and suspends execution until the thread is resumed.
         """
         import copy
+
         gid = state["current_goal_id"]
         # NOTE: the "awaiting approval" reasoning event is emitted by the upstream
         # assess_ambiguity node (which completes and is checkpointed before this node),
@@ -549,9 +547,23 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
 
     async def assess_ambiguity(state: State) -> dict:
         goal = state.get("root_goal") or state["goal_tree"][state["current_goal_id"]]["description"]
+        # When a local workspace client is attached, the workspace IS the target —
+        # "which codebase/repo?" is never a valid clarification. Without this the
+        # ambiguity triage asks the user where to look instead of searching it.
+        workspace_note = (
+            "CONTEXT: A local workspace IS attached and IS the target of this task. "
+            "Treat the attached workspace as the codebase/project by default. A missing "
+            "repository / codebase / project / folder name is NOT ambiguity, and you "
+            "MUST NEVER set blocking_question to ask which codebase/repo/folder to use — "
+            "the agent searches the attached workspace. Only WHAT to do can be ambiguous "
+            "here, never WHERE the code lives.\n\n"
+            if client_context.get_manifest() is not None
+            else ""
+        )
         prompt = (
             "You are triaging a task before an autonomous agent executes it.\n"
             f"TASK: {goal}\n\n"
+            f"{workspace_note}"
             "List the assumptions an agent must make to act on this as written. "
             "Then rate overall ambiguity from 0.0 (fully specified) to 1.0 (critically "
             "underspecified).\n\n"
@@ -560,7 +572,7 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             "execution detail is pinned down.\n\n"
             "Score HIGH (>= 0.6, typically 0.7-0.9) ONLY when the CORE task is "
             "underspecified, i.e. it has any of:\n"
-            "  - an undefined referent (e.g. \"it\", \"the thing\", \"this\") with no "
+            '  - an undefined referent (e.g. "it", "the thing", "this") with no '
             "antecedent naming the actual object,\n"
             "  - no concrete deliverable (you cannot tell what artifact to produce),\n"
             "  - undefined success criteria (you'd have to guess what 'done' means, or "
@@ -576,22 +588,24 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             "  - which specific library, method, or algorithm to use,\n"
             "  - styling, naming, or other cosmetic choices.\n\n"
             "Examples:\n"
-            "  \"make it better\" -> 0.85  (undefined referent, no deliverable)\n"
-            "  \"fix the thing\" -> 0.9  (undefined referent, no deliverable)\n"
-            "  \"improve performance\" (no system/target/metric) -> 0.75  (undefined "
+            '  "make it better" -> 0.85  (undefined referent, no deliverable)\n'
+            '  "fix the thing" -> 0.9  (undefined referent, no deliverable)\n'
+            '  "improve performance" (no system/target/metric) -> 0.75  (undefined '
             "success criteria)\n"
-            "  \"search the Hugging Face Hub for emotion classification datasets\" -> 0.1 "
+            '  "search the Hugging Face Hub for emotion classification datasets" -> 0.1 '
             " (clear objective; format and count are defaults, not ambiguity)\n"
-            "  \"write a python function that reverses a string\" -> 0.1  (the "
+            '  "write a python function that reverses a string" -> 0.1  (the '
             "implementation method is just a default to pick)\n"
-            "  \"what is 2+2?\" -> 0.0\n"
-            "  \"add a docstring to the reverse_string function in utils.py\" -> 0.1\n\n"
-            "When ambiguity is high, set \"blocking_question\" to the single most useful "
+            '  "what is 2+2?" -> 0.0\n'
+            '  "add a docstring to the reverse_string function in utils.py" -> 0.1\n\n'
+            'When ambiguity is high, set "blocking_question" to the single most useful '
             "question to ask the user; otherwise leave it empty.\n"
             "Respond as JSON: "
             '{"assumptions": ["..."], "ambiguity": 0.0, "blocking_question": "" }'
         )
-        raw = await orch.architect(prompt, thinking_budget=ASSESS_THINKING_BUDGET)  # FIX 10 (A3): was 1024
+        raw = await orch.architect(
+            prompt, thinking_budget=ASSESS_THINKING_BUDGET
+        )  # FIX 10 (A3): was 1024
         text = (raw or "").strip()
         if text.startswith("```json"):
             text = text[7:]
@@ -768,9 +782,7 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
 
         task = state.get("root_goal") or final_answer
         prompt = build_revision_prompt(task, final_answer)
-        revised = await orch.architect(
-            prompt, thinking_budget=FINALIZE_REVISION_THINKING_BUDGET
-        )
+        revised = await orch.architect(prompt, thinking_budget=FINALIZE_REVISION_THINKING_BUDGET)
         revised = (revised or "").strip()
         # A blank revision is a model glitch — keep the original answer but still
         # spend the attempt so the gate stays bounded/idempotent.
@@ -779,7 +791,8 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         await events.emit(
             "reasoning",
             node="revise",
-            summary="revised final answer" if revised and revised != final_answer
+            summary="revised final answer"
+            if revised and revised != final_answer
             else "kept final answer unchanged",
             text=out_answer[:500],
         )
@@ -824,7 +837,9 @@ def router(state: State) -> str:
     if goal is None:
         return END
 
-    if goal["status"] == Status.FAILED.value and goal["attempts"] < MAX_GOAL_ATTEMPTS:  # FIX 9: was < 3
+    if (
+        goal["status"] == Status.FAILED.value and goal["attempts"] < MAX_GOAL_ATTEMPTS
+    ):  # FIX 9: was < 3
         return "reflect"
     if goal["status"] == Status.AWAITING_APPROVAL.value:
         return "approval"
@@ -874,7 +889,11 @@ def clarification_router(state: State) -> str:
       - FIX 10: took the direct-answer fast-path (direct_answer / final_answer set),
         so we don't re-decompose and re-route a question the plan already answered.
     Otherwise continue to execute."""
-    if state.get("awaiting_clarification") or state.get("direct_answer") or state.get("final_answer"):
+    if (
+        state.get("awaiting_clarification")
+        or state.get("direct_answer")
+        or state.get("final_answer")
+    ):
         return END
     return "execute"
 
@@ -882,6 +901,7 @@ def clarification_router(state: State) -> str:
 # ---------------------------------------------------------------------------
 # Graph factory
 # ---------------------------------------------------------------------------
+
 
 def build_graph(
     orch: CodingOrchestrator,
@@ -898,9 +918,16 @@ def build_graph(
     """
     from langgraph.checkpoint.mongodb import MongoDBSaver
 
-    plan_node, execute_node, check_node, reflect_node, approval_node, assess_node, verify_node, revise_node = make_nodes(
-        orch, async_orch
-    )
+    (
+        plan_node,
+        execute_node,
+        check_node,
+        reflect_node,
+        approval_node,
+        assess_node,
+        verify_node,
+        revise_node,
+    ) = make_nodes(orch, async_orch)
 
     b = StateGraph(State)
     b.add_node("plan", plan_node)

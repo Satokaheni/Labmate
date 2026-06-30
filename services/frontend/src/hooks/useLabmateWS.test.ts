@@ -1,6 +1,7 @@
 import { renderHook, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { useLabmateWS, ensureActiveSession, mintSessionId } from './useLabmateWS';
+import { capabilitiesFrame } from '@/protocol/capabilities';
 
 let mockWs: {
   send: ReturnType<typeof vi.fn>;
@@ -414,5 +415,49 @@ describe('ensureActiveSession', () => {
 
   it('mintSessionId returns an s-prefixed id', () => {
     expect(mintSessionId()).toMatch(/^s-/);
+  });
+
+  it('sends capabilities frame after auth.ok', () => {
+    renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    // Clear the send calls from the auth frame
+    mockWs.send.mockClear();
+    // Emit auth.ok
+    act(() => {
+      mockWs.onmessage?.({
+        data: JSON.stringify({ type: 'auth.ok' }),
+      });
+    });
+    // Should have sent the capabilities frame
+    expect(mockWs.send).toHaveBeenCalledWith(
+      JSON.stringify({
+        type: 'client.capabilities',
+        protocolVersion: 1,
+        tools: [
+          { name: 'read_file', source: 'builtin' },
+          { name: 'write_file', source: 'builtin' },
+          { name: 'list_dir', source: 'builtin' },
+          { name: 'search_files', source: 'builtin' },
+          { name: 'run_tests', source: 'builtin' },
+        ],
+      })
+    );
+  });
+});
+
+describe('capabilitiesFrame', () => {
+  it('returns a frame with type client.capabilities and five builtin tools', () => {
+    const frame = capabilitiesFrame();
+    expect(frame.type).toBe('client.capabilities');
+    expect(frame.protocolVersion).toBe(1);
+    expect(frame.tools).toHaveLength(5);
+    expect(frame.tools.map((t) => t.name)).toEqual([
+      'read_file',
+      'write_file',
+      'list_dir',
+      'search_files',
+      'run_tests',
+    ]);
+    expect(frame.tools.every((t) => t.source === 'builtin')).toBe(true);
   });
 });

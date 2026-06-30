@@ -11,6 +11,7 @@ import type {
   SessionBootstrap,
   LabmateWSStatePublic,
 } from '@/types/events';
+import { capabilitiesFrame } from '@/protocol/capabilities';
 
 type LabmateWSStateBase = {
   subsystems?: Subsystem[];
@@ -386,6 +387,11 @@ export function useLabmateWS(
         if (frame.type === 'tool.request') {
           handleToolRequest(frame, ws);
           return;
+        }
+
+        // Send capabilities frame after auth succeeds
+        if (frame.type === 'auth.ok') {
+          ws.send(JSON.stringify(capabilitiesFrame()));
         }
 
         // Fill in a fresh active session at the source when boot delivers none,

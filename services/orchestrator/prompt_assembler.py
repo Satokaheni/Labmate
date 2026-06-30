@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from services.orchestrator.tool_manifest import ClientManifest
 
 # Exact execution-agent system text, copied verbatim from the old inline
 # build in coding_orchestrator.react_execute. Behavior-preserving: do not edit
@@ -27,6 +30,18 @@ BASE_SYSTEM_PROMPT = (
     "If you use the code-sandbox skill, its tools are EXACTLY: run_python, "
     "run_shell, run_tests, install_packages — call them with these names "
     "verbatim via call_skill_tool; do NOT guess other names."
+)
+
+# Steer for when a local-execution client is attached.
+# Appended to BASE_SYSTEM_PROMPT when client_manifest is not None.
+CLIENT_PRIMITIVES_STEER = (
+    "LOCAL-EXECUTION MODE: A local workspace client is attached. For ALL file work — "
+    "locating code, reading files, listing directories, editing files, and running tests — "
+    "you MUST use the local tools (search_files, read_file, list_dir, write_file, run_tests) "
+    "which execute directly on the user's machine against the real repo. Use search_files FIRST "
+    "to locate code by pattern, then read_file to read it. Do NOT use code-search / repo-reading / "
+    "parsing skills for file work — they run on the server and CANNOT see the user's files. "
+    "Skills remain available only for specialized NON-file operations."
 )
 
 
@@ -62,8 +77,15 @@ def _code_semantic_search_schema() -> dict:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "Natural language description of what to find"},
-                    "k": {"type": "integer", "description": "Number of results (max 20)", "default": 8},
+                    "query": {
+                        "type": "string",
+                        "description": "Natural language description of what to find",
+                    },
+                    "k": {
+                        "type": "integer",
+                        "description": "Number of results (max 20)",
+                        "default": 8,
+                    },
                 },
                 "required": ["query"],
             },
@@ -86,8 +108,15 @@ def _memory_search_schema() -> dict:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "What prior context or decision to recall"},
-                    "k": {"type": "integer", "description": "Number of snippets (max 20)", "default": 8},
+                    "query": {
+                        "type": "string",
+                        "description": "What prior context or decision to recall",
+                    },
+                    "k": {
+                        "type": "integer",
+                        "description": "Number of snippets (max 20)",
+                        "default": 8,
+                    },
                 },
                 "required": ["query"],
             },
@@ -105,7 +134,9 @@ def _static_tail_schemas() -> list[dict]:
                 "description": "Read a UTF-8 text file from the user's local workspace.",
                 "parameters": {
                     "type": "object",
-                    "properties": {"path": {"type": "string", "description": "Workspace-relative file path"}},
+                    "properties": {
+                        "path": {"type": "string", "description": "Workspace-relative file path"}
+                    },
                     "required": ["path"],
                 },
             },
@@ -132,7 +163,12 @@ def _static_tail_schemas() -> list[dict]:
                 "description": "List entries of a directory in the user's local workspace.",
                 "parameters": {
                     "type": "object",
-                    "properties": {"path": {"type": "string", "description": "Workspace-relative directory path"}},
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Workspace-relative directory path",
+                        }
+                    },
                     "required": ["path"],
                 },
             },
@@ -163,9 +199,18 @@ def _static_tail_schemas() -> list[dict]:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string", "description": "File, dir, or pytest nodeid to test. Omit to run the whole suite."},
-                        "expr": {"type": "string", "description": "pytest -k expression to select tests, optional."},
-                        "timeout_ms": {"type": "integer", "description": "Max run time in milliseconds, optional."},
+                        "path": {
+                            "type": "string",
+                            "description": "File, dir, or pytest nodeid to test. Omit to run the whole suite.",
+                        },
+                        "expr": {
+                            "type": "string",
+                            "description": "pytest -k expression to select tests, optional.",
+                        },
+                        "timeout_ms": {
+                            "type": "integer",
+                            "description": "Max run time in milliseconds, optional.",
+                        },
                     },
                     "required": [],
                 },
@@ -204,6 +249,7 @@ class PromptAssembler:
         memory_enabled: bool = False,
         base_system: str | None = None,
         catalog: str | None = None,
+        client_manifest: ClientManifest | None = None,
     ) -> None:
         # Resolve the skill catalog deterministically: explicit catalog wins;
         # otherwise pull it from the runner if a skill_router is present.
@@ -216,18 +262,23 @@ class PromptAssembler:
         system_text = base_system if base_system is not None else BASE_SYSTEM_PROMPT
         if catalog:
             system_text = f"{system_text}\n\n{catalog}"
+
+        # If a local-execution client is attached, steer the model to prefer local tools.
+        if client_manifest is not None:
+            system_text = f"{system_text}\n\n{CLIENT_PRIMITIVES_STEER}"
+
         self._system_msg: dict = {"role": "system", "content": system_text}
 
-        tools: list[dict] = []
-        if skill_router is not None:
-            tools.append(skill_router.runner.tool_schema())   # load_skill schema
-            tools.append(_call_skill_tool_schema())
-        if codegraph_enabled:
-            tools.append(_code_semantic_search_schema())
-        if memory_enabled:
-            tools.append(_memory_search_schema())
-        tools.extend(_static_tail_schemas())
-        self._tools: list[dict] = tools
+        # Delegate tool assembly to build_tool_list to handle manifest logic.
+        from services.orchestrator.tool_manifest import build_tool_list
+
+        self._tools: list[dict] = build_tool_list(
+            client_manifest,
+            skill_router=skill_router,
+            codegraph_enabled=codegraph_enabled,
+            memory_enabled=memory_enabled,
+            static_tail=_static_tail_schemas(),
+        )
 
     def system_message(self) -> dict:
         return self._system_msg

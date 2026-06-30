@@ -31,11 +31,12 @@ repos:
   - repo: local
     hooks:
       # React/TS "lint equivalent": type-check the frontend (no emit) when a
-      # frontend .ts/.tsx file is staged. The frontend is type-clean (tsc 0
-      # errors), so this gates new type errors locally.
+      # frontend .ts/.tsx file is staged. Checks BOTH tsconfigs — the app
+      # (src/, vitest) AND the Electron main process (electron/), which uses a
+      # separate, stricter config the app one does not compile.
       - id: frontend-typecheck
-        name: frontend tsc --noEmit
-        entry: bash -c 'cd services/frontend && npx --no-install tsc --noEmit -p tsconfig.json'
+        name: frontend tsc --noEmit (app + electron)
+        entry: bash -c 'cd services/frontend && npx --no-install tsc --noEmit -p tsconfig.json && npx --no-install tsc --noEmit -p electron/tsconfig.json'
         language: system
         files: ^services/frontend/.*\.(ts|tsx)$
         pass_filenames: false
