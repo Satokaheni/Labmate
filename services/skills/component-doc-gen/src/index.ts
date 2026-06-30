@@ -1,7 +1,8 @@
 // src/index.ts
 // NEVER console.log — ALWAYS console.error
+import * as fs from "node:fs";
 import * as path from "node:path";
-import { glob } from "glob";
+import { globSync } from "glob";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -17,8 +18,33 @@ import type { ComponentDoc } from "./types.js";
 const parser = new ComponentParser();
 const docgen = new DocGenerator();
 
+function resolveComponentPath(componentPath: string): string {
+  // existing file (absolute, or relative-to-cwd) -> use as-is
+  if (fs.existsSync(componentPath) && fs.statSync(componentPath).isFile()) {
+    return path.resolve(componentPath);
+  }
+  // else treat the basename as a component NAME and search for **/<name>.{tsx,jsx}
+  const name = path.basename(componentPath).replace(/\.(tsx|jsx|ts|js)$/i, "");
+  // search root: the dir of an absolute path (handles dispatch rooting), else cwd
+  const searchRoot = path.isAbsolute(componentPath) ? path.dirname(componentPath) : process.cwd();
+  const matches = globSync(`**/${name}.{tsx,jsx}`, {
+    cwd: searchRoot,
+    absolute: true,
+    ignore: ["**/node_modules/**"],
+  });
+  if (matches.length === 0) {
+    throw new Error(`no component file found for '${name}' under ${searchRoot}`);
+  }
+  if (matches.length > 1) {
+    throw new Error(
+      `multiple files match '${name}': ${matches.join(", ")} — pass a full path`,
+    );
+  }
+  return matches[0];
+}
+
 const generateInput = z.object({
-  component_path: z.string().describe("Absolute path to the React component .tsx file"),
+  component_path: z.string().describe("Absolute path to the React component .tsx, OR a component name / workspace-relative path — if it is not an existing file, the workspace is searched for a matching **/<name>.{tsx,jsx}"),
   include_stories: z.boolean().default(true).describe("Also generate a Storybook CSF3 story"),
 });
 
@@ -36,7 +62,7 @@ async function buildDoc(componentPath: string, includeStories: boolean): Promise
 const GENERATE_SCHEMA = {
   type: "object",
   properties: {
-    component_path: { type: "string", description: "Absolute path to the React component .tsx file" },
+    component_path: { type: "string", description: "Absolute path to the React component .tsx, OR a component name / workspace-relative path — if it is not an existing file, the workspace is searched for a matching **/<name>.{tsx,jsx}" },
     include_stories: { type: "boolean", description: "Also generate a Storybook CSF3 story", default: true },
   },
   required: ["component_path"],
@@ -81,7 +107,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     switch (name) {
       case "generate": {
         const a = generateInput.parse(args);
-        const doc = await buildDoc(a.component_path, a.include_stories);
+        const resolved = resolveComponentPath(a.component_path);
+        const doc = await buildDoc(resolved, a.include_stories);
         return { content: [{ type: "text", text: JSON.stringify(doc, null, 2) }] };
       }
       case "generate_batch": {
@@ -89,7 +116,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         if (!path.isAbsolute(a.dir_path)) {
           throw new Error(`dir_path must be an absolute path, got: ${a.dir_path}`);
         }
-        const files = await glob(a.pattern, { cwd: a.dir_path, absolute: true, nodir: true });
+        const files = globSync(a.pattern, { cwd: a.dir_path, absolute: true, nodir: true });
         console.error(`[component-doc-gen] batch: ${files.length} files match ${a.pattern}`);
         const lines: string[] = [];
         for (const file of files) {
