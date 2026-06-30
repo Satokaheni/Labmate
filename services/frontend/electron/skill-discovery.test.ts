@@ -135,6 +135,23 @@ More content
       expect(result?.body).toContain('# First section');
       expect(result?.body).toContain('Content here');
     });
+
+    it('should handle CRLF line endings consistently with LF', () => {
+      // CRLF version
+      const textCRLF = '---\r\nname: test-skill\r\ndescription: CRLF test\r\n---\r\n\r\n# Body\r\nContent';
+
+      // LF version (same content)
+      const textLF = '---\nname: test-skill\ndescription: CRLF test\n---\n\n# Body\nContent';
+
+      const resultCRLF = parseSkillMd(textCRLF);
+      const resultLF = parseSkillMd(textLF);
+
+      expect(resultCRLF).not.toBeNull();
+      expect(resultLF).not.toBeNull();
+      expect(resultCRLF?.name).toBe(resultLF?.name);
+      expect(resultCRLF?.description).toBe(resultLF?.description);
+      expect(resultCRLF?.body).toBe(resultLF?.body);
+    });
   });
 
   describe('discoverSkills', () => {

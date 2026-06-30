@@ -37,6 +37,9 @@ export interface SkillToolDescriptor {
  * @returns Parsed frontmatter + body, or null if invalid
  */
 export function parseSkillMd(text: string): DiscoveredSkill | null {
+  // Normalize line endings to LF
+  text = text.replace(/\r\n/g, '\n');
+
   // Require leading ---
   if (!text.startsWith('---\n')) {
     return null;

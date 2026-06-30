@@ -23,6 +23,8 @@ export interface ToolDescriptor {
   source: 'builtin' | 'mcp' | 'skill';
   namespace?: string;
   schema?: unknown;
+  description?: string;
+  body?: string;
 }
 
 // Read config and token synchronously so they're available before the renderer module graph runs.
@@ -46,6 +48,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('labmate:tool-execute', { name, args, sessionId }),
   getMcpTools: (): Promise<ToolDescriptor[]> =>
     ipcRenderer.invoke('labmate:mcp-tools'),
+  getSkillDescriptors: (): Promise<ToolDescriptor[]> =>
+    ipcRenderer.invoke('labmate:skill-descriptors'),
 
   // ── Workspace (multi-root per chat) ──
   getWorkspaceRoots: (sessionId: string | null): Promise<string[]> =>
