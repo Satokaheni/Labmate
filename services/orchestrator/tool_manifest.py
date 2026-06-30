@@ -244,6 +244,31 @@ def parse_manifest(payload: dict | None) -> ClientManifest | None:
     return manifest
 
 
+def hosted_skill_namespaces(manifest: ClientManifest | None) -> set[str]:
+    """
+    Extract the skill namespaces that a client hosts directly via mcp/skill descriptors.
+
+    Used to drop duplicate pod-catalog entries so the model doesn't see a skill twice
+    (once as client-hosted mcp/skill tool, once as pod-side load_skill).
+
+    Args:
+        manifest: Parsed ClientManifest or None.
+
+    Returns:
+        Set of skill namespace strings (e.g., {'ast-ts-refactor', 'code-review'}).
+        Empty set if manifest is None.
+    """
+    if manifest is None:
+        return set()
+    out: set[str] = set()
+    for descriptor in manifest.get("tools", []):
+        source = descriptor.get("source", "builtin")
+        namespace = descriptor.get("namespace")
+        if source in ("mcp", "skill") and namespace and _is_usable_descriptor(descriptor):
+            out.add(namespace)
+    return out
+
+
 def _call_skill_tool_schema() -> dict:
     """Import from prompt_assembler to avoid circular dependency."""
     from services.orchestrator.prompt_assembler import _call_skill_tool_schema as _schema
@@ -293,10 +318,25 @@ def build_tool_list(
     tools = []
     manifest_tool_names = {t["name"] for t in manifest["tools"]}
 
+    # Compute the set of skill namespaces the client hosts directly (mcp/skill).
+    # These should be dropped from the pod-side load_skill enum to prevent duplication.
+    hosted_skills = hosted_skill_namespaces(manifest)
+
     # 1. Skill interface (if router present).
     if skill_router is not None:
-        tools.append(skill_router.runner.tool_schema())  # load_skill
-        tools.append(_call_skill_tool_schema())  # call_skill_tool
+        # Exclude hosted skills from the pod catalog.
+        load_skill_schema = skill_router.runner.tool_schema(exclude=hosted_skills)
+        enum_skills = (
+            load_skill_schema.get("function", {})
+            .get("parameters", {})
+            .get("properties", {})
+            .get("name", {})
+            .get("enum", [])
+        )
+        # Only advertise load_skill if there are available skills after exclusion.
+        if enum_skills:
+            tools.append(load_skill_schema)
+            tools.append(_call_skill_tool_schema())
 
     # 2. code_semantic_search (only if declared in manifest).
     if "code_semantic_search" in manifest_tool_names:

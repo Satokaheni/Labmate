@@ -256,7 +256,11 @@ class PromptAssembler:
         # otherwise pull it from the runner if a skill_router is present.
         if catalog is None and skill_router is not None:
             try:
-                catalog = skill_router.runner.catalog_prompt()
+                from services.orchestrator.tool_manifest import hosted_skill_namespaces
+
+                # When a client is attached, exclude skills it hosts to avoid duplication.
+                exclude = hosted_skill_namespaces(client_manifest)
+                catalog = skill_router.runner.catalog_prompt(exclude=exclude)
             except Exception:
                 catalog = None
 

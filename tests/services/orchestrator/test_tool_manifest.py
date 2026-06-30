@@ -16,6 +16,7 @@ from services.orchestrator.tool_manifest import (
     CANONICAL_BUILTIN_SCHEMAS,
     ClientManifest,
     build_tool_list,
+    hosted_skill_namespaces,
     manifest_local_tool_names,
     parse_manifest,
 )
@@ -458,10 +459,29 @@ def test_build_tool_list_finish_always_last():
 def test_build_tool_list_client_attached_skill_router():
     """build_tool_list with client manifest and skill_router includes skills first."""
     runner = MagicMock()
-    runner.tool_schema.return_value = {
-        "type": "function",
-        "function": {"name": "load_skill", "parameters": {}},
-    }
+
+    # Mock tool_schema to return a schema with non-empty enum so load_skill is included.
+    def mock_tool_schema(exclude=frozenset()):
+        enum_skills = ["code-review", "test-gen"]
+        enum_skills = [s for s in enum_skills if s not in exclude]
+        return {
+            "type": "function",
+            "function": {
+                "name": "load_skill",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "enum": enum_skills,
+                        }
+                    },
+                    "required": ["name"],
+                },
+            },
+        }
+
+    runner.tool_schema = mock_tool_schema
     sr = MagicMock()
     sr.runner = runner
     manifest: ClientManifest = {
@@ -608,10 +628,29 @@ def test_manifest_local_tool_names_matches_advertised_names():
     """
     # Build a fake skill_router so load_skill and call_skill_tool are advertised.
     runner = MagicMock()
-    runner.tool_schema.return_value = {
-        "type": "function",
-        "function": {"name": "load_skill", "parameters": {}},
-    }
+
+    # Mock tool_schema to return a schema with non-empty enum so load_skill is included.
+    def mock_tool_schema(exclude=frozenset()):
+        enum_skills = ["code-review", "test-gen"]
+        enum_skills = [s for s in enum_skills if s not in exclude]
+        return {
+            "type": "function",
+            "function": {
+                "name": "load_skill",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "enum": enum_skills,
+                        }
+                    },
+                    "required": ["name"],
+                },
+            },
+        }
+
+    runner.tool_schema = mock_tool_schema
     runner.catalog_prompt.return_value = None
     fake_router = MagicMock()
     fake_router.runner = runner
@@ -763,3 +802,256 @@ def test_manifest_local_tool_names_accepts_mcp_with_valid_schema():
     local_names = manifest_local_tool_names(manifest, set())
     assert "read_file" in local_names
     assert "mcp__srv1__toolx" in local_names
+
+
+@pytest.mark.mocked
+def test_hosted_skill_namespaces_none_manifest():
+    """hosted_skill_namespaces(None) returns empty set."""
+    assert hosted_skill_namespaces(None) == set()
+
+
+@pytest.mark.mocked
+def test_hosted_skill_namespaces_empty_tools():
+    """hosted_skill_namespaces with empty tools list returns empty set."""
+    manifest: ClientManifest = {"tools": []}
+    assert hosted_skill_namespaces(manifest) == set()
+
+
+@pytest.mark.mocked
+def test_hosted_skill_namespaces_mcp_with_namespace():
+    """hosted_skill_namespaces extracts mcp/skill tool namespaces."""
+    schema = {"type": "function", "function": {"name": "find_references"}}
+    manifest: ClientManifest = {
+        "tools": [
+            {
+                "name": "find_references",
+                "source": "mcp",
+                "namespace": "ast-ts-refactor",
+                "schema": schema,
+            }
+        ]
+    }
+    assert hosted_skill_namespaces(manifest) == {"ast-ts-refactor"}
+
+
+@pytest.mark.mocked
+def test_hosted_skill_namespaces_skill_with_namespace():
+    """hosted_skill_namespaces extracts skill tool namespaces."""
+    schema = {"type": "function", "function": {"name": "generate"}}
+    manifest: ClientManifest = {
+        "tools": [
+            {
+                "name": "generate",
+                "source": "skill",
+                "namespace": "code-gen",
+                "schema": schema,
+            }
+        ]
+    }
+    assert hosted_skill_namespaces(manifest) == {"code-gen"}
+
+
+@pytest.mark.mocked
+def test_hosted_skill_namespaces_multiple():
+    """hosted_skill_namespaces extracts multiple namespaces."""
+    schema1 = {"type": "function", "function": {"name": "tool1"}}
+    schema2 = {"type": "function", "function": {"name": "tool2"}}
+    manifest: ClientManifest = {
+        "tools": [
+            {
+                "name": "tool1",
+                "source": "mcp",
+                "namespace": "ast-ts-refactor",
+                "schema": schema1,
+            },
+            {
+                "name": "tool2",
+                "source": "mcp",
+                "namespace": "code-review",
+                "schema": schema2,
+            },
+        ]
+    }
+    assert hosted_skill_namespaces(manifest) == {"ast-ts-refactor", "code-review"}
+
+
+@pytest.mark.mocked
+def test_hosted_skill_namespaces_excludes_builtin():
+    """hosted_skill_namespaces excludes builtin tools."""
+    manifest: ClientManifest = {
+        "tools": [
+            {"name": "read_file", "source": "builtin"},
+        ]
+    }
+    assert hosted_skill_namespaces(manifest) == set()
+
+
+@pytest.mark.mocked
+def test_hosted_skill_namespaces_excludes_mcp_without_namespace():
+    """hosted_skill_namespaces excludes mcp tools without namespace."""
+    schema = {"type": "function", "function": {"name": "tool1"}}
+    manifest: ClientManifest = {
+        "tools": [
+            {
+                "name": "tool1",
+                "source": "mcp",
+                "schema": schema,
+            }
+        ]
+    }
+    assert hosted_skill_namespaces(manifest) == set()
+
+
+@pytest.mark.mocked
+def test_hosted_skill_namespaces_excludes_mcp_without_schema():
+    """hosted_skill_namespaces excludes mcp tools without a schema."""
+    manifest: ClientManifest = {
+        "tools": [
+            {
+                "name": "tool1",
+                "source": "mcp",
+                "namespace": "srv1",
+            }
+        ]
+    }
+    assert hosted_skill_namespaces(manifest) == set()
+
+
+@pytest.mark.mocked
+def test_build_tool_list_client_with_hosted_skills_drops_from_enum():
+    """build_tool_list drops client-hosted skills from load_skill enum."""
+    runner = MagicMock()
+
+    # Mock the tool_schema to track what exclude set was passed.
+    def mock_tool_schema(exclude=frozenset()):
+        enum_skills = ["code-review", "test-gen"]  # Original full catalog
+        enum_skills = [s for s in enum_skills if s not in exclude]
+        return {
+            "type": "function",
+            "function": {
+                "name": "load_skill",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "enum": enum_skills,
+                        }
+                    },
+                    "required": ["name"],
+                },
+            },
+        }
+
+    runner.tool_schema = mock_tool_schema
+    sr = MagicMock()
+    sr.runner = runner
+
+    schema_tool = {
+        "type": "function",
+        "function": {"name": "find_references", "parameters": {}},
+    }
+    manifest: ClientManifest = {
+        "tools": [
+            {
+                "name": "find_references",
+                "source": "mcp",
+                "namespace": "ast-ts-refactor",
+                "schema": schema_tool,
+            },
+            {"name": "read_file", "source": "builtin"},
+        ]
+    }
+    static_tail = _static_tail_schemas()
+    tools = build_tool_list(
+        manifest, skill_router=sr, codegraph_enabled=False, static_tail=static_tail
+    )
+
+    # load_skill should be present; check its enum
+    load_skill = next((t for t in tools if t["function"]["name"] == "load_skill"), None)
+    assert load_skill is not None
+    # The enum should not contain "ast-ts-refactor" (it was excluded)
+    enum = load_skill["function"]["parameters"]["properties"]["name"]["enum"]
+    assert "ast-ts-refactor" not in enum
+
+
+@pytest.mark.mocked
+def test_build_tool_list_client_all_skills_hosted_omits_load_skill():
+    """build_tool_list omits load_skill when all pod skills are client-hosted."""
+    runner = MagicMock()
+
+    # All skills are hosted by the client, so exclude set is the full catalog.
+    def mock_tool_schema(exclude=frozenset()):
+        enum_skills = [s for s in ["code-review", "test-gen"] if s not in exclude]
+        return {
+            "type": "function",
+            "function": {
+                "name": "load_skill",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "enum": enum_skills,
+                        }
+                    },
+                    "required": ["name"],
+                },
+            },
+        }
+
+    runner.tool_schema = mock_tool_schema
+    sr = MagicMock()
+    sr.runner = runner
+
+    # Client hosts all skills
+    schema1 = {"type": "function", "function": {"name": "tool1"}}
+    schema2 = {"type": "function", "function": {"name": "tool2"}}
+    manifest: ClientManifest = {
+        "tools": [
+            {
+                "name": "tool1",
+                "source": "mcp",
+                "namespace": "code-review",
+                "schema": schema1,
+            },
+            {
+                "name": "tool2",
+                "source": "mcp",
+                "namespace": "test-gen",
+                "schema": schema2,
+            },
+            {"name": "read_file", "source": "builtin"},
+        ]
+    }
+    static_tail = _static_tail_schemas()
+    tools = build_tool_list(
+        manifest, skill_router=sr, codegraph_enabled=False, static_tail=static_tail
+    )
+    names = [t["function"]["name"] for t in tools]
+
+    # load_skill and call_skill_tool should NOT be present (empty enum)
+    assert "load_skill" not in names
+    assert "call_skill_tool" not in names
+    # Client MCP tools and finish should be present
+    assert "mcp__code-review__tool1" in names
+    assert "mcp__test-gen__tool2" in names
+    assert "finish" in names
+
+
+@pytest.mark.mocked
+def test_build_tool_list_no_manifest_byte_identical_no_exclude():
+    """build_tool_list with manifest=None is byte-identical (no exclude path taken)."""
+    static_tail = _static_tail_schemas()
+
+    # Build twice with no manifest; should be identical.
+    tools1 = build_tool_list(
+        None, skill_router=None, codegraph_enabled=False, static_tail=static_tail
+    )
+    tools2 = build_tool_list(
+        None, skill_router=None, codegraph_enabled=False, static_tail=static_tail
+    )
+
+    import json
+
+    assert json.dumps(tools1, sort_keys=True) == json.dumps(tools2, sort_keys=True)
