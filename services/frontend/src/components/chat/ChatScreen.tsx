@@ -1,4 +1,12 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type ReactNode,
+} from 'react';
 import type {
   LabmateWSStatePublic,
   Session,
@@ -894,7 +902,7 @@ function TopBar(props: {
 // Left sidebar
 // ====================================================================
 
-function sysRow(color: string, label: string, value: string, pulse = false): JSX.Element {
+function sysRow(color: string, label: string, value: string, pulse = false): ReactNode {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
       <span style={sysRowDotStyle(color, pulse)} />
@@ -1351,7 +1359,7 @@ function Composer(props: { mode: Mode; budget: number; sessionId: string; onSend
 // Right panel: skills timeline / file preview / debug / empty
 // ====================================================================
 
-function panelHeader(dot: string, label: string, right?: string, pulse = true): JSX.Element {
+function panelHeader(dot: string, label: string, right?: string, pulse = true): ReactNode {
   return (
     <div
       style={{
