@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -62,5 +62,38 @@ describe('executeTool', () => {
 
   it('rejects unknown tool', async () => {
     await expect(executeTool('rm_rf' as never, {}, [ws])).rejects.toThrow(/unknown local tool/);
+  });
+});
+
+describe('search_files', () => {
+  it('throws when passed outside the workspace roots', async () => {
+    await expect(
+      executeTool('search_files', { query: 'test', path: '../../etc/passwd' }, [ws]),
+    ).rejects.toThrow(/outside the primary/);
+  });
+
+  it('throws when no query is provided', async () => {
+    await expect(executeTool('search_files', { query: '' }, [ws])).rejects.toThrow(
+      /search_files requires query argument/,
+    );
+  });
+
+  it('throws when ripgrep is not on PATH', async () => {
+    // Set an invalid rg path to trigger the ENOENT error
+    const originalPath = process.env.LABMATE_RG_PATH;
+    process.env.LABMATE_RG_PATH = '/nonexistent/path/to/rg_that_does_not_exist';
+
+    try {
+      writeFileSync(path.join(ws, 'test.txt'), 'content', 'utf-8');
+      await expect(
+        executeTool('search_files', { query: 'test' }, [ws]),
+      ).rejects.toThrow(/ripgrep \(rg\) not found on PATH/);
+    } finally {
+      if (originalPath !== undefined) {
+        process.env.LABMATE_RG_PATH = originalPath;
+      } else {
+        delete process.env.LABMATE_RG_PATH;
+      }
+    }
   });
 });

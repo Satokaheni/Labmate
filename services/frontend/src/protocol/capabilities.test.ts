@@ -2,16 +2,28 @@ import { describe, it, expect } from 'vitest';
 import { capabilitiesFrame, CLIENT_CAPABILITIES } from './capabilities';
 
 describe('capabilities', () => {
-  it('capabilitiesFrame returns a frame with type client.capabilities and three builtin tools', () => {
+  it('capabilitiesFrame returns a frame with type client.capabilities and four builtin tools', () => {
     const frame = capabilitiesFrame();
     expect(frame.type).toBe('client.capabilities');
     expect(frame.protocolVersion).toBe(1);
-    expect(frame.tools).toHaveLength(3);
+    expect(frame.tools).toHaveLength(4);
   });
 
-  it('capabilitiesFrame tool names are exactly read_file, write_file, list_dir', () => {
+  it('capabilitiesFrame tool names are exactly read_file, write_file, list_dir, search_files', () => {
     const frame = capabilitiesFrame();
-    expect(frame.tools.map((t) => t.name)).toEqual(['read_file', 'write_file', 'list_dir']);
+    expect(frame.tools.map((t) => t.name)).toEqual([
+      'read_file',
+      'write_file',
+      'list_dir',
+      'search_files',
+    ]);
+  });
+
+  it('capabilitiesFrame includes search_files with builtin source', () => {
+    const frame = capabilitiesFrame();
+    const searchFilesTool = frame.tools.find((t) => t.name === 'search_files');
+    expect(searchFilesTool).toBeDefined();
+    expect(searchFilesTool?.source).toBe('builtin');
   });
 
   it('capabilitiesFrame tools all have source builtin', () => {

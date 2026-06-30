@@ -12,13 +12,14 @@ export interface ClientCapabilities {
   tools: ToolDescriptor[];
 }
 
-// The capabilities this client can currently execute (Phase 0: the three builtins).
+// The capabilities this client can currently execute (Phase 0: the four builtins).
 export const CLIENT_CAPABILITIES: ClientCapabilities = {
   protocolVersion: 1,
   tools: [
     { name: 'read_file', source: 'builtin' },
     { name: 'write_file', source: 'builtin' },
     { name: 'list_dir', source: 'builtin' },
+    { name: 'search_files', source: 'builtin' },
   ],
 };
 
