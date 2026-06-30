@@ -168,20 +168,23 @@ async function handleSearchFiles(args: Record<string, unknown>, roots: string[])
 
     return { hits, truncated };
   } catch (err) {
+    // execFile puts the process EXIT CODE (a number) on `code` for a non-zero
+    // exit, or a spawn errno string (e.g. 'ENOENT') when the binary is missing.
+    const code = (err as { code?: number | string }).code;
     // rg exit code 1 means "no matches", not an error
-    if ((err as NodeJS.ErrnoException).code === 1) {
+    if (code === 1) {
       return { hits: [], truncated: false };
     }
 
     // rg missing from PATH
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+    if (code === 'ENOENT') {
       throw new Error(
         'ripgrep (rg) not found on PATH — install it (e.g. brew install ripgrep) or set LABMATE_RG_PATH',
       );
     }
 
     // Other errors (exit code >= 2, etc.)
-    const errMsg = (err as any).stderr || String(err);
+    const errMsg = (err as { stderr?: string }).stderr || String(err);
     throw new Error(`ripgrep failed: ${errMsg}`);
   }
 }
