@@ -1034,10 +1034,13 @@ function AssistantTurnView(props: {
   const calls = turn.toolCalls ?? [];
   const reasoning = turn.reasoning;
 
-  // The chip shows the COUNT of distinct skills + the one CURRENTLY running (if
-  // any) — the full per-call list lives in the Skills panel (open via "View →").
-  const skillNames = [...new Set(calls.map((c) => c.name))];
-  const runningCall = calls.find((c) => c.status === 'running');
+  // The chip shows the COUNT of distinct SKILLS (kind === 'skill') + the one
+  // CURRENTLY running (if any). Plain primitive tools (read_file/run_tests/...)
+  // are kind === 'tool' and are NOT counted as skills — they still appear in the
+  // full per-call timeline in the Skills panel (open via "View →").
+  const skillCalls = calls.filter((c) => c.kind === 'skill');
+  const skillNames = [...new Set(skillCalls.map((c) => c.name))];
+  const runningCall = skillCalls.find((c) => c.status === 'running');
 
   return (
     <div style={ASSISTANT_TURN_CONTAINER_STYLE}>
