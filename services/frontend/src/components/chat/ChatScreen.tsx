@@ -61,16 +61,6 @@ function parseStart(createdAt?: string): number {
   return Date.now();
 }
 
-/** Keyboard activation (Enter/Space) for a div/span acting as a button. */
-function keyActivate(fn: () => void) {
-  return (e: KeyboardEvent<HTMLElement>) => {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      fn();
-    }
-  };
-}
-
 /** Per-call accent: skills green, plain tools blue (mirrors the comp dots). */
 function callColor(c: ToolCall): string {
   return c.kind === 'skill' ? '#56c08d' : '#6aa6ff';
@@ -333,6 +323,8 @@ const ASSISTANT_LABEL_STYLE: CSSProperties = {
 };
 
 const THOUGHT_CONTAINER_STYLE: CSSProperties = {
+  display: 'block',
+  width: '100%',
   borderLeft: '2px solid #2a2f39',
   padding: '3px 0 3px 14px',
   marginBottom: 16,
@@ -352,6 +344,7 @@ const THOUGHT_TOGGLE_ICON_STYLE: CSSProperties = {
 };
 
 const THOUGHT_TEXT_STYLE: CSSProperties = {
+  display: 'block',
   fontSize: 13,
   lineHeight: 1.6,
   color: '#6b727d',
@@ -404,10 +397,12 @@ const ANSWER_CONTAINER_STYLE: CSSProperties = {
 };
 
 const FILE_INFO_STYLE: CSSProperties = {
+  display: 'block',
   minWidth: 0,
 };
 
 const FILE_NAME_STYLE: CSSProperties = {
+  display: 'block',
   fontSize: 13.5,
   fontWeight: 600,
   color: '#e6e8ec',
@@ -417,6 +412,7 @@ const FILE_NAME_STYLE: CSSProperties = {
 };
 
 const FILE_META_STYLE: CSSProperties = {
+  display: 'block',
   fontFamily: "'IBM Plex Mono'",
   fontSize: 11,
   color: '#6b727d',
@@ -756,12 +752,20 @@ const sysRowDotStyle = (color: string, pulse: boolean): CSSProperties => ({
 });
 
 const sessionItemStyle = (active: boolean): CSSProperties => ({
+  display: 'block',
+  width: '100%',
   background: active ? '#15181e' : 'transparent',
   borderRadius: 8,
   padding: '11px 12px',
   marginBottom: 3,
   cursor: 'pointer',
 });
+
+const SKILL_ROW_TOGGLE_STYLE: CSSProperties = {
+  display: 'block',
+  width: '100%',
+  cursor: 'pointer',
+};
 
 const sessionTitleStyle = (active: boolean): CSSProperties => ({
   fontSize: 13.5,
@@ -866,23 +870,22 @@ function TopBar(props: {
         <span style={TOPBAR_STATUS_TEXT_STYLE}>llama.cpp :8000</span>
       </div>
       <div style={TOPBAR_TABS_GROUP_STYLE}>
-        <div onClick={onSkills} onKeyDown={keyActivate(onSkills)} role="button" tabIndex={0} style={segTab(rightView === 'skills')}>
+        <button type="button" className="lm-btn" onClick={onSkills} style={segTab(rightView === 'skills')}>
           ⚡ Skills
-        </div>
-        <div onClick={onFiles} onKeyDown={keyActivate(onFiles)} role="button" tabIndex={0} style={segTab(rightView === 'files')}>
+        </button>
+        <button type="button" className="lm-btn" onClick={onFiles} style={segTab(rightView === 'files')}>
           ⎋ Files
-        </div>
+        </button>
       </div>
-      <div
+      <button
+        type="button"
+        className="lm-btn"
         onClick={onToggleDebug}
-        onKeyDown={keyActivate(onToggleDebug)}
-        role="button"
-        tabIndex={0}
         style={debugToggleStyle(debug)}
       >
         <span style={{ width: 6, height: 6, borderRadius: '50%', background: debug ? '#56c08d' : '#37404c' }} />
         <span style={{ fontFamily: "'IBM Plex Mono'", fontSize: 11, color: '#939ba7' }}>debug {debug ? 'on' : 'off'}</span>
-      </div>
+      </button>
     </div>
   );
 }
@@ -919,15 +922,15 @@ function Sidebar(props: {
     <div style={SIDEBAR_CONTAINER_STYLE}>
       <div style={SIDEBAR_TOP_SECTION_STYLE}>
         <div style={MODE_TABS_CONTAINER_STYLE}>
-          <div onClick={() => onSetMode('chat')} onKeyDown={keyActivate(() => onSetMode('chat'))} role="button" tabIndex={0} style={sidebarTab('chat', mode)}>
+          <button type="button" className="lm-btn" onClick={() => onSetMode('chat')} style={sidebarTab('chat', mode)}>
             <span style={{ fontSize: 14 }}>💬</span>Chat
-          </div>
-          <div onClick={() => onSetMode('paper')} onKeyDown={keyActivate(() => onSetMode('paper'))} role="button" tabIndex={0} style={sidebarTab('paper', mode)}>
+          </button>
+          <button type="button" className="lm-btn" onClick={() => onSetMode('paper')} style={sidebarTab('paper', mode)}>
             <span style={{ fontSize: 14 }}>📄</span>Paper writing
-          </div>
-          <div onClick={() => onSetMode('code')} onKeyDown={keyActivate(() => onSetMode('code'))} role="button" tabIndex={0} style={sidebarTab('code', mode)}>
+          </button>
+          <button type="button" className="lm-btn" onClick={() => onSetMode('code')} style={sidebarTab('code', mode)}>
             <span style={{ fontSize: 14 }}>⌘</span>Coding
-          </div>
+          </button>
         </div>
         <button type="button" onClick={onNewSession} style={NEW_SESSION_BUTTON_STYLE}>
           ＋ New {MODE_META[mode].noun} session
@@ -946,24 +949,23 @@ function Sidebar(props: {
             .filter(Boolean)
             .join(' · ');
           return (
-            <div
+            <button
               key={s.id}
+              type="button"
+              className="lm-btn"
               onClick={() => onOpenSession(s.id)}
-              onKeyDown={keyActivate(() => onOpenSession(s.id))}
-              role="button"
-              tabIndex={0}
               style={sessionItemStyle(active)}
             >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                 <span style={{ fontSize: 12, opacity: 0.85 }}>{MODE_META[sMode].icon}</span>
                 <span style={sessionTitleStyle(active)}>
                   {s.title || `Session ${s.id.slice(0, 6)}`}
                 </span>
-              </div>
+              </span>
               {meta && (
-                <div style={{ fontSize: 11, color: '#5e6671', marginTop: 4, fontFamily: "'IBM Plex Mono'" }}>{meta}</div>
+                <span style={{ display: 'block', fontSize: 11, color: '#5e6671', marginTop: 4, fontFamily: "'IBM Plex Mono'" }}>{meta}</span>
               )}
-            </div>
+            </button>
           );
         })}
       </div>
@@ -995,7 +997,9 @@ function UserBubble({ text }: { text: string }) {
 }
 
 function ThinkingLine({ turn, active }: { turn: Turn; active: boolean }) {
-  const startRef = useRef<number>(parseStart(turn.createdAt));
+  // Lazy ref init: capture the start time once instead of re-parsing every render.
+  const startRef = useRef<number | null>(null);
+  if (startRef.current === null) startRef.current = parseStart(turn.createdAt);
   const now = useNow(active);
   const elapsed = Math.max(0, now - startRef.current);
   const running = (turn.toolCalls ?? []).find((c) => c.status === 'running');
@@ -1036,26 +1040,26 @@ function AssistantTurnView(props: {
 
       {/* thought block */}
       {reasoning && (
-        <div onClick={onToggleThought} onKeyDown={keyActivate(onToggleThought)} role="button" tabIndex={0} style={THOUGHT_CONTAINER_STYLE}>
-          <div style={THOUGHT_HEADER_STYLE}>
+        <button type="button" className="lm-btn" onClick={onToggleThought} style={THOUGHT_CONTAINER_STYLE}>
+          <span style={THOUGHT_HEADER_STYLE}>
             <span style={THOUGHT_TOGGLE_ICON_STYLE}>{thoughtOpen ? '▾' : '▸'}</span>
             <span style={{ fontSize: 13, color: '#939ba7' }}>Thought for {fmtDur(reasoning.durationMs) || `${reasoning.tokens} tok`}</span>
             <span style={{ fontFamily: "'IBM Plex Mono'", fontSize: 10.5, color: '#5e6671' }}>
               · {reasoning.node} · {reasoning.tokens.toLocaleString()} / {reasoning.budget.toLocaleString()}
             </span>
-          </div>
-          {thoughtOpen && <div style={THOUGHT_TEXT_STYLE}>{reasoning.text}</div>}
-        </div>
+          </span>
+          {thoughtOpen && <span style={THOUGHT_TEXT_STYLE}>{reasoning.text}</span>}
+        </button>
       )}
 
       {/* skills chip */}
       {calls.length > 0 && (
-        <div onClick={onOpenSkills} onKeyDown={keyActivate(onOpenSkills)} role="button" tabIndex={0} style={SKILLS_CHIP_STYLE}>
+        <button type="button" className="lm-btn" onClick={onOpenSkills} style={SKILLS_CHIP_STYLE}>
           <span style={SKILLS_COUNT_STYLE}>⚡</span>
           <span style={SKILLS_LABEL_STYLE}>{calls.length} skills used</span>
           <span style={SKILLS_LIST_STYLE}>{calls.map((c) => c.name).join(' · ')}</span>
           <span style={SKILLS_VIEW_LINK_STYLE}>View →</span>
-        </div>
+        </button>
       )}
 
       {/* answer */}
@@ -1081,30 +1085,29 @@ function FileCard({ artifact, active, onClick }: { artifact: Artifact; active: b
   const badge = langBadge(artifact.language);
 
   return (
-    <div
+    <button
+      type="button"
+      className="lm-btn"
       onClick={onClick}
-      onKeyDown={keyActivate(onClick)}
-      role="button"
-      tabIndex={0}
       style={fileCardStyle(active)}
     >
-      <div
+      <span
         style={{ ...fileCardBadgeStyle(badgeBg, badgeBorder), color: badgeColor }}
       >
         {badge}
-      </div>
-      <div style={FILE_INFO_STYLE}>
-        <div style={FILE_NAME_STYLE}>{artifact.name}</div>
-        <div style={FILE_META_STYLE}>
+      </span>
+      <span style={FILE_INFO_STYLE}>
+        <span style={FILE_NAME_STYLE}>{artifact.name}</span>
+        <span style={FILE_META_STYLE}>
           {artifact.language} · {formatBytes(artifact.sizeBytes)} · generated
-        </div>
-      </div>
-      <div style={FILE_SPACER_STYLE} />
+        </span>
+      </span>
+      <span style={FILE_SPACER_STYLE} />
       <span style={FILE_PREVIEW_LINK_STYLE}>Preview</span>
-      <div style={FILE_DOWNLOAD_BUTTON_STYLE}>
+      <span style={FILE_DOWNLOAD_BUTTON_STYLE}>
         ⤓
-      </div>
-    </div>
+      </span>
+    </button>
   );
 }
 
@@ -1131,12 +1134,11 @@ function ContextStrip({ window: ctx, open, onToggle }: { window?: ContextWindow;
   return (
     <div style={{ flex: 'none', padding: '0 24px 14px', background: '#0f1115' }}>
       <div style={{ maxWidth: 680, margin: '0 auto' }}>
-        <div
+        <button
+          type="button"
+          className="lm-btn"
           onClick={onToggle}
-          onKeyDown={keyActivate(onToggle)}
-          role="button"
-          tabIndex={0}
-          style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', marginBottom: 9 }}
+          style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', marginBottom: 9, width: '100%' }}
         >
           <span
             style={{
@@ -1149,13 +1151,13 @@ function ContextStrip({ window: ctx, open, onToggle }: { window?: ContextWindow;
           >
             Context
           </span>
-          <div style={{ flex: 1 }} />
+          <span style={{ flex: 1 }} />
           <span style={{ fontFamily: "'IBM Plex Mono'", fontSize: 10.5, color: '#939ba7' }}>
             {used.toLocaleString()} / {max.toLocaleString()}
           </span>
           <span style={{ fontFamily: "'IBM Plex Mono'", fontSize: 10.5, color: '#6b727d' }}>· {pct}%</span>
           <span style={{ fontSize: 10, color: '#5e6671', width: 9, textAlign: 'center' }}>{open ? '▾' : '▸'}</span>
-        </div>
+        </button>
         <div style={{ display: 'flex', height: 7, borderRadius: 4, overflow: 'hidden', background: '#15181e' }}>
           {segs &&
             CTX_SEGS.map((s) => <div key={s.key} style={{ width: w(segs[s.key]), background: s.color }} />)}
@@ -1326,9 +1328,9 @@ function Composer(props: { mode: Mode; budget: number; sessionId: string; onSend
               thinking {budget.toLocaleString()}
             </span>
             <div style={{ flex: 1 }} />
-            <div onClick={submit} onKeyDown={keyActivate(submit)} role="button" tabIndex={0} style={COMPOSER_SUBMIT_BUTTON_STYLE}>
+            <button type="button" className="lm-btn" onClick={submit} style={COMPOSER_SUBMIT_BUTTON_STYLE}>
               ↑
-            </div>
+            </button>
           </div>
         </div>
       </div>
@@ -1405,8 +1407,8 @@ function SkillsPanel({
                 {!last && <span style={{ width: 1, flex: 1, background: '#20242c', marginTop: 6, minHeight: 16 }} />}
               </div>
               <div style={{ flex: 1, minWidth: 0, paddingBottom: 16 }}>
-                <div onClick={() => onToggle(c.id)} onKeyDown={keyActivate(() => onToggle(c.id))} role="button" tabIndex={0} style={{ cursor: 'pointer' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <button type="button" className="lm-btn" onClick={() => onToggle(c.id)} style={SKILL_ROW_TOGGLE_STYLE}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <span style={{ fontFamily: "'IBM Plex Mono'", fontSize: 12.5, fontWeight: 600, color }}>{c.name}</span>
                     <span
                       style={{
@@ -1420,14 +1422,14 @@ function SkillsPanel({
                     >
                       {c.kind ?? 'tool'}
                     </span>
-                    <div style={{ flex: 1 }} />
+                    <span style={{ flex: 1 }} />
                     {c.durationMs != null && (
                       <span style={{ fontFamily: "'IBM Plex Mono'", fontSize: 10, color: '#5e6671' }}>{fmtDur(c.durationMs)}</span>
                     )}
                     <span style={{ fontSize: 10, color: '#5e6671', width: 9, textAlign: 'center' }}>{open ? '▾' : '▸'}</span>
-                  </div>
-                  {c.summary && <div style={{ fontSize: 12, color: '#7e8693', marginTop: 5 }}>{c.summary}</div>}
-                </div>
+                  </span>
+                  {c.summary && <span style={{ display: 'block', fontSize: 12, color: '#7e8693', marginTop: 5 }}>{c.summary}</span>}
+                </button>
                 {open && (
                   <div style={{ marginTop: 12 }}>
                     {c.reasoningWhy && (
@@ -1605,7 +1607,7 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug }: Chat
     ? allTurns.filter((t) => !t.sessionId || t.sessionId === activeSessionId)
     : allTurns;
 
-  const [mode, setMode] = useState<Mode>(normMode(activeSession?.mode));
+  const [mode, setMode] = useState<Mode>(() => normMode(activeSession?.mode));
   const [rightView, setRightView] = useState<'skills' | 'files' | null>('skills');
   const [debug, setLocalDebug] = useState(false);
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
@@ -1675,8 +1677,9 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug }: Chat
   const activeArtifact = useMemo<Artifact | undefined>(() => {
     if (!activeFileId) return undefined;
     for (const t of turns) {
-      const a = t.artifacts?.find((x) => x.id === activeFileId);
-      if (a) return a;
+      for (const a of t.artifacts ?? []) {
+        if (a.id === activeFileId) return a;
+      }
     }
     return undefined;
   }, [turns, activeFileId]);

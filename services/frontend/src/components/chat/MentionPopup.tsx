@@ -6,6 +6,17 @@ import { basename } from './paths';
 // Static style objects (module-level to avoid rebuild on every render)
 // ====================================================================
 
+const popupItemStyle = (active: boolean): CSSProperties => ({
+  display: 'flex',
+  alignItems: 'center',
+  gap: 9,
+  padding: '6px 9px',
+  borderRadius: 7,
+  cursor: 'pointer',
+  width: '100%',
+  background: active ? '#1b1f26' : 'transparent',
+});
+
 const POPUP_CONTAINER_STYLE: CSSProperties = {
   position: 'absolute',
   left: 0,
@@ -55,27 +66,19 @@ export function MentionPopup({
   return (
     <div className="lm-scroll" style={POPUP_CONTAINER_STYLE}>
       {entries.map((e, i) => (
-        <div
+        <button
           key={e.absolute}
-          role="button"
+          type="button"
+          className="lm-btn"
           onMouseEnter={() => onHover(i)}
           onMouseDown={(ev) => { ev.preventDefault(); onPick(e); }}
-          onKeyDown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); onPick(e); } }}
           tabIndex={-1}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 9,
-            padding: '6px 9px',
-            borderRadius: 7,
-            cursor: 'pointer',
-            background: i === index ? '#1b1f26' : 'transparent',
-          }}
+          style={popupItemStyle(i === index)}
         >
           <span aria-hidden style={POPUP_ITEM_ICON_STYLE}>{e.isDir ? '📁' : '📄'}</span>
           <span style={POPUP_ITEM_NAME_STYLE}>{basename(e.display)}</span>
           <span style={POPUP_ITEM_PATH_STYLE}>{e.display}</span>
-        </div>
+        </button>
       ))}
     </div>
   );

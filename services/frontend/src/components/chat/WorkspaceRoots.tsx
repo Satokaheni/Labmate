@@ -103,29 +103,27 @@ export function WorkspaceRoots({
         >
           <span aria-hidden style={WORKSPACE_ROOT_ICON_STYLE}>📁</span>
           <span style={WORKSPACE_ROOT_NAME_STYLE}>{basename(root)}</span>
-          <span
-            role="button"
+          <button
+            type="button"
+            className="lm-btn"
             aria-label={`Remove ${basename(root)}`}
             onClick={(e) => { e.stopPropagation(); onRemove(root); }}
-            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onRemove(root); } }}
-            tabIndex={0}
             style={WORKSPACE_ROOT_REMOVE_ICON_STYLE}
           >
             ×
-          </span>
+          </button>
         </span>
       ))}
-      <span
-        role="button"
+      <button
+        type="button"
+        className="lm-btn"
         aria-label="Add directory"
         onClick={onAdd}
-        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onAdd(); } }}
-        tabIndex={0}
         title="Add a directory to this chat"
         style={WORKSPACE_ADD_BUTTON_STYLE}
       >
         ＋
-      </span>
+      </button>
     </div>
   );
 }

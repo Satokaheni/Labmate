@@ -113,6 +113,22 @@ body {
 .lm-scroll::-webkit-scrollbar-thumb:hover { background: #323a45; }
 .lm-scroll::-webkit-scrollbar-track { background: transparent; }
 
+/* Bare button: strip native chrome so a <button> matches the surrounding
+   inline-styled layout. Per-element `style` controls look/size; this only
+   removes the user-agent button defaults (border, font, padding, alignment). */
+.lm-btn {
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+
 /* Spin speed utility classes (applied to a <g>) */
 .orbit-spin-fast {
   animation: orbitspin 1.4s linear infinite;
