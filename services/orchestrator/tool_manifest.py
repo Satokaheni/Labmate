@@ -18,6 +18,8 @@ class ToolDescriptor(TypedDict, total=False):
     source: str  # "builtin" | "mcp" | "skill"; default "builtin"
     namespace: str | None  # optional: mcp/skill namespace
     schema: dict | None  # optional: full OpenAI tool object
+    description: str  # optional: documentation skill description
+    body: str  # optional: documentation skill body
 
 
 class ClientManifest(TypedDict, total=False):
@@ -232,6 +234,10 @@ def parse_manifest(payload: dict | None) -> ClientManifest | None:
             descriptor["namespace"] = tool_raw["namespace"]
         if "schema" in tool_raw and tool_raw["schema"] is not None:
             descriptor["schema"] = tool_raw["schema"]
+        if "description" in tool_raw and tool_raw["description"] is not None:
+            descriptor["description"] = tool_raw["description"]
+        if "body" in tool_raw and tool_raw["body"] is not None:
+            descriptor["body"] = tool_raw["body"]
         tools.append(descriptor)
 
     if not tools:
@@ -242,6 +248,46 @@ def parse_manifest(payload: dict | None) -> ClientManifest | None:
         manifest["protocol_version"] = protocol_version
 
     return manifest
+
+
+def client_doc_skills(manifest: ClientManifest | None) -> dict[str, dict]:
+    """
+    Extract documentation skills from a client manifest.
+
+    A documentation skill is a descriptor with:
+    - source == "skill" (documentation skills are never "mcp" or "builtin")
+    - NO valid schema (i.e. missing schema or schema without "function" key)
+    - A name
+    - Optional description and body
+
+    Returns a dict mapping skill name to {description: str, body: str}.
+    Returns {} if manifest is None or has no documentation skills.
+    """
+    if manifest is None:
+        return {}
+
+    doc_skills: dict[str, dict] = {}
+    for descriptor in manifest.get("tools", []):
+        # Only consider source="skill" descriptors.
+        source = descriptor.get("source", "builtin")
+        if source != "skill":
+            continue
+
+        # Skip if it has a valid schema (that means it's a hosted pod skill, not documentation).
+        if _is_usable_descriptor(descriptor):
+            continue
+
+        name = descriptor.get("name")
+        if not name:
+            continue
+
+        # Extract description and body (with defaults).
+        description = descriptor.get("description", "")
+        body = descriptor.get("body", "")
+
+        doc_skills[name] = {"description": description, "body": body}
+
+    return doc_skills
 
 
 def hosted_skill_namespaces(manifest: ClientManifest | None) -> set[str]:
@@ -322,19 +368,66 @@ def build_tool_list(
     # These should be dropped from the pod-side load_skill enum to prevent duplication.
     hosted_skills = hosted_skill_namespaces(manifest)
 
-    # 1. Skill interface (if router present).
-    if skill_router is not None:
-        # Exclude hosted skills from the pod catalog.
-        load_skill_schema = skill_router.runner.tool_schema(exclude=hosted_skills)
-        enum_skills = (
-            load_skill_schema.get("function", {})
-            .get("parameters", {})
-            .get("properties", {})
-            .get("name", {})
-            .get("enum", [])
-        )
-        # Only advertise load_skill if there are available skills after exclusion.
-        if enum_skills:
+    # 1. Skill interface (if router present or client has doc-skills).
+    doc_skills = client_doc_skills(manifest)
+    if skill_router is not None or doc_skills:
+        if skill_router is not None:
+            # Exclude hosted skills from the pod catalog.
+            load_skill_schema = skill_router.runner.tool_schema(exclude=hosted_skills)
+            enum_skills = (
+                load_skill_schema.get("function", {})
+                .get("parameters", {})
+                .get("properties", {})
+                .get("name", {})
+                .get("enum", [])
+            )
+        else:
+            # No skill_router; use empty enum from pod.
+            enum_skills = []
+
+        # Merge client doc-skill names into the enum.
+        enum_skills_merged = sorted(set(enum_skills) | set(doc_skills.keys()))
+
+        # Only advertise load_skill if there are available skills after exclusion + merge.
+        if enum_skills_merged:
+            # Build or update the load_skill schema with the merged enum.
+            if skill_router is not None:
+                load_skill_schema = skill_router.runner.tool_schema(exclude=hosted_skills)
+            else:
+                # No pod router; build a minimal schema with just the doc-skills enum.
+                load_skill_schema = {
+                    "type": "function",
+                    "function": {
+                        "name": "load_skill",
+                        "description": "Load a skill (documentation or pod-based).",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "name": {
+                                    "type": "string",
+                                    "enum": enum_skills_merged,
+                                }
+                            },
+                            "required": ["name"],
+                        },
+                    },
+                }
+
+            # Update the enum in the schema.
+            load_skill_schema = load_skill_schema.copy()
+            if "function" in load_skill_schema:
+                load_skill_schema["function"] = load_skill_schema["function"].copy()
+                if "parameters" in load_skill_schema["function"]:
+                    params = load_skill_schema["function"]["parameters"].copy()
+                    if "properties" in params:
+                        props = params["properties"].copy()
+                        if "name" in props:
+                            name_prop = props["name"].copy()
+                            name_prop["enum"] = enum_skills_merged
+                            props["name"] = name_prop
+                        params["properties"] = props
+                    load_skill_schema["function"]["parameters"] = params
+
             tools.append(load_skill_schema)
             tools.append(_call_skill_tool_schema())
 

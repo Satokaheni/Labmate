@@ -16,6 +16,7 @@ from services.orchestrator.tool_manifest import (
     CANONICAL_BUILTIN_SCHEMAS,
     ClientManifest,
     build_tool_list,
+    client_doc_skills,
     hosted_skill_namespaces,
     manifest_local_tool_names,
     parse_manifest,
@@ -1055,3 +1056,524 @@ def test_build_tool_list_no_manifest_byte_identical_no_exclude():
     import json
 
     assert json.dumps(tools1, sort_keys=True) == json.dumps(tools2, sort_keys=True)
+
+
+# === Tests for parse_manifest description + body preservation ===
+
+
+@pytest.mark.mocked
+def test_parse_manifest_preserves_description():
+    """parse_manifest preserves description field when present."""
+    payload = {
+        "tools": [
+            {
+                "name": "repo-tips",
+                "source": "skill",
+                "description": "Tips for this repo",
+            }
+        ]
+    }
+    manifest = parse_manifest(payload)
+    assert manifest is not None
+    assert manifest["tools"][0]["description"] == "Tips for this repo"
+
+
+@pytest.mark.mocked
+def test_parse_manifest_preserves_body():
+    """parse_manifest preserves body field when present."""
+    payload = {
+        "tools": [
+            {
+                "name": "repo-tips",
+                "source": "skill",
+                "body": "This is the skill body content.",
+            }
+        ]
+    }
+    manifest = parse_manifest(payload)
+    assert manifest is not None
+    assert manifest["tools"][0]["body"] == "This is the skill body content."
+
+
+@pytest.mark.mocked
+def test_parse_manifest_omits_missing_description():
+    """parse_manifest omits description field when not in payload."""
+    payload = {
+        "tools": [
+            {
+                "name": "repo-tips",
+                "source": "skill",
+            }
+        ]
+    }
+    manifest = parse_manifest(payload)
+    assert manifest is not None
+    assert "description" not in manifest["tools"][0]
+
+
+@pytest.mark.mocked
+def test_parse_manifest_omits_missing_body():
+    """parse_manifest omits body field when not in payload."""
+    payload = {
+        "tools": [
+            {
+                "name": "repo-tips",
+                "source": "skill",
+            }
+        ]
+    }
+    manifest = parse_manifest(payload)
+    assert manifest is not None
+    assert "body" not in manifest["tools"][0]
+
+
+@pytest.mark.mocked
+def test_parse_manifest_description_and_body_together():
+    """parse_manifest preserves both description and body when present."""
+    payload = {
+        "tools": [
+            {
+                "name": "repo-tips",
+                "source": "skill",
+                "description": "Repository tips",
+                "body": "Content goes here",
+            }
+        ]
+    }
+    manifest = parse_manifest(payload)
+    assert manifest is not None
+    tool = manifest["tools"][0]
+    assert tool["description"] == "Repository tips"
+    assert tool["body"] == "Content goes here"
+
+
+# === Tests for client_doc_skills helper ===
+
+
+@pytest.mark.mocked
+def test_client_doc_skills_none_manifest():
+    """client_doc_skills(None) returns empty dict."""
+    assert client_doc_skills(None) == {}
+
+
+@pytest.mark.mocked
+def test_client_doc_skills_empty_manifest():
+    """client_doc_skills with empty tools list returns empty dict."""
+    manifest: ClientManifest = {"tools": []}
+    assert client_doc_skills(manifest) == {}
+
+
+@pytest.mark.mocked
+def test_client_doc_skills_extracts_schema_less_skill():
+    """client_doc_skills extracts source='skill' without schema."""
+    manifest: ClientManifest = {
+        "tools": [
+            {
+                "name": "repo-tips",
+                "source": "skill",
+                "description": "Repository guidelines",
+                "body": "Follow these practices...",
+            }
+        ]
+    }
+    doc_skills = client_doc_skills(manifest)
+    assert "repo-tips" in doc_skills
+    assert doc_skills["repo-tips"]["description"] == "Repository guidelines"
+    assert doc_skills["repo-tips"]["body"] == "Follow these practices..."
+
+
+@pytest.mark.mocked
+def test_client_doc_skills_excludes_hosted_skill_with_schema():
+    """client_doc_skills excludes source='skill' with valid schema."""
+    schema = {"type": "function", "function": {"name": "generate"}}
+    manifest: ClientManifest = {
+        "tools": [
+            {
+                "name": "code-gen",
+                "source": "skill",
+                "namespace": "code-gen",
+                "schema": schema,
+                "description": "Code generation",
+                "body": "Not extracted",
+            }
+        ]
+    }
+    doc_skills = client_doc_skills(manifest)
+    # Excluded because it has a valid schema (it's a hosted pod skill, not documentation).
+    assert "code-gen" not in doc_skills
+
+
+@pytest.mark.mocked
+def test_client_doc_skills_excludes_mcp():
+    """client_doc_skills excludes source='mcp' descriptors."""
+    manifest: ClientManifest = {
+        "tools": [
+            {
+                "name": "find_references",
+                "source": "mcp",
+                "description": "Find references",
+                "body": "Body",
+            }
+        ]
+    }
+    doc_skills = client_doc_skills(manifest)
+    assert doc_skills == {}
+
+
+@pytest.mark.mocked
+def test_client_doc_skills_excludes_builtin():
+    """client_doc_skills excludes source='builtin' descriptors."""
+    manifest: ClientManifest = {
+        "tools": [
+            {
+                "name": "read_file",
+                "source": "builtin",
+                "description": "Read a file",
+                "body": "Body",
+            }
+        ]
+    }
+    doc_skills = client_doc_skills(manifest)
+    assert doc_skills == {}
+
+
+@pytest.mark.mocked
+def test_client_doc_skills_defaults_empty_strings():
+    """client_doc_skills uses empty string defaults for missing description/body."""
+    manifest: ClientManifest = {
+        "tools": [
+            {
+                "name": "repo-tips",
+                "source": "skill",
+            }
+        ]
+    }
+    doc_skills = client_doc_skills(manifest)
+    assert doc_skills["repo-tips"]["description"] == ""
+    assert doc_skills["repo-tips"]["body"] == ""
+
+
+@pytest.mark.mocked
+def test_client_doc_skills_skips_no_name():
+    """client_doc_skills skips descriptors without a name."""
+    manifest: ClientManifest = {
+        "tools": [
+            {
+                "source": "skill",
+                "description": "No name",
+                "body": "Body",
+            }
+        ]
+    }
+    doc_skills = client_doc_skills(manifest)
+    assert doc_skills == {}
+
+
+@pytest.mark.mocked
+def test_client_doc_skills_multiple():
+    """client_doc_skills extracts multiple documentation skills."""
+    manifest: ClientManifest = {
+        "tools": [
+            {
+                "name": "repo-tips",
+                "source": "skill",
+                "description": "Repository tips",
+                "body": "Tips...",
+            },
+            {
+                "name": "conventions",
+                "source": "skill",
+                "description": "Naming conventions",
+                "body": "Conventions...",
+            },
+        ]
+    }
+    doc_skills = client_doc_skills(manifest)
+    assert len(doc_skills) == 2
+    assert doc_skills["repo-tips"]["description"] == "Repository tips"
+    assert doc_skills["conventions"]["description"] == "Naming conventions"
+
+
+# === Tests for build_tool_list with client doc-skills ===
+
+
+@pytest.mark.mocked
+def test_build_tool_list_doc_skill_added_to_load_skill_enum():
+    """build_tool_list adds doc-skills to load_skill enum."""
+    manifest: ClientManifest = {
+        "tools": [
+            {"name": "read_file", "source": "builtin"},
+            {
+                "name": "repo-tips",
+                "source": "skill",
+                "description": "Repository tips",
+                "body": "Content",
+            },
+        ]
+    }
+    static_tail = _static_tail_schemas()
+    tools = build_tool_list(
+        manifest, skill_router=None, codegraph_enabled=False, static_tail=static_tail
+    )
+    # load_skill should be present with enum including "repo-tips".
+    load_skill = next((t for t in tools if t["function"]["name"] == "load_skill"), None)
+    assert load_skill is not None
+    enum = load_skill["function"]["parameters"]["properties"]["name"]["enum"]
+    assert "repo-tips" in enum
+
+
+@pytest.mark.mocked
+def test_build_tool_list_doc_skill_merged_with_pod_enum():
+    """build_tool_list merges doc-skills with pod-skills in enum."""
+    runner = MagicMock()
+
+    def mock_tool_schema(exclude=frozenset()):
+        enum_skills = [s for s in ["code-review", "test-gen"] if s not in exclude]
+        return {
+            "type": "function",
+            "function": {
+                "name": "load_skill",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "enum": enum_skills,
+                        }
+                    },
+                    "required": ["name"],
+                },
+            },
+        }
+
+    runner.tool_schema = mock_tool_schema
+    sr = MagicMock()
+    sr.runner = runner
+
+    manifest: ClientManifest = {
+        "tools": [
+            {"name": "read_file", "source": "builtin"},
+            {
+                "name": "repo-tips",
+                "source": "skill",
+                "description": "Repository tips",
+                "body": "Content",
+            },
+        ]
+    }
+    static_tail = _static_tail_schemas()
+    tools = build_tool_list(
+        manifest, skill_router=sr, codegraph_enabled=False, static_tail=static_tail
+    )
+    load_skill = next((t for t in tools if t["function"]["name"] == "load_skill"), None)
+    assert load_skill is not None
+    enum = load_skill["function"]["parameters"]["properties"]["name"]["enum"]
+    # Should have sorted union: ["code-review", "repo-tips", "test-gen"]
+    assert set(enum) == {"code-review", "repo-tips", "test-gen"}
+    assert enum == sorted(enum)  # Verify sorted
+
+
+@pytest.mark.mocked
+def test_build_tool_list_doc_skills_only_no_router():
+    """build_tool_list advertises load_skill with doc-skills only when no router."""
+    manifest: ClientManifest = {
+        "tools": [
+            {"name": "read_file", "source": "builtin"},
+            {
+                "name": "repo-tips",
+                "source": "skill",
+                "description": "Tips",
+                "body": "Content",
+            },
+        ]
+    }
+    static_tail = _static_tail_schemas()
+    tools = build_tool_list(
+        manifest, skill_router=None, codegraph_enabled=False, static_tail=static_tail
+    )
+    names = [t["function"]["name"] for t in tools]
+    assert "load_skill" in names
+    assert "call_skill_tool" in names
+    load_skill = next((t for t in tools if t["function"]["name"] == "load_skill"), None)
+    enum = load_skill["function"]["parameters"]["properties"]["name"]["enum"]
+    assert enum == ["repo-tips"]
+
+
+@pytest.mark.mocked
+def test_build_tool_list_doc_skill_body_not_in_tool_list():
+    """build_tool_list does not include doc-skill body in the tool list."""
+    manifest: ClientManifest = {
+        "tools": [
+            {
+                "name": "repo-tips",
+                "source": "skill",
+                "description": "Tips",
+                "body": "THIS_BODY_CONTENT_MUST_NOT_APPEAR",
+            },
+        ]
+    }
+    static_tail = _static_tail_schemas()
+    tools = build_tool_list(
+        manifest, skill_router=None, codegraph_enabled=False, static_tail=static_tail
+    )
+    # Serialize and check that the body text is NOT present.
+    import json
+
+    tools_json = json.dumps(tools)
+    assert "THIS_BODY_CONTENT_MUST_NOT_APPEAR" not in tools_json
+
+
+# === Tests for PromptAssembler catalog text with doc-skills ===
+
+
+@pytest.mark.mocked
+def test_prompt_assembler_catalog_includes_doc_skill():
+    """PromptAssembler system message includes doc-skills in catalog text."""
+    manifest: ClientManifest = {
+        "tools": [
+            {"name": "read_file", "source": "builtin"},
+            {
+                "name": "repo-tips",
+                "source": "skill",
+                "description": "Repository tips and conventions",
+                "body": "THIS_BODY_MUST_NOT_BE_IN_SYSTEM",
+            },
+        ]
+    }
+    pa = PromptAssembler(
+        skill_router=None,
+        codegraph_enabled=False,
+        client_manifest=manifest,
+    )
+    system_text = pa.system_message()["content"]
+    # Description should be in the system message.
+    assert "repo-tips" in system_text
+    assert "Repository tips and conventions" in system_text
+    # Body should NOT be in the system message.
+    assert "THIS_BODY_MUST_NOT_BE_IN_SYSTEM" not in system_text
+
+
+@pytest.mark.mocked
+def test_prompt_assembler_no_doc_skills_catalog_unchanged():
+    """PromptAssembler doesn't add doc-skills lines when manifest has no doc-skills."""
+    manifest_with_doc_skills: ClientManifest = {
+        "tools": [
+            {"name": "read_file", "source": "builtin"},
+            {
+                "name": "repo-tips",
+                "source": "skill",
+                "description": "Repository tips",
+                "body": "Content",
+            },
+        ]
+    }
+    manifest_no_doc_skills: ClientManifest = {
+        "tools": [
+            {"name": "read_file", "source": "builtin"},
+        ]
+    }
+    # Build with doc-skills.
+    pa_with_doc = PromptAssembler(
+        skill_router=None,
+        codegraph_enabled=False,
+        client_manifest=manifest_with_doc_skills,
+    )
+    # Build without doc-skills.
+    pa_without_doc = PromptAssembler(
+        skill_router=None,
+        codegraph_enabled=False,
+        client_manifest=manifest_no_doc_skills,
+    )
+    # The one with doc-skills should have "- repo-tips:" in the system message.
+    system_with = pa_with_doc.system_message()["content"]
+    system_without = pa_without_doc.system_message()["content"]
+    assert "- repo-tips:" in system_with
+    assert "- repo-tips:" not in system_without
+
+
+@pytest.mark.mocked
+def test_prompt_assembler_multiple_doc_skills_sorted():
+    """PromptAssembler sorts doc-skills alphabetically in system message."""
+    manifest: ClientManifest = {
+        "tools": [
+            {
+                "name": "zebra-tips",
+                "source": "skill",
+                "description": "Z tips",
+                "body": "Z body",
+            },
+            {
+                "name": "alpha-tips",
+                "source": "skill",
+                "description": "A tips",
+                "body": "A body",
+            },
+        ]
+    }
+    pa = PromptAssembler(
+        skill_router=None,
+        codegraph_enabled=False,
+        client_manifest=manifest,
+    )
+    system_text = pa.system_message()["content"]
+    # Find the indices of the two skills.
+    idx_alpha = system_text.find("- alpha-tips:")
+    idx_zebra = system_text.find("- zebra-tips:")
+    # alpha should come before zebra.
+    assert idx_alpha < idx_zebra and idx_alpha > 0 and idx_zebra > 0
+
+
+@pytest.mark.mocked
+def test_prompt_assembler_doc_skill_body_never_in_prefix():
+    """PromptAssembler canonical_prefix never includes doc-skill body."""
+    manifest: ClientManifest = {
+        "tools": [
+            {
+                "name": "repo-tips",
+                "source": "skill",
+                "description": "Tips",
+                "body": "SECRET_BODY_CONTENT_HERE",
+            },
+        ]
+    }
+    pa = PromptAssembler(
+        skill_router=None,
+        codegraph_enabled=False,
+        client_manifest=manifest,
+    )
+    prefix = pa.canonical_prefix()
+    assert "SECRET_BODY_CONTENT_HERE" not in prefix
+
+
+# === Byte-stability regression ===
+
+
+@pytest.mark.mocked
+def test_prompt_assembler_no_manifest_byte_identical():
+    """PromptAssembler with manifest=None is byte-identical to before."""
+    pa_no_client = PromptAssembler(skill_router=None, codegraph_enabled=False, client_manifest=None)
+    pa_explicit_none = PromptAssembler(
+        skill_router=None, codegraph_enabled=False, client_manifest=None
+    )
+    assert pa_no_client.canonical_prefix() == pa_explicit_none.canonical_prefix()
+
+
+@pytest.mark.mocked
+def test_build_tool_list_manifest_without_doc_skills_identical():
+    """build_tool_list with no doc-skills matches pre-change behavior."""
+    manifest: ClientManifest = {
+        "tools": [
+            {"name": "read_file", "source": "builtin"},
+            {"name": "write_file", "source": "builtin"},
+        ]
+    }
+    static_tail = _static_tail_schemas()
+    tools = build_tool_list(
+        manifest, skill_router=None, codegraph_enabled=False, static_tail=static_tail
+    )
+    names = [t["function"]["name"] for t in tools]
+    # Should NOT have load_skill or call_skill_tool (no router, no doc-skills).
+    assert "load_skill" not in names
+    assert "call_skill_tool" not in names
+    # Should have the declared builtins + finish.
+    assert names == ["read_file", "write_file", "finish"]

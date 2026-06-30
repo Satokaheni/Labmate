@@ -268,6 +268,24 @@ class PromptAssembler:
         if catalog:
             system_text = f"{system_text}\n\n{catalog}"
 
+        # Append client documentation skills to the catalog text.
+        if client_manifest is not None:
+            from services.orchestrator.tool_manifest import client_doc_skills
+
+            doc_skills = client_doc_skills(client_manifest)
+            if doc_skills:
+                # Format: "- name: description" for each doc-skill, sorted by name.
+                doc_skills_lines = [
+                    f"- {name}: {doc_skills[name]['description']}"
+                    for name in sorted(doc_skills.keys())
+                ]
+                doc_skills_text = "\n".join(doc_skills_lines)
+                if system_text.endswith(catalog or ""):
+                    # Append to the catalog if it exists; otherwise insert after base system.
+                    system_text = f"{system_text}\n{doc_skills_text}"
+                else:
+                    system_text = f"{system_text}\n\n{doc_skills_text}"
+
         # If a local-execution client is attached, steer the model to prefer local tools.
         if client_manifest is not None:
             system_text = f"{system_text}\n\n{CLIENT_PRIMITIVES_STEER}"

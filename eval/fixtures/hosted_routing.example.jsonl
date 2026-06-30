@@ -1,0 +1,6 @@
+{"id": "hosted_find_refs_1", "task": "I need to see everywhere that parseConfig is used in the codebase", "expected": "mcp__ast-ts-refactor__find_references", "kind": "hosted", "cluster": "ts_refactor"}
+{"id": "hosted_find_refs_2", "task": "Find all references to the UserService class so I can understand its dependencies", "expected": "mcp__ast-ts-refactor__find_references", "kind": "hosted", "cluster": "ts_refactor"}
+{"id": "hosted_find_refs_3", "task": "Where is the validateEmail function called throughout the TypeScript project?", "expected": "mcp__ast-ts-refactor__find_references", "kind": "hosted", "cluster": "ts_refactor"}
+{"id": "hosted_rename_1", "task": "I want to rename the calculateTotal function to computeSum across the entire project to better reflect what it does", "expected": "mcp__ast-ts-refactor__rename_symbol", "kind": "hosted", "cluster": "ts_refactor"}
+{"id": "hosted_rename_2", "task": "Please rename the deprecated fetchUserData method to fetchUser everywhere it appears", "expected": "mcp__ast-ts-refactor__rename_symbol", "kind": "hosted", "cluster": "ts_refactor"}
+{"id": "hosted_rename_3", "task": "Change all occurrences of the oldConfig variable name to modernConfig in our TypeScript files", "expected": "mcp__ast-ts-refactor__rename_symbol", "kind": "hosted", "cluster": "ts_refactor"}

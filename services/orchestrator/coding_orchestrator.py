@@ -35,7 +35,7 @@ from .sandbox_edits import detect_sandbox_writes
 from .steer_inject import inject_steer
 from .test_outcome import classify_test_attempt
 from .tool_grounding import DEFAULT_TOOL_RESULT_BUDGET, ground_tool_result
-from .tool_manifest import manifest_local_tool_names
+from .tool_manifest import client_doc_skills, manifest_local_tool_names
 from .types import State
 from .verification_stop import (
     MAX_VERIFY_INFRA_ERRORS,
@@ -969,7 +969,9 @@ class AsyncOrchestrator:
                         reasoning_why=_turn_reasoning,
                     )
 
-                    if name == "load_skill" and self.skill_router is not None:
+                    if name == "load_skill" and (
+                        self.skill_router is not None or client_context.get_manifest() is not None
+                    ):
                         _skill_name = args.get("name", "")
                         if is_repeat_load(_skill_name, loaded_skills):
                             # Already loaded this goal: do NOT reload. Return a
@@ -987,16 +989,49 @@ class AsyncOrchestrator:
                                 refunded=REFUND_REPEAT_LOAD_SKILL,
                             )
                         else:
-                            obs = self.skill_router.runner.load_skill(_skill_name)
-                            content = json.dumps(obs)
-                            # Record a successful first load so a later repeat is
-                            # deduped. Only record on a real 'loaded'/'already_loaded'
-                            # status — an error (unknown skill / cap) must NOT be
-                            # remembered as loaded.
-                            _resp = obs.get("response") if isinstance(obs, dict) else None
-                            _status = _resp.get("status") if isinstance(_resp, dict) else None
-                            if _skill_name and _status in ("loaded", "already_loaded"):
+                            # Check if this is a client documentation skill.
+                            manifest = client_context.get_manifest()
+                            _doc = (
+                                client_doc_skills(manifest).get(_skill_name) if manifest else None
+                            )
+
+                            if _doc is not None:
+                                # Client documentation skill: return its body directly.
+                                obs = {
+                                    "name": "load_skill",
+                                    "response": {
+                                        "status": "loaded",
+                                        "name": _skill_name,
+                                        "body": _doc["body"],
+                                    },
+                                }
+                                content = json.dumps(obs)
                                 loaded_skills.add(_skill_name)
+                            else:
+                                # Pod skill: dispatch to runner.
+                                if self.skill_router is not None:
+                                    obs = self.skill_router.runner.load_skill(_skill_name)
+                                    content = json.dumps(obs)
+                                    # Record a successful first load so a later repeat is
+                                    # deduped. Only record on a real 'loaded'/'already_loaded'
+                                    # status — an error (unknown skill / cap) must NOT be
+                                    # remembered as loaded.
+                                    _resp = obs.get("response") if isinstance(obs, dict) else None
+                                    _status = (
+                                        _resp.get("status") if isinstance(_resp, dict) else None
+                                    )
+                                    if _skill_name and _status in ("loaded", "already_loaded"):
+                                        loaded_skills.add(_skill_name)
+                                else:
+                                    # No skill_router and not a doc-skill: skill not found.
+                                    obs = {
+                                        "name": "load_skill",
+                                        "response": {
+                                            "status": "error",
+                                            "message": f"Unknown skill: {_skill_name}",
+                                        },
+                                    }
+                                    content = json.dumps(obs)
 
                     elif name == "call_skill_tool" and self.skill_router is not None:
                         res = await self.skill_router.execute(

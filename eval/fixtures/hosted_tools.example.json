@@ -1,0 +1,77 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp__ast-ts-refactor__find_references",
+      "description": "Find all places where a symbol is referenced in TypeScript code. Returns matching lines with context. Use when you need to locate usages of a function, class, variable, or interface.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "description": "The name of the symbol to find (e.g., 'parseConfig', 'UserService')"
+          },
+          "pattern": {
+            "type": "string",
+            "description": "Optional regex pattern to refine matches"
+          }
+        },
+        "required": ["symbol"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp__ast-ts-refactor__rename_symbol",
+      "description": "Rename a symbol (function, class, variable, interface) across multiple files in a TypeScript project. Safely refactors all references. Use this when you need to rename something and keep all usages in sync.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "old_name": {
+            "type": "string",
+            "description": "Current name of the symbol"
+          },
+          "new_name": {
+            "type": "string",
+            "description": "New name for the symbol"
+          },
+          "scope": {
+            "type": "string",
+            "description": "Optional scope filter (e.g., file path or module name)"
+          }
+        },
+        "required": ["old_name", "new_name"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "mcp__ast-ts-refactor__extract_function",
+      "description": "Extract selected code into a new function. Automatically detects parameters and return type. Use when refactoring duplicated logic or improving code organization.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "Path to the TypeScript file"
+          },
+          "start_line": {
+            "type": "integer",
+            "description": "Start line number of the code to extract"
+          },
+          "end_line": {
+            "type": "integer",
+            "description": "End line number of the code to extract"
+          },
+          "function_name": {
+            "type": "string",
+            "description": "Name for the extracted function"
+          }
+        },
+        "required": ["file", "start_line", "end_line", "function_name"]
+      }
+    }
+  }
+]
