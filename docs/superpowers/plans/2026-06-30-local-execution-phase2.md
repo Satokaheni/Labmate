@@ -169,7 +169,20 @@ add machinery**:
   routing to execute — do NOT revert to pod-only routing (that's the blindness `fcbd477` removed), and
   do NOT add an extra LLM judgement call (defeats the latency goal). Measure first.
 
-### P2-B.3 — global user-installed MCP servers (`~/.labmate/mcp.json`) — PLANNED, build after live test
+### P2-B.3 — global user-installed MCP servers (`~/.labmate/mcp.json`) — IMPLEMENTED (Opus PASS), awaiting live test
+**Status (2026-06-30):** T-B3.1 + T-B3.2 DONE (`c38b777` + collision-test hardening `fcd0477`), Opus-judged
+**PASS** (282 frontend tests). `electron/labmate-home.ts` gained `labmateMcpConfigPath()` +
+`readUserMcpServers()` (defensive parse — missing/corrupt/wrong-shape → `[]`, never throws; skips
+entries with no `command` or a `__` in the name). `McpHostManager.startAll` extracted `_startServer`
+and now hosts user servers after the built-ins, **built-ins win on name collision** (skip-on-fail
+isolated; the collision test asserts the user spec is never started). `McpServerSpec` gained `env?`;
+`cwd`/`env` flow to `StdioClientTransport`. Namespacing/rooting unchanged — a user server is just
+another `mcp__<name>__<tool>` host. **T-B3.3 (live):** a test `~/.labmate/mcp.json` is staged
+(`my-refactor` → the bundled ast-ts-refactor dist under a new name); rebuild the app and confirm
+`mcp__my-refactor__*` tools appear in `getMcpTools()` and execute.
+
+#### (original plan below)
+### P2-B.3 — global user-installed MCP servers (`~/.labmate/mcp.json`)
 **Motivation:** mirrors how Claude scopes MCP — a `--scope user` server is GLOBAL (available in every
 session regardless of folder). Today Labmate hosts only the **built-in/first-party** TS skills
 (`BUILTIN_MCP_SERVERS` hardcoded in `electron/mcp-registry.ts`) — the analog of Claude's built-in
