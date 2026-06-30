@@ -1595,12 +1595,8 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug }: Chat
   const activeSessionId = state.activeSessionId ?? sessions[0]?.id ?? null;
   const activeSession = sessions.find((s) => s.id === activeSessionId) ?? sessions[0];
 
-  // Start a fresh chat as soon as we're ready with no active session, so the
-  // user can type immediately (the session is auto-created + titled on send).
-  useEffect(() => {
-    if (activeSessionId === null) newChat();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSessionId]);
+  // A fresh active session is guaranteed by the WS hook at boot (see
+  // ensureActiveSession), so the view no longer creates one from an effect.
 
   // Only show the active chat's turns (each turn frame carries its sessionId).
   const turns = activeSessionId

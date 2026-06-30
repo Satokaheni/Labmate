@@ -77,6 +77,33 @@ type DispatchAction =
   | { action: 'SET_ACTIVE_SESSION'; sessionId: string | null }
   | { action: 'RESET' };
 
+/** Mint a client-side session id (no backend round-trip needed). */
+export function mintSessionId(): string {
+  return (
+    's-' +
+    (typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID().replace(/-/g, '').slice(0, 12)
+      : Math.random().toString(36).slice(2, 14))
+  );
+}
+
+/**
+ * Guarantee the boot bootstrap carries an active session id, so the view never
+ * has to create one reactively (this replaces a newChat()-in-useEffect side
+ * effect in ChatScreen — which risked a stale-closure / StrictMode double
+ * create). Mints a fresh id only when the server delivered no active session
+ * AND there are no existing sessions to fall back to. Idempotent: a bootstrap
+ * that already names a session (or has sessions) is returned unchanged.
+ */
+export function ensureActiveSession(
+  bootstrap: SessionBootstrap,
+  mint: () => string = mintSessionId,
+): SessionBootstrap {
+  if (bootstrap.activeSessionId) return bootstrap;
+  if (bootstrap.sessions.length > 0) return bootstrap;
+  return { ...bootstrap, activeSessionId: mint() };
+}
+
 function labmateWSReducer(state: LabmateWSState, action: DispatchAction): LabmateWSState {
   switch (action.action) {
     case 'CONNECTING':
@@ -361,7 +388,14 @@ export function useLabmateWS(
           return;
         }
 
-        dispatch({ action: 'FRAME', frame });
+        // Fill in a fresh active session at the source when boot delivers none,
+        // so ChatScreen never has to create one from a useEffect.
+        const outFrame =
+          frame.type === 'boot.ready'
+            ? { ...frame, sessionBootstrap: ensureActiveSession(frame.sessionBootstrap) }
+            : frame;
+
+        dispatch({ action: 'FRAME', frame: outFrame });
       } catch (err) {
         console.error('Failed to parse WS frame:', err);
       }
@@ -462,11 +496,7 @@ export function useLabmateWS(
   };
 
   const newChat = (): string => {
-    const id =
-      's-' +
-      (typeof crypto !== 'undefined' && crypto.randomUUID
-        ? crypto.randomUUID().replace(/-/g, '').slice(0, 12)
-        : Math.random().toString(36).slice(2, 14));
+    const id = mintSessionId();
     dispatch({ action: 'SET_ACTIVE_SESSION', sessionId: id });
     return id;
   };
