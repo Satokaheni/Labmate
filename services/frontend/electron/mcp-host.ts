@@ -7,6 +7,7 @@ export interface McpServerSpec {
   command: string;
   args: string[];
   cwd?: string;
+  env?: Record<string, string>;
 }
 
 /**
@@ -36,6 +37,7 @@ export class McpHost {
         command: this.spec.command,
         args: this.spec.args,
         cwd: this.spec.cwd,
+        env: this.spec.env,
       });
 
       this.client = new Client(

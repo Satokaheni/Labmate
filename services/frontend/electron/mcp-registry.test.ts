@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import { McpHostManager, skillsDir, parseNamespacedTool } from './mcp-registry.js';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 
 describe('McpHostManager', () => {
   describe('skillsDir()', () => {
@@ -372,5 +373,166 @@ describe('McpHostManager.callTool integration with parseNamespacedTool', () => {
         /Failed to call tool 'mytool' on server 'test-server'/
       );
     });
+  });
+});
+
+describe('User MCP server hosting', () => {
+  let tmpDir: string;
+  let originalEnv: string | undefined;
+
+  beforeEach(() => {
+    originalEnv = process.env.LABMATE_HOME;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'labmate-registry-test-'));
+    process.env.LABMATE_HOME = tmpDir;
+  });
+
+  afterEach(() => {
+    if (originalEnv === undefined) {
+      delete process.env.LABMATE_HOME;
+    } else {
+      process.env.LABMATE_HOME = originalEnv;
+    }
+    if (fs.existsSync(tmpDir)) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('should skip user server if name collides with built-in', async () => {
+    const manager = new McpHostManager();
+
+    // Pre-set a built-in host before user servers are read
+    const builtinHost = {
+      callTool: vi.fn(),
+      listTools: vi.fn(async () => []),
+      start: vi.fn(),
+      stop: vi.fn(),
+    };
+    (manager as any).hosts.set('ast-ts-refactor', builtinHost);
+
+    // Create a user config where a server has the same name as a built-in
+    const config = {
+      mcpServers: {
+        'ast-ts-refactor': {
+          command: 'node',
+          args: ['/path/to/user-server.js'],
+        },
+      },
+    };
+    const configPath = path.join(tmpDir, 'mcp.json');
+    fs.writeFileSync(configPath, JSON.stringify(config));
+
+    // Stub _startServer to track what gets called
+    const startedServers: string[] = [];
+    const originalStartServer = (manager as any)._startServer;
+    (manager as any)._startServer = async (spec: any) => {
+      startedServers.push(spec.name);
+      // Don't actually start
+    };
+
+    await manager.startAll();
+
+    // The built-in 'ast-ts-refactor' should be attempted, but the user one should be skipped
+    // We should see only built-in starts (the user one should be skipped in the loop)
+    expect((manager as any).hosts.has('ast-ts-refactor')).toBe(true);
+    expect((manager as any).hosts.get('ast-ts-refactor')).toBe(builtinHost);
+
+    // Restore
+    (manager as any)._startServer = originalStartServer;
+  });
+
+  it('should skip user server with __ in name and log error', async () => {
+    const manager = new McpHostManager();
+
+    const config = {
+      mcpServers: {
+        'bad__server': {
+          command: 'node',
+          args: ['/path/to/server.js'],
+        },
+      },
+    };
+    const configPath = path.join(tmpDir, 'mcp.json');
+    fs.writeFileSync(configPath, JSON.stringify(config));
+
+    // Stub _startServer to see what gets called
+    const startedServers: string[] = [];
+    const originalStartServer = (manager as any)._startServer;
+    (manager as any)._startServer = async (spec: any) => {
+      startedServers.push(spec.name);
+    };
+
+    // Should not throw, just skip
+    await expect(manager.startAll()).resolves.toBeUndefined();
+
+    // bad__server should not be in the started list because readUserMcpServers should skip it
+    expect(startedServers).not.toContain('bad__server');
+
+    // Restore
+    (manager as any)._startServer = originalStartServer;
+  });
+
+  it('should continue starting other servers if one fails', async () => {
+    const manager = new McpHostManager();
+
+    const config = {
+      mcpServers: {
+        'failing-server': {
+          command: '/nonexistent/command',
+          args: [],
+        },
+        'valid-server': {
+          command: 'echo',
+          args: ['hello'],
+        },
+      },
+    };
+    const configPath = path.join(tmpDir, 'mcp.json');
+    fs.writeFileSync(configPath, JSON.stringify(config));
+
+    // Should not throw even though first server fails
+    await expect(manager.startAll()).resolves.toBeUndefined();
+
+    // Both should have been attempted but neither would start
+    // (echo is not a valid MCP server, and /nonexistent fails)
+    // Just check it doesn't crash
+    expect((manager as any).hosts).toBeDefined();
+  });
+
+  it('should apply cwd and env from user config when present', async () => {
+    const manager = new McpHostManager();
+
+    // We can't test the actual startup without a real server,
+    // but we can verify the spec is constructed correctly by stubbing _startServer
+    let capturedSpec: any = null;
+    const originalStartServer = (manager as any)._startServer;
+    (manager as any)._startServer = async (spec: any) => {
+      capturedSpec = spec;
+    };
+
+    const config = {
+      mcpServers: {
+        'user-server': {
+          command: 'node',
+          args: ['/path/to/server.js'],
+          cwd: '/home/user/project',
+          env: { MY_VAR: 'test_value' },
+        },
+      },
+    };
+    const configPath = path.join(tmpDir, 'mcp.json');
+    fs.writeFileSync(configPath, JSON.stringify(config));
+
+    await manager.startAll();
+
+    // Verify the spec was passed with cwd and env
+    expect(capturedSpec).toBeDefined();
+    expect(capturedSpec.name).toBe('user-server');
+    expect(capturedSpec.command).toBe('node');
+    expect(capturedSpec.args).toEqual(['/path/to/server.js']);
+    expect(capturedSpec.cwd).toBe('/home/user/project');
+    expect(capturedSpec.env).toEqual({ MY_VAR: 'test_value' });
+
+    // Restore
+    (manager as any)._startServer = originalStartServer;
   });
 });

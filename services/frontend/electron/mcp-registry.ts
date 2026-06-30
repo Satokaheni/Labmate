@@ -1,4 +1,5 @@
 import { McpHost, type McpServerSpec } from './mcp-host.js';
+import { readUserMcpServers } from './labmate-home.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -86,57 +87,95 @@ export class McpHostManager {
   private toolDescriptors: ToolDescriptor[] = [];
 
   /**
-   * Start all available MCP servers.
-   * Servers whose dist/index.js doesn't exist are skipped (logged).
+   * Start a single MCP server and collect its tools.
+   * Throws on failure; caller handles skip-on-fail.
+   * For built-in servers with no dist, skips (returns early without error).
+   */
+  private async _startServer(spec: McpServerSpec, isBuiltin: boolean = false): Promise<void> {
+    // For built-in servers, check dist exists first (skip, not error)
+    if (isBuiltin) {
+      const skillsDirPath = skillsDir();
+      const distPath = path.join(skillsDirPath, spec.name, 'dist', 'index.js');
+
+      if (!fs.existsSync(distPath)) {
+        console.error(`Skipping MCP server '${spec.name}': ${distPath} does not exist`);
+        return;
+      }
+    }
+
+    const host = new McpHost(spec);
+
+    try {
+      await host.start();
+      this.hosts.set(spec.name, host);
+
+      // Collect tools from this host
+      const tools = await host.listTools();
+      for (const tool of tools) {
+        const descriptor: ToolDescriptor = {
+          name: tool.name,
+          source: 'mcp',
+          namespace: spec.name,
+          schema: {
+            type: 'function',
+            function: {
+              name: tool.name,
+              description: tool.description ?? '',
+              parameters: tool.inputSchema ?? { type: 'object', properties: {} },
+            },
+          },
+        };
+        this.toolDescriptors.push(descriptor);
+      }
+    } catch (error) {
+      console.error(
+        `Failed to start MCP server '${spec.name}': ${error instanceof Error ? error.message : String(error)}`
+      );
+      // Continue with next server; one failure doesn't abort others
+      throw error;
+    }
+  }
+
+  /**
+   * Start all available MCP servers (built-in + user-installed).
+   * Built-in servers are started first; user servers follow.
+   * Built-in name collisions (if user server has same name) are kept.
+   * User servers with __ in name are skipped.
    * If a server fails to start, it's skipped and others continue.
    */
   async startAll(): Promise<void> {
     const skillsDirPath = skillsDir();
 
+    // Start built-in servers
     for (const skillName of BUILTIN_MCP_SERVERS) {
-      const distPath = path.join(skillsDirPath, skillName, 'dist', 'index.js');
-
-      // Check if dist exists; skip if not
-      if (!fs.existsSync(distPath)) {
-        console.error(`Skipping MCP server '${skillName}': ${distPath} does not exist`);
-        continue;
-      }
-
       const spec: McpServerSpec = {
         name: skillName,
         command: 'node',
-        args: [distPath],
+        args: [path.join(skillsDirPath, skillName, 'dist', 'index.js')],
       };
 
-      const host = new McpHost(spec);
+      try {
+        await this._startServer(spec, true);
+      } catch {
+        // Error already logged in _startServer; continue
+      }
+    }
+
+    // Start user-installed servers
+    const userServers = readUserMcpServers();
+    for (const spec of userServers) {
+      // Check for name collision with built-ins
+      if (this.hosts.has(spec.name)) {
+        console.error(
+          `Skipping user MCP server '${spec.name}': name collides with a built-in (built-in kept)`
+        );
+        continue;
+      }
 
       try {
-        await host.start();
-        this.hosts.set(skillName, host);
-
-        // Collect tools from this host
-        const tools = await host.listTools();
-        for (const tool of tools) {
-          const descriptor: ToolDescriptor = {
-            name: tool.name,
-            source: 'mcp',
-            namespace: skillName,
-            schema: {
-              type: 'function',
-              function: {
-                name: tool.name,
-                description: tool.description ?? '',
-                parameters: tool.inputSchema ?? { type: 'object', properties: {} },
-              },
-            },
-          };
-          this.toolDescriptors.push(descriptor);
-        }
-      } catch (error) {
-        console.error(
-          `Failed to start MCP server '${skillName}': ${error instanceof Error ? error.message : String(error)}`
-        );
-        // Continue with next server; one failure doesn't abort others
+        await this._startServer(spec, false);
+      } catch {
+        // Error already logged in _startServer; continue
       }
     }
   }
