@@ -28,9 +28,28 @@ PORT="${PORT:-8000}"
 # NOTE: PARALLEL must NOT raise per-request context — it DIVIDES it. Going back to 4 slots
 # would quarter each request to 65536 (or 4096 at the old 16384 ctx). If you hit CUDA OOM,
 # drop PARALLEL to 1 (a single 131072 slot) or halve CTX.
-CTX="${CTX:-262144}"
+# SWA prefix-cache fix: Gemma 4 is a sliding-window-attention model (n_swa=1024). WITHOUT
+# --swa-full, llama.cpp cannot restore a cached prefix across requests (the SWA layers' KV
+# rolls past the window) → it force-re-evaluates the WHOLE prompt every call (cache_n stays 1),
+# silently defeating the byte-stable-prefix design (the ~7k system+tools prefix is re-processed
+# every turn). --swa-full keeps FULL KV for the ~50 SWA layers so cross-request prefix reuse
+# works (the prefix is processed ONCE per session). Cost: full-SWA KV measures ~0.22 MiB/token
+# on this build, so KV alone is CTX×0.22 MiB. MEASURED on the 48 GiB A6000: ctx 131072 needs
+# ~28.8 GiB KV which + 18.8 GiB weights OOMs the card (cudaMalloc failed) — so the default here
+# is a 65536 slot (~14.4 GiB KV, ~36 GiB total, boots with ~12 GiB free). Raise CTX only if
+# `nvidia-smi` shows headroom; on a 32 GiB card drop to CTX=32768 (~7.2 GiB KV). Still ONE slot
+# (PARALLEL=1). Set SWA_FULL=0 to revert to the windowed behavior (no cross-request cache reuse).
+SWA_FULL="${SWA_FULL:-1}"
 NGL="${NGL:-999}"          # offload all layers to GPU (A6000 48GB fits the 18.8GB model)
-PARALLEL="${PARALLEL:-2}"  # 2 concurrent request slots → 262144/2 = 131072 tokens each
+if [[ "$SWA_FULL" == "1" ]]; then
+  CTX="${CTX:-65536}"      # one slot; full-SWA KV ~0.22 MiB/tok → ~14.4 GiB KV (131072 OOMs 48GB)
+  PARALLEL="${PARALLEL:-1}"
+  SWA_ARG=(--swa-full)
+else
+  CTX="${CTX:-262144}"     # windowed SWA = the OLD default (no cross-request cache reuse)
+  PARALLEL="${PARALLEL:-2}"
+  SWA_ARG=()
+fi
 
 LOGS="${REPO_ROOT}/.data/logs"; PIDS="${REPO_ROOT}/.data/pids"
 mkdir -p "$LOGS" "$PIDS"
@@ -44,7 +63,7 @@ if ready; then info "llama-server already serving on :${PORT}"; exit 0; fi
 [[ -x "$LLAMA_SERVER" ]] || fail "llama-server not built at $LLAMA_SERVER — run install.sh"
 [[ -f "$MODEL" ]]        || fail "GGUF not found at $MODEL — run install.sh"
 
-info "launching llama-server: ${MODEL##*/} on :${PORT} (ctx=${CTX}, ngl=${NGL}, parallel=${PARALLEL}) ..."
+info "launching llama-server: ${MODEL##*/} on :${PORT} (ctx=${CTX}, ngl=${NGL}, parallel=${PARALLEL}, swa_full=${SWA_FULL}) ..."
 nohup "$LLAMA_SERVER" \
   -m "$MODEL" \
   --alias "$ALIAS" \
@@ -53,6 +72,7 @@ nohup "$LLAMA_SERVER" \
   --ctx-size "$CTX" \
   --n-gpu-layers "$NGL" \
   --parallel "$PARALLEL" \
+  "${SWA_ARG[@]}" \
   --jinja \
   -fa 1 \
   --cache-type-k q4_0 \
