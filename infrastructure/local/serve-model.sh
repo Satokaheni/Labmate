@@ -15,7 +15,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
+# Honor local.env so MODEL (and any other served-model config) has ONE source of truth.
+# Guarded + set +u around it because local.env is a generic env file; MODEL exported on
+# the CLI still wins (local.env uses ${MODEL:-default}). Absent file → built-in default below.
+if [[ -f "${SCRIPT_DIR}/local.env" ]]; then set +u; source "${SCRIPT_DIR}/local.env"; set -u; fi
+
 LLAMA_SERVER="${LLAMA_SERVER:-/workspace/llama.cpp/build/bin/llama-server}"
+# Fallback default only (local.env normally sets MODEL to the 12B).
 MODEL="${MODEL:-/workspace/models/gemma-4-gguf/gemma-4-31B-it-UD-Q4_K_XL.gguf}"
 ALIAS="${ALIAS:-gemma-4}"
 PORT="${PORT:-8000}"
