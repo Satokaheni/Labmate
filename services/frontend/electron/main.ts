@@ -6,7 +6,7 @@ import { executeTool, LOCAL_TOOL_NAMES, type LocalToolName } from './tool-execut
 import { WorkspaceStore } from './workspace.js';
 import { searchWorkspace } from './fs-search.js';
 import { McpHostManager } from './mcp-registry.js';
-import { resolveMcpPathArgs } from './mcp-path-rooting.js';
+import { resolveMcpPathArgs, injectCodegraphProjectPath } from './mcp-path-rooting.js';
 import { skillDescriptors } from './skill-discovery.js';
 import { userSkillsDir, ensureUserSkillsDir } from './labmate-home.js';
 
@@ -386,7 +386,14 @@ ipcMain.handle(
       // Route mcp__ prefixed tools to McpHostManager
       if (name.startsWith('mcp__')) {
         const roots = workspaceStore().roots(sessionId ?? null);
-        const rootedArgs = resolveMcpPathArgs(args ?? {}, roots);
+        // Resolve path args to absolute, then default CodeGraph's projectPath to the
+        // active chat's workspace root (CodeGraph resolves its repo from projectPath/cwd,
+        // not MCP roots), so codegraph_* tools follow the chat's workspace.
+        const rootedArgs = injectCodegraphProjectPath(
+          name,
+          resolveMcpPathArgs(args ?? {}, roots),
+          roots,
+        );
         return { result: await mcpManager.callTool(name, rootedArgs) };
       }
 

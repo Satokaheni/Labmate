@@ -49,3 +49,19 @@ export function resolveMcpPathArgs(
   }
   return out;
 }
+
+/** Default `projectPath` to the active workspace root for CodeGraph tool calls, so a
+ *  `codegraph_*` call targets the CHAT'S repo. CodeGraph resolves its project from
+ *  `projectPath` (or its process cwd) — it does NOT consume MCP roots — so this is how
+ *  a hosted CodeGraph follows the active workspace. An explicit `projectPath` from the
+ *  model (e.g. to query a different repo) is respected. Pure — never mutates the input. */
+export function injectCodegraphProjectPath(
+  name: string,
+  args: Record<string, unknown>,
+  roots: string[],
+): Record<string, unknown> {
+  if (!name.startsWith('mcp__codegraph__')) return args;
+  if (typeof args.projectPath === 'string' && args.projectPath.length > 0) return args;
+  if (!roots.length) return args;
+  return { ...args, projectPath: roots[0] };
+}
