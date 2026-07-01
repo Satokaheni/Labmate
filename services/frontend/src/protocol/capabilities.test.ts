@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { capabilitiesFrame, CLIENT_CAPABILITIES, type ToolDescriptor } from './capabilities';
+import { capabilitiesFrame, CLIENT_CAPABILITIES, type ToolDescriptor, BUILTIN_TOOL_NAMES } from './capabilities';
 
 describe('capabilities', () => {
   it('capabilitiesFrame returns a frame with type client.capabilities and five builtin tools', () => {
@@ -63,5 +63,14 @@ describe('capabilities', () => {
     const frame = capabilitiesFrame([]);
     expect(frame.tools).toHaveLength(5);
     expect(frame.tools.every((t) => t.source === 'builtin')).toBe(true);
+  });
+
+  it('BUILTIN_TOOL_NAMES has the correct five tool names', () => {
+    expect(BUILTIN_TOOL_NAMES).toEqual(['read_file', 'write_file', 'list_dir', 'search_files', 'run_tests']);
+  });
+
+  it('CLIENT_CAPABILITIES is built from BUILTIN_TOOL_NAMES with builtin source', () => {
+    const expectedTools = BUILTIN_TOOL_NAMES.map((name) => ({ name, source: 'builtin' as const }));
+    expect(CLIENT_CAPABILITIES.tools).toEqual(expectedTools);
   });
 });
