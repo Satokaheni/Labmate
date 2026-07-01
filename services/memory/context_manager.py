@@ -538,6 +538,44 @@ class ContextManager:
             "reflections": reflections,
         }
 
+    async def conversation_context(self, session_id: str, budget: int | None = None) -> str:
+        """Assemble conversation continuity block for multi-turn context.
+
+        Returns summary + anchor (if diverged) + recent turns, formatted as a string.
+        NO RAG/hybrid_retrieve — this is the hot path, keep it cheap.
+        Best-effort: returns "" on any failure (never breaks the loop).
+
+        budget: token limit for the assembled block. Defaults to a sane
+                percentage of the total context budget if not provided.
+        """
+        try:
+            if not session_id:
+                return ""
+
+            # Use a reasonable default budget if not provided
+            if budget is None:
+                budget = self.budget.slot(self.budget.recent_turns_share)
+
+            # Read summary from Redis
+            summary = await self.redis.get(f"summary:{session_id}") or ""
+
+            # Read anchor, include only if it diverges from summary
+            anchor_raw = await self.redis.get(f"anchor:{session_id}") or ""
+            anchor_block = ""
+            if anchor_raw and self._anchor_diverges(anchor_raw, summary):
+                anchor_block = f"KEY FACTS (anchored, always relevant):\n{anchor_raw}"
+
+            # Read recent turns (non-destructive, watermark-based)
+            recent = await self._recent_turns(session_id, budget)
+
+            # Assemble: summary + anchor + recent
+            parts = [p for p in [summary, anchor_block, recent] if p]
+            return "\n\n".join(parts) if parts else ""
+        except Exception:
+            # Best-effort: never break the loop on memory failure
+            _logger.debug("conversation_context failed (returning empty string)", exc_info=True)
+            return ""
+
     async def last_activity_seconds(self, session_id: str) -> float:
         """Seconds since the newest turn in this session was written.
 

@@ -802,3 +802,154 @@ def test_anchor_diverges_heuristic_boundaries():
 
         # Non-empty anchor, empty summary → always diverges
         assert cm._anchor_diverges("important fact", "") is True
+
+
+# ── conversation_context tests ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_conversation_context_returns_summary_and_recent_turns():
+    """conversation_context assembles summary + anchor (if diverged) + recent turns."""
+    with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
+        from services.memory.context_manager import ContextManager
+
+        redis = AsyncMock()
+
+        def _redis_get(key):
+            if "summary:" in key:
+                return "Summary of first part of the conversation"
+            elif "anchor:" in key:
+                return "Founding fact about the task"
+            elif "summarized_through:" in key:
+                return "0"  # watermark: first turn is compacted
+            else:
+                return None
+
+        redis.get = AsyncMock(side_effect=_redis_get)
+        db = MagicMock()
+
+        class AsyncDocIter:
+            def __init__(self, docs):
+                self._docs = iter(docs)
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                try:
+                    return next(self._docs)
+                except StopIteration:
+                    raise StopAsyncIteration from None
+
+        # Recent turns (seq > watermark=0, so seq 1,2 are recent)
+        turns = [
+            {"role": "user", "text": "what is AI?", "seq": 1},
+            {"role": "assistant", "text": "AI is machine learning", "seq": 2},
+        ]
+
+        mock_cursor = AsyncDocIter(turns)
+        mock_sort = MagicMock()
+        mock_sort.limit = MagicMock(return_value=mock_cursor)
+        mock_find = MagicMock()
+        mock_find.sort = MagicMock(return_value=mock_sort)
+        chat_turns_col = MagicMock()
+        chat_turns_col.find = MagicMock(return_value=mock_find)
+        db.__getitem__ = MagicMock(return_value=chat_turns_col)
+
+        cm = ContextManager(
+            redis=redis,
+            mongo_db=db,
+            chroma_cols={},
+            embedder=AsyncMock(),
+        )
+
+        result = await cm.conversation_context("s1", budget=500)
+
+        # Should contain summary, anchor (if diverged), and recent turns
+        assert "Summary of first part" in result
+        assert "Founding fact" in result
+        assert "USER: what is AI?" in result
+        assert "ASSISTANT: AI is machine learning" in result
+
+
+@pytest.mark.asyncio
+async def test_conversation_context_returns_empty_on_no_session():
+    """conversation_context returns empty string when session_id is empty."""
+    from services.memory.context_manager import ContextManager
+
+    redis = AsyncMock()
+    db = MagicMock()
+    cm = ContextManager(
+        redis=redis,
+        mongo_db=db,
+        chroma_cols={},
+        embedder=AsyncMock(),
+    )
+
+    result = await cm.conversation_context("", budget=500)
+    assert result == ""
+
+
+@pytest.mark.asyncio
+async def test_conversation_context_returns_empty_on_failure():
+    """conversation_context returns empty string on any exception (best-effort)."""
+    from services.memory.context_manager import ContextManager
+
+    redis = AsyncMock()
+    redis.get = AsyncMock(side_effect=RuntimeError("Redis error"))
+    db = MagicMock()
+
+    cm = ContextManager(
+        redis=redis,
+        mongo_db=db,
+        chroma_cols={},
+        embedder=AsyncMock(),
+    )
+
+    result = await cm.conversation_context("s1", budget=500)
+    # Should not raise, returns empty string instead
+    assert result == ""
+
+
+@pytest.mark.asyncio
+async def test_conversation_context_does_not_call_hybrid_retrieve():
+    """conversation_context assembles summary+anchor+recent WITHOUT RAG (keep hot-path cheap)."""
+    with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
+        from services.memory.context_manager import ContextManager
+
+        redis = AsyncMock()
+        redis.get = AsyncMock(return_value=None)
+
+        db = MagicMock()
+
+        class EmptyCursor:
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                raise StopAsyncIteration
+
+        mock_cursor = EmptyCursor()
+        mock_sort = MagicMock()
+        mock_sort.limit = MagicMock(return_value=mock_cursor)
+        mock_find = MagicMock()
+        mock_find.sort = MagicMock(return_value=mock_sort)
+        chat_turns_col = MagicMock()
+        chat_turns_col.find = MagicMock(return_value=mock_find)
+        db.__getitem__ = MagicMock(return_value=chat_turns_col)
+
+        # Mock hybrid_retrieve so we can verify it's NOT called
+        hybrid_retrieve_mock = AsyncMock(return_value=[])
+
+        cm = ContextManager(
+            redis=redis,
+            mongo_db=db,
+            chroma_cols={},
+            embedder=AsyncMock(),
+        )
+        cm.hybrid_retrieve = hybrid_retrieve_mock
+
+        await cm.conversation_context("s1", budget=500)
+
+        # conversation_context should NOT call hybrid_retrieve (RAG is deferred)
+        hybrid_retrieve_mock.assert_not_called()

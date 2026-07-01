@@ -298,6 +298,11 @@ class OrchestratorProcess:
             async_orch.redis = self._redis
             async_orch.codegraph_mcp = self._codegraph_mcp
             async_orch.memory_search = MemorySearch(_sm)
+            # Wire context_manager for conversation continuity (best-effort)
+            try:
+                async_orch.context_manager = _sm.context_manager
+            except Exception:
+                pass  # context_manager may be absent in test/offline environments
 
             # CodingOrchestrator and build_graph have a circular dependency:
             # build_graph(orch, ...) closes node functions over the orch object;
@@ -318,6 +323,11 @@ class OrchestratorProcess:
                 mongo_uri=os.getenv("MONGO_URI", "mongodb://localhost:27017/labmate"),
             )
             orch.graph = graph
+            # Wire context_manager to CodingOrchestrator (best-effort)
+            try:
+                orch.context_manager = _sm.context_manager
+            except Exception:
+                pass  # context_manager may be absent in test/offline environments
 
             _log.info("orchestrator %s ready", self._worker_id)
 

@@ -297,6 +297,8 @@ class AsyncOrchestrator:
         self.skill_router = skill_router
         self.mcp = mcp
         self.codegraph_mcp = None  # set after construction if codegraph-embedder is running
+        self.context_manager = None  # set after construction for conversation continuity
+        self._active_session_id = ""  # set in execute node to track the current session
         self.memory_search: MemorySearch | None = (
             None  # set after construction when a memory store is wired
         )
@@ -529,8 +531,38 @@ class AsyncOrchestrator:
         )
         messages = [
             assembler.system_message(),  # frozen system dict at index 0
-            {"role": "user", "content": goal},
         ]
+
+        # Inject conversation continuity (best-effort, after system message before goal)
+        if self.context_manager is not None and self._active_session_id:
+            try:
+                continuity_block = await self.context_manager.conversation_context(
+                    self._active_session_id
+                )
+                if continuity_block:
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"CONVERSATION SO FAR (context — the user's new message is below):\n"
+                                f"{continuity_block}"
+                            ),
+                        }
+                    )
+            except Exception:
+                # Best-effort: on any failure, proceed without injection (log to stderr)
+                import sys
+
+                print(
+                    "warning: conversation-continuity injection failed",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+        # Append the actual goal message
+        messages.append(
+            {"role": "user", "content": goal},
+        )
 
         # Per-goal tool-loop detector — halt early if the model repeats the same
         # tool call or cycles a tiny set of calls and would otherwise burn the budget.
@@ -1515,6 +1547,7 @@ class CodingOrchestrator:
         self.mcp = mcp  # MCPClientManager | None
         self.agent_instructions: str = ""  # set per-task from AGENT.md
         self.skill_router = skill_router  # SkillRouter | None
+        self.context_manager = None  # set after construction for conversation continuity
         self._recent_actions: list[str] = []
         self._gate_futures: dict[str, asyncio.Future] = {}
 

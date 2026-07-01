@@ -38,7 +38,7 @@ The memory engine orders + watermarks by a stable per-session `seq` (createdAt i
 Repoint the READ methods from `db["messages"]`/`db.messages` to `db["chat_turns"]` with camelCase fields, mapping `text`→`content`, filtering `sessionId`, ordering by `seq`.
 - `_recent_turns(session_id, budget)`: read `chat_turns` where `sessionId==session_id` AND `seq > watermark` (watermark from `redis.get(f"summarized_through:{session_id}")`, default -1), sorted `seq` asc, newest-retained trim to budget; format `f"{role.upper()}: {text}"`.
 - `last_activity_seconds`: read newest `chat_turns.createdAt` for the session.
-- Retire `microcompact` and `clear_tool_results` → make them no-ops returning 0 (they targeted `role:'tool'` + destructive `db.messages` strips; `chat_turns` has neither). Leave the methods present (callers exist) but no-op with a docstring noting retirement.
+- **DELETE `microcompact` and `clear_tool_results`** (not no-op stubs) + their callers: `full_compact`'s `clear_tool_results` call (~474) and `main.py`'s `microcompact` branch (Task 4). They stripped `role:'tool'`/large bodies from the mutable `db.messages`; `chat_turns` has neither (final-answer-lean, immutable), so they're dead — remove them so no continuity code references `db.messages`.
 - [ ] Test: seed a fake `chat_turns` collection; `_recent_turns` returns only turns after the watermark, seq-ordered, mapping `text`→content; `microcompact`/`clear_tool_results` return 0 and mutate nothing.
 - [ ] Impl + run `pytest services/memory/tests/ -q` → green. Commit.
 
@@ -55,12 +55,21 @@ Replace the delete-based compaction with a watermark advance over `chat_turns`.
 
 ### Task 4: Reconcile `main.py` auto-compact call sites
 **Files:** `services/orchestrator/main.py`; extend the existing orchestrator tests.
-The build-context fill probe (~627) + `full_compact` (~634) now operate on `chat_turns` (no code change needed beyond confirming behavior). Remove the `microcompact` branch (~650-654) since microcompact is retired (or leave it calling the no-op — but prefer removing the dead branch). Keep the `FULL_THRESH` trigger.
-- [ ] Confirm/adjust: the probe still gates `full_compact` on `total_tokens >= FULL_THRESH`; drop the `MICRO_THRESH`/`microcompact` branch. Run the orchestrator suite → green. Commit.
+The build-context fill probe (~627) + `full_compact` (~634) now operate on `chat_turns` (confirm behavior). **Delete** the `MICRO_THRESH`/`microcompact` branch (~650-654) — microcompact is removed in Task 2. **Repoint the background sweeper's `storage._db["messages"].distinct("session_id")` (~422) to `chat_turns`'s `sessionId`** so background compaction actually finds sessions (else it never fires now that `db.messages` is empty). Keep the `FULL_THRESH` trigger.
+- [ ] Confirm/adjust: probe still gates `full_compact` on `total_tokens >= FULL_THRESH`; delete the `microcompact` branch; repoint the sweeper's `distinct` to `chat_turns`. Run the orchestrator suite → green. Commit.
 
-### Task 5: Inject continuity into the ReAct loop (the payoff)
-**Files:** `services/orchestrator/coding_orchestrator.py`; test `tests/services/orchestrator/`.
-In `_run_react_loop` (messages seeded at ~530), after `assembler.system_message()` and BEFORE the `{"role":"user","content": goal}`, insert a memory message when continuity exists.
+> **Scope note — `db.messages`:** after this plan, the continuity path no longer touches `db.messages` and its dead methods are deleted. The `db.messages` **collection** + the RAG/embedding plumbing (`write_message`, Chroma outbox, importance/decay-over-messages) are NOT removed here — that's the dormant, deferred memory subsystem ([[memory-subsystem-dormant]]); it's already unused today, and teardown-vs-activate is that project's call.
+
+### Task 5: Inject continuity at BOTH answer paths (the payoff)
+**Files:** `services/memory/context_manager.py`, `services/orchestrator/coding_orchestrator.py`, `services/orchestrator/graph.py`, `services/orchestrator/main.py`; tests in `tests/services/orchestrator/` + `services/memory/tests/`.
+
+**CRITICAL:** the user's bug ("Which problem?") is a **direct answer** — a single `orch.architect(goal_desc)` at `graph.py:239`, NOT `_run_react_loop`. So continuity must be injected at BOTH: (a) the direct-answer fast-path, and (b) the ReAct loop.
+
+- **New `ContextManager.conversation_context(session_id, budget=None) -> str`** (context_manager.py): returns the continuity block = `summary:{session_id}` (Redis) + anchor (if it diverges) + `_recent_turns(...)` — **NO RAG/`hybrid_retrieve`** (that's the deferred dormant path; keep this hot-path cheap). Best-effort, returns "" on any failure.
+- **Wire `context_manager`** onto BOTH `orch` (CodingOrchestrator) and `async_orch` (AsyncOrchestrator) post-construction in `main.py` (next to `async_orch.memory_search = MemorySearch(_sm)` ~300): `= _sm.context_manager`. Add `self.context_manager = None` to both `__init__`s; add `self._active_session_id = ""` to AsyncOrchestrator.
+- **(a) Direct-answer (graph.py:239):** build `block = await orch.context_manager.conversation_context(state.get("session_id",""))` (guard `getattr(orch,"context_manager",None)`); if non-empty, prepend to the architect prompt: `f"CONVERSATION SO FAR (prior context — answer the NEW message at the end):\n{block}\n\nNEW MESSAGE: {goal_desc}"`, else `goal_desc`.
+- **(b) ReAct loop:** in `_run_react_loop` (messages seeded ~530), after `assembler.system_message()` and BEFORE the goal message, insert a memory message when continuity exists.
+- **session_id for the ReAct loop:** set `async_orch._active_session_id = state.get("session_id","")` in the execute node (`graph.py` ~296, before `plan_and_dispatch`); `_run_react_loop` reads `self._active_session_id` + `self.context_manager`.
 - Thread `session_id` + the context_manager (via `self`/storage) into `_run_react_loop` (it currently takes `goal, max_steps`). Use the orchestrator's `storage.context_manager`.
 - Call `build_context(session_id, current_task=goal, system_prompt="", agent_instructions="")`; build the injected block from `ctx.summary_buffer` + `ctx.anchor_buffer` + `ctx.recent_turns` (NOT system_prompt — already in the prefix). If all empty, inject nothing (behavior-identical to today).
 - Inject as a single message: `{"role":"user","content": f"CONVERSATION SO FAR (context — the user's new message is below):\n{block}"}` placed at index 1 (after the frozen system dict, before the goal). Prefix stays byte-stable.

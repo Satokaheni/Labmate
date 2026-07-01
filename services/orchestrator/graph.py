@@ -236,9 +236,24 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             # ONE architect() call, mark root COMPLETED, and HALT (clarification_router sees
             # final_answer/direct_answer and returns END).
             if ENABLE_DIRECT_ANSWER_FASTPATH:
-                answer = await orch.architect(
-                    goal_desc, thinking_budget=DIRECT_ANSWER_THINKING_BUDGET
-                )
+                # Inject conversation continuity (best-effort)
+                prompt = goal_desc
+                cm = getattr(orch, "context_manager", None)
+                if cm is not None:
+                    try:
+                        session_id = state.get("session_id", "")
+                        continuity_block = await cm.conversation_context(session_id)
+                        if continuity_block:
+                            prompt = (
+                                f"CONVERSATION SO FAR (prior context — answer the NEW message at the end):\n"
+                                f"{continuity_block}\n\n"
+                                f"NEW MESSAGE: {goal_desc}"
+                            )
+                    except Exception:
+                        # Best-effort: on any failure, proceed with unaugmented prompt
+                        _log.debug("direct-answer continuity injection failed", exc_info=True)
+
+                answer = await orch.architect(prompt, thinking_budget=DIRECT_ANSWER_THINKING_BUDGET)
                 tree = copy.deepcopy(state["goal_tree"])
                 update_status(tree, root_id, Status.COMPLETED, result=answer)
                 await events.emit(
@@ -292,6 +307,9 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
         # Deep copy to avoid mutating the checkpoint's prior goal_tree.
         tree = copy.deepcopy(state["goal_tree"])
         markers = dict(state["step_markers"])
+
+        # Set the active session_id for context_manager in _run_react_loop
+        async_orch._active_session_id = state.get("session_id", "")
 
         results = await async_orch.plan_and_dispatch(ready)
         last_artifact = {"type": "other", "payload": ""}
