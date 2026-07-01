@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import time as _time
 import uuid
@@ -24,6 +25,8 @@ from services.ws_gateway.redis_bridge import (
 )
 from services.ws_gateway.sessions import InMemorySessionStore, build_sessions_router
 from services.ws_gateway.user_store import MongoUserStore
+
+logger = logging.getLogger(__name__)
 
 
 def _now_iso() -> str:
@@ -110,6 +113,36 @@ async def _relay_task(
             await ws.send_json(framed)
 
 
+def _default_session_store(config: Config):
+    """Create a session store: MongoSessionStore if Mongo URL is available, else InMemorySessionStore.
+
+    Falls back to InMemorySessionStore if mongo_url is missing or connection fails.
+    Uses a fast SYNC pymongo ping to probe reachability before returning MongoSessionStore.
+    """
+    if not config.mongo_url:
+        logger.warning("MONGO_URI not set; using in-memory session store (non-durable)")
+        return InMemorySessionStore()
+
+    # Fast synchronous reachability probe using pymongo (transitive dep of motor)
+    try:
+        import pymongo
+
+        probe = pymongo.MongoClient(config.mongo_url, serverSelectionTimeoutMS=800)
+        probe.admin.command("ping")
+        probe.close()
+    except Exception as e:
+        logger.warning("Mongo unreachable (%s); using in-memory session store (non-durable)", e)
+        return InMemorySessionStore()
+
+    try:
+        from services.ws_gateway.mongo_session_store import MongoSessionStore
+
+        return MongoSessionStore(config.mongo_url)
+    except Exception as e:
+        logger.warning("Failed to create MongoSessionStore: %s; falling back to in-memory store", e)
+        return InMemorySessionStore()
+
+
 def _title_from_message(text: str, max_len: int = 48) -> str:
     """Derive a chat title from the first user message (Claude-style auto-title)."""
     first_line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
@@ -137,8 +170,8 @@ async def _handle_send(
     # Auto-create the session on first send (Claude-style new chat): if the
     # client's session id is unknown, mint it now, titled from the first message.
     # The add_turn block below then emits session.updated with the titled session.
-    if session_id and store.get(session_id) is None:
-        store.create(
+    if session_id and await store.get(session_id) is None:
+        await store.create(
             title=_title_from_message(text),
             mode=msg.get("mode", "chat"),
             session_id=session_id,
@@ -154,8 +187,8 @@ async def _handle_send(
     }
 
     if session_id:
-        store.add_turn(session_id, user_turn)
-        session = store.get(session_id)
+        await store.add_turn(session_id, user_turn)
+        session = await store.get(session_id)
         if session:
             await ws.send_json({"type": "session.updated", "session": session})
 
@@ -236,7 +269,9 @@ async def _ws_loop(
             # Await the previous relay if one is still running (one turn at a time).
             if relay is not None and not relay.done():
                 await relay
-            debug_on = store.get_debug(active_session_id or "") if active_session_id else debug_mode
+            debug_on = (
+                await store.get_debug(active_session_id or "") if active_session_id else debug_mode
+            )
             active_task_id, relay = await _handle_send(
                 ws,
                 redis,
@@ -279,22 +314,22 @@ async def _ws_loop(
             await ws.send_json({"type": "steer.ack", "taskId": active_task_id or ""})
         elif mtype == "session.new":
             mode = msg.get("mode", "chat")
-            session = store.create(title="New session", mode=mode)
+            session = await store.create(title="New session", mode=mode)
             active_session_id = session["id"]
             await ws.send_json({"type": "session.updated", "session": session})
         elif mtype == "session.open":
             sid = msg.get("sessionId", "")
-            session = store.get(sid)
+            session = await store.get(sid)
             if session is not None:
                 active_session_id = sid
                 await ws.send_json({"type": "session.updated", "session": session})
                 # Replay the session's stored turns so the client can render them
-                turns = store.turns(sid)
+                turns = await store.turns(sid)
                 await ws.send_json({"type": "session.history", "sessionId": sid, "turns": turns})
         elif mtype == "session.rename":
             sid = msg.get("sessionId", "")
             title = msg.get("title", "")
-            session = store.rename(sid, title)
+            session = await store.rename(sid, title)
             if session is not None:
                 await ws.send_json({"type": "session.updated", "session": session})
         elif mtype == "debug.set":
@@ -302,7 +337,7 @@ async def _ws_loop(
             enabled = bool(msg.get("enabled", False))
             debug_mode = enabled
             if sid:
-                store.set_debug(sid, enabled)
+                await store.set_debug(sid, enabled)
         elif mtype == "compact":
             if not active_session_id:
                 await ws.send_json({"type": "compact.done", "ok": False, "error": "no_session"})
@@ -371,7 +406,7 @@ def build_app(
 
     user_store = user_store or MongoUserStore(config.mongo_url)
     auth = AuthService(config, user_store)
-    store = session_store or InMemorySessionStore()
+    store = session_store or _default_session_store(config)
     r = redis or aioredis.from_url(config.redis_url, decode_responses=True)
 
     # default boot checks bind the live redis; brain check needs an http_get

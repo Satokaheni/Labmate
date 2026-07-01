@@ -3,10 +3,8 @@ import pytest
 from services.ws_gateway.boot import (
     boot_plan,
     check_brain,
-    check_nervous_system,
     check_hands,
     check_memory,
-    check_workspace,
     run_boot_sequence,
 )
 
@@ -24,7 +22,9 @@ async def test_check_brain_ready_when_healthz_ok():
     async def fake_get(url):
         class R:
             status = 200
+
         return R()
+
     state, detail, message = await check_brain(http_get=fake_get, base_url="http://x:8000")
     assert state == "ready"
 
@@ -33,6 +33,7 @@ async def test_check_brain_ready_when_healthz_ok():
 async def test_check_brain_failed_when_healthz_errors():
     async def fake_get(url):
         raise ConnectionError("refused")
+
     state, detail, message = await check_brain(http_get=fake_get, base_url="http://x:8000")
     assert state == "failed"
     assert "refused" in message
@@ -86,10 +87,12 @@ async def test_run_boot_sequence_emits_updates_then_ready(redis):
 async def test_run_boot_sequence_warm_start_includes_sessions():
     """boot.ready must include sessions from the store if one is provided."""
     from services.ws_gateway.sessions import InMemorySessionStore
+
     store = InMemorySessionStore()
-    store.create(title="My session", mode="chat", session_id="s-abc")
+    await store.create(title="My session", mode="chat", session_id="s-abc")
 
     emitted = []
+
     async def emit(ev):
         emitted.append(ev)
 
@@ -100,7 +103,7 @@ async def test_run_boot_sequence_warm_start_includes_sessions():
     await run_boot_sequence(emit, checks, session_store=store)
 
     boot_ready = next(e for e in emitted if e["type"] == "boot.ready")
-    assert boot_ready["sessionBootstrap"]["sessions"] == store.list()
+    assert boot_ready["sessionBootstrap"]["sessions"] == await store.list()
     assert boot_ready["sessionBootstrap"]["activeSessionId"] == "s-abc"
 
 
@@ -108,11 +111,15 @@ async def test_run_boot_sequence_warm_start_includes_sessions():
 async def test_run_boot_sequence_empty_store_sends_empty_sessions():
     """boot.ready with no sessions → sessions=[], activeSessionId=None."""
     from services.ws_gateway.sessions import InMemorySessionStore
+
     emitted = []
+
     async def emit(ev):
         emitted.append(ev)
+
     async def ready_check(**_):
         return ("ready", "ok", "")
+
     checks = {k: ready_check for k in ("brain", "nervous_system", "hands", "memory", "workspace")}
     await run_boot_sequence(emit, checks, session_store=InMemorySessionStore())
     boot_ready = next(e for e in emitted if e["type"] == "boot.ready")

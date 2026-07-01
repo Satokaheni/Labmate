@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from services.ws_gateway.config import Config
 from services.ws_gateway.server import build_app
+from services.ws_gateway.sessions import InMemorySessionStore
 
 
 @pytest.fixture
@@ -22,12 +23,19 @@ def cfg():
 
 @pytest.fixture
 async def app(cfg, redis, seeded_store):
-    # Inject the fake redis and all-ready boot checks for deterministic tests.
+    # Inject the fake redis, all-ready boot checks, and an explicit in-memory session store
+    # so that tests never depend on whether Mongo is running.
     async def ready(**_):
         return ("ready", "ok", "")
 
     checks = {k: ready for k in ("brain", "nervous_system", "hands", "memory", "workspace")}
-    return build_app(cfg, redis=redis, boot_checks=checks, user_store=seeded_store)
+    return build_app(
+        cfg,
+        redis=redis,
+        boot_checks=checks,
+        user_store=seeded_store,
+        session_store=InMemorySessionStore(),
+    )
 
 
 @pytest.fixture
@@ -287,6 +295,8 @@ def test_session_open_emits_session_updated(client, app):
 
 def test_session_open_replays_stored_turns(client, app):
     """session.open should replay a session's stored turns in a session.history frame."""
+    import asyncio
+
     with client.websocket_connect("/ws") as ws:
         _boot_to_ready(ws, app)
         ws.send_json({"type": "session.new", "mode": "chat"})
@@ -294,28 +304,33 @@ def test_session_open_replays_stored_turns(client, app):
         sid = created["session"]["id"]
 
         # Simulate adding turns to the store (inject directly for testing)
+        # Use asyncio.run to execute async methods in this sync test context
         store = app.state.store
-        store.add_turn(
-            sid,
-            {
-                "id": "t-1",
-                "role": "user",
-                "text": "Hello",
-                "sessionId": sid,
-                "createdAt": "2026-01-01T00:00:00Z",
-                "status": "complete",
-            },
+        asyncio.run(
+            store.add_turn(
+                sid,
+                {
+                    "id": "t-1",
+                    "role": "user",
+                    "text": "Hello",
+                    "sessionId": sid,
+                    "createdAt": "2026-01-01T00:00:00Z",
+                    "status": "complete",
+                },
+            )
         )
-        store.add_turn(
-            sid,
-            {
-                "id": "t-2",
-                "role": "assistant",
-                "text": "Hi there",
-                "sessionId": sid,
-                "createdAt": "2026-01-01T00:00:01Z",
-                "status": "complete",
-            },
+        asyncio.run(
+            store.add_turn(
+                sid,
+                {
+                    "id": "t-2",
+                    "role": "assistant",
+                    "text": "Hi there",
+                    "sessionId": sid,
+                    "createdAt": "2026-01-01T00:00:01Z",
+                    "status": "complete",
+                },
+            )
         )
 
         ws.send_json({"type": "session.open", "sessionId": sid})

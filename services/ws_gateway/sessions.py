@@ -1,25 +1,28 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class InMemorySessionStore:
-    """Minimal session index. Swap for a Mongo-backed store behind this API."""
+    """Minimal session index. Swap for a Mongo-backed store behind this API.
+
+    All methods are async to match the MongoSessionStore interface.
+    """
 
     def __init__(self) -> None:
         self._sessions: dict[str, dict] = {}
         self._turns: dict[str, list[dict]] = {}
         self._debug: dict[str, bool] = {}
 
-    def create(
+    async def create(
         self,
         *,
         title: str,
@@ -42,13 +45,13 @@ class InMemorySessionStore:
         self._turns.setdefault(sid, [])
         return session
 
-    def list(self) -> list[dict]:
+    async def list(self) -> list[dict]:
         return sorted(self._sessions.values(), key=lambda s: s["updatedAt"], reverse=True)
 
-    def get(self, sid: str) -> dict | None:
+    async def get(self, sid: str) -> dict | None:
         return self._sessions.get(sid)
 
-    def rename(self, sid: str, title: str) -> dict | None:
+    async def rename(self, sid: str, title: str) -> dict | None:
         s = self._sessions.get(sid)
         if s is None:
             return None
@@ -56,20 +59,28 @@ class InMemorySessionStore:
         s["updatedAt"] = _now_iso()
         return s
 
-    def turns(self, sid: str) -> list[dict]:
+    async def delete(self, sid: str) -> bool:
+        if sid in self._sessions:
+            del self._sessions[sid]
+            self._turns.pop(sid, None)
+            self._debug.pop(sid, None)
+            return True
+        return False
+
+    async def turns(self, sid: str) -> list[dict]:
         return self._turns.get(sid, [])
 
-    def add_turn(self, sid: str, turn: dict) -> None:
+    async def add_turn(self, sid: str, turn: dict) -> None:
         self._turns.setdefault(sid, []).append(turn)
         s = self._sessions.get(sid)
         if s is not None:
             s["turnCount"] = len(self._turns[sid])
             s["updatedAt"] = _now_iso()
 
-    def set_debug(self, sid: str, enabled: bool) -> None:
+    async def set_debug(self, sid: str, enabled: bool) -> None:
         self._debug[sid] = enabled
 
-    def get_debug(self, sid: str) -> bool:
+    async def get_debug(self, sid: str) -> bool:
         return self._debug.get(sid, False)
 
 
@@ -86,22 +97,22 @@ def build_sessions_router(store: InMemorySessionStore) -> APIRouter:
     router = APIRouter()
 
     @router.get("/sessions")
-    def list_sessions() -> list[dict]:
-        return store.list()
+    async def list_sessions() -> list[dict]:
+        return await store.list()
 
     @router.post("/sessions", status_code=201)
-    def create_session(body: CreateBody) -> dict:
-        return store.create(title=body.title, mode=body.mode)
+    async def create_session(body: CreateBody) -> dict:
+        return await store.create(title=body.title, mode=body.mode)
 
     @router.get("/sessions/{sid}/turns")
-    def get_turns(sid: str) -> list[dict]:
-        if store.get(sid) is None:
+    async def get_turns(sid: str) -> list[dict]:
+        if await store.get(sid) is None:
             raise HTTPException(status_code=404, detail="not_found")
-        return store.turns(sid)
+        return await store.turns(sid)
 
     @router.patch("/sessions/{sid}")
-    def patch_session(sid: str, body: PatchBody) -> dict:
-        s = store.rename(sid, body.title)
+    async def patch_session(sid: str, body: PatchBody) -> dict:
+        s = await store.rename(sid, body.title)
         if s is None:
             raise HTTPException(status_code=404, detail="not_found")
         return s

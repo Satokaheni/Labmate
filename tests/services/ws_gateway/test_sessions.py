@@ -6,10 +6,10 @@ from services.ws_gateway.sessions import InMemorySessionStore, build_sessions_ro
 
 
 @pytest.fixture
-def store():
+async def store():
     s = InMemorySessionStore()
-    s.create(title="Older", mode="chat", session_id="a", updated_at="2026-06-01T00:00:00Z")
-    s.create(title="Newer", mode="code", session_id="b", updated_at="2026-06-05T00:00:00Z")
+    await s.create(title="Older", mode="chat", session_id="a", updated_at="2026-06-01T00:00:00Z")
+    await s.create(title="Newer", mode="code", session_id="b", updated_at="2026-06-05T00:00:00Z")
     return s
 
 
@@ -42,8 +42,18 @@ def test_patch_renames_session(client):
     assert r.json()["title"] == "Renamed"
 
 
-def test_get_turns_returns_list(client, store):
-    store.add_turn("a", {"id": "t1", "sessionId": "a", "role": "user", "text": "hi", "createdAt": "2026-06-01T00:00:01Z"})
+@pytest.mark.asyncio
+async def test_get_turns_returns_list(client, store):
+    await store.add_turn(
+        "a",
+        {
+            "id": "t1",
+            "sessionId": "a",
+            "role": "user",
+            "text": "hi",
+            "createdAt": "2026-06-01T00:00:01Z",
+        },
+    )
     r = client.get("/sessions/a/turns")
     assert r.status_code == 200
     assert r.json()[0]["text"] == "hi"
@@ -54,19 +64,23 @@ def test_patch_unknown_session_404(client):
     assert r.status_code == 404
 
 
-def test_set_debug_toggles_flag():
+@pytest.mark.asyncio
+async def test_set_debug_toggles_flag():
     from services.ws_gateway.sessions import InMemorySessionStore
+
     store = InMemorySessionStore()
-    s = store.create(title="Debug session", mode="code")
+    s = await store.create(title="Debug session", mode="code")
     sid = s["id"]
 
-    assert store.get_debug(sid) is False
-    store.set_debug(sid, True)
-    assert store.get_debug(sid) is True
-    store.set_debug(sid, False)
-    assert store.get_debug(sid) is False
+    assert await store.get_debug(sid) is False
+    await store.set_debug(sid, True)
+    assert await store.get_debug(sid) is True
+    await store.set_debug(sid, False)
+    assert await store.get_debug(sid) is False
 
 
-def test_get_debug_unknown_session_returns_false():
+@pytest.mark.asyncio
+async def test_get_debug_unknown_session_returns_false():
     from services.ws_gateway.sessions import InMemorySessionStore
-    assert InMemorySessionStore().get_debug("nonexistent") is False
+
+    assert await InMemorySessionStore().get_debug("nonexistent") is False
