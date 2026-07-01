@@ -37,13 +37,17 @@ function curvePath(elapsed: number, progress: number): string {
 export function RegressionPlot({ progress, seed = 1337, count = 24 }: RegressionPlotProps) {
   const pts = seededScatter(seed, count);
   const pathRef = useRef<SVGPathElement>(null);
+  const progressRef = useRef(progress);
+  progressRef.current = progress;
 
   // Animate the *shape* of the curve (under-fit → fitted, then a slight settle)
   // by mutating the path `d` per frame through the ref — no React state, so the
   // component does not re-render 60×/sec.
+  // Mount the effect once with empty deps; live progress is read via progressRef so
+  // boot-status ticks don't restart the animation.
   useEffect(() => {
     const apply = (elapsed: number) => {
-      pathRef.current?.setAttribute('d', curvePath(elapsed, progress));
+      pathRef.current?.setAttribute('d', curvePath(elapsed, progressRef.current));
     };
     apply(0);
     if (typeof requestAnimationFrame !== 'function') return; // non-animating env (tests)
@@ -56,7 +60,7 @@ export function RegressionPlot({ progress, seed = 1337, count = 24 }: Regression
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, [progress]);
+  }, []);
 
   return (
     <svg

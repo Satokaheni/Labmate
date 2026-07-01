@@ -50,6 +50,7 @@ type WSFrame =
   | { type: 'reasoning.done'; turnId: string; reasoning: Reasoning }
   | { type: 'artifact.created'; turnId: string; artifact: Artifact }
   | { type: 'session.updated'; session: Session }
+  | { type: 'session.deleted'; sessionId: string }
   | { type: 'session.history'; sessionId: string; turns: Turn[] }
   | { type: 'context.update'; window: ContextWindow }
   | { type: 'agent.status'; status: AgentStatus }
@@ -69,6 +70,7 @@ type WSFrame =
       result?: unknown;
       durationMs?: number;
     }
+  | { type: 'compact.done'; ok?: boolean; error?: string }
   | { type: '_INTERNAL_RESET' };
 
 type DispatchAction =
@@ -231,28 +233,35 @@ function labmateWSReducer(state: LabmateWSState, action: DispatchAction): Labmat
 
       if (frame.type === 'session.updated') {
         if (state.phase === 'ready') {
-          const existing = state.sessions.findIndex((s) => s.id === frame.session.id);
-          let sessions: Session[];
-          if (existing >= 0) {
-            // Update in place
-            sessions = state.sessions.map((s, i) => (i === existing ? frame.session : s));
-          } else {
-            // Add new
-            sessions = [...state.sessions, frame.session];
-          }
-          return { ...state, sessions };
+          // Remove any existing entry for that id and unshift the updated session to the front
+          const rest = state.sessions.filter((s) => s.id !== frame.session.id);
+          return { ...state, sessions: [frame.session, ...rest] };
         }
         return state;
       }
 
       if (frame.type === 'session.history') {
         if (state.phase === 'ready') {
-          // Merge turns from session history, deduplicating by turn id.
-          // Append any turn whose id is not already in state.turns.
-          const existingIds = new Set((state.turns ?? []).map((t) => t.id));
-          const newTurns = frame.turns.filter((t) => !existingIds.has(t.id));
-          const turns = [...(state.turns ?? []), ...newTurns];
-          return { ...state, turns };
+          // Keep only turns whose sessionId is absent or matches the incoming session,
+          // then merge frame.turns deduped by id. This ensures switching sessions
+          // cleanly drops the previous session's turns.
+          const sid = frame.sessionId;
+          const kept = (state.turns ?? []).filter((t) => !t.sessionId || t.sessionId === sid);
+          const seen = new Set(kept.map((t) => t.id));
+          const merged = [...kept, ...frame.turns.filter((t) => !seen.has(t.id))];
+          return { ...state, turns: merged };
+        }
+        return state;
+      }
+
+      if (frame.type === 'session.deleted') {
+        if (state.phase === 'ready') {
+          const sessions = state.sessions.filter((s) => s.id !== frame.sessionId);
+          let activeSessionId = state.activeSessionId;
+          if (frame.sessionId === activeSessionId) {
+            activeSessionId = sessions[0]?.id ?? null;
+          }
+          return { ...state, sessions, activeSessionId };
         }
         return state;
       }
@@ -337,6 +346,12 @@ function labmateWSReducer(state: LabmateWSState, action: DispatchAction): Labmat
         return state;
       }
 
+      if (frame.type === 'compact.done') {
+        // Transient frame; reducer is a safe no-op.
+        // The frame is handled by the effect, not state-based.
+        return state;
+      }
+
       return state;
     }
 
@@ -357,6 +372,10 @@ export function useLabmateWS(
   setActiveSession: (sessionId: string) => void;
   openSession?: (sessionId: string) => void;
   setDebug: (sessionId: string, enabled: boolean) => void;
+  renameSession: (sessionId: string, title: string) => void;
+  deleteSession: (sessionId: string) => void;
+  cancel: (turnId: string) => void;
+  compact: (sessionId: string) => void;
 } {
   const [state, dispatch] = useReducer(labmateWSReducer, { phase: 'idle' });
   const wsRef = useRef<WebSocket | null>(null);
@@ -522,6 +541,18 @@ export function useLabmateWS(
     }
   };
 
+  const renameSession = (sessionId: string, title: string) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'session.rename', sessionId, title }));
+    }
+  };
+
+  const deleteSession = (sessionId: string) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'session.delete', sessionId }));
+    }
+  };
+
   const newSession = (mode: string) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'session.new', mode }));
@@ -548,6 +579,18 @@ export function useLabmateWS(
     return id;
   };
 
+  const cancel = (turnId: string) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'cancel', turnId }));
+    }
+  };
+
+  const compact = (sessionId: string) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'compact', sessionId }));
+    }
+  };
+
   return {
     state: state as LabmateWSStatePublic,
     send,
@@ -556,5 +599,9 @@ export function useLabmateWS(
     setActiveSession,
     openSession,
     setDebug,
+    renameSession,
+    deleteSession,
+    cancel,
+    compact,
   };
 }

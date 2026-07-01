@@ -4,26 +4,27 @@ import asyncio
 import hashlib
 import logging
 import time
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import UTC, datetime
 
-from services.memory.tokenizer import token_count
-from services.memory.reranker import rerank
 from rank_bm25 import BM25Okapi
+
+from services.memory.reranker import rerank
+from services.memory.tokenizer import token_count
 
 _logger = logging.getLogger(__name__)
 
 
 @dataclass
 class ContextBudget:
-    max_tokens:          int   = 131072
-    completion_reserve:  int   = 700
-    agent_share:         float = 0.08
-    system_core_share:   float = 0.22
-    recent_turns_share:  float = 0.30
-    rag_share:           float = 0.30
-    summary_share:       float = 0.10
-    anchor_share:        float = 0.03
+    max_tokens: int = 131072
+    completion_reserve: int = 700
+    agent_share: float = 0.08
+    system_core_share: float = 0.22
+    recent_turns_share: float = 0.30
+    rag_share: float = 0.30
+    summary_share: float = 0.10
+    anchor_share: float = 0.03
 
     @property
     def effective_budget(self) -> int:
@@ -36,13 +37,13 @@ class ContextBudget:
 @dataclass
 class AssembledContext:
     agent_instructions: str = ""
-    system_prompt:      str = ""
-    core_memory:        str = ""
-    anchor_buffer:      str = ""
-    recent_turns:       str = ""
-    retrieved_context:  str = ""
-    summary_buffer:     str = ""
-    total_tokens:       int = 0
+    system_prompt: str = ""
+    core_memory: str = ""
+    anchor_buffer: str = ""
+    recent_turns: str = ""
+    retrieved_context: str = ""
+    summary_buffer: str = ""
+    total_tokens: int = 0
 
     def as_prompt(self) -> str:
         """Assemble with highest-value content near head, recent turns near tail.
@@ -52,15 +53,20 @@ class AssembledContext:
         The anchor (founding facts) sits right after core memory so it stays visible
         even after many compact cycles dilute it out of the rolling summary.
         """
-        return "\n\n".join(filter(None, [
-            self.agent_instructions,
-            self.system_prompt,
-            self.core_memory,
-            self.anchor_buffer,
-            self.retrieved_context,
-            self.summary_buffer,
-            self.recent_turns,
-        ]))
+        return "\n\n".join(
+            filter(
+                None,
+                [
+                    self.agent_instructions,
+                    self.system_prompt,
+                    self.core_memory,
+                    self.anchor_buffer,
+                    self.retrieved_context,
+                    self.summary_buffer,
+                    self.recent_turns,
+                ],
+            )
+        )
 
 
 class ContextManager:
@@ -73,18 +79,18 @@ class ContextManager:
         budget: ContextBudget | None = None,
         storage=None,
     ) -> None:
-        self.redis  = redis
-        self.db     = mongo_db
+        self.redis = redis
+        self.db = mongo_db
         self.chroma = chroma_cols
-        self.embed  = embedder
+        self.embed = embedder
         self.budget = budget or ContextBudget()
         self.storage = storage  # orchestrator StorageManager hook for importance boost
 
     async def build_context(
         self,
-        session_id:         str,
-        current_task:       str,
-        system_prompt:      str,
+        session_id: str,
+        current_task: str,
+        system_prompt: str,
         agent_instructions: str = "",
     ) -> AssembledContext:
         """Assemble the full context for one agent step, strictly within budget.
@@ -96,14 +102,16 @@ class ContextManager:
 
         # 1. Pinned slots — agent_instructions + system_prompt + core never trimmed
         core = await self.redis.get(f"core:{session_id}") or ""
-        pinned_tokens = token_count(agent_instructions) + token_count(system_prompt) + token_count(core)
+        pinned_tokens = (
+            token_count(agent_instructions) + token_count(system_prompt) + token_count(core)
+        )
         remaining = b.effective_budget - pinned_tokens
 
         # 2. RAG evidence — hybrid BM25 + dense → RRF → rerank
         rag_budget = min(b.slot(b.rag_share), max(0, remaining))
         rag_chunks = await self.hybrid_retrieve(current_task, token_budget=rag_budget)
         await self._boost_retrieved(rag_chunks)
-        rag_text   = "\n\n".join(c["text"] for c in rag_chunks)
+        rag_text = "\n\n".join(c["text"] for c in rag_chunks)
         remaining -= token_count(rag_text)
 
         # 3. Summary buffer
@@ -144,7 +152,7 @@ class ContextManager:
         """Trim text from the front (oldest lines) until it fits in budget."""
         if not text or token_count(text) <= budget:
             return text
-        lines = [l for l in text.splitlines() if l]
+        lines = [line for line in text.splitlines() if line]
         while lines and token_count("\n".join(lines)) > budget:
             lines.pop(0)
         return "\n".join(lines)
@@ -170,16 +178,36 @@ class ContextManager:
         return overlap < 0.60
 
     async def _recent_turns(self, session_id: str, budget: int) -> str:
-        """Load recent turns from MongoDB, trim to budget (newest retained)."""
+        """Load recent turns from chat_turns (immutable store), filtered by watermark.
+
+        Recent turns = turns with seq > watermark, where watermark is read from Redis.
+        Watermark defaults to -1 (meaning all turns are recent on first access).
+        """
+        # Get watermark from Redis (defaults to -1)
+        watermark_str = await self.redis.get(f"summarized_through:{session_id}")
+        watermark = int(watermark_str) if watermark_str else -1
+
+        # Read the NEWEST turns after the watermark from chat_turns (camelCase).
+        # The watermark filter goes in the QUERY (so a long post-watermark session
+        # isn't dropped), sorted DESC + limit → the recent tail, not the oldest 50.
         cursor = (
-            self.db.messages
-            .find({"session_id": session_id}, {"role": 1, "content": 1})
-            .sort("seq", -1)
+            self.db["chat_turns"]
+            .find(
+                {"sessionId": session_id, "seq": {"$gt": watermark}},
+                {"role": 1, "text": 1, "seq": 1},
+            )
+            .sort("seq", -1)  # newest first, so limit keeps the recent tail
             .limit(50)
         )
         turns = [doc async for doc in cursor]
-        turns.reverse()
-        lines = [f"{t['role'].upper()}: {t['content']}" for t in turns]
+
+        # Enforce the watermark in-memory too (test fakes may ignore the query
+        # filter), then sort chronologically by seq — robust to cursor ordering.
+        turns = [t for t in turns if t.get("seq", -1) > watermark]
+        turns.sort(key=lambda t: t.get("seq", 0))
+
+        # Format as "ROLE: text"
+        lines = [f"{t['role'].upper()}: {t['text']}" for t in turns]
         return self._trim_to_budget("\n".join(lines), budget)
 
     async def hybrid_retrieve(
@@ -217,7 +245,7 @@ class ContextManager:
             ids = res["ids"][0]
             docs = res["documents"][0]
 
-            for cid, doc in zip(ids, docs):
+            for cid, doc in zip(ids, docs, strict=False):
                 all_docs[cid] = doc
             dense_rankings.append(ids)
 
@@ -225,9 +253,7 @@ class ContextManager:
                 tokenized = [d.lower().split() for d in docs]
                 bm25 = BM25Okapi(tokenized, k1=1.5, b=0.75)
                 scores = bm25.get_scores(query.lower().split())
-                bm25_ranked = [
-                    ids[i] for i in sorted(range(len(scores)), key=lambda x: -scores[x])
-                ]
+                bm25_ranked = [ids[i] for i in sorted(range(len(scores)), key=lambda x: -scores[x])]
                 bm25_rankings.append(bm25_ranked)
 
         if not all_docs:
@@ -248,7 +274,7 @@ class ContextManager:
         # Cross-encoder rerank
         scores = await rerank(query, shortlist_docs)
         ranked = sorted(
-            zip(scores, shortlist_ids, shortlist_docs),
+            zip(scores, shortlist_ids, shortlist_docs, strict=False),
             key=lambda x: -x[0],
         )
 
@@ -283,13 +309,13 @@ class ContextManager:
 
     # ── Compaction ────────────────────────────────────────────────────────────
 
-    _MICRO_STRIP_THRESHOLD = 1500   # chars; strip old message content beyond this
-    _TOOL_RESULT_THRESHOLD = 600    # chars; tool results stripped more aggressively
-    _BLOCK_SIZE            = 20     # turns per parallel summarization block
-    _KEEP_RECENT           = 15     # turns retained verbatim after full compact
+    _MICRO_STRIP_THRESHOLD = 1500  # chars; strip old message content beyond this
+    _TOOL_RESULT_THRESHOLD = 600  # chars; tool results stripped more aggressively
+    _BLOCK_SIZE = 20  # turns per parallel summarization block
+    _KEEP_RECENT = 15  # turns retained verbatim after full compact
     _KEEP_RECENT_TOOL_RESULTS = 10  # most-recent tool results never cleared (still referenced)
-    _IDLE_COMPACT_SECONDS  = 600    # idle threshold (s) before proactive background compact
-    _LOW_FILL_RATIO        = 0.50   # only background-compact when fill ratio exceeds this
+    _IDLE_COMPACT_SECONDS = 600  # idle threshold (s) before proactive background compact
+    _LOW_FILL_RATIO = 0.50  # only background-compact when fill ratio exceeds this
 
     # Prompt used per block when summarizing in parallel
     _BLOCK_SUMMARY_PROMPT = (
@@ -321,71 +347,6 @@ class ContextManager:
         "SUMMARY:\n{summary}\n\nJSON:"
     )
 
-    async def microcompact(self, session_id: str) -> int:
-        """Strip content from old large messages without any LLM call.
-
-        Skips the 20 most-recent turns. Returns chars freed.
-        Idempotent: already-stripped messages have stripped=True and are skipped.
-        """
-        cursor = (
-            self.db["messages"]
-            .find(
-                {"session_id": session_id, "stripped": {"$ne": True}},
-                {"_id": 1, "seq": 1, "content": 1},
-            )
-            .sort("seq", -1)
-            .skip(20)
-        )
-        freed = 0
-        async for doc in cursor:
-            content = doc.get("content", "")
-            if len(content) > self._MICRO_STRIP_THRESHOLD:
-                stub = f"[stripped: {len(content)} chars]"
-                await self.db["messages"].update_one(
-                    {"_id": doc["_id"]},
-                    {"$set": {"content": stub, "stripped": True}},
-                )
-                freed += len(content) - len(stub)
-        return freed
-
-    async def clear_tool_results(self, session_id: str) -> int:
-        """Replace large tool-result bodies with stubs before LLM summarization.
-
-        Targets role='tool' messages specifically, leaving conversation intact.
-        In long research sessions tool outputs (file reads, web search dumps)
-        dominate token usage; clearing them before summarization dramatically
-        reduces the LLM input without losing conversational context.
-
-        Age-aware: the _KEEP_RECENT_TOOL_RESULTS most-recent tool results are
-        left intact (the user / next turn may still refer to them); only older
-        tool results over the threshold are cleared.
-        Returns chars freed.
-        """
-        cursor = (
-            self.db["messages"]
-            .find(
-                {
-                    "session_id": session_id,
-                    "role": "tool",
-                    "stripped": {"$ne": True},
-                },
-                {"_id": 1, "content": 1},
-            )
-            .sort("seq", -1)
-            .skip(self._KEEP_RECENT_TOOL_RESULTS)
-        )
-        freed = 0
-        async for doc in cursor:
-            content = doc.get("content", "")
-            if len(content) > self._TOOL_RESULT_THRESHOLD:
-                stub = f"[tool result: {len(content)} chars cleared]"
-                await self.db["messages"].update_one(
-                    {"_id": doc["_id"]},
-                    {"$set": {"content": stub, "stripped": True}},
-                )
-                freed += len(content) - len(stub)
-        return freed
-
     async def _parallel_summarize(
         self,
         turns: list[dict],
@@ -398,20 +359,13 @@ class ContextManager:
         The anchor (key facts from the first compaction) is passed to every
         block and the merge so the summarizer cannot drift from established facts.
         """
-        anchor_section = (
-            f"FIXED CONTEXT (always preserve):\n{anchor}\n\n" if anchor else ""
-        )
+        anchor_section = f"FIXED CONTEXT (always preserve):\n{anchor}\n\n" if anchor else ""
 
         # Split turns into fixed-size blocks
-        blocks = [
-            turns[i: i + self._BLOCK_SIZE]
-            for i in range(0, len(turns), self._BLOCK_SIZE)
-        ]
+        blocks = [turns[i : i + self._BLOCK_SIZE] for i in range(0, len(turns), self._BLOCK_SIZE)]
 
         async def _summarize_block(block: list[dict]) -> str:
-            history = "\n".join(
-                f"{t['role'].upper()}: {t['content']}" for t in block
-            )
+            history = "\n".join(f"{t['role'].upper()}: {t['content']}" for t in block)
             prompt = self._BLOCK_SUMMARY_PROMPT.format(
                 anchor_section=anchor_section,
                 history=history,
@@ -424,9 +378,7 @@ class ContextManager:
             return summaries[0]
 
         # Merge block summaries into one coherent summary
-        segments = "\n\n---\n\n".join(
-            f"Segment {i + 1}:\n{s}" for i, s in enumerate(summaries)
-        )
+        segments = "\n\n---\n\n".join(f"Segment {i + 1}:\n{s}" for i, s in enumerate(summaries))
         return await llm_fn(
             self._MERGE_PROMPT.format(
                 anchor_section=anchor_section,
@@ -441,10 +393,9 @@ class ContextManager:
         findings, lessons). Never raises — reflections are best-effort.
         """
         import json as _json
+
         try:
-            raw = await llm_fn(
-                self._REFLECTION_PROMPT.format(summary=summary[:8_000])
-            )
+            raw = await llm_fn(self._REFLECTION_PROMPT.format(summary=summary[:8_000]))
             start, end = raw.find("{"), raw.rfind("}") + 1
             if start < 0 or end <= start:
                 return []
@@ -457,10 +408,10 @@ class ContextManager:
             return []
 
     async def full_compact(self, session_id: str, llm_fn) -> dict:
-        """Summarise old turns with anchoring and parallel blocks → prune MongoDB.
+        """Summarise old turns with anchoring and parallel blocks → advance watermark (non-destructive).
 
         Improvements over naive summarization:
-          1. Tool-result clearing — strips large tool outputs before LLM input
+          1. Watermark-based non-destructive — advances a Redis watermark instead of deleting
           2. Parallel blocks — concurrent summarization removes blocking stall
           3. Anchoring — first summary stored as anchor; passed to all subsequent
              compactions so the model cannot drift from early established facts
@@ -470,14 +421,12 @@ class ContextManager:
         llm_fn: async (prompt: str) -> str
         Returns {summary_tokens, pruned_messages, reflections: list[str]}.
         """
-        # Step 1: clear tool results first (zero-LLM, maximum token recovery)
-        await self.clear_tool_results(session_id)
-
+        # Step 1: read all turns from chat_turns (immutable source)
         cursor = (
-            self.db["messages"]
+            self.db["chat_turns"]
             .find(
-                {"session_id": session_id},
-                {"_id": 1, "seq": 1, "role": 1, "content": 1},
+                {"sessionId": session_id},
+                {"seq": 1, "role": 1, "text": 1},
             )
             .sort("seq", 1)
         )
@@ -485,36 +434,63 @@ class ContextManager:
         if len(all_turns) <= self._KEEP_RECENT:
             return {"summary_tokens": 0, "pruned_messages": 0, "reflections": []}
 
-        to_compact = all_turns[: -self._KEEP_RECENT]
+        # Step 2: determine watermark and which turns are eligible for compaction
+        watermark_str = await self.redis.get(f"summarized_through:{session_id}")
+        watermark = int(watermark_str) if watermark_str else -1
+        max_seq = all_turns[-1].get("seq", -1) if all_turns else -1
 
-        # Pre-compaction token total of the turns we are about to replace — the
-        # denominator for the compression ratio reported in compact.quality.
+        # to_compact = turns with seq > watermark AND seq <= (max_seq - _KEEP_RECENT)
+        # i.e., older than the recent tail that isn't already summarized
+        threshold_seq = max_seq - self._KEEP_RECENT
+        to_compact = [
+            t
+            for t in all_turns
+            if t.get("seq", -1) > watermark and t.get("seq", -1) <= threshold_seq
+        ]
+
+        if not to_compact:
+            return {"summary_tokens": 0, "pruned_messages": 0, "reflections": []}
+
+        # Step 3: pre-compaction token total (denominator for compression ratio)
         pre_tokens = token_count(
-            "\n".join(
-                f"{t.get('role', '').upper()}: {t.get('content', '')}"
-                for t in to_compact
-            )
+            "\n".join(f"{t.get('role', '').upper()}: {t.get('text', '')}" for t in to_compact)
         )
 
-        # Step 2: load anchor (stable early-session facts; empty on first compact)
+        # Step 4: load anchor (stable early-session facts; empty on first compact)
         anchor = await self.redis.get(f"anchor:{session_id}") or ""
 
-        # Step 3: parallel anchored summarization
-        summary = await self._parallel_summarize(to_compact, anchor, llm_fn)
+        # Step 5: parallel anchored summarization (map text→content for _parallel_summarize)
+        to_compact_mapped = [
+            {"role": t.get("role", ""), "content": t.get("text", "")} for t in to_compact
+        ]
+        new_summary = await self._parallel_summarize(to_compact_mapped, anchor, llm_fn)
 
-        # Step 4: first compact → save result as the session anchor
+        # Step 6: first compact → save result as the session anchor
         if not anchor:
-            await self.redis.set(f"anchor:{session_id}", summary)
+            await self.redis.set(f"anchor:{session_id}", new_summary)
 
-        # Step 5: persist new summary (replace, not append — anchoring prevents drift)
+        # Step 7: merge new summary into existing summary (or replace if none exists)
         summary_key = f"summary:{session_id}"
         old_summary = await self.redis.get(summary_key) or ""
-        await self.redis.set(summary_key, summary)
 
-        # Step 6: prune compacted turns from MongoDB (rollback Redis on failure)
-        ids = [t["_id"] for t in to_compact]
+        if old_summary:
+            # Merge: send both summaries to the model
+            segments = f"Segment 1:\n{old_summary}\n\n---\n\nSegment 2:\n{new_summary}"
+            anchor_section = f"FIXED CONTEXT (always preserve):\n{anchor}\n\n" if anchor else ""
+            merged_summary = await llm_fn(
+                self._MERGE_PROMPT.format(
+                    anchor_section=anchor_section,
+                    segments=segments,
+                )
+            )
+            final_summary = merged_summary
+        else:
+            # First-ever summary
+            final_summary = new_summary
+
+        # Step 8: persist the merged summary to Redis (rollback on failure)
         try:
-            await self.db["messages"].delete_many({"_id": {"$in": ids}})
+            await self.redis.set(summary_key, final_summary)
         except Exception:
             if old_summary:
                 await self.redis.set(summary_key, old_summary)
@@ -522,23 +498,34 @@ class ContextManager:
                 await self.redis.delete(summary_key)
             raise
 
-        # Step 7: extract reflections for the caller to write to memory
-        reflections = await self._extract_reflections(summary, llm_fn)
+        # Step 9: advance watermark to max_seq in to_compact (rollback Redis on failure)
+        max_compacted_seq = max([t.get("seq", -1) for t in to_compact])
+        try:
+            await self.redis.set(f"summarized_through:{session_id}", str(max_compacted_seq))
+        except Exception:
+            # Rollback summary
+            if old_summary:
+                await self.redis.set(summary_key, old_summary)
+            else:
+                await self.redis.delete(summary_key)
+            raise
 
-        summary_tokens = token_count(summary)
+        # Step 10: extract reflections for the caller to write to memory
+        reflections = await self._extract_reflections(final_summary, llm_fn)
+
+        summary_tokens = token_count(final_summary)
         tokens_saved = max(0, pre_tokens - summary_tokens)
         compression_ratio = round(min(1.0, summary_tokens / pre_tokens), 4) if pre_tokens else 0.0
 
-        # Step 8: emit compaction quality for frontend instrumentation (best-effort).
-        # Lazy import keeps the memory service free of a hard orchestrator dependency;
-        # events.emit is a no-op when no task emitter is set (background/tests).
+        # Step 11: emit compaction quality for frontend instrumentation (best-effort).
         try:
             from services.orchestrator import events as _events
+
             await _events.emit(
                 "compact.quality",
                 session_id=session_id,
                 compression_ratio=compression_ratio,
-                turns_compacted=len(ids),
+                turns_compacted=len(to_compact),
                 tokens_saved=tokens_saved,
                 reflections_count=len(reflections),
             )
@@ -547,35 +534,74 @@ class ContextManager:
 
         return {
             "summary_tokens": summary_tokens,
-            "pruned_messages": len(ids),
+            "pruned_messages": 0,  # no deletion; watermark-only
             "reflections": reflections,
         }
 
-    async def last_activity_seconds(self, session_id: str) -> float:
-        """Seconds since the newest message in this session was written.
+    async def conversation_context(self, session_id: str, budget: int | None = None) -> str:
+        """Assemble conversation continuity block for multi-turn context.
 
-        Reads the newest message's created_at. Accepts both float Unix timestamps
-        (the actual storage format: time.time()) and datetime objects. Returns 0.0
-        when the session has no messages or the field is absent/unrecognised — i.e.
+        Returns summary + anchor (if diverged) + recent turns, formatted as a string.
+        NO RAG/hybrid_retrieve — this is the hot path, keep it cheap.
+        Best-effort: returns "" on any failure (never breaks the loop).
+
+        budget: token limit for the assembled block. Defaults to a sane
+                percentage of the total context budget if not provided.
+        """
+        try:
+            if not session_id:
+                return ""
+
+            # Use a reasonable default budget if not provided
+            if budget is None:
+                budget = self.budget.slot(self.budget.recent_turns_share)
+
+            # Read summary from Redis
+            summary = await self.redis.get(f"summary:{session_id}") or ""
+
+            # Read anchor, include only if it diverges from summary
+            anchor_raw = await self.redis.get(f"anchor:{session_id}") or ""
+            anchor_block = ""
+            if anchor_raw and self._anchor_diverges(anchor_raw, summary):
+                anchor_block = f"KEY FACTS (anchored, always relevant):\n{anchor_raw}"
+
+            # Read recent turns (non-destructive, watermark-based)
+            recent = await self._recent_turns(session_id, budget)
+
+            # Assemble: summary + anchor + recent
+            parts = [p for p in [summary, anchor_block, recent] if p]
+            return "\n\n".join(parts) if parts else ""
+        except Exception:
+            # Best-effort: never break the loop on memory failure
+            _logger.debug("conversation_context failed (returning empty string)", exc_info=True)
+            return ""
+
+    async def last_activity_seconds(self, session_id: str) -> float:
+        """Seconds since the newest turn in this session was written.
+
+        Reads the newest turn's createdAt from chat_turns (ISO string format).
+        Returns 0.0 when the session has no turns or the field is absent/unparseable — i.e.
         "not idle", so a missing timestamp never triggers a surprise compaction.
         """
         cursor = (
-            self.db["messages"]
-            .find({"session_id": session_id}, {"created_at": 1})
+            self.db["chat_turns"]
+            .find({"sessionId": session_id}, {"createdAt": 1})
             .sort("seq", -1)
             .limit(1)
         )
-        newest = None
+        newest_iso = None
         async for doc in cursor:
-            newest = doc.get("created_at")
+            newest_iso = doc.get("createdAt")
             break
-        if isinstance(newest, (int, float)):
-            newest = datetime.fromtimestamp(float(newest), tz=timezone.utc)
-        if not isinstance(newest, datetime):
+        if not newest_iso:
             return 0.0
-        if newest.tzinfo is None:
-            newest = newest.replace(tzinfo=timezone.utc)
-        return max(0.0, (datetime.now(timezone.utc) - newest).total_seconds())
+
+        # Parse ISO 8601 string (format: "2026-01-15T10:30:45Z")
+        try:
+            newest = datetime.strptime(newest_iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+            return max(0.0, (datetime.now(UTC) - newest).total_seconds())
+        except (ValueError, TypeError):
+            return 0.0
 
     async def maybe_background_compact(
         self,
@@ -608,7 +634,10 @@ class ContextManager:
 
             _logger.info(
                 "background compact: session %s idle %.0fs, fill %d/%d",
-                session_id, idle, ctx.total_tokens, self.budget.effective_budget,
+                session_id,
+                idle,
+                ctx.total_tokens,
+                self.budget.effective_budget,
             )
             return await self.full_compact(session_id, llm_fn)
         except Exception:
@@ -694,13 +723,15 @@ class ContextManager:
             ids=[cid],
             embeddings=[vec],
             documents=[text],
-            metadatas=[{
-                "session_id":  session_id,
-                "created_at":  time.time(),
-                "embed_model": "BAAI/bge-small-en-v1.5",
-                "importance":  0.5,
-                "source":      "consolidation",
-            }],
+            metadatas=[
+                {
+                    "session_id": session_id,
+                    "created_at": time.time(),
+                    "embed_model": "BAAI/bge-small-en-v1.5",
+                    "importance": 0.5,
+                    "source": "consolidation",
+                }
+            ],
         )
 
     async def _trim_core_memory(self, session_id: str) -> None:
@@ -711,7 +742,7 @@ class ContextManager:
         CORE_CAP = 3_000
         key = f"core:{session_id}"
         text = await self.redis.get(key) or ""
-        lines = [l for l in text.splitlines() if l.strip()]
+        lines = [line for line in text.splitlines() if line.strip()]
         if len(lines) <= 1:
             return
         pinned, evictable = lines[0], lines[1:]

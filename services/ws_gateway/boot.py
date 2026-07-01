@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING
 
 import redis.asyncio as aioredis
 
@@ -26,7 +27,9 @@ def boot_plan() -> list[dict]:
     return [{**s, "state": "pending"} for s in _PLAN]
 
 
-async def check_brain(*, http_get: Callable[[str], Awaitable], base_url: str | None = None) -> CheckResult:
+async def check_brain(
+    *, http_get: Callable[[str], Awaitable], base_url: str | None = None
+) -> CheckResult:
     url = (base_url or os.getenv("GEMMA_BASE", "http://localhost:8000")).rstrip("/")
     # GEMMA_BASE is the OpenAI-compatible base (".../v1"); llama.cpp's health
     # endpoint is "/health" at the SERVER ROOT, not "/v1/healthz". Strip the /v1
@@ -77,7 +80,7 @@ async def run_boot_sequence(
     emit: Callable[[dict], Awaitable[None]],
     checks: dict[str, CheckFn],
     *,
-    session_store: "InMemorySessionStore | None" = None,
+    session_store: InMemorySessionStore | None = None,
 ) -> bool:
     """Emit boot.plan, then per-subsystem starting/ready updates, then boot.ready.
 
@@ -103,7 +106,7 @@ async def run_boot_sequence(
             await emit({"type": "boot.error", "id": sid, "message": message})
 
     if all_required_ok:
-        sessions = session_store.list() if session_store is not None else []
+        sessions = await session_store.list() if session_store is not None else []
         active_id = sessions[0]["id"] if sessions else None
         await emit(
             {
@@ -120,7 +123,18 @@ async def run_boot_sequence(
 
 def _idle_status() -> dict:
     return {
-        "brain": {"model": os.getenv("BRAIN_MODEL", "gemma-31b"), "endpoint": os.getenv("GEMMA_BASE", ":8000"), "state": "idle", "node": "chat_node", "thinkingBudget": 2000},
-        "nervousSystem": {"name": "MCP bridge", "transport": "stdio", "state": "connected", "toolsRegistered": 0},
+        "brain": {
+            "model": os.getenv("BRAIN_MODEL", "gemma-31b"),
+            "endpoint": os.getenv("GEMMA_BASE", ":8000"),
+            "state": "idle",
+            "node": "chat_node",
+            "thinkingBudget": 2000,
+        },
+        "nervousSystem": {
+            "name": "MCP bridge",
+            "transport": "stdio",
+            "state": "connected",
+            "toolsRegistered": 0,
+        },
         "hands": {"skills": []},
     }

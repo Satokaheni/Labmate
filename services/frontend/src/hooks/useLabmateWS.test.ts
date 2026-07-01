@@ -265,6 +265,142 @@ describe('useLabmateWS', () => {
     expect(result.current.state.sessions[0].title).toBe('Renamed');
   });
 
+  it('session.updated moves an existing session to the front; a new session is inserted at front', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    emit({ type: 'boot.plan', subsystems: SUBSYSTEMS });
+    emit({ type: 'boot.ready', sessionBootstrap: BOOTSTRAP });
+
+    // Start with three sessions: A, B, C
+    const sessA: import('@/types/events').Session = {
+      id: 's-a',
+      title: 'Session A',
+      mode: 'chat' as const,
+      turnCount: 0,
+      contextTokens: 0,
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    };
+    const sessB: import('@/types/events').Session = {
+      id: 's-b',
+      title: 'Session B',
+      mode: 'chat' as const,
+      turnCount: 0,
+      contextTokens: 0,
+      createdAt: '2026-01-01T00:00:01Z',
+      updatedAt: '2026-01-01T00:00:01Z',
+    };
+    const sessC: import('@/types/events').Session = {
+      id: 's-c',
+      title: 'Session C',
+      mode: 'chat' as const,
+      turnCount: 0,
+      contextTokens: 0,
+      createdAt: '2026-01-01T00:00:02Z',
+      updatedAt: '2026-01-01T00:00:02Z',
+    };
+
+    emit({ type: 'session.updated', session: sessA });
+    // After adding A, it's at front: [A]
+    expect(result.current.state.sessions.map((s) => s.id)).toEqual(['s-a']);
+
+    emit({ type: 'session.updated', session: sessB });
+    // After adding B, it moves to front: [B, A]
+    expect(result.current.state.sessions.map((s) => s.id)).toEqual(['s-b', 's-a']);
+
+    emit({ type: 'session.updated', session: sessC });
+    // After adding C, it moves to front: [C, B, A]
+    expect(result.current.state.sessions).toHaveLength(3);
+    expect(result.current.state.sessions.map((s) => s.id)).toEqual(['s-c', 's-b', 's-a']);
+
+    // Update session C (existing) — should move to front but it's already there [C, B, A]
+    emit({ type: 'session.updated', session: { ...sessC, title: 'Session C Updated' } });
+    expect(result.current.state.sessions).toHaveLength(3);
+    expect(result.current.state.sessions.map((s) => s.id)).toEqual(['s-c', 's-b', 's-a']);
+    expect(result.current.state.sessions[0].title).toBe('Session C Updated');
+
+    // Update session A (existing at end) — should move to front [A, C, B]
+    emit({ type: 'session.updated', session: { ...sessA, title: 'Session A Updated' } });
+    expect(result.current.state.sessions).toHaveLength(3);
+    expect(result.current.state.sessions.map((s) => s.id)).toEqual(['s-a', 's-c', 's-b']);
+    expect(result.current.state.sessions[0].title).toBe('Session A Updated');
+
+    // Add a brand new session D — should be inserted at front [D, A, C, B]
+    const sessD: import('@/types/events').Session = {
+      id: 's-d',
+      title: 'Session D',
+      mode: 'chat' as const,
+      turnCount: 0,
+      contextTokens: 0,
+      createdAt: '2026-01-01T00:00:03Z',
+      updatedAt: '2026-01-01T00:00:03Z',
+    };
+    emit({ type: 'session.updated', session: sessD });
+    expect(result.current.state.sessions).toHaveLength(4);
+    expect(result.current.state.sessions.map((s) => s.id)).toEqual(['s-d', 's-a', 's-c', 's-b']);
+  });
+
+  it('session.deleted removes the session and reselects activeSessionId when needed', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    emit({ type: 'boot.plan', subsystems: SUBSYSTEMS });
+    emit({ type: 'boot.ready', sessionBootstrap: BOOTSTRAP });
+
+    const sess1: import('@/types/events').Session = {
+      id: 's-1',
+      title: 'Session 1',
+      mode: 'chat' as const,
+      turnCount: 0,
+      contextTokens: 0,
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    };
+    const sess2: import('@/types/events').Session = {
+      id: 's-2',
+      title: 'Session 2',
+      mode: 'chat' as const,
+      turnCount: 0,
+      contextTokens: 0,
+      createdAt: '2026-01-01T00:00:01Z',
+      updatedAt: '2026-01-01T00:00:01Z',
+    };
+    emit({ type: 'session.updated', session: sess1 });
+    emit({ type: 'session.updated', session: sess2 });
+    expect(result.current.state.sessions).toHaveLength(2);
+
+    // Set sess2 as active and delete it
+    act(() => result.current.setActiveSession('s-2'));
+    expect(result.current.state.activeSessionId).toBe('s-2');
+
+    emit({ type: 'session.deleted', sessionId: 's-2' });
+    expect(result.current.state.sessions).toHaveLength(1);
+    expect(result.current.state.sessions[0].id).toBe('s-1');
+    expect(result.current.state.activeSessionId).toBe('s-1');
+  });
+
+  it('session.deleted sets activeSessionId to null when deleting the last session', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    emit({ type: 'boot.plan', subsystems: SUBSYSTEMS });
+    emit({ type: 'boot.ready', sessionBootstrap: BOOTSTRAP });
+
+    const sess1: import('@/types/events').Session = {
+      id: 's-1',
+      title: 'Session 1',
+      mode: 'chat' as const,
+      turnCount: 0,
+      contextTokens: 0,
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    };
+    emit({ type: 'session.updated', session: sess1 });
+    act(() => result.current.setActiveSession('s-1'));
+
+    emit({ type: 'session.deleted', sessionId: 's-1' });
+    expect(result.current.state.sessions).toHaveLength(0);
+    expect(result.current.state.activeSessionId).toBeNull();
+  });
+
   it('reasoning.done attaches reasoning to the matching turn', () => {
     const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
     act(() => mockWs.onopen?.());
@@ -347,6 +483,24 @@ describe('useLabmateWS', () => {
     );
   });
 
+  it('renameSession sends a session.rename frame to the server', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    result.current.renameSession('s-abc', 'New Title');
+    expect(mockWs.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'session.rename', sessionId: 's-abc', title: 'New Title' }),
+    );
+  });
+
+  it('deleteSession sends a session.delete frame to the server', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    result.current.deleteSession('s-abc');
+    expect(mockWs.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'session.delete', sessionId: 's-abc' }),
+    );
+  });
+
   it('reconnects (new WebSocket) when reconnectKey increments and closes the old one', () => {
     const instances: typeof mockWs[] = [];
     vi.mocked(WebSocket).mockImplementation(() => {
@@ -412,6 +566,56 @@ describe('useLabmateWS', () => {
     );
   });
 
+  it('cancel() sends a cancel frame with turnId when socket is open', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    result.current.cancel('turn-123');
+    expect(mockWs.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'cancel', turnId: 'turn-123' }),
+    );
+  });
+
+  it('cancel() does not send when socket is closed', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    mockWs.send.mockClear();
+    // Simulate socket closed
+    mockWs.onclose?.();
+    result.current.cancel('turn-123');
+    expect(mockWs.send).not.toHaveBeenCalled();
+  });
+
+  it('compact() sends a compact frame with sessionId when socket is open', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    result.current.compact('sess-456');
+    expect(mockWs.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'compact', sessionId: 'sess-456' }),
+    );
+  });
+
+  it('compact() does not send when socket is closed', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    mockWs.send.mockClear();
+    // Simulate socket closed
+    mockWs.onclose?.();
+    result.current.compact('sess-456');
+    expect(mockWs.send).not.toHaveBeenCalled();
+  });
+
+  it('reducer tolerates compact.done frame without crashing', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    emit({ type: 'boot.plan', subsystems: SUBSYSTEMS });
+    emit({ type: 'boot.ready', sessionBootstrap: BOOTSTRAP });
+    expect(result.current.state.phase).toBe('ready');
+    // Emit compact.done frame
+    emit({ type: 'compact.done', ok: true });
+    // Should not crash, state should remain ready
+    expect(result.current.state.phase).toBe('ready');
+  });
+
   it('session.history merges turns, deduplicating by id', () => {
     const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
     act(() => mockWs.onopen?.());
@@ -474,6 +678,81 @@ describe('useLabmateWS', () => {
 
     // Should have loaded both turns
     expect(result.current.state.turns).toHaveLength(2);
+  });
+
+  it('session.history drops previous session turns when switching to a new session', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    emit({ type: 'boot.plan', subsystems: SUBSYSTEMS });
+    emit({ type: 'boot.ready', sessionBootstrap: BOOTSTRAP });
+
+    // Load session A with two turns
+    const sessionATurns: import('@/types/events').Turn[] = [
+      {
+        id: 't-a-1',
+        sessionId: 's-session-a',
+        role: 'user',
+        text: 'Session A message 1',
+        createdAt: '2026-01-01T00:00:00Z',
+        status: 'complete',
+      },
+      {
+        id: 't-a-2',
+        sessionId: 's-session-a',
+        role: 'assistant',
+        text: 'Session A response',
+        createdAt: '2026-01-01T00:00:01Z',
+        status: 'complete',
+      },
+    ];
+    emit({ type: 'session.history', sessionId: 's-session-a', turns: sessionATurns });
+    expect(result.current.state.turns).toHaveLength(2);
+    expect(result.current.state.turns.every((t) => t.sessionId === 's-session-a')).toBe(true);
+
+    // Switch to session B with its own turns
+    const sessionBTurns: import('@/types/events').Turn[] = [
+      {
+        id: 't-b-1',
+        sessionId: 's-session-b',
+        role: 'user',
+        text: 'Session B message',
+        createdAt: '2026-01-01T00:00:02Z',
+        status: 'complete',
+      },
+    ];
+    emit({ type: 'session.history', sessionId: 's-session-b', turns: sessionBTurns });
+
+    // Should only have session B turns, no A turns leakage
+    expect(result.current.state.turns).toHaveLength(1);
+    expect(result.current.state.turns[0].id).toBe('t-b-1');
+    expect(result.current.state.turns[0].sessionId).toBe('s-session-b');
+  });
+
+  it('session.history is idempotent when called twice with same turns', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    emit({ type: 'boot.plan', subsystems: SUBSYSTEMS });
+    emit({ type: 'boot.ready', sessionBootstrap: BOOTSTRAP });
+
+    const turns: import('@/types/events').Turn[] = [
+      {
+        id: 't-1',
+        sessionId: 's-session-c',
+        role: 'user',
+        text: 'Hello',
+        createdAt: '2026-01-01T00:00:00Z',
+        status: 'complete',
+      },
+    ];
+
+    // Dispatch session.history twice with the same turns
+    emit({ type: 'session.history', sessionId: 's-session-c', turns });
+    expect(result.current.state.turns).toHaveLength(1);
+
+    emit({ type: 'session.history', sessionId: 's-session-c', turns });
+    // Should still be 1 turn, not 2 (idempotent, no duplicate)
+    expect(result.current.state.turns).toHaveLength(1);
+    expect(result.current.state.turns[0].id).toBe('t-1');
   });
 });
 

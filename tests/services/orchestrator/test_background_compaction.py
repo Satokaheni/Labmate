@@ -1,4 +1,5 @@
 """Integration tests for the orchestrator background compaction sweeper."""
+
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
@@ -23,11 +24,13 @@ async def test_background_compactor_compacts_idle_session(monkeypatch):
 
     # context_manager.maybe_background_compact returns a compact result with reflections.
     context_manager = MagicMock()
-    context_manager.maybe_background_compact = AsyncMock(return_value={
-        "summary_tokens": 40,
-        "pruned_messages": 6,
-        "reflections": ["use Redis streams"],
-    })
+    context_manager.maybe_background_compact = AsyncMock(
+        return_value={
+            "summary_tokens": 40,
+            "pruned_messages": 6,
+            "reflections": ["use Redis streams"],
+        }
+    )
 
     consolidator = MagicMock()
     consolidator.write_reflections = AsyncMock()
@@ -35,10 +38,10 @@ async def test_background_compactor_compacts_idle_session(monkeypatch):
     storage = MagicMock()
     storage.context_manager = context_manager
     storage.consolidator = consolidator
-    # storage._db["messages"].distinct(...) → one candidate session.
-    messages_col = MagicMock()
-    messages_col.distinct = AsyncMock(return_value=["sess-1"])
-    storage._db = {"messages": messages_col}
+    # storage._db["chat_turns"].distinct("sessionId") → one candidate session.
+    chat_turns_col = MagicMock()
+    chat_turns_col.distinct = AsyncMock(return_value=["sess-1"])
+    storage._db = {"chat_turns": chat_turns_col}
 
     # Run one sweep, then signal shutdown so the loop exits.
     task = asyncio.create_task(proc._background_compactor(orch, storage))
@@ -79,9 +82,9 @@ async def test_background_compactor_skips_when_maybe_returns_none(monkeypatch):
     storage = MagicMock()
     storage.context_manager = context_manager
     storage.consolidator = consolidator
-    messages_col = MagicMock()
-    messages_col.distinct = AsyncMock(return_value=["sess-1"])
-    storage._db = {"messages": messages_col}
+    chat_turns_col = MagicMock()
+    chat_turns_col.distinct = AsyncMock(return_value=["sess-1"])
+    storage._db = {"chat_turns": chat_turns_col}
 
     task = asyncio.create_task(proc._background_compactor(orch, storage))
     for _ in range(50):

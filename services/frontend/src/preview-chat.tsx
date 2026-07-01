@@ -145,5 +145,5 @@ const stubEntries = [
 };
 
 createRoot(document.getElementById('root')!).render(
-  <ChatScreen state={state} send={() => {}} newSession={() => {}} newChat={() => 's-preview'} openSession={() => {}} setDebug={() => {}} />
+  <ChatScreen state={state} send={() => {}} newSession={() => {}} newChat={() => 's-preview'} openSession={() => {}} setDebug={() => {}} cancel={() => {}} compact={() => {}} />
 );

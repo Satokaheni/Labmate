@@ -91,6 +91,26 @@ function langBadge(language: string): string {
   return LANG_BADGE[language.toLowerCase()] ?? language.slice(0, 2).toUpperCase();
 }
 
+/**
+ * Pure helper to generate a scroll signal from the turns array.
+ * Changes when the last turn's text length, tool calls, artifacts, or status change,
+ * triggering the auto-scroll effect.
+ */
+export function scrollSignalFor(turns: Turn[]): string {
+  const last = turns[turns.length - 1];
+  return `${turns.length}:${last?.text?.length ?? 0}:` +
+    `${last?.toolCalls?.length ?? 0}:${last?.artifacts?.length ?? 0}:${last?.status ?? ''}`;
+}
+
+/**
+ * Pure helper to detect which turn (if any) is streaming.
+ * Returns the first streaming turn, or undefined if none exist.
+ * Used to determine when to show the Stop button.
+ */
+export function findStreamingTurn(turns: Turn[]): Turn | undefined {
+  return turns.find((t) => t.status === 'streaming');
+}
+
 // ====================================================================
 // Static style objects (module-level to avoid rebuild on every render)
 // ====================================================================
@@ -911,6 +931,132 @@ function sysRow(color: string, label: string, value: string, pulse = false): Rea
   );
 }
 
+function SessionItem(props: {
+  session: Session;
+  active: boolean;
+  onOpen: (id: string) => void;
+  onRename: (id: string, title: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  const { session: s, active, onOpen, onRename, onDelete } = props;
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState(s.title || `Session ${s.id.slice(0, 6)}`);
+  const [isHovering, setIsHovering] = useState(false);
+
+  const sMode = normMode(s.mode);
+  const meta = [MODE_META[sMode].label, s.turnCount != null ? `${s.turnCount} turns` : null]
+    .filter(Boolean)
+    .join(' · ');
+
+  const handleRenameSubmit = () => {
+    if (renameValue.trim()) {
+      onRename(s.id, renameValue.trim());
+    }
+    setIsRenaming(false);
+  };
+
+  const handleRenameCancel = () => {
+    setRenameValue(s.title || `Session ${s.id.slice(0, 6)}`);
+    setIsRenaming(false);
+  };
+
+  const handleDelete = () => {
+    if (confirm(`Delete chat "${s.title || `Session ${s.id.slice(0, 6)}`}"?`)) {
+      onDelete(s.id);
+    }
+  };
+
+  if (isRenaming) {
+    return (
+      <div style={{ padding: '8px 12px', display: 'flex', gap: 4 }}>
+        <input
+          type="text"
+          value={renameValue}
+          onChange={(e) => setRenameValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') handleRenameSubmit();
+            if (e.key === 'Escape') handleRenameCancel();
+          }}
+          autoFocus
+          style={{
+            flex: 1,
+            fontSize: 12,
+            padding: '4px 6px',
+            background: '#1a1d23',
+            color: '#c7ccd3',
+            border: '1px solid #454d5a',
+            borderRadius: 3,
+            fontFamily: 'inherit',
+          }}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className="lm-btn"
+      onClick={() => onOpen(s.id)}
+      onMouseEnter={() => setIsHovering(true)}
+      onMouseLeave={() => setIsHovering(false)}
+      style={sessionItemStyle(active)}
+    >
+      <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 7, flex: 1, minWidth: 0 }}>
+          <span style={{ fontSize: 12, opacity: 0.85 }}>{MODE_META[sMode].icon}</span>
+          <span style={sessionTitleStyle(active)}>
+            {s.title || `Session ${s.id.slice(0, 6)}`}
+          </span>
+        </span>
+        {isHovering && (
+          <span style={{ display: 'flex', gap: 4, marginLeft: 8, flexShrink: 0 }}>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsRenaming(true);
+              }}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: '#6b727d',
+                cursor: 'pointer',
+                fontSize: 11,
+                padding: 0,
+              }}
+              title="Rename"
+            >
+              ✎
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleDelete();
+              }}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: '#6b727d',
+                cursor: 'pointer',
+                fontSize: 11,
+                padding: 0,
+              }}
+              title="Delete"
+            >
+              ✕
+            </button>
+          </span>
+        )}
+      </span>
+      {!isHovering && meta && (
+        <span style={{ display: 'block', fontSize: 11, color: '#5e6671', marginTop: 4, fontFamily: "'IBM Plex Mono'" }}>{meta}</span>
+      )}
+    </button>
+  );
+}
+
 function Sidebar(props: {
   mode: Mode;
   sessions: Session[];
@@ -921,8 +1067,10 @@ function Sidebar(props: {
   onSetMode: (m: Mode) => void;
   onNewSession: () => void;
   onOpenSession: (id: string) => void;
+  onRenameSession: (id: string, title: string) => void;
+  onDeleteSession: (id: string) => void;
 }) {
-  const { mode, sessions, activeSessionId, nodeLabel, toolCount, handsSummary, onSetMode, onNewSession, onOpenSession } =
+  const { mode, sessions, activeSessionId, nodeLabel, toolCount, handsSummary, onSetMode, onNewSession, onOpenSession, onRenameSession, onDeleteSession } =
     props;
 
   return (
@@ -949,32 +1097,16 @@ function Sidebar(props: {
         {sessions.length === 0 && (
           <div style={{ fontSize: 12, color: '#5e6671', padding: '8px 12px' }}>No chats yet.</div>
         )}
-        {sessions.map((s) => {
-          const active = s.id === activeSessionId;
-          const sMode = normMode(s.mode);
-          const meta = [MODE_META[sMode].label, s.turnCount != null ? `${s.turnCount} turns` : null]
-            .filter(Boolean)
-            .join(' · ');
-          return (
-            <button
-              key={s.id}
-              type="button"
-              className="lm-btn"
-              onClick={() => onOpenSession(s.id)}
-              style={sessionItemStyle(active)}
-            >
-              <span style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                <span style={{ fontSize: 12, opacity: 0.85 }}>{MODE_META[sMode].icon}</span>
-                <span style={sessionTitleStyle(active)}>
-                  {s.title || `Session ${s.id.slice(0, 6)}`}
-                </span>
-              </span>
-              {meta && (
-                <span style={{ display: 'block', fontSize: 11, color: '#5e6671', marginTop: 4, fontFamily: "'IBM Plex Mono'" }}>{meta}</span>
-              )}
-            </button>
-          );
-        })}
+        {sessions.map((s) => (
+          <SessionItem
+            key={s.id}
+            session={s}
+            active={activeSessionId === s.id}
+            onOpen={onOpenSession}
+            onRename={onRenameSession}
+            onDelete={onDeleteSession}
+          />
+        ))}
       </div>
 
       <div style={SIDEBAR_BOTTOM_SECTION_STYLE}>
@@ -1218,8 +1350,13 @@ function detectMention(value: string, caret: number): { start: number; query: st
   return { start: caret - m[2].length - 1, query: m[2] };
 }
 
-function Composer(props: { mode: Mode; budget: number; sessionId: string; onSend: (text: string) => void }) {
-  const { mode, budget, sessionId, onSend } = props;
+/** A composer message is the manual-compact command iff it is exactly `/compact` (trimmed). */
+export function isCompactCommand(text: string): boolean {
+  return text.trim() === '/compact';
+}
+
+function Composer(props: { mode: Mode; budget: number; sessionId: string; onSend: (text: string) => void; onCompact: () => void; isStreaming: boolean; onStop: () => void }) {
+  const { mode, budget, sessionId, onSend, onCompact, isStreaming, onStop } = props;
   const api = typeof window !== 'undefined' ? window.electronAPI : undefined;
   const [text, setText] = useState('');
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -1287,7 +1424,11 @@ function Composer(props: { mode: Mode; budget: number; sessionId: string; onSend
   const submit = () => {
     const t = text.trim();
     if (!t) return;
-    onSend(t);
+    if (isCompactCommand(text)) {
+      onCompact();
+    } else {
+      onSend(t);
+    }
     setText('');
     setOpen(false);
   };
@@ -1301,7 +1442,9 @@ function Composer(props: { mode: Mode; budget: number; sessionId: string; onSend
     }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      submit();
+      // While a response is streaming the send button is a Stop button, so
+      // Enter must not queue a new message — it's a no-op until the turn ends.
+      if (!isStreaming) submit();
     }
   };
 
@@ -1344,9 +1487,28 @@ function Composer(props: { mode: Mode; budget: number; sessionId: string; onSend
               thinking {budget.toLocaleString()}
             </span>
             <div style={{ flex: 1 }} />
-            <button type="button" className="lm-btn" onClick={submit} style={COMPOSER_SUBMIT_BUTTON_STYLE}>
-              ↑
-            </button>
+            {isStreaming ? (
+              <button
+                type="button"
+                className="lm-btn"
+                onClick={onStop}
+                style={COMPOSER_SUBMIT_BUTTON_STYLE}
+                aria-label="Stop"
+                title="Stop the current task"
+              >
+                ■
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="lm-btn"
+                onClick={submit}
+                style={COMPOSER_SUBMIT_BUTTON_STYLE}
+                aria-label="Send"
+              >
+                ↑
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -1603,9 +1765,13 @@ export interface ChatScreenProps {
   newChat: () => string;
   openSession?: (sessionId: string) => void;
   setDebug: (sessionId: string, enabled: boolean) => void;
+  renameSession?: (sessionId: string, title: string) => void;
+  deleteSession?: (sessionId: string) => void;
+  cancel: (turnId: string) => void;
+  compact: (sessionId: string) => void;
 }
 
-export function ChatScreen({ state, send, newChat, openSession, setDebug }: ChatScreenProps) {
+export function ChatScreen({ state, send, newChat, openSession, setDebug, renameSession, deleteSession, cancel, compact }: ChatScreenProps) {
   const sessions = state.sessions ?? [];
   const allTurns = state.turns ?? [];
   const activeSessionId = state.activeSessionId ?? sessions[0]?.id ?? null;
@@ -1624,10 +1790,9 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug }: Chat
   // bottom, so scrolling up to read earlier messages isn't yanked back down.
   const convScrollRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
-  const lastTurn = turns[turns.length - 1];
-  const scrollSignal =
-    `${turns.length}:${lastTurn?.text?.length ?? 0}:` +
-    `${lastTurn?.toolCalls?.length ?? 0}:${lastTurn?.status ?? ''}`;
+  const scrollSignal = scrollSignalFor(turns);
+  // The one turn currently streaming (if any) — drives the composer Send⇄Stop toggle.
+  const streamingTurn = findStreamingTurn(turns);
   useEffect(() => {
     const el = convScrollRef.current;
     if (el && stickToBottomRef.current) {
@@ -1763,6 +1928,8 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug }: Chat
             onSetMode={setMode}
             onNewSession={() => newChat()}
             onOpenSession={(id) => openSession?.(id)}
+            onRenameSession={(id, title) => renameSession?.(id, title)}
+            onDeleteSession={(id) => deleteSession?.(id)}
           />
         )}
 
@@ -1816,6 +1983,11 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug }: Chat
             budget={budget}
             sessionId={wsId}
             onSend={(text) => send(text, wsId, roots[0])}
+            onCompact={() => compact(wsId)}
+            isStreaming={!!streamingTurn}
+            onStop={() => {
+              if (streamingTurn) cancel(streamingTurn.id);
+            }}
           />
         </div>
 

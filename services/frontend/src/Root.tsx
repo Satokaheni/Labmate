@@ -19,7 +19,7 @@ export function Root(): React.ReactNode {
   const [loggingIn, setLoggingIn] = useState(false);
 
   // Call the WebSocket hook
-  const { state, send, newSession, newChat, openSession, setDebug } = useLabmateWS(WS_URL, token);
+  const { state, send, newSession, newChat, openSession, setDebug, renameSession, deleteSession, cancel, compact } = useLabmateWS(WS_URL, token);
 
   // Minimum boot/loading display time: if the connect→ready sequence finishes in
   // under MIN_BOOT_MS the loading animation flashes by and looks bad, so hold the
@@ -103,6 +103,10 @@ export function Root(): React.ReactNode {
           newChat={newChat}
           openSession={openSession}
           setDebug={setDebug}
+          renameSession={renameSession}
+          deleteSession={deleteSession}
+          cancel={cancel}
+          compact={compact}
         />
       );
     }
