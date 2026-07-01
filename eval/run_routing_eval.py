@@ -52,9 +52,22 @@ except ImportError:
     yaml = None
 
 SELECT_SYSTEM = (
-    "You are a skill router. If ANY available skill is relevant to the user's "
-    "task, you MUST call load_skill with that skill's name. Only decline to call "
-    "a tool if truly no skill fits."
+    "You are a skill router. Call load_skill with the ONE skill whose PURPOSE "
+    "matches the user's underlying GOAL. Judge by the goal, not by surface "
+    "keywords: e.g. 'make slides from this PDF' is a slide-making goal, not a "
+    "PDF-parsing goal. Route — do NOT decline — whenever the task asks you to "
+    "critique, review, analyze, localize, generate, refactor, test, document, or "
+    "fetch external information, because a dedicated skill exists for those. If "
+    "the task needs external or live information — anything mentioning the web, "
+    "'online', 'look up', 'search for', or the 'latest'/'current' state of "
+    "something — route to the web-search skill. DECLINE (do not call load_skill) "
+    "ONLY when the task is trivially self-contained and needs no skill: basic "
+    "arithmetic, a simple rephrase/reword of provided text, or a "
+    "general-knowledge factual question. Examples: 'What is 17 times 23?' -> "
+    "decline; 'Rephrase this to sound more formal.' -> decline; 'Give me a UX "
+    "critique of this component.' -> load_skill(design-critique); 'Look up the "
+    "latest changelog online.' -> load_skill(web-search); 'Make conference "
+    "slides from this paper PDF.' -> load_skill(paper-to-slides)."
 )
 
 HOSTED_SYSTEM = (
