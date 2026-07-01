@@ -280,6 +280,47 @@ def test_session_rename_emits_session_updated(client, app):
         assert renamed["session"]["title"] == "My Chat"
 
 
+def test_session_delete_emits_session_deleted(client, app):
+    with client.websocket_connect("/ws") as ws:
+        _boot_to_ready(ws, app)
+        ws.send_json({"type": "session.new", "mode": "chat"})
+        created = ws.receive_json()
+        sid = created["session"]["id"]
+
+        ws.send_json({"type": "session.delete", "sessionId": sid})
+        deleted = ws.receive_json()
+        assert deleted["type"] == "session.deleted"
+        assert deleted["sessionId"] == sid
+
+
+def test_session_delete_clears_active_session_when_deleted(client, app):
+    with client.websocket_connect("/ws") as ws:
+        _boot_to_ready(ws, app)
+        ws.send_json({"type": "session.new", "mode": "chat"})
+        created = ws.receive_json()
+        sid = created["session"]["id"]
+
+        # Open the session to make it active
+        ws.send_json({"type": "session.open", "sessionId": sid})
+        ws.receive_json()  # session.updated
+        ws.receive_json()  # session.history
+
+        # Delete the active session
+        ws.send_json({"type": "session.delete", "sessionId": sid})
+        deleted = ws.receive_json()
+        assert deleted["type"] == "session.deleted"
+        assert deleted["sessionId"] == sid
+
+
+def test_session_delete_missing_sid_no_crash(client, app):
+    with client.websocket_connect("/ws") as ws:
+        _boot_to_ready(ws, app)
+        # Deleting a nonexistent session should not crash the server
+        ws.send_json({"type": "session.delete", "sessionId": "nonexistent"})
+        # Server should remain alive and we should not receive a delete frame
+        # (timeout would occur, so we don't assert on receive)
+
+
 def test_session_open_emits_session_updated(client, app):
     with client.websocket_connect("/ws") as ws:
         _boot_to_ready(ws, app)

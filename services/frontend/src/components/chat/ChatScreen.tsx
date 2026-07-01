@@ -911,6 +911,132 @@ function sysRow(color: string, label: string, value: string, pulse = false): Rea
   );
 }
 
+function SessionItem(props: {
+  session: Session;
+  active: boolean;
+  onOpen: (id: string) => void;
+  onRename: (id: string, title: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  const { session: s, active, onOpen, onRename, onDelete } = props;
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState(s.title || `Session ${s.id.slice(0, 6)}`);
+  const [isHovering, setIsHovering] = useState(false);
+
+  const sMode = normMode(s.mode);
+  const meta = [MODE_META[sMode].label, s.turnCount != null ? `${s.turnCount} turns` : null]
+    .filter(Boolean)
+    .join(' · ');
+
+  const handleRenameSubmit = () => {
+    if (renameValue.trim()) {
+      onRename(s.id, renameValue.trim());
+    }
+    setIsRenaming(false);
+  };
+
+  const handleRenameCancel = () => {
+    setRenameValue(s.title || `Session ${s.id.slice(0, 6)}`);
+    setIsRenaming(false);
+  };
+
+  const handleDelete = () => {
+    if (confirm(`Delete chat "${s.title || `Session ${s.id.slice(0, 6)}`}"?`)) {
+      onDelete(s.id);
+    }
+  };
+
+  if (isRenaming) {
+    return (
+      <div style={{ padding: '8px 12px', display: 'flex', gap: 4 }}>
+        <input
+          type="text"
+          value={renameValue}
+          onChange={(e) => setRenameValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') handleRenameSubmit();
+            if (e.key === 'Escape') handleRenameCancel();
+          }}
+          autoFocus
+          style={{
+            flex: 1,
+            fontSize: 12,
+            padding: '4px 6px',
+            background: '#1a1d23',
+            color: '#c7ccd3',
+            border: '1px solid #454d5a',
+            borderRadius: 3,
+            fontFamily: 'inherit',
+          }}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className="lm-btn"
+      onClick={() => onOpen(s.id)}
+      onMouseEnter={() => setIsHovering(true)}
+      onMouseLeave={() => setIsHovering(false)}
+      style={sessionItemStyle(active)}
+    >
+      <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 7, flex: 1, minWidth: 0 }}>
+          <span style={{ fontSize: 12, opacity: 0.85 }}>{MODE_META[sMode].icon}</span>
+          <span style={sessionTitleStyle(active)}>
+            {s.title || `Session ${s.id.slice(0, 6)}`}
+          </span>
+        </span>
+        {isHovering && (
+          <span style={{ display: 'flex', gap: 4, marginLeft: 8, flexShrink: 0 }}>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsRenaming(true);
+              }}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: '#6b727d',
+                cursor: 'pointer',
+                fontSize: 11,
+                padding: 0,
+              }}
+              title="Rename"
+            >
+              ✎
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleDelete();
+              }}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: '#6b727d',
+                cursor: 'pointer',
+                fontSize: 11,
+                padding: 0,
+              }}
+              title="Delete"
+            >
+              ✕
+            </button>
+          </span>
+        )}
+      </span>
+      {!isHovering && meta && (
+        <span style={{ display: 'block', fontSize: 11, color: '#5e6671', marginTop: 4, fontFamily: "'IBM Plex Mono'" }}>{meta}</span>
+      )}
+    </button>
+  );
+}
+
 function Sidebar(props: {
   mode: Mode;
   sessions: Session[];
@@ -921,8 +1047,10 @@ function Sidebar(props: {
   onSetMode: (m: Mode) => void;
   onNewSession: () => void;
   onOpenSession: (id: string) => void;
+  onRenameSession: (id: string, title: string) => void;
+  onDeleteSession: (id: string) => void;
 }) {
-  const { mode, sessions, activeSessionId, nodeLabel, toolCount, handsSummary, onSetMode, onNewSession, onOpenSession } =
+  const { mode, sessions, activeSessionId, nodeLabel, toolCount, handsSummary, onSetMode, onNewSession, onOpenSession, onRenameSession, onDeleteSession } =
     props;
 
   return (
@@ -949,32 +1077,16 @@ function Sidebar(props: {
         {sessions.length === 0 && (
           <div style={{ fontSize: 12, color: '#5e6671', padding: '8px 12px' }}>No chats yet.</div>
         )}
-        {sessions.map((s) => {
-          const active = s.id === activeSessionId;
-          const sMode = normMode(s.mode);
-          const meta = [MODE_META[sMode].label, s.turnCount != null ? `${s.turnCount} turns` : null]
-            .filter(Boolean)
-            .join(' · ');
-          return (
-            <button
-              key={s.id}
-              type="button"
-              className="lm-btn"
-              onClick={() => onOpenSession(s.id)}
-              style={sessionItemStyle(active)}
-            >
-              <span style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                <span style={{ fontSize: 12, opacity: 0.85 }}>{MODE_META[sMode].icon}</span>
-                <span style={sessionTitleStyle(active)}>
-                  {s.title || `Session ${s.id.slice(0, 6)}`}
-                </span>
-              </span>
-              {meta && (
-                <span style={{ display: 'block', fontSize: 11, color: '#5e6671', marginTop: 4, fontFamily: "'IBM Plex Mono'" }}>{meta}</span>
-              )}
-            </button>
-          );
-        })}
+        {sessions.map((s) => (
+          <SessionItem
+            key={s.id}
+            session={s}
+            active={activeSessionId === s.id}
+            onOpen={onOpenSession}
+            onRename={onRenameSession}
+            onDelete={onDeleteSession}
+          />
+        ))}
       </div>
 
       <div style={SIDEBAR_BOTTOM_SECTION_STYLE}>
@@ -1603,9 +1715,11 @@ export interface ChatScreenProps {
   newChat: () => string;
   openSession?: (sessionId: string) => void;
   setDebug: (sessionId: string, enabled: boolean) => void;
+  renameSession?: (sessionId: string, title: string) => void;
+  deleteSession?: (sessionId: string) => void;
 }
 
-export function ChatScreen({ state, send, newChat, openSession, setDebug }: ChatScreenProps) {
+export function ChatScreen({ state, send, newChat, openSession, setDebug, renameSession, deleteSession }: ChatScreenProps) {
   const sessions = state.sessions ?? [];
   const allTurns = state.turns ?? [];
   const activeSessionId = state.activeSessionId ?? sessions[0]?.id ?? null;
@@ -1763,6 +1877,8 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug }: Chat
             onSetMode={setMode}
             onNewSession={() => newChat()}
             onOpenSession={(id) => openSession?.(id)}
+            onRenameSession={(id, title) => renameSession?.(id, title)}
+            onDeleteSession={(id) => deleteSession?.(id)}
           />
         )}
 

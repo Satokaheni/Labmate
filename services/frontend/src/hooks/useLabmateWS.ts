@@ -50,6 +50,7 @@ type WSFrame =
   | { type: 'reasoning.done'; turnId: string; reasoning: Reasoning }
   | { type: 'artifact.created'; turnId: string; artifact: Artifact }
   | { type: 'session.updated'; session: Session }
+  | { type: 'session.deleted'; sessionId: string }
   | { type: 'session.history'; sessionId: string; turns: Turn[] }
   | { type: 'context.update'; window: ContextWindow }
   | { type: 'agent.status'; status: AgentStatus }
@@ -259,6 +260,18 @@ function labmateWSReducer(state: LabmateWSState, action: DispatchAction): Labmat
         return state;
       }
 
+      if (frame.type === 'session.deleted') {
+        if (state.phase === 'ready') {
+          const sessions = state.sessions.filter((s) => s.id !== frame.sessionId);
+          let activeSessionId = state.activeSessionId;
+          if (frame.sessionId === activeSessionId) {
+            activeSessionId = sessions[0]?.id ?? null;
+          }
+          return { ...state, sessions, activeSessionId };
+        }
+        return state;
+      }
+
       if (frame.type === 'context.update') {
         if (state.phase === 'ready') {
           return { ...state, contextWindow: frame.window };
@@ -359,6 +372,8 @@ export function useLabmateWS(
   setActiveSession: (sessionId: string) => void;
   openSession?: (sessionId: string) => void;
   setDebug: (sessionId: string, enabled: boolean) => void;
+  renameSession: (sessionId: string, title: string) => void;
+  deleteSession: (sessionId: string) => void;
 } {
   const [state, dispatch] = useReducer(labmateWSReducer, { phase: 'idle' });
   const wsRef = useRef<WebSocket | null>(null);
@@ -524,6 +539,18 @@ export function useLabmateWS(
     }
   };
 
+  const renameSession = (sessionId: string, title: string) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'session.rename', sessionId, title }));
+    }
+  };
+
+  const deleteSession = (sessionId: string) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'session.delete', sessionId }));
+    }
+  };
+
   const newSession = (mode: string) => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'session.new', mode }));
@@ -558,5 +585,7 @@ export function useLabmateWS(
     setActiveSession,
     openSession,
     setDebug,
+    renameSession,
+    deleteSession,
   };
 }

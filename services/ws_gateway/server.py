@@ -398,6 +398,13 @@ async def _ws_loop(
             session = await store.rename(sid, title)
             if session is not None:
                 await ws.send_json({"type": "session.updated", "session": session})
+        elif mtype == "session.delete":
+            sid = msg.get("sessionId", "")
+            deleted = await store.delete(sid)
+            if deleted:
+                if sid == active_session_id:
+                    active_session_id = None
+                await ws.send_json({"type": "session.deleted", "sessionId": sid})
         elif mtype == "debug.set":
             sid = msg.get("sessionId", "") or active_session_id or ""
             enabled = bool(msg.get("enabled", False))

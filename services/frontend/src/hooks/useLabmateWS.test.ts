@@ -265,6 +265,67 @@ describe('useLabmateWS', () => {
     expect(result.current.state.sessions[0].title).toBe('Renamed');
   });
 
+  it('session.deleted removes the session and reselects activeSessionId when needed', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    emit({ type: 'boot.plan', subsystems: SUBSYSTEMS });
+    emit({ type: 'boot.ready', sessionBootstrap: BOOTSTRAP });
+
+    const sess1: import('@/types/events').Session = {
+      id: 's-1',
+      title: 'Session 1',
+      mode: 'chat' as const,
+      turnCount: 0,
+      contextTokens: 0,
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    };
+    const sess2: import('@/types/events').Session = {
+      id: 's-2',
+      title: 'Session 2',
+      mode: 'chat' as const,
+      turnCount: 0,
+      contextTokens: 0,
+      createdAt: '2026-01-01T00:00:01Z',
+      updatedAt: '2026-01-01T00:00:01Z',
+    };
+    emit({ type: 'session.updated', session: sess1 });
+    emit({ type: 'session.updated', session: sess2 });
+    expect(result.current.state.sessions).toHaveLength(2);
+
+    // Set sess2 as active and delete it
+    act(() => result.current.setActiveSession('s-2'));
+    expect(result.current.state.activeSessionId).toBe('s-2');
+
+    emit({ type: 'session.deleted', sessionId: 's-2' });
+    expect(result.current.state.sessions).toHaveLength(1);
+    expect(result.current.state.sessions[0].id).toBe('s-1');
+    expect(result.current.state.activeSessionId).toBe('s-1');
+  });
+
+  it('session.deleted sets activeSessionId to null when deleting the last session', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    emit({ type: 'boot.plan', subsystems: SUBSYSTEMS });
+    emit({ type: 'boot.ready', sessionBootstrap: BOOTSTRAP });
+
+    const sess1: import('@/types/events').Session = {
+      id: 's-1',
+      title: 'Session 1',
+      mode: 'chat' as const,
+      turnCount: 0,
+      contextTokens: 0,
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    };
+    emit({ type: 'session.updated', session: sess1 });
+    act(() => result.current.setActiveSession('s-1'));
+
+    emit({ type: 'session.deleted', sessionId: 's-1' });
+    expect(result.current.state.sessions).toHaveLength(0);
+    expect(result.current.state.activeSessionId).toBeNull();
+  });
+
   it('reasoning.done attaches reasoning to the matching turn', () => {
     const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
     act(() => mockWs.onopen?.());
@@ -344,6 +405,24 @@ describe('useLabmateWS', () => {
     result.current.setDebug('s-abc', true);
     expect(mockWs.send).toHaveBeenCalledWith(
       JSON.stringify({ type: 'debug.set', sessionId: 's-abc', enabled: true }),
+    );
+  });
+
+  it('renameSession sends a session.rename frame to the server', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    result.current.renameSession('s-abc', 'New Title');
+    expect(mockWs.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'session.rename', sessionId: 's-abc', title: 'New Title' }),
+    );
+  });
+
+  it('deleteSession sends a session.delete frame to the server', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    result.current.deleteSession('s-abc');
+    expect(mockWs.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'session.delete', sessionId: 's-abc' }),
     );
   });
 
