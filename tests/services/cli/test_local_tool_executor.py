@@ -72,6 +72,25 @@ def test_read_file_offset_past_eof(tmp_path: Path):
     assert out == {"content": ""}
 
 
+def test_read_file_exotic_line_separator_parity(tmp_path: Path):
+    """Files with vertical tab (\\x0b) should NOT split on it (parity with TS).
+
+    TS splits on \\n only; Python must do the same.
+    Content: "a\\x0bb\\nc" → 2 lines: ["a\\x0bb\\n", "c"]
+    offset=1, limit=1 → line 1 → "a\\x0bb\\n"
+    """
+    content = "a\x0bb\nc"
+    (tmp_path / "f.txt").write_text(content, encoding="utf-8")
+    out = execute_local_tool(
+        "read_file", {"path": "f.txt", "offset": 1, "limit": 1}, workspace=str(tmp_path)
+    )
+    # TS splits "a\x0bb\nc" on \n → ["a\x0bb", "c"]
+    # TS restores newlines → ["a\x0bb\n", "c"]
+    # TS slices [0:1] → ["a\x0bb\n"]
+    # TS joins → "a\x0bb\n"
+    assert out == {"content": "a\x0bb\n"}
+
+
 # ── _ToolInterceptingStream integration ───────────────────────────────────────
 
 

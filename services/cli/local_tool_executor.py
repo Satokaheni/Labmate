@@ -34,9 +34,20 @@ def execute_local_tool(name: str, args: dict[str, Any], *, workspace: str) -> An
         raw_limit = args.get("limit")
         if raw_offset is None and raw_limit is None:
             return {"content": p.read_text(encoding="utf-8")}
-        lines = p.read_text(encoding="utf-8").splitlines(keepends=True)
+        text = p.read_text(encoding="utf-8")
+        # Split on \n only (not all Unicode line boundaries) to match TypeScript behavior.
+        # This ensures files with \x0b, \f, etc. are handled identically across platforms.
+        lines = text.split("\n")
+        # Restore newlines on all lines except possibly the last (splitlines semantics).
+        lines_with_nl = [
+            line + "\n" if i < len(lines) - 1 else line for i, line in enumerate(lines)
+        ]
+        # Drop the synthetic trailing empty string that split('\n') produces on a
+        # newline-terminated file — we don't want it to count as a real line.
+        last_line = lines_with_nl[-1] if lines_with_nl else ""
+        normalized = lines_with_nl[:-1] if last_line == "" else lines_with_nl
         start = max(0, int(raw_offset) - 1) if raw_offset is not None else 0
-        selected = lines[start:]
+        selected = normalized[start:]
         if raw_limit is not None:
             selected = selected[: int(raw_limit)]
         return {"content": "".join(selected)}
