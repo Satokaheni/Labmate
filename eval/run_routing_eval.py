@@ -17,7 +17,7 @@ the expected one.
     --eval eval/routing_eval.jsonl \\
     --skills-dir services/skills \\
     --base-url http://localhost:8000/v1 \\
-    --model gemma-4-31b \\
+    --model gemma-4-12b \\
     --repeats 3 \\
     --report eval/reports/
 
@@ -26,7 +26,7 @@ the expected one.
     --eval eval/fixtures/hosted_routing.example.jsonl \\
     --hosted-tools eval/fixtures/hosted_tools.example.json \\
     --base-url http://localhost:8000/v1 \\
-    --model gemma-4-31b \\
+    --model gemma-4-12b \\
     --repeats 3 \\
     --report eval/reports/
 
@@ -434,7 +434,7 @@ def main():
     ap.add_argument("--catalog-json")
     ap.add_argument("--hosted-tools", help="JSON file with hosted tool schemas")
     ap.add_argument("--base-url", default="http://localhost:8000/v1")
-    ap.add_argument("--model", default="gemma-4-31b")
+    ap.add_argument("--model", default="gemma-4-12b")
     ap.add_argument("--repeats", type=int, default=1)
     ap.add_argument("--select-attempts", type=int, default=3)
     ap.add_argument("--temperature", type=float, default=0.7)
