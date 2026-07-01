@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { scrollSignalFor, findStreamingTurn } from './ChatScreen';
+import { scrollSignalFor, findStreamingTurn, isCompactCommand } from './ChatScreen';
 import type { Turn } from '@/types/events';
 
 describe('findStreamingTurn', () => {
@@ -125,5 +125,24 @@ describe('scrollSignalFor', () => {
     expect(() => {
       scrollSignalFor(turns);
     }).not.toThrow();
+  });
+});
+
+describe('isCompactCommand (the shipped predicate Composer.submit routes on)', () => {
+  it('is true for exactly "/compact" (and with surrounding whitespace)', () => {
+    expect(isCompactCommand('/compact')).toBe(true);
+    expect(isCompactCommand('   /compact  ')).toBe(true);
+  });
+
+  it('is false for normal messages, including ones that merely contain /compact', () => {
+    expect(isCompactCommand('hello world')).toBe(false);
+    expect(isCompactCommand('/compact now')).toBe(false);
+    expect(isCompactCommand('please /compact')).toBe(false);
+    expect(isCompactCommand('/compactify')).toBe(false);
+  });
+
+  it('is false for empty / whitespace-only input', () => {
+    expect(isCompactCommand('')).toBe(false);
+    expect(isCompactCommand('   ')).toBe(false);
   });
 });

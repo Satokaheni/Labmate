@@ -70,6 +70,7 @@ type WSFrame =
       result?: unknown;
       durationMs?: number;
     }
+  | { type: 'compact.done'; ok?: boolean; error?: string }
   | { type: '_INTERNAL_RESET' };
 
 type DispatchAction =
@@ -345,6 +346,12 @@ function labmateWSReducer(state: LabmateWSState, action: DispatchAction): Labmat
         return state;
       }
 
+      if (frame.type === 'compact.done') {
+        // Transient frame; reducer is a safe no-op.
+        // The frame is handled by the effect, not state-based.
+        return state;
+      }
+
       return state;
     }
 
@@ -368,6 +375,7 @@ export function useLabmateWS(
   renameSession: (sessionId: string, title: string) => void;
   deleteSession: (sessionId: string) => void;
   cancel: (turnId: string) => void;
+  compact: (sessionId: string) => void;
 } {
   const [state, dispatch] = useReducer(labmateWSReducer, { phase: 'idle' });
   const wsRef = useRef<WebSocket | null>(null);
@@ -577,6 +585,12 @@ export function useLabmateWS(
     }
   };
 
+  const compact = (sessionId: string) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'compact', sessionId }));
+    }
+  };
+
   return {
     state: state as LabmateWSStatePublic,
     send,
@@ -588,5 +602,6 @@ export function useLabmateWS(
     renameSession,
     deleteSession,
     cancel,
+    compact,
   };
 }

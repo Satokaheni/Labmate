@@ -585,6 +585,37 @@ describe('useLabmateWS', () => {
     expect(mockWs.send).not.toHaveBeenCalled();
   });
 
+  it('compact() sends a compact frame with sessionId when socket is open', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    result.current.compact('sess-456');
+    expect(mockWs.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'compact', sessionId: 'sess-456' }),
+    );
+  });
+
+  it('compact() does not send when socket is closed', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    mockWs.send.mockClear();
+    // Simulate socket closed
+    mockWs.onclose?.();
+    result.current.compact('sess-456');
+    expect(mockWs.send).not.toHaveBeenCalled();
+  });
+
+  it('reducer tolerates compact.done frame without crashing', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    emit({ type: 'boot.plan', subsystems: SUBSYSTEMS });
+    emit({ type: 'boot.ready', sessionBootstrap: BOOTSTRAP });
+    expect(result.current.state.phase).toBe('ready');
+    // Emit compact.done frame
+    emit({ type: 'compact.done', ok: true });
+    // Should not crash, state should remain ready
+    expect(result.current.state.phase).toBe('ready');
+  });
+
   it('session.history merges turns, deduplicating by id', () => {
     const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
     act(() => mockWs.onopen?.());

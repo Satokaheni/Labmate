@@ -1373,8 +1373,13 @@ function detectMention(value: string, caret: number): { start: number; query: st
   return { start: caret - m[2].length - 1, query: m[2] };
 }
 
-function Composer(props: { mode: Mode; budget: number; sessionId: string; onSend: (text: string) => void }) {
-  const { mode, budget, sessionId, onSend } = props;
+/** A composer message is the manual-compact command iff it is exactly `/compact` (trimmed). */
+export function isCompactCommand(text: string): boolean {
+  return text.trim() === '/compact';
+}
+
+function Composer(props: { mode: Mode; budget: number; sessionId: string; onSend: (text: string) => void; onCompact: () => void }) {
+  const { mode, budget, sessionId, onSend, onCompact } = props;
   const api = typeof window !== 'undefined' ? window.electronAPI : undefined;
   const [text, setText] = useState('');
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -1442,7 +1447,11 @@ function Composer(props: { mode: Mode; budget: number; sessionId: string; onSend
   const submit = () => {
     const t = text.trim();
     if (!t) return;
-    onSend(t);
+    if (isCompactCommand(text)) {
+      onCompact();
+    } else {
+      onSend(t);
+    }
     setText('');
     setOpen(false);
   };
@@ -1761,9 +1770,10 @@ export interface ChatScreenProps {
   renameSession?: (sessionId: string, title: string) => void;
   deleteSession?: (sessionId: string) => void;
   cancel: (turnId: string) => void;
+  compact: (sessionId: string) => void;
 }
 
-export function ChatScreen({ state, send, newChat, openSession, setDebug, renameSession, deleteSession, cancel }: ChatScreenProps) {
+export function ChatScreen({ state, send, newChat, openSession, setDebug, renameSession, deleteSession, cancel, compact }: ChatScreenProps) {
   const sessions = state.sessions ?? [];
   const allTurns = state.turns ?? [];
   const activeSessionId = state.activeSessionId ?? sessions[0]?.id ?? null;
@@ -1974,6 +1984,7 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug, rename
             budget={budget}
             sessionId={wsId}
             onSend={(text) => send(text, wsId, roots[0])}
+            onCompact={() => compact(wsId)}
           />
         </div>
 
