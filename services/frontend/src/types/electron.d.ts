@@ -1,3 +1,8 @@
+/**
+ * Electron preload API type definitions
+ * Ensures renderer has access to native APIs via contextBridge
+ */
+
 export interface ExecuteToolResponse {
   result?: unknown;
   error?: string;
@@ -10,6 +15,14 @@ export interface ToolDescriptor {
   schema?: unknown;
 }
 
+export interface WorkspaceEntry {
+  absolute: string;
+  insert: string;
+  display: string;
+  root: string;
+  isDir: boolean;
+}
+
 declare global {
   interface Window {
     electronAPI?: {
@@ -20,6 +33,15 @@ declare global {
       clearToken(): Promise<void>;
       executeTool(name: string, args: Record<string, unknown>, sessionId?: string | null): Promise<ExecuteToolResponse>;
       getMcpTools(): Promise<ToolDescriptor[]>;
+      getSkillDescriptors(): Promise<ToolDescriptor[]>;
+      getWorkspaceRoots(sessionId: string | null): Promise<string[]>;
+      addWorkspaceRoot(sessionId: string): Promise<{ roots: string[] }>;
+      removeWorkspaceRoot(sessionId: string, path: string): Promise<{ roots: string[] }>;
+      hasDefaultWorkspace(): Promise<boolean>;
+      getDefaultWorkspace(): Promise<string | null>;
+      setDefaultWorkspace(): Promise<{ path: string | null }>;
+      searchWorkspace(sessionId: string | null, query: string): Promise<{ entries: WorkspaceEntry[] }>;
+      setActiveSession(sessionId: string | null): Promise<{ ok: boolean }>;
     };
   }
 }

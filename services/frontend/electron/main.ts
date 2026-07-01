@@ -318,15 +318,18 @@ ipcMain.handle(
     const chosen = await pickFolders();
     let roots = workspaceStore().roots(payload.sessionId);
     for (const dir of chosen) roots = workspaceStore().addRoot(payload.sessionId, dir);
+    await mcpManager.setWorkspaceRoots(roots);
     return { roots };
   },
 );
 
 ipcMain.handle(
   'labmate:remove-workspace-root',
-  (_evt, payload: { sessionId: string; path: string }) => ({
-    roots: workspaceStore().removeRoot(payload.sessionId, payload.path),
-  }),
+  async (_evt, payload: { sessionId: string; path: string }) => {
+    const roots = workspaceStore().removeRoot(payload.sessionId, payload.path);
+    await mcpManager.setWorkspaceRoots(roots);
+    return { roots };
+  },
 );
 
 // Fuzzy file/dir search across a chat's roots, for the @-mention autocomplete.
@@ -338,6 +341,16 @@ ipcMain.handle(
     return { entries: await searchWorkspace(roots, payload.query ?? '') };
   },
 );
+
+// Notify MCP servers of the active session change (update roots)
+ipcMain.handle('labmate:active-session', async (_e, payload: { sessionId?: string | null }) => {
+  try {
+    await mcpManager.setWorkspaceRoots(workspaceStore().roots(payload?.sessionId ?? null));
+  } catch (err) {
+    console.error('active-session roots update failed:', err);
+  }
+  return { ok: true };
+});
 
 ipcMain.handle('labmate:mcp-tools', async () => {
   try {
@@ -393,6 +406,12 @@ void app.whenReady().then(() => {
   mcpReady = mcpManager.startAll().catch((e) => {
     console.error('mcp startAll failed:', e);
   });
+  // Seed initial roots for the default workspace (null sessionId)
+  try {
+    void mcpManager.setWorkspaceRoots(workspaceStore().roots(null));
+  } catch (err) {
+    console.error('failed to seed initial workspace roots:', err);
+  }
   createWindow();
 });
 
