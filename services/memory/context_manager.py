@@ -187,20 +187,27 @@ class ContextManager:
         watermark_str = await self.redis.get(f"summarized_through:{session_id}")
         watermark = int(watermark_str) if watermark_str else -1
 
-        # Read from chat_turns (camelCase fields)
+        # Read the NEWEST turns after the watermark from chat_turns (camelCase).
+        # The watermark filter goes in the QUERY (so a long post-watermark session
+        # isn't dropped), sorted DESC + limit → the recent tail, not the oldest 50.
         cursor = (
             self.db["chat_turns"]
-            .find({"sessionId": session_id}, {"role": 1, "text": 1, "seq": 1})
-            .sort("seq", 1)  # ascending order
+            .find(
+                {"sessionId": session_id, "seq": {"$gt": watermark}},
+                {"role": 1, "text": 1, "seq": 1},
+            )
+            .sort("seq", -1)  # newest first, so limit keeps the recent tail
             .limit(50)
         )
         turns = [doc async for doc in cursor]
 
-        # Filter to turns with seq > watermark
-        recent_turns = [t for t in turns if t.get("seq", -1) > watermark]
+        # Enforce the watermark in-memory too (test fakes may ignore the query
+        # filter), then sort chronologically by seq — robust to cursor ordering.
+        turns = [t for t in turns if t.get("seq", -1) > watermark]
+        turns.sort(key=lambda t: t.get("seq", 0))
 
         # Format as "ROLE: text"
-        lines = [f"{t['role'].upper()}: {t['text']}" for t in recent_turns]
+        lines = [f"{t['role'].upper()}: {t['text']}" for t in turns]
         return self._trim_to_budget("\n".join(lines), budget)
 
     async def hybrid_retrieve(

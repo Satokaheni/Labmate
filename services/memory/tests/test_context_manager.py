@@ -242,6 +242,12 @@ async def test_recent_turns_reads_chat_turns_with_watermark():
         assert "hello" not in recent  # seq 1 is <= watermark
         assert "hi" not in recent  # seq 3 is <= watermark
 
+        # The watermark filter must live in the QUERY (not only in-memory), else a
+        # long post-watermark session would be dropped by the newest-N limit.
+        find_filter = chat_turns_col.find.call_args[0][0]
+        assert find_filter.get("sessionId") == "s1"
+        assert find_filter.get("seq") == {"$gt": 5}
+
 
 @pytest.mark.asyncio
 async def test_recent_turns_defaults_watermark_to_minus_one():
