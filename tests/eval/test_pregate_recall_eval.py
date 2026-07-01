@@ -153,3 +153,125 @@ def test_all_none_rows_no_skill():
     assert r["false_skip_rate"] == pytest.approx(0.0)
     assert r["n_skill"] == 0
     assert r["n_none"] == 2
+
+
+# ---------------------------------------------------------------------------
+# _recommend_threshold tests (new)
+# ---------------------------------------------------------------------------
+
+
+def test_recommend_threshold_normal_case():
+    """Normal case: the highest threshold with acceptable false-skip is recommended."""
+    from eval.pregate_recall_eval import _recommend_threshold
+
+    rows = [
+        {
+            "threshold": 0.20,
+            "false_skip_rate": 0.02,
+            "correct_skip_rate": 0.50,
+            "per_skill_false_skip": {"code-review": 0.02},
+            "n_skill": 50,
+            "n_none": 10,
+        },
+        {
+            "threshold": 0.25,
+            "false_skip_rate": 0.04,
+            "correct_skip_rate": 0.70,
+            "per_skill_false_skip": {"code-review": 0.04},
+            "n_skill": 50,
+            "n_none": 10,
+        },
+        {
+            "threshold": 0.30,
+            "false_skip_rate": 0.08,
+            "correct_skip_rate": 0.80,
+            "per_skill_false_skip": {"code-review": 0.08},
+            "n_skill": 50,
+            "n_none": 10,
+        },
+    ]
+    rec = _recommend_threshold(rows, max_false_skip=0.05)
+    # Both 0.20 and 0.25 qualify (false_skip_rate <= 0.05 and correct_skip_rate > 0)
+    # The highest is 0.25
+    assert rec == 0.25
+
+
+def test_recommend_threshold_rejects_no_op_threshold():
+    """A threshold with correct_skip_rate == 0 (no latency win) must NOT be recommended."""
+    from eval.pregate_recall_eval import _recommend_threshold
+
+    rows = [
+        {
+            "threshold": 0.20,
+            "false_skip_rate": 0.0,
+            "correct_skip_rate": 0.0,  # No latency benefit (no none rows skipped)
+            "per_skill_false_skip": {},
+            "n_skill": 10,
+            "n_none": 0,
+        },
+    ]
+    rec = _recommend_threshold(rows, max_false_skip=0.05)
+    # No-op threshold with 0 correct_skip should not be recommended
+    assert rec is None
+
+
+def test_recommend_threshold_all_regressions():
+    """Sweep where all useful thresholds regress recall — no recommendation."""
+    from eval.pregate_recall_eval import _recommend_threshold
+
+    rows = [
+        {
+            "threshold": 0.20,
+            "false_skip_rate": 0.02,
+            "correct_skip_rate": 0.5,
+            "per_skill_false_skip": {"code-review": 0.02},
+            "n_skill": 50,
+            "n_none": 10,
+        },
+        {
+            "threshold": 0.25,
+            "false_skip_rate": 0.08,  # Exceeds 0.05 gate
+            "correct_skip_rate": 0.7,
+            "per_skill_false_skip": {"code-review": 0.08},
+            "n_skill": 50,
+            "n_none": 10,
+        },
+        {
+            "threshold": 0.30,
+            "false_skip_rate": 0.12,  # Exceeds 0.05 gate
+            "correct_skip_rate": 0.8,
+            "per_skill_false_skip": {"code-review": 0.12},
+            "n_skill": 50,
+            "n_none": 10,
+        },
+    ]
+    rec = _recommend_threshold(rows, max_false_skip=0.05)
+    # Only 0.20 passes the gate, and it has correct_skip_rate > 0, so it's recommended
+    assert rec == 0.20
+
+
+def test_recommend_threshold_mixed_with_no_op():
+    """Mix of useful and no-op thresholds; only useful ones are considered."""
+    from eval.pregate_recall_eval import _recommend_threshold
+
+    rows = [
+        {
+            "threshold": 0.15,
+            "false_skip_rate": 0.0,
+            "correct_skip_rate": 0.0,  # No-op: skips nothing
+            "per_skill_false_skip": {},
+            "n_skill": 50,
+            "n_none": 10,
+        },
+        {
+            "threshold": 0.25,
+            "false_skip_rate": 0.03,
+            "correct_skip_rate": 0.60,  # Useful: delivers latency win
+            "per_skill_false_skip": {"code-review": 0.03},
+            "n_skill": 50,
+            "n_none": 10,
+        },
+    ]
+    rec = _recommend_threshold(rows, max_false_skip=0.05)
+    # 0.15 is rejected (no latency win), 0.25 is recommended
+    assert rec == 0.25

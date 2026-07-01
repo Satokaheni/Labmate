@@ -74,3 +74,30 @@ async def test_flag_off_never_consults_pregate(monkeypatch):
 
     assert res.skills == []
     assert not res.needs_clarification
+
+
+@pytest.mark.asyncio
+@pytest.mark.mocked
+async def test_empty_catalog_still_runs_vote(monkeypatch):
+    """When pre-gate flag is ON but catalog is EMPTY, _confidence_check must still run.
+
+    The wiring guard leaves _pregate=None when runner.catalog is empty, so the vote
+    should proceed normally (no pre-gate filter).
+    """
+    monkeypatch.setattr(SR, "ENABLE_ROUTING_PREGATE", True)
+    runner = MagicMock()
+    runner.catalog = {}  # Empty catalog
+    router = SkillRouter(runner=runner, redis=AsyncMock(), gemma_api_base="http://x/v1")
+    # After initialization with empty catalog, _pregate should be None
+    assert router._pregate is None
+
+    # The vote should still run
+    with patch.object(
+        router, "_confidence_check", new=AsyncMock(return_value=(None, 0.0))
+    ) as mock_vote:
+        res = await router.route("anything")
+
+    # Confirm _confidence_check was awaited (the vote ran)
+    mock_vote.assert_awaited_once()
+    assert res.skills == []
+    assert not res.needs_clarification

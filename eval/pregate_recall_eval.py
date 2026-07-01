@@ -112,12 +112,16 @@ def _load_cases(eval_path: Path) -> list[dict]:
 
 
 def _recommend_threshold(results: list[dict], max_false_skip: float = 0.05) -> float | None:
-    """Return the highest threshold where every per-skill false-skip rate ≤ max_false_skip."""
+    """Return the highest threshold where every per-skill false-skip rate ≤ max_false_skip
+    AND the threshold delivers a real latency benefit (correct_skip_rate > 0).
+
+    A threshold with correct_skip_rate == 0 is a no-op: it skips nothing and buys zero latency.
+    Such thresholds are excluded even if they pass the false-skip gate."""
     candidate = None
     for r in results:
         all_ok = all(v <= max_false_skip for v in r["per_skill_false_skip"].values())
-        # Also require the aggregate false_skip_rate ≤ max_false_skip
-        if all_ok and r["false_skip_rate"] <= max_false_skip:
+        # Also require the aggregate false_skip_rate ≤ max_false_skip AND a real benefit
+        if all_ok and r["false_skip_rate"] <= max_false_skip and r["correct_skip_rate"] > 0:
             if candidate is None or r["threshold"] > candidate:
                 candidate = r["threshold"]
     return candidate
