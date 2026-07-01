@@ -430,3 +430,40 @@ async def test_direct_answer_continuity_injection_is_best_effort(monkeypatch):
             return
 
     pytest.fail(f"Direct-answer call not found in {architect_calls}")
+
+
+@pytest.mark.asyncio
+@pytest.mark.mocked
+async def test_assess_ambiguity_receives_continuity(monkeypatch):
+    """REGRESSION (live "Which problem?" bug): assess_ambiguity is the FIRST graph node —
+    it runs BEFORE the plan (direct-answer) and execute (ReAct) paths. Without prior
+    conversation it scores a follow-up like "is that problem NP-complete?" as ambiguous
+    (unresolved referent 'that problem') and HALTS with a clarification before any answer
+    path — and its continuity injection — ever runs.
+
+    Drives the REAL assess_ambiguity node; asserts prior conversation reaches ITS
+    architect() prompt. FAILS if continuity is not injected into assess_ambiguity.
+    """
+    graph, mock_orch = _build_graph_with_direct_answer(monkeypatch)
+    mock_orch.context_manager = MagicMock()
+    mock_orch.context_manager.conversation_context = AsyncMock(
+        return_value="ASSISTANT: The Traveling Salesman Problem (TSP) is NP-hard."
+    )
+
+    token = client_context.set_manifest(None)
+    try:
+        await graph.ainvoke(
+            _root_state_for_graph("Is that problem NP-complete?"),
+            {"configurable": {"thread_id": "t-assess-continuity"}},
+        )
+    finally:
+        client_context.reset_manifest(token)
+
+    # The FIRST architect() call is assess_ambiguity's triage prompt — it MUST carry the
+    # prior conversation so 'that problem' is resolvable (not flagged ambiguous → halt).
+    assert mock_orch.architect.await_count >= 1
+    assess_prompt = mock_orch.architect.call_args_list[0][0][0]
+    assert "PRIOR CONVERSATION" in assess_prompt
+    assert (
+        "Traveling Salesman Problem" in assess_prompt
+    ), f"assess_ambiguity prompt missing prior conversation: {assess_prompt[:600]}"
