@@ -1,0 +1,24 @@
+{
+  "_comment": "SINGLE SOURCE OF TRUTH for the Python<->TS capability-manifest contract. Edit this, then run: python scripts/gen_contract.py",
+  "toolSource": ["builtin", "mcp", "skill"],
+  "builtinToolNames": ["read_file", "write_file", "list_dir", "search_files", "run_tests"],
+  "shapes": {
+    "ToolDescriptor": {
+      "fields": {
+        "name": { "ts": "string", "py": "str", "required": true },
+        "source": { "ts": "ToolSource", "py": "str", "required": true },
+        "namespace": { "ts": "string", "py": "str | None", "required": false },
+        "schema": { "ts": "unknown", "py": "dict | None", "required": false },
+        "description": { "ts": "string", "py": "str", "required": false },
+        "body": { "ts": "string", "py": "str", "required": false }
+      }
+    },
+    "ClientManifest": {
+      "tsName": "ClientCapabilities",
+      "fields": {
+        "protocolVersion": { "ts": "number", "py": "int", "pyName": "protocol_version", "required": false },
+        "tools": { "ts": "ToolDescriptor[]", "py": "list[ToolDescriptor]", "required": true }
+      }
+    }
+  }
+}

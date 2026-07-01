@@ -11,6 +11,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Contract drift guard: the Python<->TS manifest types are generated from
+  # contract/manifest.contract.json — fail if the committed generated files are stale.
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install ruff==0.8.6
+      - name: regenerate contract types + assert no drift
+        run: |
+          set -euo pipefail
+          python scripts/gen_contract.py
+          ruff format services/orchestrator/_contract_generated.py
+          if ! git diff --quiet -- services/frontend/src/protocol/contract.generated.ts services/orchestrator/_contract_generated.py; then
+            echo "::error::Generated contract files are stale. Edit contract/manifest.contract.json and run: python scripts/gen_contract.py"
+            git --no-pager diff -- services/frontend/src/protocol/contract.generated.ts services/orchestrator/_contract_generated.py
+            exit 1
+          fi
+
   # Lint only the Python files changed in the PR — keeps CI green/adoptable
   # without a big-bang reformat of the pre-existing codebase.
   ruff:

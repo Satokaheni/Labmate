@@ -8,25 +8,12 @@ is the full tool list (read/write/list/run_bash/run_tests/finish).
 
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from typing import Any
 
+from services.orchestrator._contract_generated import ClientManifest, ToolDescriptor
 
-class ToolDescriptor(TypedDict, total=False):
-    """OpenAI-compatible tool descriptor."""
-
-    name: str  # required: tool name
-    source: str  # "builtin" | "mcp" | "skill"; default "builtin"
-    namespace: str | None  # optional: mcp/skill namespace
-    schema: dict | None  # optional: full OpenAI tool object
-    description: str  # optional: documentation skill description
-    body: str  # optional: documentation skill body
-
-
-class ClientManifest(TypedDict, total=False):
-    """Top-level manifest of client capabilities."""
-
-    protocol_version: int  # optional; if present, usually 1
-    tools: list[ToolDescriptor]  # required: list of tool descriptors
+# Re-export for backward compatibility with existing importers
+__all__ = ["ClientManifest", "ToolDescriptor"]
 
 
 # Canonical builtin schemas — byte-identical to prompt_assembler._static_tail_schemas()
