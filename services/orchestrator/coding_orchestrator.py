@@ -1618,13 +1618,21 @@ class CodingOrchestrator:
             ]
         return [{"role": "user", "content": prompt}]
 
-    async def architect(self, prompt: str, thinking_budget: int = 3000) -> str:
+    async def architect(
+        self, prompt: str, thinking_budget: int = 3000, max_tokens: int | None = None
+    ) -> str:
         """
         Planning, self-reflection, aggregation -> Gemma 4 31B dense.
 
         thinking_budget controls per-request reasoning depth via llama.cpp's
         thinking_budget_tokens field (only honored when server started without
         --reasoning-budget flag). Pass thinking_budget=0 for fast tool-dispatch nodes.
+
+        max_tokens caps the CONTENT length (separate from thinking_budget, which only
+        caps reasoning). Structured pre-flight calls (ambiguity triage, routing) MUST
+        pass a tight cap — without it the model can ramble a small JSON out to thousands
+        of content tokens (~3.8k observed live), the dominant pre-answer latency cost.
+        Leave None for answer-generating calls (direct answer, reflect) that need length.
         """
         r = await acompletion_with_failover(
             model="openai/gemma-4-31b",
@@ -1632,6 +1640,7 @@ class CodingOrchestrator:
             api_key="not-needed",
             messages=self._build_messages(prompt),
             extra_body={"thinking_budget_tokens": thinking_budget},
+            **({"max_tokens": max_tokens} if max_tokens is not None else {}),
         )
         return r.choices[0].message.content
 

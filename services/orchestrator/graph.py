@@ -47,6 +47,12 @@ CRITIQUE_DISPATCH_TIMEOUT = float(os.getenv("CRITIQUE_DISPATCH_TIMEOUT", "110"))
 # negligible effect on the binary "is this ambiguous" call; raise via env if the
 # gate starts missing genuinely ambiguous prompts.
 ASSESS_THINKING_BUDGET = int(os.getenv("ASSESS_THINKING_BUDGET", "384"))
+# Cap the CONTENT of the ambiguity-triage call. Its output is a small JSON
+# ({assumptions, ambiguity, blocking_question}); without a cap the model can ramble it
+# out to thousands of tokens (~3.8k observed live) — the dominant pre-answer latency cost.
+# 512 fits several assumptions with headroom; a truncated ramble just falls back to
+# ambiguity=0.0 (fail-safe). Tune via ASSESS_MAX_TOKENS.
+ASSESS_MAX_TOKENS = int(os.getenv("ASSESS_MAX_TOKENS", "512"))
 
 # FIX 10 (B2): direct-answer fast-path. When route() reports a skill-less SINGLE intent
 # (e.g. "What is 2+2?"), the plan node answers directly via architect() and HALTS the
@@ -658,8 +664,8 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
             '{"assumptions": ["..."], "ambiguity": 0.0, "blocking_question": "" }'
         )
         raw = await orch.architect(
-            prompt, thinking_budget=ASSESS_THINKING_BUDGET
-        )  # FIX 10 (A3): was 1024
+            prompt, thinking_budget=ASSESS_THINKING_BUDGET, max_tokens=ASSESS_MAX_TOKENS
+        )  # FIX 10 (A3): was 1024; max_tokens caps the JSON so it can't ramble to ~3.8k
         text = (raw or "").strip()
         if text.startswith("```json"):
             text = text[7:]

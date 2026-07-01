@@ -11,6 +11,7 @@ to:
 All litellm calls use api_key="not-needed" and explicit thinking_budget_tokens.
 No stdout writes; all logging goes to stderr.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -26,9 +27,9 @@ from typing import Any
 import litellm
 import redis.asyncio as aioredis
 
-from services.skill_runner.skill_runner import SkillRunner
 from services.orchestrator import events
 from services.orchestrator.skill_telemetry import record_use_best_effort
+from services.skill_runner.skill_runner import SkillRunner
 
 _log = logging.getLogger("skill_router")
 
@@ -48,6 +49,11 @@ RESULT_PREFIX = "labmate:result:"
 # recall toward ~100% (precision is unaffected — we only accept catalog hits).
 SELECT_ATTEMPTS = 3
 PLAN_ATTEMPTS = 3
+# Cap the CONTENT of the routing model calls. Their output is a tiny selection (a
+# load_skill tool call or a `{"tool":...,"arguments":...}` JSON); without a cap the model
+# can ramble prose out to thousands of tokens (and the JSON call RETRIES PLAN_ATTEMPTS
+# times, compounding it) — a big share of pre-answer latency. 256 is ample for a selection.
+ROUTE_MAX_TOKENS = int(os.getenv("ROUTE_MAX_TOKENS", "256"))
 
 # Confidence threshold for accepting a routing decision. 2/3 (0.666...) == "at least
 # 2 of 3 samples agreed". Below this (and not unanimous) the task has no confident skill
@@ -64,6 +70,7 @@ class RouteResult:
     [task]. needs_clarification is retained for backward compatibility but route()
     always sets it False — the assess_ambiguity node owns clarification.
     """
+
     skills: list[str]
     needs_clarification: bool = False
     clarification_question: str = ""
@@ -80,7 +87,7 @@ class SkillRouter:
         gemma_api_base: str,
         *,
         call_timeout: float = float(os.getenv("SKILL_CALL_TIMEOUT", "135")),
-        telemetry_path: "Path | None" = None,
+        telemetry_path: Path | None = None,
     ) -> None:
         """
         Args:
@@ -127,6 +134,7 @@ class SkillRouter:
                 tools=[schema],
                 tool_choice="auto",
                 extra_body={"thinking_budget_tokens": thinking_budget},
+                max_tokens=ROUTE_MAX_TOKENS,
             )
         except Exception as exc:
             _log.warning("_sample_select error: %s", exc)
@@ -176,7 +184,9 @@ class SkillRouter:
         # together overlaps the prefills across the model's parallel slots and lets
         # the prompt cache serve the shared prefix — same samples, same unanimity
         # logic, just without the serialized re-prefill.
-        picks = await asyncio.gather(*(self._sample_select(task, 0) for _ in range(SELECT_ATTEMPTS)))
+        picks = await asyncio.gather(
+            *(self._sample_select(task, 0) for _ in range(SELECT_ATTEMPTS))
+        )
         picks = [p for p in picks if p is not None]
         if not picks:
             return None
@@ -315,6 +325,7 @@ class SkillRouter:
                     api_key="not-needed",
                     messages=[{"role": "user", "content": prompt}],
                     extra_body={"thinking_budget_tokens": 0},
+                    max_tokens=ROUTE_MAX_TOKENS,
                 )
                 choices = getattr(r, "choices", None)
                 if not choices:
@@ -445,8 +456,11 @@ class SkillRouter:
                 result = await self.execute(skill_name, plan["tool"], plan["arguments"])
             except Exception as exc:
                 await events.emit(
-                    "tool.done", tool_id=tool_id, status="error",
-                    summary=str(exc)[:200], result=None,
+                    "tool.done",
+                    tool_id=tool_id,
+                    status="error",
+                    summary=str(exc)[:200],
+                    result=None,
                     duration_ms=int((time.monotonic() - started) * 1000),
                 )
                 raise
