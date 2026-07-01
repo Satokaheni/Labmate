@@ -290,20 +290,55 @@ if ENABLE_ROUTING_PREGATE:
   `python -m pytest tests/services/orchestrator/test_skill_router*.py tests/services/orchestrator/test_route_pregate_wiring.py -q`
 - [ ] **Step 5 — commit.**
 
-### Task 0.3: Recall gate — validate the threshold on the routing eval (BLOCKING before default-on)
+### Task 0.3: Pre-gate recall eval (BLOCKING gate before default-on)
 
-**Files:** none (validation task); records numbers into `eval/reports/`.
+**Why this replaces a `run_routing_eval` sweep:** `eval/run_routing_eval.py` is a faithful COPY
+of the routing loop (its `route_one` SEAM), not the real `SkillRouter` — it never constructs a
+router, so `ENABLE_ROUTING_PREGATE` has ZERO effect on it. A flag-on/off sweep there measures
+nothing about the pre-gate. Instead, exercise the REAL `SkillPreGate` directly and measure the only
+recall risk that matters: a **false-skip** — the pre-gate returning False (skip routing) for a case
+that has an expected skill.
 
-- [ ] **Step 1** — baseline: `ENABLE_ROUTING_PREGATE=0`, run
-  `python eval/run_routing_eval.py --eval eval/routing_eval.jsonl --skills-dir services/skills --base-url $GEMMA_BASE --model gemma-4-31b --repeats 3 --report eval/reports/`.
-- [ ] **Step 2** — pre-gate on: same command with `ENABLE_ROUTING_PREGATE=1` (sweep
-  `PREGATE_SIM_THRESHOLD` ∈ {0.25, 0.30, 0.35}).
-- [ ] **Step 3** — **acceptance:** pick the highest threshold at which **no skill's accuracy drops
-  > 0.05** vs baseline (higher threshold = more skips = more latency saved, but more recall risk).
-  Record the chosen value. **Only then** may `ENABLE_ROUTING_PREGATE` default to 1 (separate commit).
-- [ ] **Step 4** — live latency confirm (host): push the "what is the traveling salesman problem"
-  message with the gate on; confirm `route() pre-gate: no plausible skill` in the log and pre-answer
-  latency drops toward the assess-only floor (~2s), not 19s.
+**Files:**
+- Modify: `services/orchestrator/routing_pregate.py` — add `async def max_similarity(self, task: str)
+  -> float` and refactor `any_plausible_skill` to use it (single source for the cosine logic).
+- Create: `eval/pregate_recall_eval.py` — sweep thresholds over the eval cases, report false-skip /
+  correct-skip rates + per-skill false-skip breakdown, recommend a threshold.
+- Test: extend `tests/services/orchestrator/test_routing_pregate.py` (max_similarity); create
+  `tests/eval/test_pregate_recall_eval.py` (the pure aggregation core).
+
+**Interfaces:**
+- `SkillPreGate.max_similarity(task) -> float`: best cosine over the catalog. Empty catalog →
+  `float("-inf")` (nothing matches → `any_plausible_skill` False for any threshold). On embed error →
+  `float("inf")` (FAIL-SAFE → `any_plausible_skill` True). `any_plausible_skill` becomes exactly
+  `await self.max_similarity(task) >= self._threshold`. The four existing pre-gate tests MUST stay
+  green (behavior-preserving refactor).
+- Pure core: `summarize_skips(rows: list[dict], thresholds: list[float]) -> list[dict]`, where each
+  row is `{"expected": str, "max_sim": float}` (`expected == "none"` = no skill). Returns, per
+  threshold: `{threshold, false_skip_rate, correct_skip_rate, per_skill_false_skip: {skill: rate},
+  n_skill, n_none}`. false_skip = expected-skill case with `max_sim < threshold`; correct_skip =
+  `none` case with `max_sim < threshold`.
+
+- [ ] **Step 1 — failing tests.** (a) `max_similarity` via fake embed: close task → high sim,
+  off-topic → low, empty catalog → `-inf`, embed error → `inf`; and the four ORIGINAL
+  `any_plausible_skill` tests still pass unchanged. (b) `summarize_skips` on synthetic rows: a
+  false-skip and a correct-skip are each counted into the right bucket at the right threshold;
+  per-skill breakdown groups false-skips by `expected`; empty input is safe.
+- [ ] **Step 2 — run, verify FAIL.**
+- [ ] **Step 3 — implement** the refactor + `summarize_skips` + the live harness. The harness (run on
+  the host, not unit-tested): load `eval/routing_eval.jsonl` + the catalog via `SkillRunner`, build a
+  real `SkillPreGate`, compute `max_similarity` per case ONCE (plus a built-in list of known no-match
+  conversational probes — "what is the traveling salesman problem", "what is the capital of France" —
+  to exercise the correct-skip win), then `summarize_skips` over the threshold sweep. Print a table
+  and the **recommended threshold = the highest at which every per-skill false-skip rate ≤ 0.05**.
+- [ ] **Step 4 — run, verify PASS** (unit tests). ruff clean. Commit.
+- [ ] **Step 5 — HOST run (hand-off; BLOCKING gate).**
+  `python eval/pregate_recall_eval.py --eval eval/routing_eval.jsonl --skills-dir services/skills --thresholds 0.20,0.25,0.30,0.35,0.40`.
+  **Acceptance:** adopt the recommended threshold (highest with every per-skill false-skip ≤ 0.05).
+  Only then does `PREGATE_SIM_THRESHOLD` default to it and `ENABLE_ROUTING_PREGATE` flip to 1
+  (separate commit). Then a live latency confirm: push "what is the traveling salesman problem" with
+  the gate on → `route() pre-gate: no plausible skill` in the log, pre-answer latency toward the ~2s
+  assess-only floor, not 19s.
 
 > **Optional (gated) Task 0.4 — SELECT_ATTEMPTS serialization.** With the pre-gate absorbing the
 > no-match case, the 3-into-2-slots tail matters less. If still worth it after 0.3, evaluate
