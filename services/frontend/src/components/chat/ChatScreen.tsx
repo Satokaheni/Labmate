@@ -102,6 +102,15 @@ export function scrollSignalFor(turns: Turn[]): string {
     `${last?.toolCalls?.length ?? 0}:${last?.artifacts?.length ?? 0}:${last?.status ?? ''}`;
 }
 
+/**
+ * Pure helper to detect which turn (if any) is streaming.
+ * Returns the first streaming turn, or undefined if none exist.
+ * Used to determine when to show the Stop button.
+ */
+export function findStreamingTurn(turns: Turn[]): Turn | undefined {
+  return turns.find((t) => t.status === 'streaming');
+}
+
 // ====================================================================
 // Static style objects (module-level to avoid rebuild on every render)
 // ====================================================================
@@ -1126,7 +1135,7 @@ function UserBubble({ text }: { text: string }) {
   );
 }
 
-function ThinkingLine({ turn, active }: { turn: Turn; active: boolean }) {
+function ThinkingLine({ turn, active, onCancel }: { turn: Turn; active: boolean; onCancel?: () => void }) {
   // Lazy ref init: capture the start time once instead of re-parsing every render.
   const startRef = useRef<number | null>(null);
   if (startRef.current === null) startRef.current = parseStart(turn.createdAt);
@@ -1140,6 +1149,28 @@ function ThinkingLine({ turn, active }: { turn: Turn; active: boolean }) {
       <span style={THINKING_DOT_STYLE} />
       <span style={THINKING_TEXT_STYLE}>{label}…</span>
       <span style={THINKING_TIME_STYLE}>{(elapsed / 1000).toFixed(1)}s</span>
+      {onCancel && (
+        <button
+          type="button"
+          className="lm-btn"
+          onClick={onCancel}
+          style={{
+            marginLeft: 12,
+            padding: '4px 10px',
+            fontSize: 11,
+            fontFamily: "'IBM Plex Mono'",
+            color: '#c7ccd3',
+            background: '#1b1f26',
+            border: '1px solid #2a2f39',
+            borderRadius: 5,
+            cursor: 'pointer',
+            flexShrink: 0,
+          }}
+          title="Stop the current task"
+        >
+          Stop
+        </button>
+      )}
     </div>
   );
 }
@@ -1152,8 +1183,9 @@ function AssistantTurnView(props: {
   onOpenSkills: () => void;
   onOpenArtifact: (a: Artifact) => void;
   activeFileId: string | null;
+  onCancel?: () => void;
 }) {
-  const { turn, active, thoughtOpen, onToggleThought, onOpenSkills, onOpenArtifact, activeFileId } = props;
+  const { turn, active, thoughtOpen, onToggleThought, onOpenSkills, onOpenArtifact, activeFileId, onCancel } = props;
   const calls = turn.toolCalls ?? [];
   const reasoning = turn.reasoning;
 
@@ -1174,7 +1206,7 @@ function AssistantTurnView(props: {
       </div>
 
       {/* live thinking indicator (no answer text yet) */}
-      {active && !turn.text && <ThinkingLine turn={turn} active={active} />}
+      {active && !turn.text && <ThinkingLine turn={turn} active={active} onCancel={onCancel} />}
 
       {/* thought block */}
       {reasoning && (
@@ -1728,9 +1760,10 @@ export interface ChatScreenProps {
   setDebug: (sessionId: string, enabled: boolean) => void;
   renameSession?: (sessionId: string, title: string) => void;
   deleteSession?: (sessionId: string) => void;
+  cancel: (turnId: string) => void;
 }
 
-export function ChatScreen({ state, send, newChat, openSession, setDebug, renameSession, deleteSession }: ChatScreenProps) {
+export function ChatScreen({ state, send, newChat, openSession, setDebug, renameSession, deleteSession, cancel }: ChatScreenProps) {
   const sessions = state.sessions ?? [];
   const allTurns = state.turns ?? [];
   const activeSessionId = state.activeSessionId ?? sessions[0]?.id ?? null;
@@ -1928,6 +1961,7 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug, rename
                       setRightView('files');
                     }}
                     activeFileId={activeFileId}
+                    onCancel={t.status === 'streaming' ? () => cancel(t.id) : undefined}
                   />
                 )
               )}

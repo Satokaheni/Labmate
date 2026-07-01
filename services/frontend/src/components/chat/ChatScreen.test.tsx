@@ -1,6 +1,42 @@
 import { describe, it, expect } from 'vitest';
-import { scrollSignalFor } from './ChatScreen';
+import { scrollSignalFor, findStreamingTurn } from './ChatScreen';
 import type { Turn } from '@/types/events';
+
+describe('findStreamingTurn', () => {
+  it('returns the streaming turn when one exists', () => {
+    const turns: Turn[] = [
+      { id: 't1', role: 'user', text: 'Hello', status: 'complete' },
+      { id: 't2', role: 'assistant', text: 'Hi', status: 'streaming' },
+      { id: 't3', role: 'user', text: 'More', status: 'complete' },
+    ];
+    const streaming = findStreamingTurn(turns);
+    expect(streaming?.id).toBe('t2');
+  });
+
+  it('returns undefined when no turn is streaming', () => {
+    const turns: Turn[] = [
+      { id: 't1', role: 'user', text: 'Hello', status: 'complete' },
+      { id: 't2', role: 'assistant', text: 'Hi', status: 'complete' },
+    ];
+    const streaming = findStreamingTurn(turns);
+    expect(streaming).toBeUndefined();
+  });
+
+  it('returns undefined for empty turns array', () => {
+    const turns: Turn[] = [];
+    const streaming = findStreamingTurn(turns);
+    expect(streaming).toBeUndefined();
+  });
+
+  it('returns the first streaming turn if multiple exist (should be rare)', () => {
+    const turns: Turn[] = [
+      { id: 't1', role: 'assistant', text: 'Hi', status: 'streaming' },
+      { id: 't2', role: 'assistant', text: 'More', status: 'streaming' },
+    ];
+    const streaming = findStreamingTurn(turns);
+    expect(streaming?.id).toBe('t1');
+  });
+});
 
 describe('scrollSignalFor', () => {
   it('changes when the last turn gains an artifact', () => {

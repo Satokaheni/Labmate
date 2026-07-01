@@ -367,6 +367,7 @@ export function useLabmateWS(
   setDebug: (sessionId: string, enabled: boolean) => void;
   renameSession: (sessionId: string, title: string) => void;
   deleteSession: (sessionId: string) => void;
+  cancel: (turnId: string) => void;
 } {
   const [state, dispatch] = useReducer(labmateWSReducer, { phase: 'idle' });
   const wsRef = useRef<WebSocket | null>(null);
@@ -570,6 +571,12 @@ export function useLabmateWS(
     return id;
   };
 
+  const cancel = (turnId: string) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'cancel', turnId }));
+    }
+  };
+
   return {
     state: state as LabmateWSStatePublic,
     send,
@@ -580,5 +587,6 @@ export function useLabmateWS(
     setDebug,
     renameSession,
     deleteSession,
+    cancel,
   };
 }

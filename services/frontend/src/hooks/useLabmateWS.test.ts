@@ -566,6 +566,25 @@ describe('useLabmateWS', () => {
     );
   });
 
+  it('cancel() sends a cancel frame with turnId when socket is open', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    result.current.cancel('turn-123');
+    expect(mockWs.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'cancel', turnId: 'turn-123' }),
+    );
+  });
+
+  it('cancel() does not send when socket is closed', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    mockWs.send.mockClear();
+    // Simulate socket closed
+    mockWs.onclose?.();
+    result.current.cancel('turn-123');
+    expect(mockWs.send).not.toHaveBeenCalled();
+  });
+
   it('session.history merges turns, deduplicating by id', () => {
     const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
     act(() => mockWs.onopen?.());
