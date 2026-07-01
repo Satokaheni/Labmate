@@ -301,6 +301,11 @@ class PromptAssembler:
             system_text = f"{system_text}\n\n{workspace_root_clause}"
 
         self._system_msg: dict = {"role": "system", "content": system_text}
+        # Store the resolved skill catalog separately so per-segment token
+        # accounting (measure_prompt_segments) can attribute its cost — the
+        # catalog (all advertised skill descriptions) is the prime suspect for
+        # the fixed per-turn prefix cost. See token-cost-reduction plan Task 1.
+        self._catalog: str = catalog or ""
 
         # Delegate tool assembly to build_tool_list to handle manifest logic.
         from services.orchestrator.tool_manifest import build_tool_list
@@ -325,3 +330,56 @@ class PromptAssembler:
 
     def prefix_fingerprint(self) -> str:
         return hashlib.sha256(self.canonical_prefix().encode("utf-8")).hexdigest()
+
+
+def measure_prompt_segments(assembler: PromptAssembler, messages: list[dict]) -> dict[str, int]:
+    """Attribute a model request's token fill to named segments (token-cost Task 1).
+
+    The live context telemetry lumps the WHOLE fill into "conversation"; this
+    estimates per-segment token counts (via the Gemma tokenizer) for one model
+    request so a live run reveals WHERE the tokens actually go. Segments:
+      system_base   — BASE_SYSTEM_PROMPT + steer/manifest/workspace clauses
+      skill_catalog — the advertised skill catalog (prime fixed-cost suspect)
+      tool_schemas  — the JSON tool-schema array
+      conversation  — user/assistant turns
+      continuity    — the injected prior-conversation block
+      tool_results  — role='tool' results carried in context
+    Returns a dict of int token counts plus "total". Best-effort/pure — never raises
+    into the caller (a measurement failure must not perturb the model call).
+    """
+    from services.memory.tokenizer import token_count
+
+    catalog = getattr(assembler, "_catalog", "") or ""
+    system_content = assembler.system_message().get("content", "") or ""
+    # system_base = the system message MINUS the catalog section (measured separately).
+    system_base = system_content.replace(catalog, "", 1) if catalog else system_content
+
+    seg = {
+        "system_base": token_count(system_base),
+        "skill_catalog": token_count(catalog),
+        "tool_schemas": token_count(
+            json.dumps(assembler.tools(), separators=(",", ":"), ensure_ascii=False)
+        ),
+        "conversation": 0,
+        "continuity": 0,
+        "tool_results": 0,
+    }
+    for m in messages or []:
+        role = m.get("role")
+        content = m.get("content")
+        if role == "system":
+            continue  # counted via system_base + skill_catalog
+        text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+        n = token_count(text)
+        if role == "tool":
+            seg["tool_results"] += n
+        elif (
+            role == "user"
+            and isinstance(content, str)
+            and content.startswith("CONVERSATION SO FAR")
+        ):
+            seg["continuity"] += n
+        else:
+            seg["conversation"] += n
+    seg["total"] = sum(seg.values())
+    return seg

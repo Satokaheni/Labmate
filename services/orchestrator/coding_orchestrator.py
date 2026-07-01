@@ -31,7 +31,7 @@ from .memory_search import MemorySearch
 from .message_repair import message_repair_enabled, sanitize_messages
 from .model_client import acompletion_with_failover, resolve_bases
 from .progress_breaker import ProgressBreaker, ProgressStep
-from .prompt_assembler import PromptAssembler
+from .prompt_assembler import PromptAssembler, measure_prompt_segments
 from .sandbox_edits import detect_sandbox_writes
 from .steer_inject import inject_steer
 from .test_outcome import classify_test_attempt
@@ -660,6 +660,9 @@ class AsyncOrchestrator:
                     used=_loaded.used,
                 )
 
+        # token-cost Task 1: emit the per-segment token breakdown ONCE per goal
+        # (at the first model call) so a live run reveals where the prompt fill goes.
+        _measured_segments = False
         try:
             while True:
                 # ── Live interrupt: cancel + steer (top of every turn) ──────────
@@ -771,6 +774,18 @@ class AsyncOrchestrator:
                     # Mid-loop steers (_to_inject) are already cleared at line 517 each turn.
                     if _pending_steer is not None:
                         _pending_steer = None
+
+                if not _measured_segments:
+                    _measured_segments = True
+                    try:
+                        import logging as _logging
+
+                        _seg = measure_prompt_segments(assembler, _messages_for_model)
+                        _logging.getLogger("orchestrator").info(
+                            "token_breakdown session=%s %s", self._active_session_id, _seg
+                        )
+                    except Exception:
+                        pass
 
                 r = await acompletion_with_failover(
                     model="openai/gemma-4-31b",
