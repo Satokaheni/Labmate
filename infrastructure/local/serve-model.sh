@@ -28,9 +28,25 @@ PORT="${PORT:-8000}"
 # NOTE: PARALLEL must NOT raise per-request context — it DIVIDES it. Going back to 4 slots
 # would quarter each request to 65536 (or 4096 at the old 16384 ctx). If you hit CUDA OOM,
 # drop PARALLEL to 1 (a single 131072 slot) or halve CTX.
-CTX="${CTX:-262144}"
+# SWA prefix-cache fix: Gemma 4 is a sliding-window-attention model (n_swa=1024). WITHOUT
+# --swa-full, llama.cpp cannot restore a cached prefix across requests (the SWA layers' KV
+# rolls past the window) → it force-re-evaluates the WHOLE prompt every call (cache_n stays 1),
+# silently defeating the byte-stable-prefix design (the ~7k system+tools prefix is re-processed
+# every turn). --swa-full keeps FULL KV for the ~50 SWA layers so cross-request prefix reuse
+# works (the prefix is processed ONCE per session). Cost: ~6x the KV VRAM — so when ON, default
+# to ONE full-size slot (ctx 262144×2 would OOM); raise PARALLEL/CTX only if `nvidia-smi` shows
+# headroom. Set SWA_FULL=0 to revert to the windowed behavior (no cross-request cache reuse).
+SWA_FULL="${SWA_FULL:-1}"
 NGL="${NGL:-999}"          # offload all layers to GPU (A6000 48GB fits the 18.8GB model)
-PARALLEL="${PARALLEL:-2}"  # 2 concurrent request slots → 262144/2 = 131072 tokens each
+if [[ "$SWA_FULL" == "1" ]]; then
+  CTX="${CTX:-131072}"     # one full-size slot (model's n_ctx_train); --swa-full KV ~6x
+  PARALLEL="${PARALLEL:-1}"
+  SWA_ARG=(--swa-full)
+else
+  CTX="${CTX:-262144}"     # windowed SWA = the OLD default (no cross-request cache reuse)
+  PARALLEL="${PARALLEL:-2}"
+  SWA_ARG=()
+fi
 
 LOGS="${REPO_ROOT}/.data/logs"; PIDS="${REPO_ROOT}/.data/pids"
 mkdir -p "$LOGS" "$PIDS"
@@ -44,7 +60,7 @@ if ready; then info "llama-server already serving on :${PORT}"; exit 0; fi
 [[ -x "$LLAMA_SERVER" ]] || fail "llama-server not built at $LLAMA_SERVER — run install.sh"
 [[ -f "$MODEL" ]]        || fail "GGUF not found at $MODEL — run install.sh"
 
-info "launching llama-server: ${MODEL##*/} on :${PORT} (ctx=${CTX}, ngl=${NGL}, parallel=${PARALLEL}) ..."
+info "launching llama-server: ${MODEL##*/} on :${PORT} (ctx=${CTX}, ngl=${NGL}, parallel=${PARALLEL}, swa_full=${SWA_FULL}) ..."
 nohup "$LLAMA_SERVER" \
   -m "$MODEL" \
   --alias "$ALIAS" \
@@ -53,6 +69,7 @@ nohup "$LLAMA_SERVER" \
   --ctx-size "$CTX" \
   --n-gpu-layers "$NGL" \
   --parallel "$PARALLEL" \
+  "${SWA_ARG[@]}" \
   --jinja \
   -fa 1 \
   --cache-type-k q4_0 \

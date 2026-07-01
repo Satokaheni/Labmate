@@ -30,19 +30,29 @@ caching dynamic tool defs/results is **net-negative TTFT** vs a stable system-pr
 So two of our candidate levers are confirmed **counterproductive on a single local Q4 host**:
 dynamic top-k catalog pruning, and LLMLingua-style compression of a cached prefix.
 
-## ⚠️ PREREQUISITE — verify the premise on OUR host FIRST
-The search flagged that **Gemma-class shared-KV (SWA) architectures sometimes log
-`"cache reuse not supported"` in llama.cpp** even with flash-attention. Labmate's primary model
-IS Gemma 4 31B. **The entire byte-stable-prefix strategy is conditional on the cache actually
-being reused on our build.** Check before committing to anything below:
-```bash
-grep -iE "cache|slot|reuse|swa|prefix" .data/logs/llama-server.log | tail -40
-# On the 2nd identical request, confirm a non-zero cached prefix in the /completion timings
-# (cache_n / prompt_n / "cached"). If cache_n stays ~0, the prefix is NOT being reused.
-```
-- **Cache IS reused** → optimize for window/VRAM with the **cache-safe** levers; avoid prefix-breaking ones.
-- **Cache is NOT reused** → byte-stability is moot; just cut raw token count (terse schemas +
-  defer-loading + code-mode), and dynamic per-turn pruning becomes fair game.
+## ✅ PREREQUISITE — RESOLVED LIVE (2026-07-01): the cache was NOT being reused
+Verified on the host: **`cache_n` never exceeds 1 (BOS only) on a repeated identical request** —
+the full ~7k prefix is re-processed every call. Root cause: **Gemma 4 is a sliding-window-attention
+model (`n_swa=1024`) and llama-server ran WITHOUT `--swa-full`**, so the SWA layers' KV rolls past
+the window and llama.cpp force-re-evaluates the whole prompt (`"forcing full prompt re-processing
+due to lack of cache data … likely due to SWA"`; it restores only `n_past=1` and erases the real
+prefix checkpoint). **This silently defeated the entire PromptAssembler byte-stable-prefix feature
+(harness-robustness) — the prefix was byte-stable but never reused.**
+
+**Fix applied** (`infrastructure/local/serve-model.sh`, `SWA_FULL=1` default → adds `--swa-full`,
+coupled with one full-size slot `CTX=131072 PARALLEL=1` since `--swa-full` ~6×'s the KV and
+`262144×2` would OOM). **Awaiting a live re-check** that (a) `cache_n` now grows on a repeat request
+and (b) VRAM fits (`nvidia-smi`); raise `CTX`/`PARALLEL` if there's headroom, or `SWA_FULL=0` to revert.
+
+**Which fork we're in depends on that re-check:**
+- **`--swa-full` works (cache now reused)** → the intended world: prefix is latency-cheap, optimize
+  for window/VRAM with the **cache-safe** levers below; avoid prefix-breaking ones. **← target.**
+- **`--swa-full` can't fit VRAM / still no reuse** → byte-stability is moot; cut raw token count
+  (terse schemas + defer-loading + code-mode) and dynamic per-turn pruning becomes fair game.
+
+> Note: even with the fix, the fixed prefix is only cheap AFTER the first turn of a session (one-time
+> ~7k eval per session). The deferred-tool-search plan still pays off (smaller first-turn eval +
+> window/VRAM), just less dramatically than if the prefix were free.
 
 ## What the reference harnesses do (both converge)
 | | hermes-agent | openclaw |
