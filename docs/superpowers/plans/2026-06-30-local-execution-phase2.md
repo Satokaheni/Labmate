@@ -288,10 +288,25 @@ only semantic search behind a stable name; rejected for being more work + less c
   `{ "mcpServers": { "codegraph": { "command": "<codegraph-mcp-cmd>", "args": [...], "cwd": "<workspace>" } } }`
   (the exact launch command is the CodeGraph CLI's MCP mode — track in the prerequisites doc).
 
-**Optional follow-up (NOT built — UX nicety):** frontend auto-hosts CodeGraph when `.codegraph/` exists
-in the active workspace, so the user needn't edit `mcp.json`. Has real lifecycle complexity (MCP hosts
-spawn at app startup, before a workspace is selected; CodeGraph needs `cwd=<workspace>`), so it'd need
-workspace-tied dynamic host spawning. Defer until the mcp.json path is exercised live.
+**Workspace-following via MCP `roots` — DONE (`9e90b1d`, Opus PASS).** The original "why is it pinned to
+one repo?" gap: a hosted server (CodeGraph) had no way to know the chat's workspace, so we hard-coded
+`--path`. Fixed the way Claude Code does it — **MCP `roots`**, NOT per-workspace `--path` spawning:
+- `electron/mcp-host.ts`: the SDK `Client` now declares `capabilities.roots.listChanged`, answers
+  `roots/list` with the active workspace roots (`buildRootsList` → `file://` URIs), and exposes
+  `notifyRootsChanged()` (`sendRootsListChanged`).
+- `electron/mcp-registry.ts`: `McpHostManager` holds `currentRoots`, feeds each host a `getRoots`
+  provider, and `setWorkspaceRoots()` broadcasts changes (failure-isolated `allSettled`).
+- `electron/main.ts`: roots are driven on startup, on workspace add/remove, and on a new
+  `labmate:active-session` IPC. `preload` exposes `setActiveSession`; `ChatScreen` fires it on
+  `activeSessionId` change.
+- So `codegraph serve --mcp` (NO `--path`) resolves the *active chat's* workspace via roots — and a chat
+  with multiple roots (like a 3-repo session) declares all of them. Cross-repo is still available via
+  each codegraph tool's `projectPath` arg. `~/.labmate/mcp.json` switched to the clean
+  `{ "codegraph": { "command": "<abs>/codegraph", "args": ["serve","--mcp"] } }`.
+
+**Optional follow-up (still NOT built — UX nicety):** frontend AUTO-hosts CodeGraph when `.codegraph/`
+exists in the active workspace, so the user needn't add it to `mcp.json` at all. Now lower-risk given
+roots handle the workspace; still needs `.codegraph/` detection + spawning a host on demand.
 
 ## P2-D — decommission pod discovery to fallback-only — DONE
 The advertise/dispatch exclusion is already correct by construction (P2-C above): a capable client never
