@@ -1783,7 +1783,7 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug, rename
   // Only show the active chat's turns (each turn frame carries its sessionId).
   const turns = activeSessionId
     ? allTurns.filter((t) => !t.sessionId || t.sessionId === activeSessionId)
-    : allTurns;
+    : []; // no active session (e.g. the last chat was deleted) → empty window, not every turn
 
   // Auto-scroll the conversation to the bottom on a new message and as the
   // assistant response streams in — but only when the user is already near the

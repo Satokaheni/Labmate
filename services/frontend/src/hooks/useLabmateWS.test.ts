@@ -395,10 +395,18 @@ describe('useLabmateWS', () => {
     };
     emit({ type: 'session.updated', session: sess1 });
     act(() => result.current.setActiveSession('s-1'));
+    // Seed a turn in this chat so we can assert it's cleared on delete.
+    emit({
+      type: 'turn.created',
+      turn: { id: 't-1', sessionId: 's-1', role: 'user', text: 'hello', status: 'complete' },
+    } as never);
+    expect(result.current.state.turns).toHaveLength(1);
 
     emit({ type: 'session.deleted', sessionId: 's-1' });
     expect(result.current.state.sessions).toHaveLength(0);
     expect(result.current.state.activeSessionId).toBeNull();
+    // The deleted chat's turns must be gone — the window can't still hold the old chat.
+    expect(result.current.state.turns).toHaveLength(0);
   });
 
   it('reasoning.done attaches reasoning to the matching turn', () => {
