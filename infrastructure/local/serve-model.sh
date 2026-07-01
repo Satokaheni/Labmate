@@ -33,13 +33,16 @@ PORT="${PORT:-8000}"
 # rolls past the window) → it force-re-evaluates the WHOLE prompt every call (cache_n stays 1),
 # silently defeating the byte-stable-prefix design (the ~7k system+tools prefix is re-processed
 # every turn). --swa-full keeps FULL KV for the ~50 SWA layers so cross-request prefix reuse
-# works (the prefix is processed ONCE per session). Cost: ~6x the KV VRAM — so when ON, default
-# to ONE full-size slot (ctx 262144×2 would OOM); raise PARALLEL/CTX only if `nvidia-smi` shows
-# headroom. Set SWA_FULL=0 to revert to the windowed behavior (no cross-request cache reuse).
+# works (the prefix is processed ONCE per session). Cost: full-SWA KV measures ~0.22 MiB/token
+# on this build, so KV alone is CTX×0.22 MiB. MEASURED on the 48 GiB A6000: ctx 131072 needs
+# ~28.8 GiB KV which + 18.8 GiB weights OOMs the card (cudaMalloc failed) — so the default here
+# is a 65536 slot (~14.4 GiB KV, ~36 GiB total, boots with ~12 GiB free). Raise CTX only if
+# `nvidia-smi` shows headroom; on a 32 GiB card drop to CTX=32768 (~7.2 GiB KV). Still ONE slot
+# (PARALLEL=1). Set SWA_FULL=0 to revert to the windowed behavior (no cross-request cache reuse).
 SWA_FULL="${SWA_FULL:-1}"
 NGL="${NGL:-999}"          # offload all layers to GPU (A6000 48GB fits the 18.8GB model)
 if [[ "$SWA_FULL" == "1" ]]; then
-  CTX="${CTX:-131072}"     # one full-size slot (model's n_ctx_train); --swa-full KV ~6x
+  CTX="${CTX:-65536}"      # one slot; full-SWA KV ~0.22 MiB/tok → ~14.4 GiB KV (131072 OOMs 48GB)
   PARALLEL="${PARALLEL:-1}"
   SWA_ARG=(--swa-full)
 else
