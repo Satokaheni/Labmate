@@ -209,8 +209,14 @@ class MongoSessionStore:
         await self._ensure_indexes()
 
         try:
-            # Insert a shallow copy of the turn dict so we don't mutate the caller's dict
-            await self._turns.insert_one(dict(turn))
+            # Compute seq (0-based, monotonic per session) = count of existing turns
+            existing_turns = await self.turns(sid)
+            seq = len(existing_turns)
+
+            # Insert a shallow copy of the turn dict with seq set
+            turn_copy = dict(turn)
+            turn_copy["seq"] = seq
+            await self._turns.insert_one(turn_copy)
 
             # Update session turnCount and updatedAt
             turns = await self.turns(sid)

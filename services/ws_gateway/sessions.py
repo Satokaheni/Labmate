@@ -71,7 +71,15 @@ class InMemorySessionStore:
         return self._turns.get(sid, [])
 
     async def add_turn(self, sid: str, turn: dict) -> None:
-        self._turns.setdefault(sid, []).append(turn)
+        # Compute seq (0-based, monotonic per session) = count of existing turns
+        existing_turns = self._turns.get(sid, [])
+        seq = len(existing_turns)
+
+        # Append turn with seq set
+        turn_copy = dict(turn)
+        turn_copy["seq"] = seq
+        self._turns.setdefault(sid, []).append(turn_copy)
+
         s = self._sessions.get(sid)
         if s is not None:
             s["turnCount"] = len(self._turns[sid])

@@ -84,3 +84,52 @@ async def test_get_debug_unknown_session_returns_false():
     from services.ws_gateway.sessions import InMemorySessionStore
 
     assert await InMemorySessionStore().get_debug("nonexistent") is False
+
+
+@pytest.mark.asyncio
+async def test_add_turn_sets_monotonic_seq():
+    from services.ws_gateway.sessions import InMemorySessionStore
+
+    store = InMemorySessionStore()
+    await store.create(title="Test", mode="chat", session_id="s-1")
+
+    # Add first turn
+    await store.add_turn("s-1", {"id": "t-1", "sessionId": "s-1", "role": "user", "text": "first"})
+    # Add second turn
+    await store.add_turn(
+        "s-1", {"id": "t-2", "sessionId": "s-1", "role": "assistant", "text": "second"}
+    )
+
+    turns = await store.turns("s-1")
+
+    assert len(turns) == 2
+    # First turn should have seq == 0
+    assert turns[0]["seq"] == 0
+    # Second turn should have seq == 1
+    assert turns[1]["seq"] == 1
+
+
+@pytest.mark.asyncio
+async def test_turns_seq_independent_per_session():
+    from services.ws_gateway.sessions import InMemorySessionStore
+
+    store = InMemorySessionStore()
+
+    # Create two sessions
+    await store.create(title="Session 1", mode="chat", session_id="s-1")
+    await store.create(title="Session 2", mode="chat", session_id="s-2")
+
+    # Add turn to first session
+    await store.add_turn("s-1", {"id": "t-1", "sessionId": "s-1", "role": "user", "text": "s1-t1"})
+    await store.add_turn("s-1", {"id": "t-2", "sessionId": "s-1", "role": "user", "text": "s1-t2"})
+
+    # Add turn to second session (should start seq at 0)
+    await store.add_turn("s-2", {"id": "t-3", "sessionId": "s-2", "role": "user", "text": "s2-t1"})
+
+    turns_s1 = await store.turns("s-1")
+    turns_s2 = await store.turns("s-2")
+
+    assert turns_s1[0]["seq"] == 0
+    assert turns_s1[1]["seq"] == 1
+    # Second session starts its seq at 0
+    assert turns_s2[0]["seq"] == 0
