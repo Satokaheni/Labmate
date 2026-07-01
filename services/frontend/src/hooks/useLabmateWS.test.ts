@@ -475,6 +475,81 @@ describe('useLabmateWS', () => {
     // Should have loaded both turns
     expect(result.current.state.turns).toHaveLength(2);
   });
+
+  it('session.history drops previous session turns when switching to a new session', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    emit({ type: 'boot.plan', subsystems: SUBSYSTEMS });
+    emit({ type: 'boot.ready', sessionBootstrap: BOOTSTRAP });
+
+    // Load session A with two turns
+    const sessionATurns: import('@/types/events').Turn[] = [
+      {
+        id: 't-a-1',
+        sessionId: 's-session-a',
+        role: 'user',
+        text: 'Session A message 1',
+        createdAt: '2026-01-01T00:00:00Z',
+        status: 'complete',
+      },
+      {
+        id: 't-a-2',
+        sessionId: 's-session-a',
+        role: 'assistant',
+        text: 'Session A response',
+        createdAt: '2026-01-01T00:00:01Z',
+        status: 'complete',
+      },
+    ];
+    emit({ type: 'session.history', sessionId: 's-session-a', turns: sessionATurns });
+    expect(result.current.state.turns).toHaveLength(2);
+    expect(result.current.state.turns.every((t) => t.sessionId === 's-session-a')).toBe(true);
+
+    // Switch to session B with its own turns
+    const sessionBTurns: import('@/types/events').Turn[] = [
+      {
+        id: 't-b-1',
+        sessionId: 's-session-b',
+        role: 'user',
+        text: 'Session B message',
+        createdAt: '2026-01-01T00:00:02Z',
+        status: 'complete',
+      },
+    ];
+    emit({ type: 'session.history', sessionId: 's-session-b', turns: sessionBTurns });
+
+    // Should only have session B turns, no A turns leakage
+    expect(result.current.state.turns).toHaveLength(1);
+    expect(result.current.state.turns[0].id).toBe('t-b-1');
+    expect(result.current.state.turns[0].sessionId).toBe('s-session-b');
+  });
+
+  it('session.history is idempotent when called twice with same turns', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    emit({ type: 'boot.plan', subsystems: SUBSYSTEMS });
+    emit({ type: 'boot.ready', sessionBootstrap: BOOTSTRAP });
+
+    const turns: import('@/types/events').Turn[] = [
+      {
+        id: 't-1',
+        sessionId: 's-session-c',
+        role: 'user',
+        text: 'Hello',
+        createdAt: '2026-01-01T00:00:00Z',
+        status: 'complete',
+      },
+    ];
+
+    // Dispatch session.history twice with the same turns
+    emit({ type: 'session.history', sessionId: 's-session-c', turns });
+    expect(result.current.state.turns).toHaveLength(1);
+
+    emit({ type: 'session.history', sessionId: 's-session-c', turns });
+    // Should still be 1 turn, not 2 (idempotent, no duplicate)
+    expect(result.current.state.turns).toHaveLength(1);
+    expect(result.current.state.turns[0].id).toBe('t-1');
+  });
 });
 
 describe('ensureActiveSession', () => {

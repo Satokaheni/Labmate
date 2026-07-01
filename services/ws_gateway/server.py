@@ -53,7 +53,7 @@ async def _relay_task(
     reasoning_chunks: list[str] = []
     reasoning_node: str = "chat_node"
     reasoning_start: float | None = None
-    full_reasoning_text: str = ""  # Preserve reasoning text for turn persistence
+    reasoning_obj: dict | None = None  # Structured reasoning object for persistence
 
     # Accumulate assistant turn data for persistence
     answer_chunks: list[str] = []
@@ -92,24 +92,24 @@ async def _relay_task(
         # Synthesize reasoning.done before relaying turn.done
         if etype == "turn.done" and reasoning_chunks:
             full_text = "".join(reasoning_chunks)
-            full_reasoning_text = full_text  # Save for turn persistence
             duration_ms = int((_time.time() - (reasoning_start or _time.time())) * 1000)
             first_line = next(
                 (ln.strip() for ln in full_text.splitlines() if ln.strip()),
                 full_text[:120],
             )
+            reasoning_obj = {
+                "summary": first_line[:120],
+                "text": full_text,
+                "node": reasoning_node,
+                "tokens": len(full_text) // 4,
+                "budget": 0,
+                "durationMs": duration_ms,
+            }
             await ws.send_json(
                 {
                     "type": "reasoning.done",
                     "turnId": turn_id,
-                    "reasoning": {
-                        "summary": first_line[:120],
-                        "text": full_text,
-                        "node": reasoning_node,
-                        "tokens": len(full_text) // 4,
-                        "budget": 0,
-                        "durationMs": duration_ms,
-                    },
+                    "reasoning": reasoning_obj,
                 }
             )
             reasoning_chunks = []
@@ -154,7 +154,7 @@ async def _relay_task(
                     "sessionId": session_id,
                     "role": "assistant",
                     "text": text,
-                    "reasoning": full_reasoning_text,
+                    "reasoning": reasoning_obj,
                     "toolCalls": list(tool_calls.values()),
                     "createdAt": _now_iso(),
                     "status": raw.get("status", "complete"),

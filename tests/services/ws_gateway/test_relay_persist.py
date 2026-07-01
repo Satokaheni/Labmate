@@ -130,7 +130,15 @@ async def test_relay_persist_complete_turn(fake_ws, fake_store):
     assert turn["sessionId"] == session_id
     assert turn["role"] == "assistant"
     assert turn["text"] == "FULL ANSWER"  # Preferred from final_answer
-    assert turn["reasoning"] == "Thinking about the problem."
+    # Verify reasoning is a structured dict, not a bare string
+    assert isinstance(
+        turn["reasoning"], dict
+    ), f"reasoning should be dict, got {type(turn['reasoning'])}"
+    assert turn["reasoning"]["text"] == "Thinking about the problem."
+    assert turn["reasoning"]["summary"] == "Thinking about the problem."
+    assert turn["reasoning"]["node"] == "chat_node"
+    assert isinstance(turn["reasoning"]["tokens"], int)
+    assert isinstance(turn["reasoning"]["budget"], int)
     assert turn["status"] == "complete"
     assert isinstance(turn["createdAt"], str)  # ISO format
     assert "toolCalls" in turn
@@ -355,3 +363,44 @@ async def test_relay_persist_error_status(fake_ws, fake_store):
     # Verify status is recorded
     turn = fake_store.add_turn.call_args[0][1]
     assert turn["status"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_relay_persist_no_reasoning_none(fake_ws, fake_store):
+    """When turn.done has no reasoning events, persisted reasoning should be None."""
+    task_id = "task-test-123"
+    session_id = "s-test-789"
+    assistant_turn_id = "turn-asst-123"
+
+    events = [
+        {"type": "answer.delta", "task_id": task_id, "seq": 1, "text": "Hello"},
+        {
+            "type": "turn.done",
+            "task_id": task_id,
+            "seq": 2,
+            "status": "complete",
+            "final_answer": "Hello there",
+        },
+    ]
+
+    import services.ws_gateway.server as server_module
+
+    original_tail = server_module.tail_task_events
+    server_module.tail_task_events = lambda redis, task_id, **kw: fake_tail_task_events(events)
+
+    try:
+        await _relay_task(
+            fake_ws,
+            AsyncMock(),
+            task_id,
+            assistant_turn_id,
+            store=fake_store,
+            session_id=session_id,
+            debug=False,
+        )
+    finally:
+        server_module.tail_task_events = original_tail
+
+    # Verify reasoning is None when no reasoning events were present
+    turn = fake_store.add_turn.call_args[0][1]
+    assert turn["reasoning"] is None

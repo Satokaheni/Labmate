@@ -247,12 +247,14 @@ function labmateWSReducer(state: LabmateWSState, action: DispatchAction): Labmat
 
       if (frame.type === 'session.history') {
         if (state.phase === 'ready') {
-          // Merge turns from session history, deduplicating by turn id.
-          // Append any turn whose id is not already in state.turns.
-          const existingIds = new Set((state.turns ?? []).map((t) => t.id));
-          const newTurns = frame.turns.filter((t) => !existingIds.has(t.id));
-          const turns = [...(state.turns ?? []), ...newTurns];
-          return { ...state, turns };
+          // Keep only turns whose sessionId is absent or matches the incoming session,
+          // then merge frame.turns deduped by id. This ensures switching sessions
+          // cleanly drops the previous session's turns.
+          const sid = frame.sessionId;
+          const kept = (state.turns ?? []).filter((t) => !t.sessionId || t.sessionId === sid);
+          const seen = new Set(kept.map((t) => t.id));
+          const merged = [...kept, ...frame.turns.filter((t) => !seen.has(t.id))];
+          return { ...state, turns: merged };
         }
         return state;
       }
