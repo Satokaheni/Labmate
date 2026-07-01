@@ -87,20 +87,31 @@ FULL_THRESH = int(CTX_TOKENS * 0.85)
 CONTEXT_REFRESH_S = float(os.getenv("CONTEXT_REFRESH_SECONDS", "2.0"))
 
 
-def _context_window(used_fallback: int = 0) -> dict:
+def _context_window(used_fallback: int = 0, used_floor: int = 0) -> dict:
     """Build the context-window telemetry payload from the live token high-water mark.
 
     `used` is the peak prompt_tokens seen across THIS task's LLM calls. The per-task
     counter resets each turn, so before this turn's first model call we fall back to
     `used_fallback` — the carried fill from the prior turn in this session — so the
     strip doesn't drop to 0% at the start of every new message. Once a real peak is
-    recorded it wins (so the value still reflects compaction, which shrinks the prompt).
+    recorded it wins over the fallback (so the value still reflects compaction, which
+    shrinks the prompt).
+
+    `used_floor` is a *known-real* minimum: the actual current context size measured
+    with the Gemma tokenizer via build_context() at turn start. It is a HARD floor —
+    the reported fill never drops below it — because it reflects the accumulated
+    conversation history that genuinely occupies the window. This is what keeps the
+    strip from resetting to 0% on message 2+ even when no completion reports
+    usage.prompt_tokens (e.g. the streaming final-answer path, or an endpoint that
+    omits usage), which would otherwise leave both the peak and the carried fill at 0.
+
     The whole measured fill is attributed to `conversation` — the dominant real
     component — since usage data carries no per-segment breakdown.
     """
     ctx_max = CTX_TOKENS
     _peak = call_counter.get_peak_prompt_tokens()
-    ctx_used = min(_peak if _peak > 0 else max(used_fallback, 0), ctx_max)
+    _base = _peak if _peak > 0 else max(used_fallback, 0)
+    ctx_used = min(max(_base, max(used_floor, 0)), ctx_max)
     return {
         "max": ctx_max,
         "used": ctx_used,
@@ -119,19 +130,25 @@ async def _context_refresh_loop(
     emitter: events.EventEmitter,
     interval_s: float = CONTEXT_REFRESH_S,
     used_fallback: int = 0,
+    used_floor: int = 0,
 ) -> None:
     """Re-emit the context window every `interval_s` until cancelled at turn end.
 
     Created with asyncio.create_task AFTER the per-task counter contextvar is set,
     so it inherits that context and reports the live peak. `used_fallback` carries
-    the prior turn's fill so the strip shows it until this turn's first model call.
+    the prior turn's fill so the strip shows it until this turn's first model call;
+    `used_floor` is the real measured context size (a hard minimum) so the strip
+    never sits below the actual fill even before the first completion reports usage.
     Best-effort: a failed emit is swallowed; cancellation ends the loop cleanly.
     """
     try:
         while True:
             await asyncio.sleep(interval_s)
             try:
-                await emitter.emit("context", window=_context_window(used_fallback))
+                await emitter.emit(
+                    "context",
+                    window=_context_window(used_fallback, used_floor),
+                )
             except Exception:
                 pass
     except asyncio.CancelledError:
@@ -516,6 +533,9 @@ class OrchestratorProcess:
         _manifest_token = None
         _ws_root_token = None
         _ctx_task: asyncio.Task | None = None
+        # Known-real context fill measured at turn start (Gemma-tokenized). Pre-declared
+        # so the turn-end finally block can always reference it as the strip's hard floor.
+        _ctx_floor = 0
 
         try:
             payload = json.loads(fields.get("payload", "{}"))
@@ -590,15 +610,54 @@ class OrchestratorProcess:
                 },
             )
             await _emitter.emit("turn.start", task=task_text)
-            # Populate the strip immediately with the fill CARRIED from the prior turn
-            # in this session, so it shows the accumulated context (e.g. 11%) instead of
-            # resetting to 0% — then refresh live as this turn's real peak is measured.
+
+            # Load AGENT.md (or workspace.instructions DB field) — pinned for this session.
+            # Loaded here (before the context strip's turn-start emit) because it feeds the
+            # build_context() measurement used as the strip's known-real fill FLOOR below.
+            agent_instructions = ""
+            try:
+                agent_instructions = await storage.workspaces.load_agent_instructions(workspace_id)
+            except Exception:
+                pass
+
+            # Measure the REAL current context fill (Gemma-tokenized) for this session
+            # BEFORE running the graph. This same build_context result gates auto-compact
+            # (below) and doubles as the context-strip FLOOR: the accumulated conversation
+            # history genuinely occupies the window, so the strip must never show less than
+            # this — not even on message 2+ when no completion reports usage.prompt_tokens
+            # (streaming final-answer path / usage-less endpoints) and the carried peak is 0.
+            ctx_check = None
+            try:
+                ctx_check = await storage.context_manager.build_context(
+                    session_id=session_id,
+                    current_task=task_text,
+                    system_prompt="",
+                    agent_instructions=agent_instructions,
+                )
+                _ctx_floor = max(int(ctx_check.total_tokens or 0), 0)
+            except Exception as exc:
+                _log.warning("ctx-floor build_context failed (non-fatal): %s", exc)
+
+            # Populate the strip immediately. Show the larger of the fill CARRIED from the
+            # prior turn and the measured floor, so it reflects the accumulated context
+            # (never resetting to 0%) — then refresh live as this turn's real peak is measured.
             _carried_fill = self._session_ctx_fill.get(session_id, 0)
-            _log.info("ctx-carry: session=%s carried=%d", session_id, _carried_fill)
-            await _emitter.emit("context", window=_context_window(_carried_fill))
+            _log.info(
+                "ctx-carry: session=%s carried=%d floor=%d", session_id, _carried_fill, _ctx_floor
+            )
+            # Persist the measured floor as this session's carry right away, so even if this
+            # turn's peak counter never populates (no usage reported), the NEXT turn still
+            # starts from a real, non-zero fill instead of 0.
+            if _ctx_floor > 0 and session_id:
+                self._session_ctx_fill[session_id] = max(
+                    self._session_ctx_fill.get(session_id, 0), _ctx_floor
+                )
+            await _emitter.emit("context", window=_context_window(_carried_fill, _ctx_floor))
             if CONTEXT_REFRESH_S > 0:
                 _ctx_task = asyncio.create_task(
-                    _context_refresh_loop(_emitter, used_fallback=_carried_fill)
+                    _context_refresh_loop(
+                        _emitter, used_fallback=_carried_fill, used_floor=_ctx_floor
+                    )
                 )
 
             # Fix 2: Record session if user_id and workspace_id are present
@@ -624,22 +683,9 @@ class OrchestratorProcess:
                 except Exception:
                     pass  # upsert failure never blocks task
 
-            # Load AGENT.md (or workspace.instructions DB field) — pinned for this session
-            agent_instructions = ""
+            # Auto-compact: reuse the context measurement taken above for the strip floor.
             try:
-                agent_instructions = await storage.workspaces.load_agent_instructions(workspace_id)
-            except Exception:
-                pass
-
-            # Auto-compact: check context fill before running the graph
-            try:
-                ctx_check = await storage.context_manager.build_context(
-                    session_id=session_id,
-                    current_task=task_text,
-                    system_prompt="",
-                    agent_instructions=agent_instructions,
-                )
-                if ctx_check.total_tokens >= FULL_THRESH:
+                if ctx_check is not None and ctx_check.total_tokens >= FULL_THRESH:
                     compact_result = await storage.context_manager.full_compact(
                         session_id,
                         llm_fn=lambda p: orch.architect(p, thinking_budget=0),
@@ -840,12 +886,23 @@ class OrchestratorProcess:
                 )
                 # Final, accurate context fill (peak prompt_tokens high-water mark).
                 # Persist it as this session's carried fill so the NEXT turn's strip
-                # starts from here instead of 0%.
+                # starts from here instead of 0%. The measured turn-start floor
+                # (_ctx_floor) is the hard minimum: never persist or emit below it, and
+                # never let a small/zero peak shrink a carry we already seeded from the
+                # floor — otherwise the strip would still reset on the next message when
+                # this turn reported no usage.
                 _final_peak = call_counter.get_peak_prompt_tokens()
-                _log.info("ctx-persist: session=%s final_peak=%d", session_id, _final_peak)
-                if _final_peak > 0 and session_id:
-                    self._session_ctx_fill[session_id] = _final_peak
-                await events.emit("context", window=_context_window(_final_peak))
+                _log.info(
+                    "ctx-persist: session=%s final_peak=%d floor=%d",
+                    session_id,
+                    _final_peak,
+                    _ctx_floor,
+                )
+                if session_id:
+                    _carry = max(_final_peak, _ctx_floor, self._session_ctx_fill.get(session_id, 0))
+                    if _carry > 0:
+                        self._session_ctx_fill[session_id] = _carry
+                await events.emit("context", window=_context_window(_final_peak, _ctx_floor))
                 await events.emit("turn.done", status=_status, final_answer=_answer)
             except Exception:
                 pass
