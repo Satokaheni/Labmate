@@ -71,6 +71,51 @@ def test_context_window_fallback_clamped_to_max():
     assert w["free"] == 0
 
 
+def test_context_window_floor_applies_without_peak_or_fallback():
+    # The known real context size (measured with build_context) is a hard floor:
+    # even with no per-task peak and no carried fill, the strip shows the real fill
+    # instead of resetting to 0% — this is the guarantee for every new message.
+    w = main._context_window(used_floor=7000)
+    assert w["used"] == 7000
+    assert w["segments"]["conversation"] == 7000
+
+
+def test_context_window_floor_wins_over_smaller_fallback():
+    # Carried fill from the prior turn is smaller than the measured floor → floor wins,
+    # so the gauge never dips below the real current context size.
+    w = main._context_window(used_fallback=1000, used_floor=7000)
+    assert w["used"] == 7000
+
+
+def test_context_window_peak_wins_over_floor_when_larger():
+    # A real measured peak above the floor is the true high-water mark and wins.
+    token = call_counter.start()
+    try:
+        call_counter.current_counter.get().observe_prompt_tokens(20000)
+        w = main._context_window(used_floor=7000)
+        assert w["used"] == 20000
+    finally:
+        call_counter.reset(token)
+
+
+def test_context_window_floor_wins_over_smaller_peak():
+    # A tiny peak (e.g. a cheap tool-selection call with thinking_budget=0) must not
+    # drag the gauge below the real measured context floor.
+    token = call_counter.start()
+    try:
+        call_counter.current_counter.get().observe_prompt_tokens(500)
+        w = main._context_window(used_floor=7000)
+        assert w["used"] == 7000
+    finally:
+        call_counter.reset(token)
+
+
+def test_context_window_floor_clamped_to_max():
+    w = main._context_window(used_floor=main.CTX_TOKENS + 5000)
+    assert w["used"] == main.CTX_TOKENS
+    assert w["free"] == 0
+
+
 @pytest.mark.asyncio
 async def test_context_refresh_loop_emits_until_cancelled():
     emitter = MagicMock()
