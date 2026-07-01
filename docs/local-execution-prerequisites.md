@@ -13,7 +13,10 @@ for each feature to work.
 ```bash
 brew install ripgrep        # search_files (Phase 1)
 # pytest (or your project's test runner) must be on PATH for run_tests (Phase 1)
-# CodeGraph CLI v0.9.9       # client semantic search (Phase 2 — not yet shipped)
+# CodeGraph (P2-C) — code intelligence hosted as a client MCP server:
+#   install the codegraph CLI v0.9.9 (https://github.com/colbymchenry/codegraph)
+#   codegraph init          # in each repo → builds <repo>/.codegraph/codegraph.db
+#   codegraph serve --mcp   # runs it as a stdio MCP server (this is what the frontend hosts)
 ```
 
 ## Prerequisites by feature
@@ -29,7 +32,7 @@ brew install ripgrep        # search_files (Phase 1)
 
 | Prereq | Needed for | Notes |
 |--------|-----------|-------|
-| **CodeGraph CLI v0.9.9** | client-side CodeGraph / semantic search (P2-C) | User installs it + runs its init/index in the workspace, then **hosts it as an MCP server** via `~/.labmate/mcp.json` (P2-B.3) — CodeGraph is itself an MCP server. Its tools (`mcp__codegraph__codegraph_search`/`_explore`/`_callers`/…) are then hosted client-side and route to the client; the pod `code_semantic_search` is auto-excluded for that client. Example: `{ "mcpServers": { "codegraph": { "command": "<codegraph-mcp-cmd>", "args": [...], "cwd": "<workspace>" } } }`. (Pod-side, set `ENABLE_POD_CODEGRAPH=0` for a client-first deployment to skip the pod embedder.) |
+| **CodeGraph CLI v0.9.9** (https://github.com/colbymchenry/codegraph) | client-side CodeGraph / semantic search (P2-C) | Install the CLI, run **`codegraph init`** in the repo (builds `<repo>/.codegraph/codegraph.db`). CodeGraph is itself a stdio MCP server (`codegraph serve --mcp`), so **host it via `~/.labmate/mcp.json`** (P2-B.3). Its 8 tools (`mcp__codegraph__codegraph_search`/`_explore`/`_callers`/`_callees`/`_impact`/`_node`/`_files`/`_status`) route to the client; the pod `code_semantic_search` is auto-excluded for that client. **Verified working entry:** `{ "mcpServers": { "codegraph": { "command": "<abs>/codegraph", "args": ["serve","--mcp","--path","<repo>"], "cwd": "<repo>" } } }`. ⚠️ **Known limitation:** `--path` is static per `mcp.json` (global, spawned at app startup), so CodeGraph serves ONE hard-coded repo, not the chat's active workspace — **workspace-aware auto-hosting is a P2-C follow-up** (auto-detect `.codegraph/` in the active workspace root + spawn CodeGraph there). Pod-side, set `ENABLE_POD_CODEGRAPH=0` for a client-first deployment to skip the pod embedder. |
 | **User-installed local MCP servers** | client-hosted MCP tools (P2-A / P2-B.3) | Each server brings its own runtime/deps; declared in `~/.labmate/mcp.json` (like `claude mcp add --scope user`). Their tools are namespaced `mcp__<server>__<tool>`. |
 | **`SKILL.md` skills on disk** | local doc-skills (P2-B.1) | Pure markdown (frontmatter + body) in `~/.labmate/skills/<name>/SKILL.md`; discovered by the frontend, advertised in the `load_skill` catalog. No extra runtime — the model uses the local primitives the skill describes. |
 
