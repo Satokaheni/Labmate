@@ -1135,7 +1135,7 @@ function UserBubble({ text }: { text: string }) {
   );
 }
 
-function ThinkingLine({ turn, active, onCancel }: { turn: Turn; active: boolean; onCancel?: () => void }) {
+function ThinkingLine({ turn, active }: { turn: Turn; active: boolean }) {
   // Lazy ref init: capture the start time once instead of re-parsing every render.
   const startRef = useRef<number | null>(null);
   if (startRef.current === null) startRef.current = parseStart(turn.createdAt);
@@ -1149,28 +1149,6 @@ function ThinkingLine({ turn, active, onCancel }: { turn: Turn; active: boolean;
       <span style={THINKING_DOT_STYLE} />
       <span style={THINKING_TEXT_STYLE}>{label}…</span>
       <span style={THINKING_TIME_STYLE}>{(elapsed / 1000).toFixed(1)}s</span>
-      {onCancel && (
-        <button
-          type="button"
-          className="lm-btn"
-          onClick={onCancel}
-          style={{
-            marginLeft: 12,
-            padding: '4px 10px',
-            fontSize: 11,
-            fontFamily: "'IBM Plex Mono'",
-            color: '#c7ccd3',
-            background: '#1b1f26',
-            border: '1px solid #2a2f39',
-            borderRadius: 5,
-            cursor: 'pointer',
-            flexShrink: 0,
-          }}
-          title="Stop the current task"
-        >
-          Stop
-        </button>
-      )}
     </div>
   );
 }
@@ -1183,9 +1161,8 @@ function AssistantTurnView(props: {
   onOpenSkills: () => void;
   onOpenArtifact: (a: Artifact) => void;
   activeFileId: string | null;
-  onCancel?: () => void;
 }) {
-  const { turn, active, thoughtOpen, onToggleThought, onOpenSkills, onOpenArtifact, activeFileId, onCancel } = props;
+  const { turn, active, thoughtOpen, onToggleThought, onOpenSkills, onOpenArtifact, activeFileId } = props;
   const calls = turn.toolCalls ?? [];
   const reasoning = turn.reasoning;
 
@@ -1206,7 +1183,7 @@ function AssistantTurnView(props: {
       </div>
 
       {/* live thinking indicator (no answer text yet) */}
-      {active && !turn.text && <ThinkingLine turn={turn} active={active} onCancel={onCancel} />}
+      {active && !turn.text && <ThinkingLine turn={turn} active={active} />}
 
       {/* thought block */}
       {reasoning && (
@@ -1378,8 +1355,8 @@ export function isCompactCommand(text: string): boolean {
   return text.trim() === '/compact';
 }
 
-function Composer(props: { mode: Mode; budget: number; sessionId: string; onSend: (text: string) => void; onCompact: () => void }) {
-  const { mode, budget, sessionId, onSend, onCompact } = props;
+function Composer(props: { mode: Mode; budget: number; sessionId: string; onSend: (text: string) => void; onCompact: () => void; isStreaming: boolean; onStop: () => void }) {
+  const { mode, budget, sessionId, onSend, onCompact, isStreaming, onStop } = props;
   const api = typeof window !== 'undefined' ? window.electronAPI : undefined;
   const [text, setText] = useState('');
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -1465,7 +1442,9 @@ function Composer(props: { mode: Mode; budget: number; sessionId: string; onSend
     }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      submit();
+      // While a response is streaming the send button is a Stop button, so
+      // Enter must not queue a new message — it's a no-op until the turn ends.
+      if (!isStreaming) submit();
     }
   };
 
@@ -1508,9 +1487,28 @@ function Composer(props: { mode: Mode; budget: number; sessionId: string; onSend
               thinking {budget.toLocaleString()}
             </span>
             <div style={{ flex: 1 }} />
-            <button type="button" className="lm-btn" onClick={submit} style={COMPOSER_SUBMIT_BUTTON_STYLE}>
-              ↑
-            </button>
+            {isStreaming ? (
+              <button
+                type="button"
+                className="lm-btn"
+                onClick={onStop}
+                style={COMPOSER_SUBMIT_BUTTON_STYLE}
+                aria-label="Stop"
+                title="Stop the current task"
+              >
+                ■
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="lm-btn"
+                onClick={submit}
+                style={COMPOSER_SUBMIT_BUTTON_STYLE}
+                aria-label="Send"
+              >
+                ↑
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -1793,6 +1791,8 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug, rename
   const convScrollRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
   const scrollSignal = scrollSignalFor(turns);
+  // The one turn currently streaming (if any) — drives the composer Send⇄Stop toggle.
+  const streamingTurn = findStreamingTurn(turns);
   useEffect(() => {
     const el = convScrollRef.current;
     if (el && stickToBottomRef.current) {
@@ -1971,7 +1971,6 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug, rename
                       setRightView('files');
                     }}
                     activeFileId={activeFileId}
-                    onCancel={t.status === 'streaming' ? () => cancel(t.id) : undefined}
                   />
                 )
               )}
@@ -1985,6 +1984,10 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug, rename
             sessionId={wsId}
             onSend={(text) => send(text, wsId, roots[0])}
             onCompact={() => compact(wsId)}
+            isStreaming={!!streamingTurn}
+            onStop={() => {
+              if (streamingTurn) cancel(streamingTurn.id);
+            }}
           />
         </div>
 
