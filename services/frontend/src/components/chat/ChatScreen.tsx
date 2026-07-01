@@ -91,6 +91,17 @@ function langBadge(language: string): string {
   return LANG_BADGE[language.toLowerCase()] ?? language.slice(0, 2).toUpperCase();
 }
 
+/**
+ * Pure helper to generate a scroll signal from the turns array.
+ * Changes when the last turn's text length, tool calls, artifacts, or status change,
+ * triggering the auto-scroll effect.
+ */
+export function scrollSignalFor(turns: Turn[]): string {
+  const last = turns[turns.length - 1];
+  return `${turns.length}:${last?.text?.length ?? 0}:` +
+    `${last?.toolCalls?.length ?? 0}:${last?.artifacts?.length ?? 0}:${last?.status ?? ''}`;
+}
+
 // ====================================================================
 // Static style objects (module-level to avoid rebuild on every render)
 // ====================================================================
@@ -1738,10 +1749,7 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug, rename
   // bottom, so scrolling up to read earlier messages isn't yanked back down.
   const convScrollRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
-  const lastTurn = turns[turns.length - 1];
-  const scrollSignal =
-    `${turns.length}:${lastTurn?.text?.length ?? 0}:` +
-    `${lastTurn?.toolCalls?.length ?? 0}:${lastTurn?.status ?? ''}`;
+  const scrollSignal = scrollSignalFor(turns);
   useEffect(() => {
     const el = convScrollRef.current;
     if (el && stickToBottomRef.current) {
