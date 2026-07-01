@@ -74,18 +74,26 @@ def reasoning_summary(text: str) -> str:
 def tool_event_display(tool_name: str, args: dict | None) -> tuple[str, str]:
     """Return (kind, display_name) for a tool.start event.
 
-    Skill-loading/using tools are surfaced as kind='skill' and labelled with the
-    SKILL's name (not the mechanism), so the UI shows what was actually used:
-      - load_skill       -> the loaded skill (args['name'])
-      - call_skill_tool  -> the skill whose tool ran (args['skill'])
-    Every other tool is a plain kind='tool' shown by its own name. Falls back to
-    the mechanism name when the expected arg is missing.
+    Skill/capability tools are surfaced as kind='skill' and labelled with the
+    SKILL/SERVER name (not the mechanism), so the UI chip shows what was used:
+      - load_skill              -> the loaded skill (args['name'])
+      - call_skill_tool         -> the skill whose tool ran (args['skill'])
+      - mcp__<server>__<tool>   -> the hosted MCP SERVER (e.g. 'codegraph',
+                                   'ast-ts-refactor') — a client-hosted capability
+    Plain primitives (read_file/run_tests/…) stay kind='tool' by their own name.
+    Falls back to the mechanism name when the expected arg is missing.
     """
     args = args or {}
     if tool_name == "call_skill_tool":
         return "skill", str(args.get("skill") or tool_name)
     if tool_name == "load_skill":
         return "skill", str(args.get("name") or tool_name)
+    if tool_name.startswith("mcp__"):
+        # Surface the hosted MCP server as the skill (e.g. mcp__codegraph__codegraph_status
+        # -> 'codegraph'), so a turn that used a hosted capability shows it in the chip.
+        rest = tool_name[len("mcp__") :]
+        server = rest.split("__", 1)[0] if rest else ""
+        return "skill", server or tool_name
     return "tool", tool_name
 
 

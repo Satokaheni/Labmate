@@ -304,9 +304,25 @@ one repo?" gap: a hosted server (CodeGraph) had no way to know the chat's worksp
   each codegraph tool's `projectPath` arg. `~/.labmate/mcp.json` switched to the clean
   `{ "codegraph": { "command": "<abs>/codegraph", "args": ["serve","--mcp"] } }`.
 
+**CORRECTION + how it actually works — LIVE-VALIDATED (`4a04b9b`).** Live testing proved CodeGraph
+**does NOT consume MCP roots** (it never requests `roots/list`); it resolves the repo from `projectPath`
+(per tool call) or its process `cwd`. So the roots wiring (`9e90b1d`), while correct MCP client
+behavior, is INERT for CodeGraph. The real driver: the frontend `mcp__` dispatch injects
+**`projectPath` = the active chat's workspace root** for `codegraph_*` calls
+(`electron/mcp-path-rooting.ts::injectCodegraphProjectPath`), so each call targets the chat's repo;
+the model may override `projectPath` for cross-repo. **Confirmed live:** an openclaw-workspace chat
+returned openclaw's stats (18,245 files), a Labmate chat returned Labmate's (583) — CodeGraph follows
+the workspace deterministically. The startup "Attached to <repo>" log is just the spawn-time default
+(pre-tool-call) and is expected. **P2-C + P2-D DONE + live-validated.** (The roots wiring is kept as
+correct general MCP behavior for future servers that DO use roots.)
+
+**Chip labeling (`events.tool_event_display`):** hosted `mcp__<server>__<tool>` calls now surface as
+kind='skill' named by the SERVER (e.g. `codegraph`), so a turn using a hosted capability shows it in the
+skills chip (was tagged 'tool' → showed "0 skills").
+
 **Optional follow-up (still NOT built — UX nicety):** frontend AUTO-hosts CodeGraph when `.codegraph/`
-exists in the active workspace, so the user needn't add it to `mcp.json` at all. Now lower-risk given
-roots handle the workspace; still needs `.codegraph/` detection + spawning a host on demand.
+exists in the active workspace, so the user needn't add it to `mcp.json` at all. Still needs
+`.codegraph/` detection + spawning a host on demand.
 
 ## P2-D — decommission pod discovery to fallback-only — DONE
 The advertise/dispatch exclusion is already correct by construction (P2-C above): a capable client never
