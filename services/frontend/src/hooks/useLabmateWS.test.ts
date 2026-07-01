@@ -265,6 +265,81 @@ describe('useLabmateWS', () => {
     expect(result.current.state.sessions[0].title).toBe('Renamed');
   });
 
+  it('session.updated moves an existing session to the front; a new session is inserted at front', () => {
+    const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
+    act(() => mockWs.onopen?.());
+    emit({ type: 'boot.plan', subsystems: SUBSYSTEMS });
+    emit({ type: 'boot.ready', sessionBootstrap: BOOTSTRAP });
+
+    // Start with three sessions: A, B, C
+    const sessA: import('@/types/events').Session = {
+      id: 's-a',
+      title: 'Session A',
+      mode: 'chat' as const,
+      turnCount: 0,
+      contextTokens: 0,
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    };
+    const sessB: import('@/types/events').Session = {
+      id: 's-b',
+      title: 'Session B',
+      mode: 'chat' as const,
+      turnCount: 0,
+      contextTokens: 0,
+      createdAt: '2026-01-01T00:00:01Z',
+      updatedAt: '2026-01-01T00:00:01Z',
+    };
+    const sessC: import('@/types/events').Session = {
+      id: 's-c',
+      title: 'Session C',
+      mode: 'chat' as const,
+      turnCount: 0,
+      contextTokens: 0,
+      createdAt: '2026-01-01T00:00:02Z',
+      updatedAt: '2026-01-01T00:00:02Z',
+    };
+
+    emit({ type: 'session.updated', session: sessA });
+    // After adding A, it's at front: [A]
+    expect(result.current.state.sessions.map((s) => s.id)).toEqual(['s-a']);
+
+    emit({ type: 'session.updated', session: sessB });
+    // After adding B, it moves to front: [B, A]
+    expect(result.current.state.sessions.map((s) => s.id)).toEqual(['s-b', 's-a']);
+
+    emit({ type: 'session.updated', session: sessC });
+    // After adding C, it moves to front: [C, B, A]
+    expect(result.current.state.sessions).toHaveLength(3);
+    expect(result.current.state.sessions.map((s) => s.id)).toEqual(['s-c', 's-b', 's-a']);
+
+    // Update session C (existing) — should move to front but it's already there [C, B, A]
+    emit({ type: 'session.updated', session: { ...sessC, title: 'Session C Updated' } });
+    expect(result.current.state.sessions).toHaveLength(3);
+    expect(result.current.state.sessions.map((s) => s.id)).toEqual(['s-c', 's-b', 's-a']);
+    expect(result.current.state.sessions[0].title).toBe('Session C Updated');
+
+    // Update session A (existing at end) — should move to front [A, C, B]
+    emit({ type: 'session.updated', session: { ...sessA, title: 'Session A Updated' } });
+    expect(result.current.state.sessions).toHaveLength(3);
+    expect(result.current.state.sessions.map((s) => s.id)).toEqual(['s-a', 's-c', 's-b']);
+    expect(result.current.state.sessions[0].title).toBe('Session A Updated');
+
+    // Add a brand new session D — should be inserted at front [D, A, C, B]
+    const sessD: import('@/types/events').Session = {
+      id: 's-d',
+      title: 'Session D',
+      mode: 'chat' as const,
+      turnCount: 0,
+      contextTokens: 0,
+      createdAt: '2026-01-01T00:00:03Z',
+      updatedAt: '2026-01-01T00:00:03Z',
+    };
+    emit({ type: 'session.updated', session: sessD });
+    expect(result.current.state.sessions).toHaveLength(4);
+    expect(result.current.state.sessions.map((s) => s.id)).toEqual(['s-d', 's-a', 's-c', 's-b']);
+  });
+
   it('session.deleted removes the session and reselects activeSessionId when needed', () => {
     const { result } = renderHook(() => useLabmateWS('ws://localhost:8787/ws', 'tok'));
     act(() => mockWs.onopen?.());

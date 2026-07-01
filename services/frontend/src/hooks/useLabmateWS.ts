@@ -232,16 +232,9 @@ function labmateWSReducer(state: LabmateWSState, action: DispatchAction): Labmat
 
       if (frame.type === 'session.updated') {
         if (state.phase === 'ready') {
-          const existing = state.sessions.findIndex((s) => s.id === frame.session.id);
-          let sessions: Session[];
-          if (existing >= 0) {
-            // Update in place
-            sessions = state.sessions.map((s, i) => (i === existing ? frame.session : s));
-          } else {
-            // Add new
-            sessions = [...state.sessions, frame.session];
-          }
-          return { ...state, sessions };
+          // Remove any existing entry for that id and unshift the updated session to the front
+          const rest = state.sessions.filter((s) => s.id !== frame.session.id);
+          return { ...state, sessions: [frame.session, ...rest] };
         }
         return state;
       }
