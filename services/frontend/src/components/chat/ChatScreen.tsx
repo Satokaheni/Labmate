@@ -1677,6 +1677,16 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug }: Chat
     api.hasDefaultWorkspace().then((has) => setNeedsWorkspaceSetup(!has)).catch(() => { /* ignore */ });
   }, []);
 
+  // Signal active session change to Electron main for MCP roots updates
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'electronAPI' in window) {
+      const api = window.electronAPI as any;
+      if (api?.setActiveSession) {
+        (api.setActiveSession(activeSessionId ?? null) as Promise<any>).catch(() => { /* ignore */ });
+      }
+    }
+  }, [activeSessionId]);
+
   const chooseDefaultWorkspace = async () => {
     const api = window.electronAPI;
     if (!api?.setDefaultWorkspace) return;

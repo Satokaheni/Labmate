@@ -1,6 +1,9 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { ListRootsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { pathToFileURL } from 'node:url';
+import { basename } from 'node:path';
 
 export interface McpServerSpec {
   name: string;
@@ -11,6 +14,16 @@ export interface McpServerSpec {
 }
 
 /**
+ * Build a roots list for MCP roots protocol from absolute file paths.
+ * Filters out empty/non-string entries and returns an array of { uri, name } objects.
+ */
+export function buildRootsList(paths: string[]): Array<{ uri: string; name: string }> {
+  return (paths ?? [])
+    .filter((p) => typeof p === 'string' && p.length > 0)
+    .map((p) => ({ uri: pathToFileURL(p).href, name: basename(p) }));
+}
+
+/**
  * McpHost wraps a single MCP server connection via stdio transport.
  * Uses the official SDK Client + StdioClientTransport.
  */
@@ -18,9 +31,11 @@ export class McpHost {
   private spec: McpServerSpec;
   private client: Client | null = null;
   private transport: StdioClientTransport | null = null;
+  private getRoots?: () => string[];
 
-  constructor(spec: McpServerSpec) {
+  constructor(spec: McpServerSpec, getRoots?: () => string[]) {
     this.spec = spec;
+    this.getRoots = getRoots;
   }
 
   /**
@@ -46,9 +61,13 @@ export class McpHost {
           version: '0.1.0',
         },
         {
-          capabilities: {},
+          capabilities: { roots: { listChanged: true } },
         }
       );
+
+      this.client.setRequestHandler(ListRootsRequestSchema, async () => ({
+        roots: buildRootsList(this.getRoots?.() ?? []),
+      }));
 
       await this.client.connect(this.transport);
     } catch (error) {
@@ -111,6 +130,19 @@ export class McpHost {
         throw new Error(`Tool '${name}' not found in server '${this.spec.name}'`);
       }
       throw error;
+    }
+  }
+
+  /**
+   * Notify the MCP server that the workspace roots have changed.
+   * Best-effort; errors are logged but not thrown.
+   */
+  async notifyRootsChanged(): Promise<void> {
+    if (this.client === null) return;
+    try {
+      await this.client.sendRootsListChanged();
+    } catch (e) {
+      console.error(`roots/list_changed failed for '${this.spec.name}':`, e);
     }
   }
 

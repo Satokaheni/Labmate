@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveMcpPathArgs } from './mcp-path-rooting.js';
+import { resolveMcpPathArgs, injectCodegraphProjectPath } from './mcp-path-rooting.js';
 
 describe('resolveMcpPathArgs', () => {
   describe('single-value path keys', () => {
@@ -209,5 +209,55 @@ describe('resolveMcpPathArgs', () => {
       // path.join normalizes to platform separator
       expect(result.file).toBe('/root/src/nested/a.ts');
     });
+  });
+});
+
+describe('injectCodegraphProjectPath', () => {
+  it('defaults projectPath to the primary workspace root for a codegraph tool', () => {
+    const out = injectCodegraphProjectPath(
+      'mcp__codegraph__codegraph_search',
+      { query: 'auth' },
+      ['/Users/me/repo', '/other'],
+    );
+    expect(out).toEqual({ query: 'auth', projectPath: '/Users/me/repo' });
+  });
+
+  it('respects an explicit projectPath (model targeting another repo)', () => {
+    const out = injectCodegraphProjectPath(
+      'mcp__codegraph__codegraph_status',
+      { projectPath: '/some/other/repo' },
+      ['/Users/me/repo'],
+    );
+    expect(out.projectPath).toBe('/some/other/repo');
+  });
+
+  it('treats an empty-string projectPath as absent and injects', () => {
+    const out = injectCodegraphProjectPath(
+      'mcp__codegraph__codegraph_search',
+      { projectPath: '', query: 'x' },
+      ['/Users/me/repo'],
+    );
+    expect(out.projectPath).toBe('/Users/me/repo');
+  });
+
+  it('leaves non-codegraph mcp tools untouched', () => {
+    const args = { symbol: 'foo', new_name: 'bar' };
+    const out = injectCodegraphProjectPath('mcp__ast-ts-refactor__rename_symbol', args, ['/Users/me/repo']);
+    expect(out).toBe(args);
+    expect('projectPath' in out).toBe(false);
+  });
+
+  it('returns args unchanged when there are no roots', () => {
+    const args = { query: 'x' };
+    const out = injectCodegraphProjectPath('mcp__codegraph__codegraph_search', args, []);
+    expect(out).toBe(args);
+  });
+
+  it('does not mutate the input', () => {
+    const args = { query: 'x' };
+    const out = injectCodegraphProjectPath('mcp__codegraph__codegraph_search', args, ['/r']);
+    expect(args).not.toHaveProperty('projectPath');
+    expect(out).not.toBe(args);
+    expect(out.projectPath).toBe('/r');
   });
 });

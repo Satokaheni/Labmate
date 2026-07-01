@@ -85,6 +85,7 @@ const BUILTIN_MCP_SERVERS = ['ast-ts-refactor', 'component-doc-gen', 'a11y-audit
 export class McpHostManager {
   private hosts: Map<string, McpHost> = new Map();
   private toolDescriptors: ToolDescriptor[] = [];
+  private currentRoots: string[] = [];
 
   /**
    * Start a single MCP server and collect its tools.
@@ -103,7 +104,7 @@ export class McpHostManager {
       }
     }
 
-    const host = new McpHost(spec);
+    const host = new McpHost(spec, () => this.currentRoots);
 
     try {
       await host.start();
@@ -235,6 +236,23 @@ export class McpHostManager {
         `Failed to call tool '${toolName}' on server '${serverName}': ${error instanceof Error ? error.message : String(error)}`
       );
     }
+  }
+
+  /**
+   * Get the current workspace roots being advertised to MCP servers.
+   */
+  getWorkspaceRoots(): string[] {
+    return this.currentRoots;
+  }
+
+  /**
+   * Set the workspace roots and notify all started MCP servers.
+   * Best-effort; individual host notify failures are logged but don't throw.
+   */
+  async setWorkspaceRoots(roots: string[]): Promise<void> {
+    this.currentRoots = Array.isArray(roots) ? [...roots] : [];
+    // Use allSettled so one host failure doesn't prevent notifying others
+    await Promise.allSettled([...this.hosts.values()].map((h) => h.notifyRootsChanged()));
   }
 
   /**

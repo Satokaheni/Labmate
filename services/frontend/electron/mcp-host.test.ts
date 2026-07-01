@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { McpHost, type McpServerSpec } from './mcp-host.js';
+import { McpHost, buildRootsList, type McpServerSpec } from './mcp-host.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -138,6 +138,61 @@ describe('McpHost', () => {
 
       // Now start again to verify it's cleaned up
       await expect(host.start()).rejects.toThrow(); // Real error from bad binary
+    });
+  });
+
+  describe('buildRootsList', () => {
+    it('should convert absolute paths to { uri, name } objects', () => {
+      const paths = ['/Users/me/repo', '/x/y'];
+      const result = buildRootsList(paths);
+
+      expect(result).toHaveLength(2);
+      expect(result[0]).toEqual({
+        uri: expect.stringContaining('file://'),
+        name: 'repo',
+      });
+      expect(result[1]).toEqual({
+        uri: expect.stringContaining('file://'),
+        name: 'y',
+      });
+    });
+
+    it('should filter out empty strings', () => {
+      const paths = ['/a/b', '', '/c/d', ''];
+      const result = buildRootsList(paths);
+
+      expect(result).toHaveLength(2);
+      expect(result[0].name).toBe('b');
+      expect(result[1].name).toBe('d');
+    });
+
+    it('should filter out non-strings', () => {
+      const paths = ['/a/b', null, '/c/d', undefined] as any[];
+      const result = buildRootsList(paths);
+
+      expect(result).toHaveLength(2);
+      expect(result[0].name).toBe('b');
+      expect(result[1].name).toBe('d');
+    });
+
+    it('should return empty array for empty input', () => {
+      const result = buildRootsList([]);
+      expect(result).toEqual([]);
+    });
+
+    it('should return empty array for null/undefined input', () => {
+      expect(buildRootsList(null as any)).toEqual([]);
+      expect(buildRootsList(undefined as any)).toEqual([]);
+    });
+
+    it('should extract base name correctly from paths with trailing slashes', () => {
+      const paths = ['/Users/me/repo/', '/x/y/'];
+      const result = buildRootsList(paths);
+
+      expect(result).toHaveLength(2);
+      // basename() strips trailing slashes
+      expect(result[0].name).toBe('repo');
+      expect(result[1].name).toBe('y');
     });
   });
 });

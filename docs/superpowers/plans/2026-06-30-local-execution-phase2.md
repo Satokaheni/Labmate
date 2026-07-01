@@ -268,15 +268,69 @@ fail (+tests with a fake server spec); T-B3.3 [integration/live] declare a real 
 scope) + a UI "add server" flow + trust gate. Global-first matches the user's mental model; project
 scope layers on after.
 
-## P2-C — client-side semantic search (CodeGraph)
-`code_semantic_search` becomes a client-routed tool when the client declares `codegraph`: the
-frontend queries the local CodeGraph daemon (`<workspace>/.codegraph/daemon.sock`) and returns
-ranked hits. Retire the pod `codegraph_embedder` to no-client fallback only. Adds the CodeGraph
-CLI prereq (track in `docs/local-execution-prerequisites.md`).
+## P2-C — client-side CodeGraph — DONE via P2-B.3 (Framing A: host CodeGraph as an MCP server)
 
-## P2-D — decommission pod discovery to fallback-only
-Pod CodeGraph + `WORKSPACE_PATH` access exist ONLY for no-client/headless; never reached while a
-capable client is attached.
+**Decision (2026-06-30, user-approved):** CodeGraph v0.9.9 is ITSELF an MCP server (`codegraph_search`,
+`codegraph_explore`, `codegraph_callers`, `codegraph_callees`, `codegraph_impact`, `codegraph_node`,
+`codegraph_files`, `codegraph_status`). So "client-side CodeGraph" = **host it as a user MCP server via
+P2-B.3** (`~/.labmate/mcp.json`), exactly how CodeGraph works with Claude Code / other agents. This
+gives the model CodeGraph's FULL toolset (not just semantic search) with **zero new routing code** —
+NOT the original "dedicated `code_semantic_search` client-routing" framing (which would have re-exposed
+only semantic search behind a stable name; rejected for being more work + less capability).
+
+**Already works (verified + regression-locked in `tests/services/orchestrator/test_codegraph_client_routing.py`):**
+- The client declares `mcp__codegraph__*` (P2-B.3). `build_tool_list` advertises the pod
+  `code_semantic_search` ONLY when the manifest declares it (`tool_manifest.py` §2), so a
+  CodeGraph-hosting client **auto-excludes** the pod tool — no dedup needed, correct by construction.
+- The `mcp__codegraph__*` tools are in `manifest_local_tool_names`, so they **route to the client** over
+  the existing `tool.request`/`tool.result` seam (same path as the file tools + the bundled MCP skills).
+- **To use:** add CodeGraph to `~/.labmate/mcp.json`, e.g.
+  `{ "mcpServers": { "codegraph": { "command": "<codegraph-mcp-cmd>", "args": [...], "cwd": "<workspace>" } } }`
+  (the exact launch command is the CodeGraph CLI's MCP mode — track in the prerequisites doc).
+
+**Workspace-following via MCP `roots` — DONE (`9e90b1d`, Opus PASS).** The original "why is it pinned to
+one repo?" gap: a hosted server (CodeGraph) had no way to know the chat's workspace, so we hard-coded
+`--path`. Fixed the way Claude Code does it — **MCP `roots`**, NOT per-workspace `--path` spawning:
+- `electron/mcp-host.ts`: the SDK `Client` now declares `capabilities.roots.listChanged`, answers
+  `roots/list` with the active workspace roots (`buildRootsList` → `file://` URIs), and exposes
+  `notifyRootsChanged()` (`sendRootsListChanged`).
+- `electron/mcp-registry.ts`: `McpHostManager` holds `currentRoots`, feeds each host a `getRoots`
+  provider, and `setWorkspaceRoots()` broadcasts changes (failure-isolated `allSettled`).
+- `electron/main.ts`: roots are driven on startup, on workspace add/remove, and on a new
+  `labmate:active-session` IPC. `preload` exposes `setActiveSession`; `ChatScreen` fires it on
+  `activeSessionId` change.
+- So `codegraph serve --mcp` (NO `--path`) resolves the *active chat's* workspace via roots — and a chat
+  with multiple roots (like a 3-repo session) declares all of them. Cross-repo is still available via
+  each codegraph tool's `projectPath` arg. `~/.labmate/mcp.json` switched to the clean
+  `{ "codegraph": { "command": "<abs>/codegraph", "args": ["serve","--mcp"] } }`.
+
+**CORRECTION + how it actually works — LIVE-VALIDATED (`4a04b9b`).** Live testing proved CodeGraph
+**does NOT consume MCP roots** (it never requests `roots/list`); it resolves the repo from `projectPath`
+(per tool call) or its process `cwd`. So the roots wiring (`9e90b1d`), while correct MCP client
+behavior, is INERT for CodeGraph. The real driver: the frontend `mcp__` dispatch injects
+**`projectPath` = the active chat's workspace root** for `codegraph_*` calls
+(`electron/mcp-path-rooting.ts::injectCodegraphProjectPath`), so each call targets the chat's repo;
+the model may override `projectPath` for cross-repo. **Confirmed live:** an openclaw-workspace chat
+returned openclaw's stats (18,245 files), a Labmate chat returned Labmate's (583) — CodeGraph follows
+the workspace deterministically. The startup "Attached to <repo>" log is just the spawn-time default
+(pre-tool-call) and is expected. **P2-C + P2-D DONE + live-validated.** (The roots wiring is kept as
+correct general MCP behavior for future servers that DO use roots.)
+
+**Chip labeling (`events.tool_event_display`):** hosted `mcp__<server>__<tool>` calls now surface as
+kind='skill' named by the SERVER (e.g. `codegraph`), so a turn using a hosted capability shows it in the
+skills chip (was tagged 'tool' → showed "0 skills").
+
+**Optional follow-up (still NOT built — UX nicety):** frontend AUTO-hosts CodeGraph when `.codegraph/`
+exists in the active workspace, so the user needn't add it to `mcp.json` at all. Still needs
+`.codegraph/` detection + spawning a host on demand.
+
+## P2-D — decommission pod discovery to fallback-only — DONE
+The advertise/dispatch exclusion is already correct by construction (P2-C above): a capable client never
+sees the pod `code_semantic_search`. The remaining resource piece — not *spawning* the pod embedder when
+it isn't needed — is the `ENABLE_POD_CODEGRAPH` flag (`services/orchestrator/main.py::pod_codegraph_enabled`,
+default `1`). Set `ENABLE_POD_CODEGRAPH=0` in a client-first deployment to skip the embedder spawn
+entirely (saves the index + watch cost); no-client tasks then have no semantic search. Pod CodeGraph +
+`WORKSPACE_PATH` remain the no-client/headless fallback when the flag is on.
 
 ## Constraints
 Prefix byte-stability (manifest sorted/canonical); MCP stdout-is-sacred; tests mirror services/;

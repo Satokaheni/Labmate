@@ -178,3 +178,14 @@ def test_tool_event_display_falls_back_when_arg_missing():
     assert tool_event_display("load_skill", {}) == ("skill", "load_skill")
     assert tool_event_display("load_skill", None) == ("skill", "load_skill")
     assert tool_event_display("call_skill_tool", {"skill": ""}) == ("skill", "call_skill_tool")
+
+
+def test_tool_event_display_mcp_tool_shows_server_as_skill():
+    """A hosted mcp__<server>__<tool> call surfaces the SERVER as kind='skill'."""
+    from services.orchestrator.events import tool_event_display
+
+    assert tool_event_display("mcp__codegraph__codegraph_status", {}) == ("skill", "codegraph")
+    assert tool_event_display("mcp__ast-ts-refactor__find_references", {"symbol": "x"}) == (
+        "skill",
+        "ast-ts-refactor",
+    )

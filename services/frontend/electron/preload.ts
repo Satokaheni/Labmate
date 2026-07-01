@@ -70,4 +70,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     query: string,
   ): Promise<{ entries: WorkspaceEntry[] }> =>
     ipcRenderer.invoke('labmate:search-workspace', { sessionId, query }),
+  setActiveSession: (sessionId: string | null): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke('labmate:active-session', { sessionId }),
 });
