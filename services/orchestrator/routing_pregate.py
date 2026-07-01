@@ -30,16 +30,25 @@ class SkillPreGate:
         texts = [f"{name}: {desc}" for name, desc in self._entries]
         self._cat_vecs = await self._embed_fn(texts, self._redis)
 
-    async def any_plausible_skill(self, task: str) -> bool:
+    async def max_similarity(self, task: str) -> float:
+        """Return the best cosine similarity between *task* and any catalog entry.
+
+        Returns:
+            float("-inf")  — empty catalog (any_plausible_skill → False for any threshold)
+            float("inf")   — embed error (FAIL-SAFE → any_plausible_skill → True)
+            otherwise      — best dot-product score over the L2-normalised catalog vecs
+        """
         if not self._entries:
-            return False
+            return float("-inf")
         try:
             await self._ensure_catalog()
             (task_vec,) = await self._embed_fn([task], self._redis)
-            best = max(_dot(task_vec, v) for v in (self._cat_vecs or []))
+            return max(_dot(task_vec, v) for v in (self._cat_vecs or []))
         except Exception:  # noqa: BLE001 — fail-safe: proceed to the full vote
-            return True
-        return best >= self._threshold
+            return float("inf")
+
+    async def any_plausible_skill(self, task: str) -> bool:
+        return await self.max_similarity(task) >= self._threshold
 
 
 def _dot(a, b) -> float:
