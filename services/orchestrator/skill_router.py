@@ -60,6 +60,10 @@ ROUTE_MAX_TOKENS = int(os.getenv("ROUTE_MAX_TOKENS", "256"))
 # match and route() falls through to the direct-answer path.
 CONFIDENCE_THRESHOLD = 2.0 / 3.0
 
+# Enable semantic pre-gate: skip expensive SELECT_ATTEMPTS vote when no skill plausibly
+# matches the task (fail-safe: any embed error proceeds to the full vote).
+ENABLE_ROUTING_PREGATE = os.getenv("ENABLE_ROUTING_PREGATE", "0") == "1"
+
 
 @dataclass
 class RouteResult:
@@ -108,6 +112,7 @@ class SkillRouter:
         self._call_timeout = call_timeout
         self._telemetry_path = telemetry_path
         self._last_reasoning: str = ""
+        self._pregate = None
 
     @property
     def runner(self) -> SkillRunner:
@@ -237,6 +242,17 @@ class SkillRouter:
         route) is the sole owner of clarification for genuine ambiguity. A clear-but-
         skill-less task (e.g. "What is 2+2?") is unambiguous and PROCEEDS to direct answer.
         """
+        # Pre-gate: semantic similarity check (fail-safe) to skip expensive SELECT_ATTEMPTS vote.
+        if ENABLE_ROUTING_PREGATE:
+            if self._pregate is None and self._runner.catalog:
+                from services.orchestrator.routing_pregate import SkillPreGate
+
+                catalog = {name: meta.description for name, meta in self._runner.catalog.items()}
+                self._pregate = SkillPreGate(catalog, redis=self._redis)
+            if self._pregate is not None and not await self._pregate.any_plausible_skill(task):
+                _log.info("route() pre-gate: no plausible skill -> skip vote, direct answer")
+                return RouteResult(skills=[], needs_clarification=False, sub_intents=[task])
+
         sub_intents = [task]
         skill, confidence = await self._confidence_check(task)
         if skill is not None and confidence >= CONFIDENCE_THRESHOLD:
