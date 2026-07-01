@@ -261,7 +261,11 @@ function labmateWSReducer(state: LabmateWSState, action: DispatchAction): Labmat
           if (frame.sessionId === activeSessionId) {
             activeSessionId = sessions[0]?.id ?? null;
           }
-          return { ...state, sessions, activeSessionId };
+          // Drop the deleted session's turns so a stale conversation can't linger —
+          // especially when the LAST chat is deleted (activeSessionId → null), the
+          // window must be empty, not still showing the old chat's messages.
+          const turns = (state.turns ?? []).filter((t) => t.sessionId !== frame.sessionId);
+          return { ...state, sessions, activeSessionId, turns };
         }
         return state;
       }
