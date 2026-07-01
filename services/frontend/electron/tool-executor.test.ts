@@ -64,6 +64,26 @@ describe('executeTool', () => {
   it('rejects unknown tool', async () => {
     await expect(executeTool('rm_rf' as never, {}, [ws])).rejects.toThrow(/unknown local tool/);
   });
+
+  it('read_file with offset and limit returns only the selected lines (1-based)', async () => {
+    const content = 'line1\nline2\nline3\nline4\nline5\n';
+    writeFileSync(path.join(ws, 'f.txt'), content, 'utf-8');
+    const out = await executeTool('read_file', { path: 'f.txt', offset: 2, limit: 2 }, [ws]);
+    expect(out).toEqual({ content: 'line2\nline3\n' });
+  });
+
+  it('read_file with no offset or limit returns the whole file (backward compat)', async () => {
+    const content = 'line1\nline2\nline3\nline4\nline5\n';
+    writeFileSync(path.join(ws, 'f.txt'), content, 'utf-8');
+    const out = await executeTool('read_file', { path: 'f.txt' }, [ws]);
+    expect(out).toEqual({ content });
+  });
+
+  it('read_file with offset past EOF returns empty content', async () => {
+    writeFileSync(path.join(ws, 'f.txt'), 'line1\nline2\n', 'utf-8');
+    const out = await executeTool('read_file', { path: 'f.txt', offset: 100 }, [ws]);
+    expect(out).toEqual({ content: '' });
+  });
 });
 
 describe('search_files', () => {

@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from services.cli.local_tool_executor import execute_local_tool
 
-
 # ── execute_local_tool ─────────────────────────────────────────────────────────
+
 
 def test_read_file_returns_content(tmp_path: Path):
     (tmp_path / "a.txt").write_text("hello", encoding="utf-8")
@@ -33,9 +33,7 @@ def test_list_dir_lists_entries(tmp_path: Path):
 
 def test_path_escape_is_rejected(tmp_path: Path):
     with pytest.raises(ValueError, match="outside workspace"):
-        execute_local_tool(
-            "read_file", {"path": "../../../etc/passwd"}, workspace=str(tmp_path)
-        )
+        execute_local_tool("read_file", {"path": "../../../etc/passwd"}, workspace=str(tmp_path))
 
 
 def test_absolute_path_escape_is_rejected(tmp_path: Path):
@@ -48,7 +46,34 @@ def test_unknown_tool_raises(tmp_path: Path):
         execute_local_tool("delete_everything", {}, workspace=str(tmp_path))
 
 
+def test_read_file_offset_and_limit(tmp_path: Path):
+    """offset=2, limit=2 on a 5-line file returns lines 2-3 (1-based)."""
+    content = "line1\nline2\nline3\nline4\nline5\n"
+    (tmp_path / "f.txt").write_text(content, encoding="utf-8")
+    out = execute_local_tool(
+        "read_file", {"path": "f.txt", "offset": 2, "limit": 2}, workspace=str(tmp_path)
+    )
+    assert out == {"content": "line2\nline3\n"}
+
+
+def test_read_file_whole_file_when_no_offset_or_limit(tmp_path: Path):
+    """Omitting offset and limit returns the whole file unchanged (backward compat)."""
+    content = "line1\nline2\nline3\nline4\nline5\n"
+    (tmp_path / "f.txt").write_text(content, encoding="utf-8")
+    out = execute_local_tool("read_file", {"path": "f.txt"}, workspace=str(tmp_path))
+    assert out == {"content": content}
+
+
+def test_read_file_offset_past_eof(tmp_path: Path):
+    """offset past EOF returns empty content string."""
+    content = "line1\nline2\n"
+    (tmp_path / "f.txt").write_text(content, encoding="utf-8")
+    out = execute_local_tool("read_file", {"path": "f.txt", "offset": 100}, workspace=str(tmp_path))
+    assert out == {"content": ""}
+
+
 # ── _ToolInterceptingStream integration ───────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_tool_intercepting_stream_calls_send_result_callback(tmp_path: Path):
@@ -73,6 +98,7 @@ async def test_tool_intercepting_stream_calls_send_result_callback(tmp_path: Pat
     from services.cli.event_stream import EventStream, _ToolInterceptingStream
 
     calls: list[tuple] = []
+
     async def fake_send_result(tool_request_id, result, error):
         calls.append((tool_request_id, result, error))
 

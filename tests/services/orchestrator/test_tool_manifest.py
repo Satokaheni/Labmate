@@ -130,6 +130,23 @@ def test_canonical_builtin_schemas_contains_expected_keys():
 
 
 @pytest.mark.mocked
+def test_read_file_schema_has_offset_and_limit_params():
+    """CANONICAL_BUILTIN_SCHEMAS['read_file'] advertises optional offset and limit params."""
+    props = CANONICAL_BUILTIN_SCHEMAS["read_file"]["function"]["parameters"]["properties"]
+    assert "offset" in props, "read_file schema must have an 'offset' property"
+    assert "limit" in props, "read_file schema must have a 'limit' property"
+    assert props["offset"]["type"] == "integer"
+    assert props["limit"]["type"] == "integer"
+
+
+@pytest.mark.mocked
+def test_read_file_schema_required_is_path_only():
+    """CANONICAL_BUILTIN_SCHEMAS['read_file'] required list is still ['path'] only."""
+    required = CANONICAL_BUILTIN_SCHEMAS["read_file"]["function"]["parameters"]["required"]
+    assert required == ["path"], f"required should be ['path'], got {required}"
+
+
+@pytest.mark.mocked
 def test_canonical_builtin_schemas_byte_identical_to_prompt_assembler():
     """read_file, write_file, list_dir, run_tests schemas match prompt_assembler exactly."""
     static_tail = _static_tail_schemas()

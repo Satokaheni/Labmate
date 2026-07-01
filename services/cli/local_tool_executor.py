@@ -7,6 +7,7 @@ the WebSocket via the send_result callback in _ToolInterceptingStream.
 Only read_file / write_file / list_dir are supported; every path is confined
 to the workspace root.
 """
+
 from __future__ import annotations
 
 import os
@@ -29,7 +30,16 @@ def execute_local_tool(name: str, args: dict[str, Any], *, workspace: str) -> An
     """Run one local file tool synchronously. Raises on bad path / unknown tool."""
     if name == "read_file":
         p = _safe_path(str(args.get("path", "")), workspace)
-        return {"content": p.read_text(encoding="utf-8")}
+        raw_offset = args.get("offset")
+        raw_limit = args.get("limit")
+        if raw_offset is None and raw_limit is None:
+            return {"content": p.read_text(encoding="utf-8")}
+        lines = p.read_text(encoding="utf-8").splitlines(keepends=True)
+        start = max(0, int(raw_offset) - 1) if raw_offset is not None else 0
+        selected = lines[start:]
+        if raw_limit is not None:
+            selected = selected[: int(raw_limit)]
+        return {"content": "".join(selected)}
     if name == "write_file":
         p = _safe_path(str(args.get("path", "")), workspace)
         p.parent.mkdir(parents=True, exist_ok=True)
