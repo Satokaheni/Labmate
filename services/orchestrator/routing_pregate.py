@@ -12,7 +12,11 @@ import os
 
 from services.memory.embedder import embed
 
-PREGATE_SIM_THRESHOLD = float(os.getenv("PREGATE_SIM_THRESHOLD", "0.30"))
+# 0.58 = the validated operating point (pregate_recall_eval on the 12B host, 2026-07-01):
+# 0% false-skip (no routing-recall loss, every per-skill rate 0%) with 66.7% correct-skip
+# (no-match tasks bypass the routing vote). 0.60 trades 1.2% false-skip for 88.9% correct-skip;
+# 0.65 collapses (11% false-skip). bge-small compresses cosines high, so the useful band is ~0.58.
+PREGATE_SIM_THRESHOLD = float(os.getenv("PREGATE_SIM_THRESHOLD", "0.58"))
 
 
 class SkillPreGate:
