@@ -42,17 +42,29 @@ async def _relay_task(
     turn_id: str,
     *,
     debug: bool = False,
+    store=None,
+    session_id: str = "",
 ) -> None:
     """Tail the orchestrator event stream for one task and relay StreamEvents.
 
     Synthesizes reasoning.done from accumulated reasoning events before turn.done.
+    Assembles and persists the complete assistant turn on turn.done (best-effort).
     """
     reasoning_chunks: list[str] = []
     reasoning_node: str = "chat_node"
     reasoning_start: float | None = None
+    full_reasoning_text: str = ""  # Preserve reasoning text for turn persistence
+
+    # Accumulate assistant turn data for persistence
+    answer_chunks: list[str] = []
+    tool_calls: dict[str, dict] = {}  # Keyed by tool_id for updates
 
     async for raw in tail_task_events(redis, task_id, block_ms=200):
         etype = raw.get("type")
+
+        # Accumulate answer text deltas
+        if etype == "answer.delta":
+            answer_chunks.append(raw.get("text", ""))
 
         # Accumulate reasoning text for synthesis
         if etype == "reasoning":
@@ -61,9 +73,26 @@ async def _relay_task(
             if reasoning_start is None:
                 reasoning_start = _time.time()
 
+        # Track tool calls: start creates entry, done updates it
+        if etype == "tool.start":
+            tool_id = raw.get("tool_id", "")
+            tool_calls[tool_id] = {
+                "id": tool_id,
+                "name": raw.get("name", ""),
+                "args": raw.get("args", {}),
+                "result": None,
+                "status": "pending",
+            }
+        elif etype == "tool.done":
+            tool_id = raw.get("tool_id", "")
+            if tool_id in tool_calls:
+                tool_calls[tool_id]["result"] = raw.get("result")
+                tool_calls[tool_id]["status"] = raw.get("status", "done")
+
         # Synthesize reasoning.done before relaying turn.done
         if etype == "turn.done" and reasoning_chunks:
             full_text = "".join(reasoning_chunks)
+            full_reasoning_text = full_text  # Save for turn persistence
             duration_ms = int((_time.time() - (reasoning_start or _time.time())) * 1000)
             first_line = next(
                 (ln.strip() for ln in full_text.splitlines() if ln.strip()),
@@ -111,6 +140,33 @@ async def _relay_task(
         framed = translate_event(raw, turn_id=turn_id)
         if framed is not None:
             await ws.send_json(framed)
+
+        # On turn.done, assemble and persist the complete assistant turn (best-effort)
+        if etype == "turn.done":
+            if session_id and store is not None:
+                # Prefer final_answer from the event; fall back to concatenated deltas
+                final_answer = raw.get("final_answer")
+                text = final_answer if final_answer else "".join(answer_chunks)
+
+                # Build the turn document
+                assistant_turn = {
+                    "id": turn_id,
+                    "sessionId": session_id,
+                    "role": "assistant",
+                    "text": text,
+                    "reasoning": full_reasoning_text,
+                    "toolCalls": list(tool_calls.values()),
+                    "createdAt": _now_iso(),
+                    "status": raw.get("status", "complete"),
+                }
+
+                # Persist best-effort: log on failure, do not propagate
+                try:
+                    await store.add_turn(session_id, assistant_turn)
+                except Exception as e:
+                    logger.warning(
+                        "Failed to persist assistant turn for session %s: %s", session_id, e
+                    )
 
 
 def _default_session_store(config: Config):
@@ -212,7 +268,17 @@ async def _handle_send(
         client_capabilities=client_capabilities,
         workspace_root=msg.get("workspaceRoot", ""),
     )
-    relay = asyncio.create_task(_relay_task(ws, redis, task_id, assistant_turn_id, debug=debug))
+    relay = asyncio.create_task(
+        _relay_task(
+            ws,
+            redis,
+            task_id,
+            assistant_turn_id,
+            debug=debug,
+            store=store,
+            session_id=session_id,
+        )
+    )
     return task_id, relay
 
 
