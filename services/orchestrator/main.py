@@ -79,7 +79,6 @@ BLOCK_MS = 5_000
 # so it must equal the PER-SLOT window, not the raw --ctx-size. Keep CTX_WINDOW in sync
 # with serve-model.sh whenever the slot math changes.
 CTX_TOKENS = int(os.getenv("CTX_WINDOW", "131072"))
-MICRO_THRESH = int(CTX_TOKENS * 0.70)
 FULL_THRESH = int(CTX_TOKENS * 0.85)
 
 # How often, during a running turn, to re-emit the context-window telemetry so the
@@ -419,7 +418,7 @@ class OrchestratorProcess:
                 if self._shutdown.is_set():
                     break
 
-                session_ids = await storage._db["messages"].distinct("session_id")
+                session_ids = await storage._db["chat_turns"].distinct("sessionId")
                 for session_id in session_ids[:BG_COMPACT_MAX_SESSIONS]:
                     if self._shutdown.is_set():
                         break
@@ -647,11 +646,6 @@ class OrchestratorProcess:
                                 session_id, compact_result["reflections"]
                             )
                         )
-                elif ctx_check.total_tokens >= MICRO_THRESH:
-                    freed = await storage.context_manager.microcompact(session_id)
-                    if freed:
-                        await events.emit("compact.micro", freed=freed)
-                        _log.info("task %s: microcompact freed %d chars", task_id, freed)
             except Exception as exc:
                 _log.warning("auto-compact check failed (non-fatal): %s", exc)
 
