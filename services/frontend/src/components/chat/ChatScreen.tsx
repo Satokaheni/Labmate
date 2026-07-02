@@ -931,7 +931,7 @@ function sysRow(color: string, label: string, value: string, pulse = false): Rea
   );
 }
 
-function SessionItem(props: {
+export function SessionItem(props: {
   session: Session;
   active: boolean;
   onOpen: (id: string) => void;
@@ -1009,48 +1009,58 @@ function SessionItem(props: {
             {s.title || `Session ${s.id.slice(0, 6)}`}
           </span>
         </span>
-        {isHovering && (
-          <span style={{ display: 'flex', gap: 4, marginLeft: 8, flexShrink: 0 }}>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setIsRenaming(true);
-              }}
-              style={{
-                background: 'none',
-                border: 'none',
-                color: '#6b727d',
-                cursor: 'pointer',
-                fontSize: 11,
-                padding: 0,
-              }}
-              title="Rename"
-            >
-              ✎
-            </button>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleDelete();
-              }}
-              style={{
-                background: 'none',
-                border: 'none',
-                color: '#6b727d',
-                cursor: 'pointer',
-                fontSize: 11,
-                padding: 0,
-              }}
-              title="Delete"
-            >
-              ✕
-            </button>
-          </span>
-        )}
+        <span
+          aria-hidden={!isHovering}
+          style={{
+            display: 'flex',
+            gap: 4,
+            marginLeft: 8,
+            flexShrink: 0,
+            visibility: isHovering ? 'visible' : 'hidden',
+            pointerEvents: isHovering ? 'auto' : 'none',
+          }}
+        >
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsRenaming(true);
+            }}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: '#6b727d',
+              cursor: 'pointer',
+              fontSize: 11,
+              padding: 0,
+            }}
+            title="Rename"
+            tabIndex={isHovering ? 0 : -1}
+          >
+            ✎
+          </button>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              handleDelete();
+            }}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: '#6b727d',
+              cursor: 'pointer',
+              fontSize: 11,
+              padding: 0,
+            }}
+            title="Delete"
+            tabIndex={isHovering ? 0 : -1}
+          >
+            ✕
+          </button>
+        </span>
       </span>
-      {!isHovering && meta && (
+      {meta && (
         <span style={{ display: 'block', fontSize: 11, color: '#5e6671', marginTop: 4, fontFamily: "'IBM Plex Mono'" }}>{meta}</span>
       )}
     </button>
