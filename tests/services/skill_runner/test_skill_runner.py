@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 import services.skill_runner.skill_runner as skill_runner
-from services.skill_runner.skill_runner import SkillMeta, SkillRunner
+from services.skill_runner.skill_runner import SkillMeta, SkillRunner, render_catalog_line
 
 VALID_SKILL = """---
 name: {name}
@@ -471,3 +471,121 @@ def test_tool_schema_exclude_multiple_skills(write_skill, tmp_path):
     assert enum == ["beta"]
     assert "deploy" not in enum
     assert "alpha" not in enum
+
+
+# ---------------------------------------------------------------------------
+# render_catalog_line — shared helper (single source of truth)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.mocked
+class TestRenderCatalogLine:
+    """Unit tests for the render_catalog_line helper that production and eval share."""
+
+    def test_full_mode_returns_name_colon_description(self):
+        assert render_catalog_line("deploy", "Deploys things.", "full") == (
+            "- deploy: Deploys things."
+        )
+
+    def test_terse_mode_first_sentence_with_period_space(self):
+        # Split on ". " — take first segment + "."
+        desc = "Foo bar. Baz qux."
+        assert render_catalog_line("my-skill", desc, "terse") == "- my-skill: Foo bar."
+
+    def test_terse_mode_first_sentence_period_no_space(self):
+        # No ". " but has "." — split on "." take first + "."
+        desc = "Foo bar.Baz qux"
+        assert render_catalog_line("my-skill", desc, "terse") == "- my-skill: Foo bar."
+
+    def test_terse_mode_no_period_uses_first_12_words(self):
+        words = ["word"] * 15
+        desc = " ".join(words)
+        result = render_catalog_line("my-skill", desc, "terse")
+        expected_body = " ".join(["word"] * 12)
+        assert result == f"- my-skill: {expected_body}"
+
+    def test_terse_mode_no_period_fewer_than_12_words(self):
+        desc = "short description here"
+        assert (
+            render_catalog_line("my-skill", desc, "terse") == "- my-skill: short description here"
+        )
+
+    def test_terse_mode_single_sentence_ending_with_period(self):
+        desc = "Deploys things."
+        assert render_catalog_line("deploy", desc, "terse") == "- deploy: Deploys things."
+
+    def test_names_mode_returns_name_only(self):
+        assert render_catalog_line("deploy", "Deploys things.", "names") == "- deploy"
+
+    def test_unknown_mode_raises_value_error(self):
+        with pytest.raises(ValueError, match="Unknown SKILL_CATALOG_MODE"):
+            render_catalog_line("deploy", "Desc.", "invalid")
+
+
+# ---------------------------------------------------------------------------
+# catalog_prompt — SKILL_CATALOG_MODE env var support
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.mocked
+def test_catalog_prompt_full_mode_is_default(write_skill, tmp_path, monkeypatch):
+    """When SKILL_CATALOG_MODE is unset the default is 'full' (legacy behavior)."""
+    monkeypatch.delenv("SKILL_CATALOG_MODE", raising=False)
+    proj_root, _ = write_skill(
+        "project", "deploy", VALID_SKILL.format(name="deploy", desc="Deploys things.")
+    )
+    runner = SkillRunner(roots=[proj_root, tmp_path / "personal", tmp_path / "bundled"])
+    runner.discover()
+    prompt = runner.catalog_prompt()
+    assert "- deploy: Deploys things." in prompt
+
+
+@pytest.mark.mocked
+def test_catalog_prompt_terse_mode_via_env(write_skill, tmp_path, monkeypatch):
+    """SKILL_CATALOG_MODE=terse renders only the first sentence of each description."""
+    monkeypatch.setenv("SKILL_CATALOG_MODE", "terse")
+    proj_root, _ = write_skill(
+        "project",
+        "deploy",
+        VALID_SKILL.format(name="deploy", desc="Deploys things. Does extra stuff."),
+    )
+    write_skill(
+        "project",
+        "alpha",
+        VALID_SKILL.format(name="alpha", desc="Alpha skill. More details."),
+    )
+    runner = SkillRunner(roots=[proj_root, tmp_path / "personal", tmp_path / "bundled"])
+    runner.discover()
+    prompt = runner.catalog_prompt()
+    # terse: only first sentence (up to and including the first ".")
+    assert "- deploy: Deploys things." in prompt
+    assert "Does extra stuff" not in prompt
+    assert "- alpha: Alpha skill." in prompt
+    assert "More details" not in prompt
+
+
+@pytest.mark.mocked
+def test_catalog_prompt_names_mode_via_env(write_skill, tmp_path, monkeypatch):
+    """SKILL_CATALOG_MODE=names renders name-only lines."""
+    monkeypatch.setenv("SKILL_CATALOG_MODE", "names")
+    proj_root, _ = write_skill(
+        "project", "deploy", VALID_SKILL.format(name="deploy", desc="Deploys things.")
+    )
+    runner = SkillRunner(roots=[proj_root, tmp_path / "personal", tmp_path / "bundled"])
+    runner.discover()
+    prompt = runner.catalog_prompt()
+    assert "- deploy" in prompt
+    assert "Deploys things" not in prompt
+
+
+@pytest.mark.mocked
+def test_catalog_prompt_terse_mode_header_preserved(write_skill, tmp_path, monkeypatch):
+    """The header line is always present regardless of mode."""
+    monkeypatch.setenv("SKILL_CATALOG_MODE", "terse")
+    proj_root, _ = write_skill(
+        "project", "deploy", VALID_SKILL.format(name="deploy", desc="Deploys things.")
+    )
+    runner = SkillRunner(roots=[proj_root, tmp_path / "personal", tmp_path / "bundled"])
+    runner.discover()
+    prompt = runner.catalog_prompt()
+    assert prompt.startswith("Available skills (call load_skill(name) to activate one):")

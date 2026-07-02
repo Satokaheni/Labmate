@@ -125,32 +125,15 @@ def collapse(s: str) -> str:
 def catalog_prompt(catalog: dict[str, str], mode: str = "full") -> str:
     """Render a skill catalog as a newline-separated list.
 
-    Modes:
-    - 'full': "- {name}: {description}" (default, unchanged)
-    - 'terse': "- {name}: {first sentence}" where first sentence is up to and
-               including the first '.', or first 12 words if no period found
-    - 'names': "- {name}" (name only, no description)
+    Delegates per-line rendering to ``render_catalog_line`` from
+    ``services.skill_runner.skill_runner`` — that function is the single source
+    of truth so the eval and production renderers can never drift.
+
+    Modes: 'full' | 'terse' | 'names'  (see render_catalog_line for semantics).
     """
-    if mode == "full":
-        return "\n".join(f"- {n}: {d}" for n, d in catalog.items())
-    elif mode == "terse":
-        lines = []
-        for n, d in catalog.items():
-            # Extract first sentence: split on ". " or ".", take first segment
-            if ". " in d:
-                first_sentence = d.split(". ")[0] + "."
-            elif "." in d:
-                first_sentence = d.split(".")[0] + "."
-            else:
-                # No period: use first 12 words
-                words = d.split()[:12]
-                first_sentence = " ".join(words)
-            lines.append(f"- {n}: {first_sentence}")
-        return "\n".join(lines)
-    elif mode == "names":
-        return "\n".join(f"- {n}" for n in catalog.keys())
-    else:
-        raise ValueError(f"Unknown mode: {mode}")
+    from services.skill_runner.skill_runner import render_catalog_line
+
+    return "\n".join(render_catalog_line(n, d, mode) for n, d in catalog.items())
 
 
 def load_skill_tool(catalog: dict[str, str]) -> list[dict]:

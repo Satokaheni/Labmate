@@ -67,3 +67,59 @@ def test_measure_prompt_segments_no_catalog_zero_catalog_segment():
     assert seg["system_base"] > 0
     assert seg["continuity"] == 0
     assert seg["conversation"] == 0
+
+
+# ---------------------------------------------------------------------------
+# SKILL_CATALOG_MODE — prefix stability + segment shrink (terse mode)
+# ---------------------------------------------------------------------------
+
+# A catalog with multi-sentence descriptions so terse is strictly shorter than full.
+_MULTI_SENTENCE_CATALOG = (
+    "- skill-a: Does thing A. With extra context about A.\n"
+    "- skill-b: Does thing B. With extra context about B.\n"
+    "- skill-c: Does thing C. With extra context about C."
+)
+_TERSE_CATALOG = (
+    "- skill-a: Does thing A.\n" "- skill-b: Does thing B.\n" "- skill-c: Does thing C."
+)
+
+
+def test_prefix_fingerprint_stable_across_two_terse_constructions(monkeypatch):
+    """Two PromptAssembler instances built under SKILL_CATALOG_MODE=terse have
+    identical prefix_fingerprint() — confirming byte-stable prefix-cache behaviour."""
+    monkeypatch.setenv("SKILL_CATALOG_MODE", "terse")
+    a = PromptAssembler(skill_router=None, base_system="BASE", catalog=_TERSE_CATALOG)
+    b = PromptAssembler(skill_router=None, base_system="BASE", catalog=_TERSE_CATALOG)
+    assert a.prefix_fingerprint() == b.prefix_fingerprint()
+    assert a.canonical_prefix() == b.canonical_prefix()
+
+
+def test_prefix_fingerprint_differs_between_full_and_terse(monkeypatch):
+    """terse catalog produces a different (smaller) fingerprint than full, proving
+    the shrink took effect and the two modes are not accidentally identical."""
+    monkeypatch.setenv("SKILL_CATALOG_MODE", "full")
+    full_asm = PromptAssembler(
+        skill_router=None, base_system="BASE", catalog=_MULTI_SENTENCE_CATALOG
+    )
+    monkeypatch.setenv("SKILL_CATALOG_MODE", "terse")
+    terse_asm = PromptAssembler(skill_router=None, base_system="BASE", catalog=_TERSE_CATALOG)
+    assert full_asm.prefix_fingerprint() != terse_asm.prefix_fingerprint()
+    # full prefix is longer (more catalog text)
+    assert len(full_asm.canonical_prefix()) > len(terse_asm.canonical_prefix())
+
+
+def test_measure_prompt_segments_terse_skill_catalog_smaller_than_full():
+    """measure_prompt_segments shows a smaller skill_catalog token count under terse
+    than under full when descriptions have multiple sentences."""
+    with patch("services.memory.tokenizer.token_count", side_effect=_stub_token_count):
+        full_asm = PromptAssembler(
+            skill_router=None, base_system="BASE", catalog=_MULTI_SENTENCE_CATALOG
+        )
+        terse_asm = PromptAssembler(skill_router=None, base_system="BASE", catalog=_TERSE_CATALOG)
+        full_seg = measure_prompt_segments(full_asm, [full_asm.system_message()])
+        terse_seg = measure_prompt_segments(terse_asm, [terse_asm.system_message()])
+
+    assert terse_seg["skill_catalog"] < full_seg["skill_catalog"], (
+        f"terse skill_catalog ({terse_seg['skill_catalog']}) should be < "
+        f"full skill_catalog ({full_seg['skill_catalog']})"
+    )
