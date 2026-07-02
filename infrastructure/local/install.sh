@@ -35,15 +35,21 @@ mkdir -p "${REPO_ROOT}/.data/logs" "${REPO_ROOT}/.data/pids"
 # ─── Tunables (override via env) ──────────────────────────────────────────────
 export HF_HOME="${HF_HOME:-/workspace/.hf-cache}"
 LLAMA_DIR="${LLAMA_DIR:-/workspace/llama.cpp}"
-MODEL_DIR="${MODEL_DIR:-/workspace/models/gemma-4-gguf}"
-GGUF_REPO="${GGUF_REPO:-unsloth/gemma-4-31B-it-GGUF}"
-GGUF_FILE="${GGUF_FILE:-gemma-4-31B-it-UD-Q4_K_XL.gguf}"
+# Served model — keep in sync with local.env's MODEL (serve-model.sh serves that path).
+# The 12B is the default (single-GPU; ~2x faster than the 31B and fits its full 262144 ctx
+# on a 48 GB card). Override GGUF_REPO/MODEL_DIR/GGUF_FILE via env for a different model.
+MODEL_DIR="${MODEL_DIR:-/workspace/models/gemma-4-12b-gguf}"
+GGUF_REPO="${GGUF_REPO:-unsloth/gemma-4-12b-it-GGUF}"   # verify matches your HF source; env-overridable
+GGUF_FILE="${GGUF_FILE:-gemma-4-12b-it-UD-Q4_K_XL.gguf}"
 
 # Tokenizer for the ast-repo-map skill's token budgeting. We download only the
 # tokenizer FILES of the served model (not the weights), so it costs no VRAM and
 # ~31MB on disk. The skill loads it from this dir via REPO_MAP_TOKENIZER (local.env).
+# 12B & 31B share the gemma-4 tokenizer, so the (identical) tokenizer files still apply.
+# PIN the dir to the path local.env's REPO_MAP_TOKENIZER already points at — independent of
+# MODEL_DIR — so swapping the GGUF to the 12B does not move the tokenizer out from under it.
 TOKENIZER_REPO="${TOKENIZER_REPO:-google/gemma-4-31B-it}"
-TOKENIZER_DIR="${TOKENIZER_DIR:-${MODEL_DIR}/tokenizer}"
+TOKENIZER_DIR="${TOKENIZER_DIR:-/workspace/models/gemma-4-gguf/tokenizer}"
 
 # SearXNG (native metasearch for the web-search skill).
 SEARXNG_DIR="${SEARXNG_DIR:-/workspace/searxng}"

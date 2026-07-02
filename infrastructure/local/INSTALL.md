@@ -67,10 +67,11 @@ System Python is **PEP-668 externally-managed**, so installs use
 **Build:** `cmake -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=86` (A6000 = sm_86),
 target `llama-server`. Output: `/workspace/llama.cpp/build/bin/llama-server`.
 
-**Model:** GGUF from `unsloth/gemma-4-31B-it-GGUF`, quant **`UD-Q4_K_XL`**
-(18.8 GB, Unsloth *Dynamic* — higher accuracy than plain Q4_0/Q4_K per §8.5),
-downloaded to `/workspace/models/gemma-4-gguf/`. The `mtp-gemma-4-31B-it.gguf`
-draft model is available for speculative decoding if desired.
+**Model:** GGUF from `unsloth/gemma-4-12b-it-GGUF`, quant **`UD-Q4_K_XL`**
+(~7.4 GB, Unsloth *Dynamic* — higher accuracy than plain Q4_0/Q4_K per §8.5),
+downloaded to `/workspace/models/gemma-4-12b-gguf/` (kept in sync with `local.env`'s
+`MODEL`). The 12B fits its full 262144-token context on a 48 GB card and routes on par
+with the 31B; override `GGUF_REPO`/`MODEL_DIR`/`GGUF_FILE` to serve a different model.
 
 **Serve:** `llama-server -m <gguf> --jinja --n-gpu-layers 999 --ctx-size 16384`
 on `127.0.0.1:8000`. `--jinja` uses the GGUF's embedded chat template, which
