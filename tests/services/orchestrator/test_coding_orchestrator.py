@@ -1360,6 +1360,17 @@ class TestAsyncOrchestratorInit:
         assert orch.workspace == "."
         assert orch.max_steps == 6
 
+    def test_init_defaults_agent_instructions_empty(self):
+        """Regression: AsyncOrchestrator must define agent_instructions (default "").
+
+        The ReAct loop (_run_react_loop) reads self.agent_instructions to inject
+        AGENTS.md into the cached prefix; the graph execute node propagates the real
+        per-task value from the CodingOrchestrator. Without this default, react_execute
+        driven directly (tests, or before the graph sets it) raised AttributeError.
+        """
+        orch = AsyncOrchestrator()
+        assert orch.agent_instructions == ""
+
 
 @pytest.mark.mocked
 class TestReactExecuteBudget:

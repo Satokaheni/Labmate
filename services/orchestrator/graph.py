@@ -316,6 +316,9 @@ def make_nodes(orch: CodingOrchestrator, async_orch: AsyncOrchestrator):
 
         # Set the active session_id for context_manager in _run_react_loop
         async_orch._active_session_id = state.get("session_id", "")
+        # Propagate per-task AGENTS.md instructions to the ReAct loop (which runs on
+        # async_orch, a different object than the CodingOrchestrator that holds them).
+        async_orch.agent_instructions = getattr(orch, "agent_instructions", "")
 
         results = await async_orch.plan_and_dispatch(ready)
         last_artifact = {"type": "other", "payload": ""}
