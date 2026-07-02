@@ -4,12 +4,13 @@ Tests that:
 1. code-sandbox advertises the expected tools (run_python, run_shell, run_tests, install_packages)
 2. Unknown tool errors list the valid tool names (addressing the Task 4 discoverability fix)
 """
-import asyncio
+
 import pytest
 
-from tests.live.conftest import require_service
 from services.skill_runner.skill_registry import SkillRegistry, SkillUnavailable
 from services.skill_worker.manifest_loader import discover_manifests
+from tests.live.conftest import require_service
+from tests.live.skill_harness import teardown_skill
 
 pytestmark = pytest.mark.live
 
@@ -32,11 +33,8 @@ async def test_code_sandbox_advertises_expected_tools():
         for name in ("run_python", "run_shell", "run_tests", "install_packages"):
             assert name in sp.tools
     finally:
-        # Clean up: cancel the background skill process
         for sp in reg._skills.values():
-            if sp._run_task:
-                sp._run_task.cancel()
-        await asyncio.sleep(0.1)  # Allow cancellation to process
+            await teardown_skill(reg, sp)
 
 
 @pytest.mark.asyncio
@@ -65,8 +63,5 @@ async def test_unknown_tool_lists_valid_names():
         assert "run_pytest" in msg
         assert "run_tests" in msg
     finally:
-        # Clean up: cancel the background skill process
         for sp in reg._skills.values():
-            if sp._run_task:
-                sp._run_task.cancel()
-        await asyncio.sleep(0.1)  # Allow cancellation to process
+            await teardown_skill(reg, sp)
