@@ -32,7 +32,7 @@ import { readRightView, writeRightView, type RightView } from './rightViewStore'
  * while wiring the live WebSocket state in place of the prototype data.
  * ------------------------------------------------------------------ */
 
-type Mode = 'chat' | 'paper' | 'code';
+export type Mode = 'chat' | 'paper' | 'code';
 
 const MODE_META: Record<Mode, { icon: string; label: string; noun: string; chip: string; budget: number }> = {
   chat: { icon: '💬', label: 'Chat', noun: 'chat', chip: '💬 Chat', budget: 1000 },
