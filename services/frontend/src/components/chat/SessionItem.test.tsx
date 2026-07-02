@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Session } from '@/types/events';
 import { SessionItem } from './ChatScreen';
 
@@ -26,5 +26,38 @@ describe('SessionItem', () => {
 
     fireEvent.mouseLeave(row);
     expect(screen.getByText(/3 turns/)).toBeInTheDocument();
+  });
+
+  it('calls onOpen on Enter keydown', () => {
+    const onOpen = vi.fn();
+    render(<SessionItem session={s} active={false} onOpen={onOpen} onRename={() => {}} onDelete={() => {}} />);
+
+    const row = screen.getByRole('button', { name: /My chat/ });
+    fireEvent.keyDown(row, { key: 'Enter' });
+
+    expect(onOpen).toHaveBeenCalledWith('s-1');
+  });
+
+  it('calls onOpen on Space keydown', () => {
+    const onOpen = vi.fn();
+    render(<SessionItem session={s} active={false} onOpen={onOpen} onRename={() => {}} onDelete={() => {}} />);
+
+    const row = screen.getByRole('button', { name: /My chat/ });
+    fireEvent.keyDown(row, { key: ' ' });
+
+    expect(onOpen).toHaveBeenCalledWith('s-1');
+  });
+
+  it('does NOT call onOpen when keydown originates from an inner action button', () => {
+    const onOpen = vi.fn();
+    render(<SessionItem session={s} active={false} onOpen={onOpen} onRename={() => {}} onDelete={() => {}} />);
+
+    const row = screen.getByRole('button', { name: /My chat/ });
+    fireEvent.mouseEnter(row);
+
+    const renameBtn = screen.getByTitle('Rename');
+    fireEvent.keyDown(renameBtn, { key: 'Enter' });
+
+    expect(onOpen).not.toHaveBeenCalled();
   });
 });

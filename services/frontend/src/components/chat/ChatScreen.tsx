@@ -997,10 +997,20 @@ export function SessionItem(props: {
   }
 
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       className="lm-btn"
       onClick={() => onOpen(s.id)}
+      onKeyDown={(e) => {
+        if (isRenaming) return;
+        const target = e.target as HTMLElement;
+        if (target.tagName === 'BUTTON') return;
+        if (e.key === 'Enter' || e.key === ' ') {
+          if (e.key === ' ') e.preventDefault();
+          onOpen(s.id);
+        }
+      }}
       onMouseEnter={() => setIsHovering(true)}
       onMouseLeave={() => setIsHovering(false)}
       style={sessionItemStyle(active)}
@@ -1066,7 +1076,7 @@ export function SessionItem(props: {
       {meta && (
         <span style={{ display: 'block', fontSize: 11, color: '#5e6671', marginTop: 4, fontFamily: "'IBM Plex Mono'" }}>{meta}</span>
       )}
-    </button>
+    </div>
   );
 }
 
