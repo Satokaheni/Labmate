@@ -23,6 +23,9 @@ import { useWorkspace } from './useWorkspace';
 import { WorkspaceRoots } from './WorkspaceRoots';
 import { WorkspaceSetupModal } from './WorkspaceSetupModal';
 import { MentionPopup } from './MentionPopup';
+import { readRightView, writeRightView, type RightView } from './rightViewStore';
+import { NewSessionWelcome } from './NewSessionWelcome';
+import { greetingFor } from './newSessionContent';
 
 /* ------------------------------------------------------------------ *
  * Faithful rebuild of Labmate.dc.html (the design comp). The comp is
@@ -31,7 +34,7 @@ import { MentionPopup } from './MentionPopup';
  * while wiring the live WebSocket state in place of the prototype data.
  * ------------------------------------------------------------------ */
 
-type Mode = 'chat' | 'paper' | 'code';
+export type Mode = 'chat' | 'paper' | 'code';
 
 const MODE_META: Record<Mode, { icon: string; label: string; noun: string; chip: string; budget: number }> = {
   chat: { icon: '💬', label: 'Chat', noun: 'chat', chip: '💬 Chat', budget: 1000 },
@@ -931,7 +934,7 @@ function sysRow(color: string, label: string, value: string, pulse = false): Rea
   );
 }
 
-function SessionItem(props: {
+export function SessionItem(props: {
   session: Session;
   active: boolean;
   onOpen: (id: string) => void;
@@ -994,10 +997,20 @@ function SessionItem(props: {
   }
 
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       className="lm-btn"
       onClick={() => onOpen(s.id)}
+      onKeyDown={(e) => {
+        if (isRenaming) return;
+        const target = e.target as HTMLElement;
+        if (target.tagName === 'BUTTON') return;
+        if (e.key === 'Enter' || e.key === ' ') {
+          if (e.key === ' ') e.preventDefault();
+          onOpen(s.id);
+        }
+      }}
       onMouseEnter={() => setIsHovering(true)}
       onMouseLeave={() => setIsHovering(false)}
       style={sessionItemStyle(active)}
@@ -1009,51 +1022,61 @@ function SessionItem(props: {
             {s.title || `Session ${s.id.slice(0, 6)}`}
           </span>
         </span>
-        {isHovering && (
-          <span style={{ display: 'flex', gap: 4, marginLeft: 8, flexShrink: 0 }}>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setIsRenaming(true);
-              }}
-              style={{
-                background: 'none',
-                border: 'none',
-                color: '#6b727d',
-                cursor: 'pointer',
-                fontSize: 11,
-                padding: 0,
-              }}
-              title="Rename"
-            >
-              ✎
-            </button>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleDelete();
-              }}
-              style={{
-                background: 'none',
-                border: 'none',
-                color: '#6b727d',
-                cursor: 'pointer',
-                fontSize: 11,
-                padding: 0,
-              }}
-              title="Delete"
-            >
-              ✕
-            </button>
-          </span>
-        )}
+        <span
+          aria-hidden={!isHovering}
+          style={{
+            display: 'flex',
+            gap: 4,
+            marginLeft: 8,
+            flexShrink: 0,
+            visibility: isHovering ? 'visible' : 'hidden',
+            pointerEvents: isHovering ? 'auto' : 'none',
+          }}
+        >
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsRenaming(true);
+            }}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: '#6b727d',
+              cursor: 'pointer',
+              fontSize: 11,
+              padding: 0,
+            }}
+            title="Rename"
+            tabIndex={isHovering ? 0 : -1}
+          >
+            ✎
+          </button>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              handleDelete();
+            }}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: '#6b727d',
+              cursor: 'pointer',
+              fontSize: 11,
+              padding: 0,
+            }}
+            title="Delete"
+            tabIndex={isHovering ? 0 : -1}
+          >
+            ✕
+          </button>
+        </span>
       </span>
-      {!isHovering && meta && (
+      {meta && (
         <span style={{ display: 'block', fontSize: 11, color: '#5e6671', marginTop: 4, fontFamily: "'IBM Plex Mono'" }}>{meta}</span>
       )}
-    </button>
+    </div>
   );
 }
 
@@ -1355,8 +1378,8 @@ export function isCompactCommand(text: string): boolean {
   return text.trim() === '/compact';
 }
 
-function Composer(props: { mode: Mode; budget: number; sessionId: string; onSend: (text: string) => void; onCompact: () => void; isStreaming: boolean; onStop: () => void }) {
-  const { mode, budget, sessionId, onSend, onCompact, isStreaming, onStop } = props;
+export function Composer(props: { mode: Mode; budget: number; sessionId: string; onSend: (text: string) => void; onCompact: () => void; isStreaming: boolean; onStop: () => void; seed?: { text: string; nonce: number } | null; onSeedConsumed?: () => void }) {
+  const { mode, budget, sessionId, onSend, onCompact, isStreaming, onStop, seed, onSeedConsumed } = props;
   const api = typeof window !== 'undefined' ? window.electronAPI : undefined;
   const [text, setText] = useState('');
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -1376,6 +1399,19 @@ function Composer(props: { mode: Mode; budget: number; sessionId: string; onSend
     el.style.height = 'auto';
     el.style.height = `${Math.min(el.scrollHeight, COMPOSER_MAX_H)}px`;
   }, [text]);
+
+  // Seed effect: when a new nonce arrives, prefill the textarea, focus it,
+  // then immediately call onSeedConsumed so ChatScreen clears seed to null.
+  // This makes the seed a one-shot: any later remount (send → thread branch,
+  // or navigate to another session) sees seed=null and the effect is a no-op.
+  const lastSeedNonce = useRef<number | null>(null);
+  useEffect(() => {
+    if (!seed || seed.nonce === lastSeedNonce.current) return;
+    lastSeedNonce.current = seed.nonce;
+    setText(seed.text);
+    requestAnimationFrame(() => taRef.current?.focus());
+    onSeedConsumed?.();
+  }, [seed, onSeedConsumed]);
 
   const updateMention = (value: string, caret: number) => {
     const mention = detectMention(value, caret);
@@ -1801,8 +1837,11 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug, rename
   }, [scrollSignal]);
 
   const [mode, setMode] = useState<Mode>(() => normMode(activeSession?.mode));
-  const [rightView, setRightView] = useState<'skills' | 'files' | null>('skills');
+  const [rightView, setRightView] = useState<RightView>(() => readRightView());
   const [debug, setLocalDebug] = useState(false);
+  const [seed, setSeed] = useState<{ text: string; nonce: number } | null>(null);
+  const seedNonce = useRef(0);
+  const seedComposer = (text: string) => setSeed({ text, nonce: ++seedNonce.current });
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
   const [thoughtOpen, setThoughtOpen] = useState<Record<string, boolean>>({});
   const [skillOpen, setSkillOpen] = useState<Record<string, boolean>>({});
@@ -1893,12 +1932,15 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug, rename
     if (activeSessionId) setDebug(activeSessionId, next);
   };
 
-  const showRight = debug || rightView !== null;
+  const showRightView = (v: RightView) => { writeRightView(v); setRightView(v); };
+
+  const showWelcome = turns.length === 0;
+  const showRight = (debug || rightView !== null) && !showWelcome;
 
   return (
     <div style={{ height: '100vh', width: '100%', display: 'flex', flexDirection: 'column', background: '#0f1115', color: '#e6e8ec', overflow: 'hidden' }}>
       <TopBar
-        sessionTitle={activeSession?.title ?? 'New session'}
+        sessionTitle={showWelcome ? 'New chat' : (activeSession?.title ?? 'New session')}
         rightView={rightView}
         debug={debug}
         roots={roots}
@@ -1907,8 +1949,8 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug, rename
         onToggleSidebar={toggleSidebar}
         onAddRoot={addRoot}
         onRemoveRoot={removeRoot}
-        onSkills={() => setRightView((v) => (v === 'skills' ? null : 'skills'))}
-        onFiles={() => setRightView((v) => (v === 'files' ? null : 'files'))}
+        onSkills={() => showRightView(rightView === 'skills' ? null : 'skills')}
+        onFiles={() => showRightView(rightView === 'files' ? null : 'files')}
         onToggleDebug={toggleDebug}
       />
 
@@ -1935,60 +1977,80 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug, rename
 
         {/* center conversation */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: '#0f1115', minWidth: 0 }}>
-          <div
-            className="lm-scroll"
-            ref={convScrollRef}
-            onScroll={() => {
-              const el = convScrollRef.current;
-              if (el) {
-                stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+          {showWelcome ? (
+            <NewSessionWelcome
+              mode={mode}
+              greeting={greetingFor(new Date())}
+              onStarter={seedComposer}
+              composer={
+                <Composer
+                  mode={mode}
+                  budget={budget}
+                  sessionId={wsId}
+                  onSend={(text) => send(text, wsId, roots[0])}
+                  onCompact={() => compact(wsId)}
+                  isStreaming={!!streamingTurn}
+                  onStop={() => { if (streamingTurn) cancel(streamingTurn.id); }}
+                  seed={seed}
+                  onSeedConsumed={() => setSeed(null)}
+                />
               }
-            }}
-            style={{ flex: 1, overflowY: 'auto', padding: '34px 0 22px' }}
-          >
-            <div style={{ maxWidth: 680, margin: '0 auto', padding: '0 24px' }}>
-              {turns.length === 0 && (
-                <div style={{ fontSize: 14, color: '#5e6671', textAlign: 'center', marginTop: 40 }}>
-                  Ask anything to get started.
+            />
+          ) : (
+            <>
+              <div
+                className="lm-scroll"
+                ref={convScrollRef}
+                onScroll={() => {
+                  const el = convScrollRef.current;
+                  if (el) {
+                    stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+                  }
+                }}
+                style={{ flex: 1, overflowY: 'auto', padding: '34px 0 22px' }}
+              >
+                <div style={{ maxWidth: 680, margin: '0 auto', padding: '0 24px' }}>
+                  {turns.map((t) =>
+                    t.role === 'user' ? (
+                      <UserBubble key={t.id} text={t.text ?? ''} />
+                    ) : (
+                      <AssistantTurnView
+                        key={t.id}
+                        turn={t}
+                        active={t.status === 'streaming'}
+                        thoughtOpen={!!thoughtOpen[t.id]}
+                        onToggleThought={() => setThoughtOpen((m) => ({ ...m, [t.id]: !m[t.id] }))}
+                        onOpenSkills={() => {
+                          setSkillsTurnId(t.id);
+                          showRightView('skills');
+                        }}
+                        onOpenArtifact={(a) => {
+                          setActiveFileId(a.id);
+                          showRightView('files');
+                        }}
+                        activeFileId={activeFileId}
+                      />
+                    )
+                  )}
                 </div>
-              )}
-              {turns.map((t) =>
-                t.role === 'user' ? (
-                  <UserBubble key={t.id} text={t.text ?? ''} />
-                ) : (
-                  <AssistantTurnView
-                    key={t.id}
-                    turn={t}
-                    active={t.status === 'streaming'}
-                    thoughtOpen={!!thoughtOpen[t.id]}
-                    onToggleThought={() => setThoughtOpen((m) => ({ ...m, [t.id]: !m[t.id] }))}
-                    onOpenSkills={() => {
-                      setSkillsTurnId(t.id);
-                      setRightView('skills');
-                    }}
-                    onOpenArtifact={(a) => {
-                      setActiveFileId(a.id);
-                      setRightView('files');
-                    }}
-                    activeFileId={activeFileId}
-                  />
-                )
-              )}
-            </div>
-          </div>
+              </div>
 
-          <ContextStrip window={state.contextWindow} open={sysOpen} onToggle={() => setSysOpen((o) => !o)} />
-          <Composer
-            mode={mode}
-            budget={budget}
-            sessionId={wsId}
-            onSend={(text) => send(text, wsId, roots[0])}
-            onCompact={() => compact(wsId)}
-            isStreaming={!!streamingTurn}
-            onStop={() => {
-              if (streamingTurn) cancel(streamingTurn.id);
-            }}
-          />
+              <ContextStrip window={state.contextWindow} open={sysOpen} onToggle={() => setSysOpen((o) => !o)} />
+              <Composer
+                mode={mode}
+                budget={budget}
+                sessionId={wsId}
+                onSend={(text) => send(text, wsId, roots[0])}
+                onCompact={() => compact(wsId)}
+                isStreaming={!!streamingTurn}
+                onStop={() => {
+                  if (streamingTurn) cancel(streamingTurn.id);
+                }}
+                seed={seed}
+                onSeedConsumed={() => setSeed(null)}
+              />
+            </>
+          )}
         </div>
 
         {/* right column */}

@@ -129,6 +129,12 @@ body {
   cursor: pointer;
 }
 
+@keyframes heroin {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.lm-heroin { animation: heroin 0.5s ease both; }
+
 /* Spin speed utility classes (applied to a <g>) */
 .orbit-spin-fast {
   animation: orbitspin 1.4s linear infinite;
