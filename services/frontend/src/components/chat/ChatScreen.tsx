@@ -24,6 +24,8 @@ import { WorkspaceRoots } from './WorkspaceRoots';
 import { WorkspaceSetupModal } from './WorkspaceSetupModal';
 import { MentionPopup } from './MentionPopup';
 import { readRightView, writeRightView, type RightView } from './rightViewStore';
+import { NewSessionWelcome } from './NewSessionWelcome';
+import { greetingFor } from './newSessionContent';
 
 /* ------------------------------------------------------------------ *
  * Faithful rebuild of Labmate.dc.html (the design comp). The comp is
@@ -1823,6 +1825,9 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug, rename
   const [mode, setMode] = useState<Mode>(() => normMode(activeSession?.mode));
   const [rightView, setRightView] = useState<RightView>(() => readRightView());
   const [debug, setLocalDebug] = useState(false);
+  const [seed, setSeed] = useState<{ text: string; nonce: number } | null>(null);
+  const seedNonce = useRef(0);
+  const seedComposer = (text: string) => setSeed({ text, nonce: ++seedNonce.current });
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
   const [thoughtOpen, setThoughtOpen] = useState<Record<string, boolean>>({});
   const [skillOpen, setSkillOpen] = useState<Record<string, boolean>>({});
@@ -1915,12 +1920,13 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug, rename
 
   const showRightView = (v: RightView) => { writeRightView(v); setRightView(v); };
 
-  const showRight = debug || rightView !== null;
+  const showWelcome = turns.length === 0;
+  const showRight = (debug || rightView !== null) && !showWelcome;
 
   return (
     <div style={{ height: '100vh', width: '100%', display: 'flex', flexDirection: 'column', background: '#0f1115', color: '#e6e8ec', overflow: 'hidden' }}>
       <TopBar
-        sessionTitle={activeSession?.title ?? 'New session'}
+        sessionTitle={showWelcome ? 'New chat' : (activeSession?.title ?? 'New session')}
         rightView={rightView}
         debug={debug}
         roots={roots}
@@ -1957,60 +1963,78 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug, rename
 
         {/* center conversation */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: '#0f1115', minWidth: 0 }}>
-          <div
-            className="lm-scroll"
-            ref={convScrollRef}
-            onScroll={() => {
-              const el = convScrollRef.current;
-              if (el) {
-                stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+          {showWelcome ? (
+            <NewSessionWelcome
+              mode={mode}
+              greeting={greetingFor(new Date())}
+              onStarter={seedComposer}
+              composer={
+                <Composer
+                  mode={mode}
+                  budget={budget}
+                  sessionId={wsId}
+                  onSend={(text) => send(text, wsId, roots[0])}
+                  onCompact={() => compact(wsId)}
+                  isStreaming={!!streamingTurn}
+                  onStop={() => { if (streamingTurn) cancel(streamingTurn.id); }}
+                  seed={seed}
+                />
               }
-            }}
-            style={{ flex: 1, overflowY: 'auto', padding: '34px 0 22px' }}
-          >
-            <div style={{ maxWidth: 680, margin: '0 auto', padding: '0 24px' }}>
-              {turns.length === 0 && (
-                <div style={{ fontSize: 14, color: '#5e6671', textAlign: 'center', marginTop: 40 }}>
-                  Ask anything to get started.
+            />
+          ) : (
+            <>
+              <div
+                className="lm-scroll"
+                ref={convScrollRef}
+                onScroll={() => {
+                  const el = convScrollRef.current;
+                  if (el) {
+                    stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+                  }
+                }}
+                style={{ flex: 1, overflowY: 'auto', padding: '34px 0 22px' }}
+              >
+                <div style={{ maxWidth: 680, margin: '0 auto', padding: '0 24px' }}>
+                  {turns.map((t) =>
+                    t.role === 'user' ? (
+                      <UserBubble key={t.id} text={t.text ?? ''} />
+                    ) : (
+                      <AssistantTurnView
+                        key={t.id}
+                        turn={t}
+                        active={t.status === 'streaming'}
+                        thoughtOpen={!!thoughtOpen[t.id]}
+                        onToggleThought={() => setThoughtOpen((m) => ({ ...m, [t.id]: !m[t.id] }))}
+                        onOpenSkills={() => {
+                          setSkillsTurnId(t.id);
+                          showRightView('skills');
+                        }}
+                        onOpenArtifact={(a) => {
+                          setActiveFileId(a.id);
+                          showRightView('files');
+                        }}
+                        activeFileId={activeFileId}
+                      />
+                    )
+                  )}
                 </div>
-              )}
-              {turns.map((t) =>
-                t.role === 'user' ? (
-                  <UserBubble key={t.id} text={t.text ?? ''} />
-                ) : (
-                  <AssistantTurnView
-                    key={t.id}
-                    turn={t}
-                    active={t.status === 'streaming'}
-                    thoughtOpen={!!thoughtOpen[t.id]}
-                    onToggleThought={() => setThoughtOpen((m) => ({ ...m, [t.id]: !m[t.id] }))}
-                    onOpenSkills={() => {
-                      setSkillsTurnId(t.id);
-                      showRightView('skills');
-                    }}
-                    onOpenArtifact={(a) => {
-                      setActiveFileId(a.id);
-                      showRightView('files');
-                    }}
-                    activeFileId={activeFileId}
-                  />
-                )
-              )}
-            </div>
-          </div>
+              </div>
 
-          <ContextStrip window={state.contextWindow} open={sysOpen} onToggle={() => setSysOpen((o) => !o)} />
-          <Composer
-            mode={mode}
-            budget={budget}
-            sessionId={wsId}
-            onSend={(text) => send(text, wsId, roots[0])}
-            onCompact={() => compact(wsId)}
-            isStreaming={!!streamingTurn}
-            onStop={() => {
-              if (streamingTurn) cancel(streamingTurn.id);
-            }}
-          />
+              <ContextStrip window={state.contextWindow} open={sysOpen} onToggle={() => setSysOpen((o) => !o)} />
+              <Composer
+                mode={mode}
+                budget={budget}
+                sessionId={wsId}
+                onSend={(text) => send(text, wsId, roots[0])}
+                onCompact={() => compact(wsId)}
+                isStreaming={!!streamingTurn}
+                onStop={() => {
+                  if (streamingTurn) cancel(streamingTurn.id);
+                }}
+                seed={seed}
+              />
+            </>
+          )}
         </div>
 
         {/* right column */}
