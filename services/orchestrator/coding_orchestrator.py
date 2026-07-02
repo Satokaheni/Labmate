@@ -289,6 +289,10 @@ class AsyncOrchestrator:
         self.tpm_limiter = AsyncLimiter(tpm, 60)
         self.budget = TokenBudget(budget)
         self.results: dict[str, Result] = {}
+        # Per-task AGENTS.md instructions for the ReAct loop's cached prefix. Defaults
+        # to "" so react_execute works when driven directly (tests); the graph execute
+        # node propagates the real value from the CodingOrchestrator per task.
+        self.agent_instructions: str = ""
         self._qwen_base = qwen_api_base
         self._gemma_base = gemma_api_base
         # Ordered endpoint list for failover (primary + LABMATE_FALLBACK_BASES).
