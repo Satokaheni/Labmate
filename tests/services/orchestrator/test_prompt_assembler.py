@@ -349,3 +349,76 @@ def test_workspace_root_different_paths_produce_different_prefixes():
     # Prefixes should differ because the workspace roots differ.
     assert a.canonical_prefix() != b.canonical_prefix()
     assert a.prefix_fingerprint() != b.prefix_fingerprint()
+
+
+# ---------------------------------------------------------------------------
+# AGENTS.md — agent_instructions param
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.mocked
+def test_agent_instructions_appear_in_system_message():
+    """PromptAssembler(agent_instructions=...) places the text in system_message()['content']."""
+    instructions = "Follow the house style."
+    a = PromptAssembler(skill_router=None, codegraph_enabled=False, agent_instructions=instructions)
+    content = a.system_message()["content"]
+    assert instructions in content
+    # The section header is also present.
+    assert "Project instructions (AGENTS.md)" in content
+
+
+@pytest.mark.mocked
+def test_agent_instructions_in_canonical_prefix():
+    """agent_instructions text is part of canonical_prefix (and hence prefix_fingerprint)."""
+    instructions = "Follow the house style."
+    a = PromptAssembler(skill_router=None, codegraph_enabled=False, agent_instructions=instructions)
+    assert instructions in a.canonical_prefix()
+
+
+@pytest.mark.mocked
+def test_agent_instructions_cache_stability():
+    """Two assemblers built with identical agent_instructions produce identical fingerprints."""
+    instructions = "Always write type annotations."
+    a = PromptAssembler(skill_router=None, codegraph_enabled=False, agent_instructions=instructions)
+    b = PromptAssembler(skill_router=None, codegraph_enabled=False, agent_instructions=instructions)
+    assert a.prefix_fingerprint() == b.prefix_fingerprint()
+    assert a.canonical_prefix() == b.canonical_prefix()
+
+
+@pytest.mark.mocked
+def test_agent_instructions_changes_fingerprint():
+    """An assembler WITH agent_instructions has a DIFFERENT fingerprint than one without."""
+    with_instructions = PromptAssembler(
+        skill_router=None, codegraph_enabled=False, agent_instructions="Some project rules."
+    )
+    without_instructions = PromptAssembler(skill_router=None, codegraph_enabled=False)
+    assert with_instructions.prefix_fingerprint() != without_instructions.prefix_fingerprint()
+
+
+@pytest.mark.mocked
+def test_agent_instructions_empty_string_byte_identical_to_no_arg():
+    """PromptAssembler(agent_instructions='') is byte-identical to PromptAssembler() — backward compat."""
+    a = PromptAssembler(skill_router=None, codegraph_enabled=False)
+    b = PromptAssembler(skill_router=None, codegraph_enabled=False, agent_instructions="")
+    assert a.system_message()["content"] == b.system_message()["content"]
+    assert a.canonical_prefix() == b.canonical_prefix()
+    assert a.prefix_fingerprint() == b.prefix_fingerprint()
+
+
+@pytest.mark.mocked
+def test_agent_instructions_whitespace_only_byte_identical_to_no_arg():
+    """Whitespace-only agent_instructions is treated as empty — byte-identical prefix."""
+    a = PromptAssembler(skill_router=None, codegraph_enabled=False)
+    b = PromptAssembler(skill_router=None, codegraph_enabled=False, agent_instructions="   \n  ")
+    assert a.system_message()["content"] == b.system_message()["content"]
+    assert a.canonical_prefix() == b.canonical_prefix()
+    assert a.prefix_fingerprint() == b.prefix_fingerprint()
+
+
+@pytest.mark.mocked
+def test_agent_instructions_appears_after_base_prompt():
+    """The AGENTS.md section is appended after BASE_SYSTEM_PROMPT, not before it."""
+    instructions = "Prefer functional patterns."
+    a = PromptAssembler(skill_router=None, codegraph_enabled=False, agent_instructions=instructions)
+    content = a.system_message()["content"]
+    assert content.find(BASE_SYSTEM_PROMPT) < content.find(instructions)
