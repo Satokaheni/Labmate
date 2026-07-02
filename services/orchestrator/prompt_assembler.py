@@ -263,6 +263,7 @@ class PromptAssembler:
         catalog: str | None = None,
         client_manifest: ClientManifest | None = None,
         workspace_root: str | None = None,
+        agent_instructions: str = "",
     ) -> None:
         # Resolve the skill catalog deterministically: explicit catalog wins;
         # otherwise pull it from the runner if a skill_router is present.
@@ -311,6 +312,15 @@ class PromptAssembler:
                 "local file tools (read_file/write_file/search_files) still take workspace-relative paths."
             )
             system_text = f"{system_text}\n\n{workspace_root_clause}"
+
+        # Append project instructions (AGENTS.md) when present.
+        # CRITICAL: when agent_instructions is empty/whitespace, this block MUST NOT execute —
+        # the system_text content must remain byte-identical to the pre-change output.
+        _agent_instructions = agent_instructions.strip() if agent_instructions else ""
+        if _agent_instructions:
+            system_text = (
+                f"{system_text}\n\n# Project instructions (AGENTS.md)\n\n{_agent_instructions}"
+            )
 
         self._system_msg: dict = {"role": "system", "content": system_text}
         # Store the resolved skill catalog separately so per-segment token

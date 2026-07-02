@@ -522,6 +522,7 @@ class AsyncOrchestrator:
             memory_enabled=self.memory_search is not None,
             client_manifest=client_context.get_manifest(),
             workspace_root=client_context.get_workspace_root(),
+            agent_instructions=self.agent_instructions or "",
         )
         tools = assembler.tools()  # frozen list — never rebuilt per step
         # Compute the set of tools that route to the local client (if attached).
