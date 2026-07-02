@@ -490,26 +490,57 @@ honor `SKILL_CATALOG_MODE = full | terse | names` (default `full`). `terse` = na
 
 ---
 
-## Phase 3 — Smarter reads (variable cost; cache-neutral; do regardless of the window verdict)
+## Phase 3 — `read_file` line-range (RESCOPED after the client-seam map, 2026-07-01)
 
-The research flags `tool_results` as the variable cost that actually spikes the window on real work
-(the original 14k full-file-read case). Cache-neutral (tail-only), so it's safe independent of the
-prefix work.
+**Scope correction:** the seam map dissolved most of the original Phase 3. `search_files` ALREADY
+returns compact matched lines (`{file,line,text}`, cap 200) — not whole files — so the "snippet
+instead of whole files" task was a wrong premise and is **DROPPED**. `read_file` results are already
+budgeted to 16k (`ground_tool_result`), and the 12B's 256k window relieves window pressure. So this
+phase is **NOT a window fix** — it's a **capability/precision** win: `read_file` line-range lets the
+model read exactly the lines it needs (e.g. lines 200–250 of a 2,000-line file) instead of a
+16k-truncated head+tail that may not even contain them. Line numbers are 1-based to compose with
+`search_files` hits (search → `read_file(offset=hit.line)`).
 
-**Files:** Modify `CANONICAL_BUILTIN_SCHEMAS` (tool_manifest.py:21-122) for `read_file` +
-`search_files`; the client-side local-tool handler must honor the new params (coordinate with the
-local-execution layer — a client that ignores them must still return the whole file, i.e. additive
-and backward-compatible).
+**Out of scope (flagged separately):** `search_files` is wired only in the Electron client, NOT the
+CLI fallback (`LOCAL_TOOL_NAMES = {read_file, write_file, list_dir}`, local_tools.py:30) — a real
+capability gap, but a bug, not this token/precision work.
 
-- [ ] **Task 3.1** — `read_file` schema gains optional `offset`/`limit` (line range); client honors
-  them; unit test the schema + a contract test that an old client ignoring them still works.
-- [ ] **Task 3.2** — `search_files` returns a snippet (matched line ± context) instead of whole
-  files; test the snippet shape and the token reduction on a fixture.
-- [ ] **Task 3.3** — measure on a read-heavy fixture task; record the `tool_results` reduction.
+### Task 3.1: `read_file` optional `offset`/`limit` (both client executors)
 
-> **Code-mode / programmatic tool calling** (results stay in a sandbox, only a summary enters
-> context — the research's biggest variable-cost win) is noted as a **future stretch**, NOT in scope
-> here — it's a larger surface and the research says do the high-leverage pieces and STOP.
+**Semantics (identical in both executors):** `offset` = 1-based line to start (default 1);
+`limit` = max lines to return (default: all remaining). BOTH omitted → whole file (byte-identical
+to today). `offset` past EOF → empty content. Return shape stays `{"content": <str>}` (no new keys,
+so existing assertions pass). Unknown args are already ignored by both executors, so an old client
+returns the whole file — additive/backward-compatible with no manifest change (the manifest declares
+tool NAMES only, no per-param support).
+
+**Files:**
+- Modify: `services/orchestrator/tool_manifest.py` — `CANONICAL_BUILTIN_SCHEMAS["read_file"]`
+  (:22-35): add optional `offset`/`limit` integer params + a description note ("for large files, pass
+  offset/limit to read a line range").
+- Modify: `services/cli/local_tool_executor.py` (`execute_local_tool` read_file branch, :29-31) —
+  honor offset/limit (Python).
+- Modify: `services/frontend/electron/tool-executor.ts` (`executeTool` read_file branch, ~:20) —
+  honor offset/limit (TypeScript; must pass `frontend tsc --noEmit`).
+- Test: `tests/services/orchestrator/test_tool_manifest.py` (schema has the new params);
+  `tests/services/cli/test_local_tool_executor.py` (Python range/whole/past-EOF cases);
+  `services/frontend/electron/tool-executor.test.ts` (TS range/whole/past-EOF cases).
+
+- [ ] **Step 1 — failing tests** (all three layers): schema advertises `offset`+`limit`; CLI
+  `read_file(path, offset=2, limit=2)` on a 5-line fixture returns lines 2–3; omitted → all 5;
+  offset past EOF → `""`. Same three cases in the Electron test.
+- [ ] **Step 2 — run, verify FAIL.**
+- [ ] **Step 3 — implement** all three (schema + both executors), identical semantics.
+- [ ] **Step 4 — run, verify PASS:** `python -m pytest tests/services/cli/test_local_tool_executor.py tests/services/orchestrator/test_tool_manifest.py -q` + the Electron test (`npm test` in services/frontend, or the repo's TS test command) + `npm run build`/`tsc --noEmit` clean.
+- [ ] **Step 5 — commit** (only the 6 touched files; never `git add -A`).
+
+### Task 3.2: measure the precision win
+
+- [ ] On a large-file fixture, show a ranged read returns just the requested lines vs the whole-file
+  (or 16k-truncated) read; record the per-read token delta. Small/observational — no acceptance gate.
+
+> **Code-mode / programmatic tool calling** stays a **future stretch**, NOT in scope — larger
+> surface, and the research says do the high-leverage pieces and STOP.
 
 ---
 

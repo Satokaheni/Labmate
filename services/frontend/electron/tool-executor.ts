@@ -79,7 +79,23 @@ export async function executeTool(
 ): Promise<unknown> {
   if (name === 'read_file') {
     const p = resolveToolPath(String(args.path ?? ''), roots);
-    return { content: await fs.readFile(p, 'utf-8') };
+    const rawOffset = args.offset;
+    const rawLimit = args.limit;
+    if (rawOffset === undefined && rawLimit === undefined) {
+      return { content: await fs.readFile(p, 'utf-8') };
+    }
+    const text = await fs.readFile(p, 'utf-8');
+    const lines = text.split('\n');
+    // Restore newlines on all lines except possibly the last (splitlines semantics)
+    const linesWithNl = lines.map((l, i) => (i < lines.length - 1 ? l + '\n' : l));
+    // Drop the synthetic trailing empty string that split('\n') produces on a
+    // newline-terminated file — we don't want it to count as a real line.
+    const lastLine = linesWithNl[linesWithNl.length - 1];
+    const normalized = lastLine === '' ? linesWithNl.slice(0, -1) : linesWithNl;
+    const offset = rawOffset !== undefined ? Math.max(0, Number(rawOffset) - 1) : 0;
+    const selected = normalized.slice(offset);
+    const limited = rawLimit !== undefined ? selected.slice(0, Number(rawLimit)) : selected;
+    return { content: limited.join('') };
   }
   if (name === 'write_file') {
     // Writes always target the primary root (roots[0]) for relative paths.

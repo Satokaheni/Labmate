@@ -51,6 +51,18 @@ try:
 except ImportError:
     yaml = None
 
+
+def get_token_count(text: str) -> int:
+    """Get token count for text using Gemma tokenizer. Falls back to char count on error."""
+    try:
+        from services.memory.tokenizer import token_count
+
+        return token_count(text)
+    except Exception:  # noqa: BLE001
+        # Fallback: rough estimate using char count
+        return len(text) // 4
+
+
 SELECT_SYSTEM = (
     "You are a skill router. Call load_skill with the ONE skill whose PURPOSE "
     "matches the user's underlying GOAL. Judge by the goal, not by surface "
@@ -110,8 +122,35 @@ def collapse(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-def catalog_prompt(catalog: dict[str, str]) -> str:
-    return "\n".join(f"- {n}: {d}" for n, d in catalog.items())
+def catalog_prompt(catalog: dict[str, str], mode: str = "full") -> str:
+    """Render a skill catalog as a newline-separated list.
+
+    Modes:
+    - 'full': "- {name}: {description}" (default, unchanged)
+    - 'terse': "- {name}: {first sentence}" where first sentence is up to and
+               including the first '.', or first 12 words if no period found
+    - 'names': "- {name}" (name only, no description)
+    """
+    if mode == "full":
+        return "\n".join(f"- {n}: {d}" for n, d in catalog.items())
+    elif mode == "terse":
+        lines = []
+        for n, d in catalog.items():
+            # Extract first sentence: split on ". " or ".", take first segment
+            if ". " in d:
+                first_sentence = d.split(". ")[0] + "."
+            elif "." in d:
+                first_sentence = d.split(".")[0] + "."
+            else:
+                # No period: use first 12 words
+                words = d.split()[:12]
+                first_sentence = " ".join(words)
+            lines.append(f"- {n}: {first_sentence}")
+        return "\n".join(lines)
+    elif mode == "names":
+        return "\n".join(f"- {n}" for n in catalog.keys())
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
 
 
 def load_skill_tool(catalog: dict[str, str]) -> list[dict]:
@@ -257,6 +296,7 @@ async def evaluate(
     concurrency,
     hosted_tools=None,
     call_model=None,
+    catalog_mode="full",
 ):
     """Evaluate cases, routing them to the right scorer based on kind.
 
@@ -264,7 +304,9 @@ async def evaluate(
     (for testing with stubs). Should be an async callable matching
     _default_call_hosted_model signature."""
     skill_tools = load_skill_tool(catalog)
-    skill_system = f"{SELECT_SYSTEM}\n\nAvailable skills:\n{catalog_prompt(catalog)}"
+    skill_system = (
+        f"{SELECT_SYSTEM}\n\nAvailable skills:\n{catalog_prompt(catalog, mode=catalog_mode)}"
+    )
     hosted_system = HOSTED_SYSTEM
     sem = asyncio.Semaphore(concurrency)
 
@@ -439,6 +481,12 @@ def main():
     ap.add_argument("--select-attempts", type=int, default=3)
     ap.add_argument("--temperature", type=float, default=0.7)
     ap.add_argument("--concurrency", type=int, default=2, help="match llama-server --parallel")
+    ap.add_argument(
+        "--catalog-mode",
+        choices=["full", "terse", "names"],
+        default="full",
+        help="skill catalog rendering mode",
+    )
     ap.add_argument("--report", default="eval/reports/")
     args = ap.parse_args()
 
@@ -463,6 +511,12 @@ def main():
         )
 
     client = make_client(args.base_url)
+
+    # Print catalog mode and token count
+    catalog_text = catalog_prompt(catalog, mode=args.catalog_mode)
+    catalog_tokens = get_token_count(catalog_text)
+    print(f"catalog mode={args.catalog_mode} tokens={catalog_tokens}", file=sys.stderr)
+
     results = asyncio.run(
         evaluate(
             cases,
@@ -474,6 +528,7 @@ def main():
             args.temperature,
             args.concurrency,
             hosted_tools=hosted_tools,
+            catalog_mode=args.catalog_mode,
         )
     )
     summary = summarize(results)

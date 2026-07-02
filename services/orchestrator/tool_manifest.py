@@ -23,11 +23,23 @@ CANONICAL_BUILTIN_SCHEMAS: dict[str, dict] = {
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read a UTF-8 text file from the user's local workspace.",
+            "description": (
+                "Read a UTF-8 text file from the user's local workspace. "
+                "For large files, pass offset (1-based line number to start) and/or "
+                "limit (max lines to return) to read a line range instead of the whole file."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Workspace-relative file path"}
+                    "path": {"type": "string", "description": "Workspace-relative file path"},
+                    "offset": {
+                        "type": "integer",
+                        "description": "1-based line number to start reading from (default: 1).",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of lines to return (default: all remaining).",
+                    },
                 },
                 "required": ["path"],
             },
