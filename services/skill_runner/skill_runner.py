@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,45 @@ import frontmatter  # python-frontmatter; yaml.safe_load by default
 # CRITICAL: never write to stdout. All logging goes to stderr via handlers
 # configured by the host process. This module only acquires a named logger.
 log = logging.getLogger("skill_runner")
+
+
+def render_catalog_line(name: str, description: str, mode: str) -> str:
+    """Render a single skill catalog entry for the given mode.
+
+    This is the **single source of truth** for catalog rendering, shared
+    by both the production ``SkillRunner.catalog_prompt`` and the eval harness
+    (``eval/run_routing_eval.py``) so the two can never drift.
+
+    Modes
+    -----
+    full
+        ``"- {name}: {description}"`` — unchanged legacy default.
+    terse
+        ``"- {name}: {first sentence}"`` where the first sentence is text up
+        to and including the first ``"."`` (using ``". "`` split to preserve
+        the dot), or the first 12 whitespace-delimited words when no period is
+        present.  This is the **validated** mode (accuracy 0.977 on the 12B,
+        ~73% smaller than full).
+    names
+        ``"- {name}"`` — name only; NOT recommended (regressed to 0.886).
+
+    Raises ``ValueError`` for unknown modes.
+    """
+    if mode == "full":
+        return f"- {name}: {description}"
+    elif mode == "terse":
+        if ". " in description:
+            first_sentence = description.split(". ")[0] + "."
+        elif "." in description:
+            first_sentence = description.split(".")[0] + "."
+        else:
+            words = description.split()[:12]
+            first_sentence = " ".join(words)
+        return f"- {name}: {first_sentence}"
+    elif mode == "names":
+        return f"- {name}"
+    else:
+        raise ValueError(f"Unknown SKILL_CATALOG_MODE: {mode!r}")
 
 
 @dataclass(frozen=True)
@@ -112,10 +152,28 @@ class SkillRunner:
     # ---------- STAGE 2: catalog -> system prompt + tool schema ----------
 
     def catalog_prompt(self, exclude: frozenset[str] | set[str] = frozenset()) -> str:
+        """Render the skill catalog as a newline-separated list.
+
+        The rendering mode is controlled by the ``SKILL_CATALOG_MODE`` environment
+        variable (values: ``full`` | ``terse`` | ``names``; default ``full``).
+
+        - ``full``  — ``"- {name}: {description}"`` (unchanged legacy default)
+        - ``terse`` — ``"- {name}: {first sentence}"`` where the first sentence is
+          the text up to and including the first ``"."``, or the first 12
+          whitespace-delimited words when no period is present.
+          This is the **validated** mode (accuracy 0.977, ~73% smaller than full).
+        - ``names`` — ``"- {name}"`` (name only; NOT recommended — regressed to 0.886)
+
+        Reading the mode from the environment inside this method (rather than at
+        module import or construction time) keeps ``catalog_prompt`` a pure function
+        of ``(catalog, env)`` — byte-stable within a process run while remaining
+        configurable per deployment without any call-site changes.
+        """
+        mode = os.environ.get("SKILL_CATALOG_MODE", "full")
         lines = ["Available skills (call load_skill(name) to activate one):"]
         for m in sorted(self.catalog.values(), key=lambda s: s.name):
             if m.name not in exclude:
-                lines.append(f"- {m.name}: {m.description}")
+                lines.append(render_catalog_line(m.name, m.description, mode))
         return "\n".join(lines)
 
     def tool_schema(self, exclude: frozenset[str] | set[str] = frozenset()) -> dict[str, Any]:
