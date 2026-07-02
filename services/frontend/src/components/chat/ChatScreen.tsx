@@ -1366,8 +1366,8 @@ export function isCompactCommand(text: string): boolean {
   return text.trim() === '/compact';
 }
 
-function Composer(props: { mode: Mode; budget: number; sessionId: string; onSend: (text: string) => void; onCompact: () => void; isStreaming: boolean; onStop: () => void }) {
-  const { mode, budget, sessionId, onSend, onCompact, isStreaming, onStop } = props;
+export function Composer(props: { mode: Mode; budget: number; sessionId: string; onSend: (text: string) => void; onCompact: () => void; isStreaming: boolean; onStop: () => void; seed?: { text: string; nonce: number } | null }) {
+  const { mode, budget, sessionId, onSend, onCompact, isStreaming, onStop, seed } = props;
   const api = typeof window !== 'undefined' ? window.electronAPI : undefined;
   const [text, setText] = useState('');
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -1387,6 +1387,15 @@ function Composer(props: { mode: Mode; budget: number; sessionId: string; onSend
     el.style.height = 'auto';
     el.style.height = `${Math.min(el.scrollHeight, COMPOSER_MAX_H)}px`;
   }, [text]);
+
+  // Seed effect: when a new nonce arrives, prefill the textarea and focus it.
+  const lastSeedNonce = useRef<number | null>(null);
+  useEffect(() => {
+    if (!seed || seed.nonce === lastSeedNonce.current) return;
+    lastSeedNonce.current = seed.nonce;
+    setText(seed.text);
+    requestAnimationFrame(() => taRef.current?.focus());
+  }, [seed]);
 
   const updateMention = (value: string, caret: number) => {
     const mention = detectMention(value, caret);
