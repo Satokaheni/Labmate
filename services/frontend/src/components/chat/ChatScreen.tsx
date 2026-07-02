@@ -1368,8 +1368,8 @@ export function isCompactCommand(text: string): boolean {
   return text.trim() === '/compact';
 }
 
-export function Composer(props: { mode: Mode; budget: number; sessionId: string; onSend: (text: string) => void; onCompact: () => void; isStreaming: boolean; onStop: () => void; seed?: { text: string; nonce: number } | null }) {
-  const { mode, budget, sessionId, onSend, onCompact, isStreaming, onStop, seed } = props;
+export function Composer(props: { mode: Mode; budget: number; sessionId: string; onSend: (text: string) => void; onCompact: () => void; isStreaming: boolean; onStop: () => void; seed?: { text: string; nonce: number } | null; onSeedConsumed?: () => void }) {
+  const { mode, budget, sessionId, onSend, onCompact, isStreaming, onStop, seed, onSeedConsumed } = props;
   const api = typeof window !== 'undefined' ? window.electronAPI : undefined;
   const [text, setText] = useState('');
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -1390,14 +1390,18 @@ export function Composer(props: { mode: Mode; budget: number; sessionId: string;
     el.style.height = `${Math.min(el.scrollHeight, COMPOSER_MAX_H)}px`;
   }, [text]);
 
-  // Seed effect: when a new nonce arrives, prefill the textarea and focus it.
+  // Seed effect: when a new nonce arrives, prefill the textarea, focus it,
+  // then immediately call onSeedConsumed so ChatScreen clears seed to null.
+  // This makes the seed a one-shot: any later remount (send → thread branch,
+  // or navigate to another session) sees seed=null and the effect is a no-op.
   const lastSeedNonce = useRef<number | null>(null);
   useEffect(() => {
     if (!seed || seed.nonce === lastSeedNonce.current) return;
     lastSeedNonce.current = seed.nonce;
     setText(seed.text);
     requestAnimationFrame(() => taRef.current?.focus());
-  }, [seed]);
+    onSeedConsumed?.();
+  }, [seed, onSeedConsumed]);
 
   const updateMention = (value: string, caret: number) => {
     const mention = detectMention(value, caret);
@@ -1978,6 +1982,7 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug, rename
                   isStreaming={!!streamingTurn}
                   onStop={() => { if (streamingTurn) cancel(streamingTurn.id); }}
                   seed={seed}
+                  onSeedConsumed={() => setSeed(null)}
                 />
               }
             />
@@ -2032,6 +2037,7 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug, rename
                   if (streamingTurn) cancel(streamingTurn.id);
                 }}
                 seed={seed}
+                onSeedConsumed={() => setSeed(null)}
               />
             </>
           )}

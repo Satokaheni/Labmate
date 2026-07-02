@@ -27,7 +27,7 @@ export function NewSessionWelcome({ mode, greeting, onStarter, composer }: NewSe
           {subtext}
         </div>
 
-        {/* Centered composer — the SAME <Composer> element ChatScreen uses when docked (passed in) */}
+        {/* Centered composer — passed in as a slot from ChatScreen (renders a fresh Composer instance in each branch) */}
         <div style={{ width: '100%' }}>{composer}</div>
 
         {/* Starter chips */}
