@@ -225,18 +225,11 @@ async def test_search_turns_text_mode_uses_dollar_text(storage, mock_mongo):
     assert "$text" in filt
     assert filt["$text"]["$search"] == "billing"
 
-    # sort must include textScore
+    # sort must be by relevance (textScore) — the whole point of $text mode
+    assert col.sort.called
     sort_args = col.sort.call_args
     sort_arg = sort_args.args[0] if sort_args.args else sort_args[0][0]
-    assert (
-        any(
-            (isinstance(sort_arg, list) and sort_arg[0][0] == "score")
-            or (isinstance(sort_arg, list) and str(sort_arg) and "textScore" in str(sort_arg))
-            for _ in [1]  # dummy loop to allow assert
-        )
-        or True
-    )  # textScore embedded in dict arg — just assert sort was called
-    assert col.sort.called
+    assert "textScore" in str(sort_arg)
     assert col.limit.called
     assert result == []
 
