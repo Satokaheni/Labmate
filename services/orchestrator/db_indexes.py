@@ -1,6 +1,9 @@
 """Create MongoDB indexes on first run. Safe to call repeatedly (idempotent)."""
+
 from __future__ import annotations
+
 import logging
+
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 logger = logging.getLogger(__name__)
@@ -15,4 +18,8 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db["episodes"].create_index([("session_id", 1), ("seq", 1)])
     await db["memories"].create_index([("session_id", 1), ("valid_to", 1)])
     await db["memories"].create_index([("session_id", 1), ("valid_to", 1), ("expires_at", 1)])
+    # chat_turns: full-text index for session_search ($text mode)
+    # and compound index for session-scoped queries + continuity reads.
+    await db["chat_turns"].create_index([("text", "text")])
+    await db["chat_turns"].create_index([("sessionId", 1), ("seq", 1)])
     logger.info("MongoDB indexes ensured")

@@ -54,6 +54,7 @@ from services.orchestrator.completion_guard import reconcile_final_answer
 from services.orchestrator.graph import GEMMA_BASE, QWEN_BASE, build_graph
 from services.orchestrator.mcp_client_manager import MCPClientManager
 from services.orchestrator.memory_search import MemorySearch
+from services.orchestrator.session_search import SessionSearch
 from services.orchestrator.skill_curator import (
     CapturedSequence,
     RecentSequences,
@@ -328,6 +329,7 @@ class OrchestratorProcess:
             async_orch.redis = self._redis
             async_orch.codegraph_mcp = self._codegraph_mcp
             async_orch.memory_search = MemorySearch(_sm)
+            async_orch.session_search = SessionSearch(_sm)
             # Wire context_manager for conversation continuity (best-effort)
             try:
                 async_orch.context_manager = _sm.context_manager

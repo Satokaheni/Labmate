@@ -33,6 +33,7 @@ from .model_client import acompletion_with_failover, resolve_bases
 from .progress_breaker import ProgressBreaker, ProgressStep
 from .prompt_assembler import PromptAssembler, measure_prompt_segments
 from .sandbox_edits import detect_sandbox_writes
+from .session_search import SessionSearch
 from .steer_inject import inject_steer
 from .test_outcome import classify_test_attempt
 from .tool_grounding import DEFAULT_TOOL_RESULT_BUDGET, ground_tool_result
@@ -306,6 +307,9 @@ class AsyncOrchestrator:
         self.memory_search: MemorySearch | None = (
             None  # set after construction when a memory store is wired
         )
+        self.session_search: SessionSearch | None = (
+            None  # set after construction when a memory store is wired
+        )
         self.workspace = workspace
         self.max_steps = max_steps
         self.redis = redis
@@ -524,6 +528,7 @@ class AsyncOrchestrator:
             skill_router=self.skill_router,
             codegraph_enabled=self.codegraph_mcp is not None,
             memory_enabled=self.memory_search is not None,
+            session_search_enabled=self.session_search is not None,
             client_manifest=client_context.get_manifest(),
             workspace_root=client_context.get_workspace_root(),
             agent_instructions=self.agent_instructions or "",
@@ -1347,6 +1352,20 @@ class AsyncOrchestrator:
                                 content = json.dumps({"error": str(exc)})
                         else:
                             content = json.dumps({"error": "memory search not available"})
+
+                    elif name == "session_search":
+                        if self.session_search is not None:
+                            try:
+                                content = await self.session_search.search(
+                                    args.get("query", ""),
+                                    args.get("k"),
+                                    args.get("mode", "text"),
+                                    args.get("session_id"),
+                                )
+                            except Exception as exc:
+                                content = json.dumps({"error": str(exc)})
+                        else:
+                            content = json.dumps({"error": "session search not available"})
 
                     else:
                         content = json.dumps({"error": f"unknown tool: {name}"})
