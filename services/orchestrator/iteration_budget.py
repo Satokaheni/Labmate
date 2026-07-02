@@ -20,23 +20,28 @@ import threading
 # Tool names whose iterations are refunded: pure reads / inspection that
 # should not eat into the working budget. Keep this in sync with the
 # read-only tools exposed by AsyncOrchestrator.react_execute.
-CHEAP_TOOLS: frozenset[str] = frozenset({
-    "read_file",
-    "list_dir",
-    "code_semantic_search",
-})
+CHEAP_TOOLS: frozenset[str] = frozenset(
+    {
+        "read_file",
+        "list_dir",
+        "code_semantic_search",
+    }
+)
 
 # Refundable tools: a SUPERSET of CHEAP_TOOLS. In addition to pure reads, a
 # turn that only ran verification (run_tests / run_bash) or inspection
 # (code_semantic_search / memory_search) is refunded, so checking the work
 # does not starve the editing budget. CHEAP_TOOLS stays intact for callers
 # that mean "pure read only".
-REFUNDABLE_TOOLS: frozenset[str] = CHEAP_TOOLS | frozenset({
-    "run_tests",
-    "run_bash",
-    "code_semantic_search",
-    "memory_search",
-})
+REFUNDABLE_TOOLS: frozenset[str] = CHEAP_TOOLS | frozenset(
+    {
+        "run_tests",
+        "run_bash",
+        "code_semantic_search",
+        "memory_search",
+        "session_search",
+    }
+)
 
 
 class IterationBudget:

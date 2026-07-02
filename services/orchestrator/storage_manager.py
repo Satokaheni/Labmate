@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
 
 import chromadb
@@ -12,8 +12,8 @@ import redis.asyncio as aioredis
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from .db_indexes import ensure_indexes
-from .workspace_manager import WorkspaceManager
 from .memory_consolidator import MemoryConsolidator
+from .workspace_manager import WorkspaceManager
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ TASKS_STREAM = "tasks"
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 # Importance -> days-until-expiry. importance >= 5 never expires.
@@ -74,7 +74,7 @@ class StorageManager:
         self._workspaces = WorkspaceManager(self._db)
 
     @classmethod
-    def from_clients(cls, *, mongo, chroma, redis) -> "StorageManager":
+    def from_clients(cls, *, mongo, chroma, redis) -> StorageManager:
         """Build with injected clients (tests). Bypasses env/network setup."""
         self = cls.__new__(cls)
         self._mongo = mongo
@@ -85,10 +85,11 @@ class StorageManager:
         self._workspaces = WorkspaceManager(self._db)
         return self
 
-    async def __aenter__(self) -> "StorageManager":
+    async def __aenter__(self) -> StorageManager:
         """Start the OutboxWorker background task when entering the context."""
         await ensure_indexes(self._db)
         from .outbox_worker import OutboxWorker
+
         self._outbox_worker = OutboxWorker(self)
         self._outbox_task = asyncio.create_task(self._outbox_worker.run(), name="outbox-worker")
         return self
@@ -115,6 +116,7 @@ class StorageManager:
         if not hasattr(self, "_context_manager"):
             from services.memory.context_manager import ContextManager
             from services.memory.embedder import embed as _embed_fn
+
             _redis = self._redis
 
             async def _embedder(texts: list[str]) -> list[list[float]]:
@@ -150,6 +152,7 @@ class StorageManager:
         crash-recovery records, cleared when a goal finishes.
         """
         from .loop_checkpoint import CHECKPOINT_COLLECTION
+
         return self._db[CHECKPOINT_COLLECTION]
 
     async def _get_chroma(self):
@@ -212,13 +215,16 @@ class StorageManager:
         Re-projects (re-opens outbox) so the OutboxWorker updates Chroma metadata.
         """
         from bson import ObjectId
+
         await self._db[MEMORIES].update_one(
             {"_id": ObjectId(memory_id)},
-            {"$set": {
-                "valid_to": valid_to or _utcnow(),
-                "outbox.processed": False,
-                "outbox.processed_at": None,
-            }},
+            {
+                "$set": {
+                    "valid_to": valid_to or _utcnow(),
+                    "outbox.processed": False,
+                    "outbox.processed_at": None,
+                }
+            },
         )
 
     async def boost_memory_importance(self, memory_id: str, delta: float = 0.1) -> None:
@@ -230,6 +236,7 @@ class StorageManager:
         next sweep (see decay task).
         """
         from bson import ObjectId
+
         try:
             oid = ObjectId(memory_id)
         except Exception:
@@ -244,12 +251,14 @@ class StorageManager:
             return
         await self._db[MEMORIES].update_one(
             {"_id": oid},
-            {"$set": {
-                "importance": new_importance,
-                "expires_at": _expires_at(new_importance),
-                "outbox.processed": False,
-                "outbox.processed_at": None,
-            }},
+            {
+                "$set": {
+                    "importance": new_importance,
+                    "expires_at": _expires_at(new_importance),
+                    "outbox.processed": False,
+                    "outbox.processed_at": None,
+                }
+            },
         )
 
     async def decay_expired_memories(self, session_id: str, now: datetime | None = None) -> int:
@@ -296,14 +305,77 @@ class StorageManager:
             src = meta.get("source")
             fact_text = docs[i] if i < len(docs) else ""
             display = f"[{src}] {fact_text}" if src else fact_text
-            out.append({
-                "id": _id,
-                "fact": display,
-                "raw_fact": fact_text,
-                "metadata": meta,
-                "distance": dists[i] if i < len(dists) else None,
-            })
+            out.append(
+                {
+                    "id": _id,
+                    "fact": display,
+                    "raw_fact": fact_text,
+                    "metadata": meta,
+                    "distance": dists[i] if i < len(dists) else None,
+                }
+            )
         return out
+
+    # --- full-text / regex search over raw transcript (session_search) ----------
+    async def search_turns(
+        self,
+        query: str,
+        top_k: int = 8,
+        *,
+        mode: str = "text",
+        session_id: str | None = None,
+    ) -> list[dict]:
+        """Keyword / regex search over the ``chat_turns`` collection.
+
+        Returns ``[{"sessionId": ..., "seq": ..., "text": ...}]``.
+
+        * Empty / whitespace query → ``[]`` (no Mongo query).
+        * ``mode="text"`` → MongoDB ``$text`` full-text search (requires the
+          text index created by ``ensure_indexes``), ranked by textScore.
+        * ``mode="regex"`` → case-insensitive ``$regex`` scan, sorted by
+          ``createdAt`` descending (most recent first; no relevance score).
+        * ``session_id`` → scope to one session; omit to search all sessions.
+        * Any Mongo exception (e.g. invalid regex) → logged to stderr, returns
+          ``[]`` (never raises into the caller).
+        """
+        if not (query or "").strip():
+            return []
+
+        base_filter: dict = {}
+        if session_id:
+            base_filter["sessionId"] = session_id
+
+        try:
+            col = self._db["chat_turns"]
+            if mode == "regex":
+                filt = {**base_filter, "text": {"$regex": query, "$options": "i"}}
+                cursor = (
+                    col.find(
+                        filt,
+                        {"sessionId": 1, "seq": 1, "text": 1},
+                    )
+                    .sort([("createdAt", -1)])
+                    .limit(top_k)
+                )
+            else:
+                # default: $text full-text search
+                filt = {**base_filter, "$text": {"$search": query}}
+                cursor = (
+                    col.find(
+                        filt,
+                        {"score": {"$meta": "textScore"}, "sessionId": 1, "seq": 1, "text": 1},
+                    )
+                    .sort([("score", {"$meta": "textScore"})])
+                    .limit(top_k)
+                )
+
+            return [
+                {"sessionId": doc.get("sessionId"), "seq": doc.get("seq"), "text": doc.get("text")}
+                async for doc in cursor
+            ]
+        except Exception as exc:
+            logger.error("search_turns failed (mode=%s): %s", mode, exc)
+            return []
 
     # --- working cache (Redis KV) ---------------------------------------
     async def cache_set(self, key: str, value: str, ttl: int = 3600) -> None:
@@ -313,7 +385,7 @@ class StorageManager:
         v = await self._redis.get(f"cache:{key}")
         if v is None:
             return None
-        return v.decode() if isinstance(v, (bytes, bytearray)) else v
+        return v.decode() if isinstance(v, bytes | bytearray) else v
 
     # --- task queue (Redis Streams, rule #5) ----------------------------
     async def enqueue_task(self, stream: str, payload: dict) -> None:

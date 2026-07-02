@@ -355,6 +355,7 @@ def build_tool_list(
     skill_router: Any = None,
     codegraph_enabled: bool = False,
     memory_enabled: bool = False,
+    session_search_enabled: bool = False,
     static_tail: list[dict],
 ) -> list[dict]:
     """
@@ -384,6 +385,10 @@ def build_tool_list(
             from services.orchestrator.prompt_assembler import _memory_search_schema
 
             tools.append(_memory_search_schema())
+        if session_search_enabled:
+            from services.orchestrator.prompt_assembler import _session_search_schema
+
+            tools.append(_session_search_schema())
         tools.extend(static_tail)
         return tools
 
@@ -470,6 +475,12 @@ def build_tool_list(
         from services.orchestrator.prompt_assembler import _memory_search_schema
 
         tools.append(_memory_search_schema())
+
+    # 3b. session_search (if session search enabled).
+    if session_search_enabled:
+        from services.orchestrator.prompt_assembler import _session_search_schema
+
+        tools.append(_session_search_schema())
 
     # 4. Builtins in fixed order: only those declared in manifest, NO run_bash.
     builtin_order = ["read_file", "write_file", "list_dir", "search_files", "run_tests"]

@@ -124,6 +124,46 @@ def _memory_search_schema() -> dict:
     }
 
 
+def _session_search_schema() -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": "session_search",
+            "description": (
+                "Full-text search over PAST conversation turns across all sessions — "
+                "recall what was actually said before (a past decision, preference, value). "
+                "mode='text' = word search (default); mode='regex' = case-insensitive "
+                "substring/pattern (use for exact identifiers like a function name)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Keywords or regex pattern to search for in past turns",
+                    },
+                    "k": {
+                        "type": "integer",
+                        "description": "Number of results (max 20)",
+                        "default": 8,
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["text", "regex"],
+                        "description": "Search mode: 'text' (word search, default) or 'regex' (pattern match)",
+                        "default": "text",
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Scope search to one session by ID; omit to search all sessions",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    }
+
+
 def _static_tail_schemas() -> list[dict]:
     # read_file, write_file, list_dir, run_bash, finish — always present, fixed order.
     return [
@@ -259,6 +299,7 @@ class PromptAssembler:
         skill_router: Any = None,
         codegraph_enabled: bool = False,
         memory_enabled: bool = False,
+        session_search_enabled: bool = False,
         base_system: str | None = None,
         catalog: str | None = None,
         client_manifest: ClientManifest | None = None,
@@ -337,6 +378,7 @@ class PromptAssembler:
             skill_router=skill_router,
             codegraph_enabled=codegraph_enabled,
             memory_enabled=memory_enabled,
+            session_search_enabled=session_search_enabled,
             static_tail=_static_tail_schemas(),
         )
 
