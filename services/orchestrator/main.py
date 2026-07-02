@@ -48,7 +48,7 @@ from pathlib import Path
 import redis.asyncio as aioredis
 from mcp import StdioServerParameters
 
-from services.orchestrator import call_counter, client_context, events, skill_curator
+from services.orchestrator import call_counter, client_context, ctx_window, events, skill_curator
 from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
 from services.orchestrator.completion_guard import reconcile_final_answer
 from services.orchestrator.graph import GEMMA_BASE, QWEN_BASE, build_graph
@@ -72,12 +72,14 @@ RESULT_PREFIX = "labmate:result:"
 RESULT_TTL = 86_400  # 24 h
 BLOCK_MS = 5_000
 
-# Per-request context window the model actually serves = llama-server --ctx-size
-# DIVIDED BY --parallel (each slot gets ctx-size/n_parallel tokens). serve-model.sh
-# defaults to --ctx-size 262144 --parallel 2 → 131072 per request. This ceiling drives
-# the context gauge (used/free shown to the frontend) and the auto-compact thresholds,
-# so it must equal the PER-SLOT window, not the raw --ctx-size. Keep CTX_WINDOW in sync
-# with serve-model.sh whenever the slot math changes.
+# Per-request context window the model actually serves (= llama-server --ctx-size
+# DIVIDED BY --parallel). This ceiling drives the context gauge (used/free shown to
+# the frontend) and the auto-compact thresholds, so it must equal the PER-SLOT window.
+#
+# These are the STARTUP DEFAULTS only. run() overwrites them by querying llama-server's
+# /props for the actual loaded window (see ctx_window.resolve_ctx_window), so the gauge
+# tracks the served model automatically without hand-syncing CTX_WINDOW on a model swap.
+# The CTX_WINDOW env is the fallback when that query fails; 131072 is the last resort.
 CTX_TOKENS = int(os.getenv("CTX_WINDOW", "131072"))
 FULL_THRESH = int(CTX_TOKENS * 0.85)
 
@@ -239,6 +241,17 @@ class OrchestratorProcess:
 
         async with StorageManager() as _sm:
             _log.info("storage ready")
+
+            # Single source of truth for the context gauge: ask llama-server what
+            # context window it actually loaded (best-effort; falls back to the
+            # CTX_WINDOW env, then 131072, if /props is unreachable). Updating the
+            # module globals is safe because _context_window()/FULL_THRESH read them
+            # at call time, and task processing (which emits `context` events) begins
+            # only after this point.
+            global CTX_TOKENS, FULL_THRESH
+            CTX_TOKENS = await ctx_window.resolve_ctx_window(GEMMA_BASE, fallback=CTX_TOKENS)
+            FULL_THRESH = int(CTX_TOKENS * 0.85)
+            _log.info("context window: %d tokens (full-threshold %d)", CTX_TOKENS, FULL_THRESH)
 
             self._mcp = MCPClientManager(_build_mcp_params())
             await self._mcp.start()
