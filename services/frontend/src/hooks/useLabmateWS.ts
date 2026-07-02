@@ -233,9 +233,19 @@ function labmateWSReducer(state: LabmateWSState, action: DispatchAction): Labmat
 
       if (frame.type === 'session.updated') {
         if (state.phase === 'ready') {
-          // Remove any existing entry for that id and unshift the updated session to the front
-          const rest = state.sessions.filter((s) => s.id !== frame.session.id);
-          return { ...state, sessions: [frame.session, ...rest] };
+          // Upsert the session, then order by real activity (updatedAt desc) rather
+          // than frame-arrival. Opening a chat re-emits session.updated with an
+          // UNCHANGED updatedAt, so re-sorting keeps its position; only real activity
+          // (add_turn/rename) bumps updatedAt on the backend and floats it to the top.
+          const others = state.sessions.filter((s) => s.id !== frame.session.id);
+          const upserted = [...others, frame.session];
+          upserted.sort((a, b) => {
+            const at = a.updatedAt ?? '';
+            const bt = b.updatedAt ?? '';
+            if (at !== bt) return at < bt ? 1 : -1; // desc by ISO timestamp (lexicographic works for ISO)
+            return a.id < b.id ? 1 : a.id > b.id ? -1 : 0; // stable tiebreak
+          });
+          return { ...state, sessions: upserted };
         }
         return state;
       }
