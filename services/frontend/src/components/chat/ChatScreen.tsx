@@ -23,6 +23,7 @@ import { useWorkspace } from './useWorkspace';
 import { WorkspaceRoots } from './WorkspaceRoots';
 import { WorkspaceSetupModal } from './WorkspaceSetupModal';
 import { MentionPopup } from './MentionPopup';
+import { readRightView, writeRightView, type RightView } from './rightViewStore';
 
 /* ------------------------------------------------------------------ *
  * Faithful rebuild of Labmate.dc.html (the design comp). The comp is
@@ -1811,7 +1812,7 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug, rename
   }, [scrollSignal]);
 
   const [mode, setMode] = useState<Mode>(() => normMode(activeSession?.mode));
-  const [rightView, setRightView] = useState<'skills' | 'files' | null>('skills');
+  const [rightView, setRightView] = useState<RightView>(() => readRightView());
   const [debug, setLocalDebug] = useState(false);
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
   const [thoughtOpen, setThoughtOpen] = useState<Record<string, boolean>>({});
@@ -1903,6 +1904,8 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug, rename
     if (activeSessionId) setDebug(activeSessionId, next);
   };
 
+  const showRightView = (v: RightView) => { writeRightView(v); setRightView(v); };
+
   const showRight = debug || rightView !== null;
 
   return (
@@ -1917,8 +1920,8 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug, rename
         onToggleSidebar={toggleSidebar}
         onAddRoot={addRoot}
         onRemoveRoot={removeRoot}
-        onSkills={() => setRightView((v) => (v === 'skills' ? null : 'skills'))}
-        onFiles={() => setRightView((v) => (v === 'files' ? null : 'files'))}
+        onSkills={() => showRightView(rightView === 'skills' ? null : 'skills')}
+        onFiles={() => showRightView(rightView === 'files' ? null : 'files')}
         onToggleDebug={toggleDebug}
       />
 
@@ -1974,11 +1977,11 @@ export function ChatScreen({ state, send, newChat, openSession, setDebug, rename
                     onToggleThought={() => setThoughtOpen((m) => ({ ...m, [t.id]: !m[t.id] }))}
                     onOpenSkills={() => {
                       setSkillsTurnId(t.id);
-                      setRightView('skills');
+                      showRightView('skills');
                     }}
                     onOpenArtifact={(a) => {
                       setActiveFileId(a.id);
-                      setRightView('files');
+                      showRightView('files');
                     }}
                     activeFileId={activeFileId}
                   />
