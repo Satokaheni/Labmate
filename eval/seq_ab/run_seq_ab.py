@@ -127,6 +127,7 @@ def aggregate_trials(trial_results):
         "pass_rate_ci_high": round(ci_high, 3),
         "median_llm_calls": median([t.get("llm_calls") for t in trial_results]),
         "median_wall_s": median([t.get("wall_s") for t in trial_results]),
+        "median_analysis_deduped": median([t.get("analysis_deduped") for t in trial_results]),
         "trials": trial_results,
     }
 
@@ -137,7 +138,8 @@ def summarize_line(mode, case_id, agg):
         f"[{mode}] {case_id}: {agg['pass_count']}/{agg['trials_run']} pass "
         f"(rate={agg['pass_rate']}) "
         f"median_calls={agg['median_llm_calls']} "
-        f"median_wall={agg['median_wall_s']}s"
+        f"median_wall={agg['median_wall_s']}s "
+        f"median_deduped={agg['median_analysis_deduped']}"
     )
 
 
@@ -165,8 +167,9 @@ def run_case(r, case):
                 break
             time.sleep(5)
         elapsed = time.time() - t0
-        # Collect the skill/tool sequence from the event stream
+        # Collect the skill/tool sequence + repeat-analysis-guard firings from the event stream.
         seq = []
+        analysis_deduped = 0  # times the repeat-analysis guard short-circuited a re-review
         entries = r.xrange(f"labmate:events:{task_id}")
         for _id, fields in entries:
             raw = fields.get("event")
@@ -175,6 +178,8 @@ def run_case(r, case):
             ev = json.loads(raw)
             if ev.get("type") == "tool.start":
                 seq.append(ev.get("name", "?"))
+            elif ev.get("type") == "analysis.deduped":
+                analysis_deduped += 1
         state = (result or {}).get("state", {})
         return {
             "id": case["id"],
@@ -182,6 +187,7 @@ def run_case(r, case):
             "task": case["task"],
             "ok": (result or {}).get("ok"),
             "skill_sequence": seq,
+            "analysis_deduped": analysis_deduped,
             "llm_calls": (result or {}).get("llm_calls"),
             "wall_s": round(elapsed, 1),
             "final_answer": (state.get("final_answer") or "")[:1200],
