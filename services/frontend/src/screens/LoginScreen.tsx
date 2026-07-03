@@ -72,6 +72,80 @@ export function LoginScreen({ onSubmit, submitting = false, error }: LoginScreen
         </div>
       </div>
 
+      {/* experiment graphic (bottom-left) — decorative training-run chart.
+          Purely illustrative product texture: aria-hidden + pointer-events-none,
+          and hidden on narrow windows so it never collides with the centered card. */}
+      <div
+        data-testid="experiment-graphic"
+        aria-hidden="true"
+        className="pointer-events-none absolute bottom-9 left-6 hidden w-[392px] max-w-[42vw] md:block"
+      >
+        <div
+          className="mb-[15px] max-w-[340px] font-sans text-[17px] font-semibold leading-[1.38] tracking-[-0.01em] [text-wrap:balance]"
+          style={{ color: '#cfd4da' }}
+        >
+          Run the experiment, read the diff, draft the paper — in one place.
+        </div>
+
+        {/* the chart itself is dimmed; headline + spec line stay full-strength */}
+        <div style={{ opacity: 0.62 }}>
+          <div className="mb-[7px] flex items-center">
+            <span className="flex-1 font-mono text-[9.5px] uppercase tracking-[0.12em]" style={{ color: '#5e6671' }}>
+              fig.1 — training run
+            </span>
+            <span className="flex items-center gap-3 font-mono text-[9.5px]" style={{ color: '#7e8693' }}>
+              <span className="flex items-center gap-[5px]">
+                <span className="inline-block h-[2px] w-[13px]" style={{ background: '#6aa6ff' }} />
+                train
+              </span>
+              <span className="flex items-center gap-[5px]">
+                <span className="inline-block w-[13px]" style={{ height: 0, borderTop: '2px dashed #a78bfa' }} />
+                val
+              </span>
+            </span>
+          </div>
+
+          <svg viewBox="0 0 520 200" className="block h-auto max-h-[150px] w-full" role="presentation">
+            <line x1="46" y1="14" x2="46" y2="186" stroke="#2a2f39" strokeWidth="1.5" />
+            <line x1="46" y1="186" x2="506" y2="186" stroke="#2a2f39" strokeWidth="1.5" />
+            <line x1="46" y1="60" x2="506" y2="60" stroke="#ffffff08" strokeWidth="1" />
+            <line x1="46" y1="108" x2="506" y2="108" stroke="#ffffff08" strokeWidth="1" />
+            <line x1="46" y1="148" x2="506" y2="148" stroke="#ffffff08" strokeWidth="1" />
+            <text x="38" y="20" textAnchor="end" fontFamily="IBM Plex Mono" fontSize="9" fill="#4f5662">
+              2.0
+            </text>
+            <text x="38" y="112" textAnchor="end" fontFamily="IBM Plex Mono" fontSize="9" fill="#4f5662">
+              1.0
+            </text>
+            <text x="38" y="189" textAnchor="end" fontFamily="IBM Plex Mono" fontSize="9" fill="#4f5662">
+              0.4
+            </text>
+            <polyline
+              points="46,186 100,152 160,114 230,142 300,166 380,176 506,172"
+              fill="none"
+              stroke="#a78bfa"
+              strokeWidth="2"
+              strokeDasharray="4 5"
+              opacity="0.7"
+            />
+            <polyline
+              points="46,26 100,90 160,130 230,156 300,170 380,178 506,180"
+              fill="none"
+              stroke="#6aa6ff"
+              strokeWidth="2.5"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            />
+            <circle cx="230" cy="156" r="3.5" fill="#0f1115" stroke="#6aa6ff" strokeWidth="2" />
+            <circle cx="506" cy="180" r="3.5" fill="#0f1115" stroke="#6aa6ff" strokeWidth="2" />
+          </svg>
+        </div>
+
+        <div className="mt-3 font-mono text-[10.5px] tracking-[0.02em]" style={{ color: '#5e6671' }}>
+          gemma-4-12b · 12B · ctx 262,144 · 12 skills · build 0.1.0
+        </div>
+      </div>
+
       {/* sign-in card */}
       <div className="flex h-full items-center justify-center">
         <form
