@@ -38,6 +38,17 @@ def test_too_few_trials_never_a_win():
     assert out["win"] is False
 
 
+def test_three_trials_below_default_floor_even_for_perfect_split():
+    # n=3 is below the default floor (5) AND its CIs overlap even at 3/3 vs 0/3,
+    # so a perfect split is still not a win. Documents why decisive A/Bs need n>=5.
+    base = _rec("c2", "compound", 0, 3)
+    var = _rec("c2", "compound", 3, 3)
+    out = compare_case(base, var)  # default min_trials=5
+    assert out["enough_trials"] is False
+    assert out["cis_disjoint"] is False
+    assert out["win"] is False
+
+
 def test_compare_runs_matches_by_id_and_rolls_up():
     baseline = {"cases": [_rec("c2", "compound", 0, 5), _rec("c5", "control_trivial", 5, 5)]}
     variant = {"cases": [_rec("c2", "compound", 5, 5), _rec("c5", "control_trivial", 5, 5)]}
@@ -50,12 +61,12 @@ def test_compare_runs_matches_by_id_and_rolls_up():
 def test_compare_runs_from_json_files(tmp_path):
     base = {
         "cases": [
-            {"id": "c2", "kind": "compound", "pass_count": 0, "trials_run": 4, "pass_rate": 0.0}
+            {"id": "c2", "kind": "compound", "pass_count": 0, "trials_run": 5, "pass_rate": 0.0}
         ]
     }
     var = {
         "cases": [
-            {"id": "c2", "kind": "compound", "pass_count": 4, "trials_run": 4, "pass_rate": 1.0}
+            {"id": "c2", "kind": "compound", "pass_count": 5, "trials_run": 5, "pass_rate": 1.0}
         ]
     }
     (tmp_path / "b.json").write_text(json.dumps(base))

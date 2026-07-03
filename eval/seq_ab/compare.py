@@ -5,13 +5,18 @@ no-op floor, and a strict `win` verdict.
 A case is a WIN only when: variant rate > baseline rate, BOTH arms ran >= min_trials,
 AND their CIs are disjoint. This is the machine check behind the variance policy —
 a single green run or an overlapping-CI bump is NOT a win.
+
+min_trials defaults to 5 because at n=3 the disjoint-CI bar is unreachable even for a
+perfect split: Wilson(3/3)=[0.44,1.0] overlaps Wilson(0/3)=[0.0,0.56]. n=5 is the
+smallest count where a clean 5/5-vs-0/5 separates ([0.57,1.0] vs [0.0,0.43]). Use TRIALS>=3
+to report variance, but >=5 to CLAIM a win.
 """
 
 from eval.seq_ab.baselines import noop_floor
 from eval.seq_ab.variance import intervals_disjoint, wilson_interval
 
 
-def compare_case(rec_a: dict, rec_b: dict, min_trials: int = 3) -> dict:
+def compare_case(rec_a: dict, rec_b: dict, min_trials: int = 5) -> dict:
     """rec_a = baseline, rec_b = variant. Both are per-case result records."""
     na, nb = rec_a.get("trials_run", 0), rec_b.get("trials_run", 0)
     pa, pb = rec_a.get("pass_count", 0), rec_b.get("pass_count", 0)
@@ -40,7 +45,7 @@ def compare_case(rec_a: dict, rec_b: dict, min_trials: int = 3) -> dict:
     }
 
 
-def compare_runs(baseline: dict, variant: dict, min_trials: int = 3) -> dict:
+def compare_runs(baseline: dict, variant: dict, min_trials: int = 5) -> dict:
     """Match cases by id across two run dicts ({'cases': [...]}) and roll up."""
     by_id_b = {c["id"]: c for c in variant.get("cases", [])}
     cases = []

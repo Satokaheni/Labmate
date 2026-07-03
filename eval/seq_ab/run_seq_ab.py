@@ -94,6 +94,22 @@ def median(values):
     return (nums[mid - 1] + nums[mid]) / 2
 
 
+def resolve_out_path(mode, ab_only, env):
+    """Where to write the results file.
+
+    SEQ_AB_OUT (if set) wins outright, so a flag-A/B can direct each arm to a
+    throwaway file and NEVER overwrite a committed results-<mode>.json. Otherwise
+    AB_ONLY -> a distinct results-<mode>-only-<tag>.json; else the default.
+    """
+    override = env.get("SEQ_AB_OUT")
+    if override:
+        return override
+    if ab_only:
+        tag = "-".join(ab_only).replace("/", "_")
+        return f"eval/seq_ab/results-{mode}-only-{tag}.json"
+    return f"eval/seq_ab/results-{mode}.json"
+
+
 def aggregate_trials(trial_results):
     """Fold a list of per-trial result dicts into one aggregate record.
 
@@ -182,10 +198,8 @@ def main():
     # run writes to a distinct file so it never clobbers the full results-<mode>.json.
     only = [s.strip() for s in os.getenv("AB_ONLY", "").split(",") if s.strip()]
     cases = [c for c in CASES if not only or any(s in c["id"] for s in only)]
-    out_path = OUT
+    out_path = resolve_out_path(MODE, only, os.environ)
     if only:
-        tag = "-".join(only).replace("/", "_")
-        out_path = f"eval/seq_ab/results-{MODE}-only-{tag}.json"
         print(f"[{MODE}] AB_ONLY={only} -> {len(cases)} case(s) -> {out_path}", flush=True)
     provenance = build_provenance(
         model=os.path.basename(os.getenv("MODEL", "")) or "unknown",
