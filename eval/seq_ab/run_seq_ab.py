@@ -5,46 +5,82 @@ The orchestrator's SEQUENCING_MODE is process-wide (read at import), so this scr
 is invoked ONCE PER MODE after the orchestrator is (re)started with that env var.
 Results are written to eval/seq_ab/results-<mode>.json for later comparison/judging.
 """
-import json, sys, time, os
+
+import json
+import os
+import sys
+import time
+
 import redis
+
+from eval.metric_meaning import seq_ab_meaning_block
+from eval.provenance import build_provenance, capture_env_flags, current_git_sha
 from eval.seq_ab.local_tool_responder import LocalToolResponder
+from eval.seq_ab.variance import wilson_interval
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 MODE = sys.argv[1] if len(sys.argv) > 1 else "unknown"
 OUT = f"eval/seq_ab/results-{MODE}.json"
-TRIALS = int(os.getenv("TRIALS", "3"))  # run each case N times; pass-rate scoring. TRIALS=1 == single-shot.
+TRIALS = int(
+    os.getenv("TRIALS", "3")
+)  # run each case N times; pass-rate scoring. TRIALS=1 == single-shot.
 
 # Fixtures are reset before each case so a prior mode's fix doesn't leak.
 FIXTURES = {
     "/workspace/ab_factorial.py": (
         'def factorial(n):\n    """Return n! (product of 1..n). 0! == 1."""\n'
-        '    result = 1\n    for i in range(1, n):          # bug: excludes n\n'
-        '        result *= i\n    return result\n'
+        "    result = 1\n    for i in range(1, n):          # bug: excludes n\n"
+        "        result *= i\n    return result\n"
     ),
     "/workspace/ab_buggy.py": (
         'def average(nums):\n    """Return the arithmetic mean of a list of numbers."""\n'
-        '    total = 0\n    for x in nums:\n        total += x\n'
-        '    return total / len(nums) + 1    # bug: stray + 1\n'
+        "    total = 0\n    for x in nums:\n        total += x\n"
+        "    return total / len(nums) + 1    # bug: stray + 1\n"
     ),
     "/workspace/ab_off.py": (
         'def last_index(seq, target):\n    """Return the index of the LAST occurrence of target, or -1 if absent."""\n'
-        '    for i in range(len(seq)):\n        if seq[i] == target:\n'
-        '            return i               # bug: returns FIRST match, not last\n    return -1\n'
+        "    for i in range(len(seq)):\n        if seq[i] == target:\n"
+        "            return i               # bug: returns FIRST match, not last\n    return -1\n"
+    ),
+    "/workspace/ab_multi.py": (
+        "def normalize(xs):\n"
+        '    """Scale a list of numbers to sum to 1.0. Empty list -> []."""\n'
+        "    total = 0\n"
+        "    for x in xs:\n"
+        "        total = x            # bug 1: assignment, not accumulation\n"
+        "    return [x / total for x in xs]   # bug 2: no empty-list guard (ZeroDivisionError)\n"
     ),
 }
 
 CASES = [
-    {"id": "c1_testgen_review_fix", "kind": "compound",
-     "task": "Generate unit tests for the factorial function in /workspace/ab_factorial.py, run them, find and fix the bug, and re-run until they pass."},
-    {"id": "c2_review_fix", "kind": "compound",
-     "task": "Review /workspace/ab_buggy.py for bugs, then fix the code."},
-    {"id": "c3_bug_then_test", "kind": "compound",
-     "task": "Find the bug in /workspace/ab_off.py and write a unit test that exposes it."},
-    {"id": "c4_single_review", "kind": "control_single",
-     "task": "Find bugs in /workspace/ab_buggy.py."},
-    {"id": "c5_trivial", "kind": "control_trivial",
-     "task": "What is 2+2? Reply in one sentence."},
+    {
+        "id": "c1_testgen_review_fix",
+        "kind": "compound",
+        "task": "Generate unit tests for the factorial function in /workspace/ab_factorial.py, run them, find and fix the bug, and re-run until they pass.",
+    },
+    {
+        "id": "c2_review_fix",
+        "kind": "compound",
+        "task": "Review /workspace/ab_buggy.py for bugs, then fix the code.",
+    },
+    {
+        "id": "c3_bug_then_test",
+        "kind": "compound",
+        "task": "Find the bug in /workspace/ab_off.py and write a unit test that exposes it.",
+    },
+    {
+        "id": "c6_multiedit_fix",
+        "kind": "compound",
+        "task": "Fix the two bugs in /workspace/ab_multi.py (the running total and the empty-list crash), then write and run a test that proves normalize works and handles [].",
+    },
+    {
+        "id": "c4_single_review",
+        "kind": "control_single",
+        "task": "Find bugs in /workspace/ab_buggy.py.",
+    },
+    {"id": "c5_trivial", "kind": "control_trivial", "task": "What is 2+2? Reply in one sentence."},
 ]
+
 
 def median(values):
     """Median of the non-None numeric values; None if there are none."""
@@ -58,6 +94,22 @@ def median(values):
     return (nums[mid - 1] + nums[mid]) / 2
 
 
+def resolve_out_path(mode, ab_only, env):
+    """Where to write the results file.
+
+    SEQ_AB_OUT (if set) wins outright, so a flag-A/B can direct each arm to a
+    throwaway file and NEVER overwrite a committed results-<mode>.json. Otherwise
+    AB_ONLY -> a distinct results-<mode>-only-<tag>.json; else the default.
+    """
+    override = env.get("SEQ_AB_OUT")
+    if override:
+        return override
+    if ab_only:
+        tag = "-".join(ab_only).replace("/", "_")
+        return f"eval/seq_ab/results-{mode}-only-{tag}.json"
+    return f"eval/seq_ab/results-{mode}.json"
+
+
 def aggregate_trials(trial_results):
     """Fold a list of per-trial result dicts into one aggregate record.
 
@@ -66,10 +118,13 @@ def aggregate_trials(trial_results):
     trials_run = len(trial_results)
     pass_count = sum(1 for t in trial_results if t.get("ok") is True)
     pass_rate = round(pass_count / trials_run, 2) if trials_run else 0.0
+    ci_low, ci_high = wilson_interval(pass_count, trials_run)
     return {
         "pass_count": pass_count,
         "trials_run": trials_run,
         "pass_rate": pass_rate,
+        "pass_rate_ci_low": round(ci_low, 3),
+        "pass_rate_ci_high": round(ci_high, 3),
         "median_llm_calls": median([t.get("llm_calls") for t in trial_results]),
         "median_wall_s": median([t.get("wall_s") for t in trial_results]),
         "trials": trial_results,
@@ -85,10 +140,12 @@ def summarize_line(mode, case_id, agg):
         f"median_wall={agg['median_wall_s']}s"
     )
 
+
 def reset_fixtures():
     for path, body in FIXTURES.items():
         with open(path, "w") as f:
             f.write(body)
+
 
 def run_case(r, case):
     reset_fixtures()
@@ -120,7 +177,9 @@ def run_case(r, case):
                 seq.append(ev.get("name", "?"))
         state = (result or {}).get("state", {})
         return {
-            "id": case["id"], "kind": case["kind"], "task": case["task"],
+            "id": case["id"],
+            "kind": case["kind"],
+            "task": case["task"],
             "ok": (result or {}).get("ok"),
             "skill_sequence": seq,
             "llm_calls": (result or {}).get("llm_calls"),
@@ -131,6 +190,7 @@ def run_case(r, case):
     finally:
         responder.stop()
 
+
 def main():
     r = redis.from_url(REDIS_URL, decode_responses=True)
     # Optional case filter: AB_ONLY=c1,c3 runs only cases whose id contains any of
@@ -138,12 +198,22 @@ def main():
     # run writes to a distinct file so it never clobbers the full results-<mode>.json.
     only = [s.strip() for s in os.getenv("AB_ONLY", "").split(",") if s.strip()]
     cases = [c for c in CASES if not only or any(s in c["id"] for s in only)]
-    out_path = OUT
+    out_path = resolve_out_path(MODE, only, os.environ)
     if only:
-        tag = "-".join(only).replace("/", "_")
-        out_path = f"eval/seq_ab/results-{MODE}-only-{tag}.json"
         print(f"[{MODE}] AB_ONLY={only} -> {len(cases)} case(s) -> {out_path}", flush=True)
-    out = {"mode": MODE, "trials": TRIALS, "cases": []}
+    provenance = build_provenance(
+        model=os.path.basename(os.getenv("MODEL", "")) or "unknown",
+        git_sha=current_git_sha(),
+        captured_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
+        env=capture_env_flags(os.environ),
+    )
+    out = {
+        "mode": MODE,
+        "trials": TRIALS,
+        "provenance": provenance,
+        "metric_meaning": seq_ab_meaning_block(),
+        "cases": [],
+    }
     for case in cases:
         print(f"[{MODE}] running {case['id']} x{TRIALS} ...", flush=True)
         trial_results = []
@@ -170,6 +240,7 @@ def main():
     for c in out["cases"]:
         print("  " + summarize_line(MODE, c["id"], c), flush=True)
     print(f"[{MODE}] wrote {out_path}", flush=True)
+
 
 if __name__ == "__main__":
     main()

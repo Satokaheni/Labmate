@@ -46,6 +46,14 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
+from eval.metric_meaning import routing_header_lines
+from eval.routing_metrics import (
+    inflation_estimate,
+    majority_class_accuracy,
+    random_baseline_accuracy,
+    subset_overall,
+)
+
 try:
     import yaml
 except ImportError:
@@ -394,7 +402,7 @@ def summarize(results: list[dict]) -> dict:
     }
 
 
-def write_reports(results, summary, report_dir, repeats):
+def write_reports(results, summary, report_dir, repeats, baselines=None, leakage=None):
     Path(report_dir).mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     (Path(report_dir) / f"routing-eval-{stamp}.json").write_text(
@@ -404,6 +412,7 @@ def write_reports(results, summary, report_dir, repeats):
     lines = [
         f"# Routing eval — {stamp}",
         "",
+        *routing_header_lines(),
         f"- cases: {summary['n']}  |  repeats: {repeats}",
         f"- overall accuracy: {summary['overall']:.3f}",
         f"- mean stability: {summary['mean_stability']:.3f}",
@@ -412,6 +421,25 @@ def write_reports(results, summary, report_dir, repeats):
         else "- false-positive rate: n/a",
         "",
     ]
+
+    if baselines:
+        lines += [
+            "## Trivial baselines (interpret the accuracy against these)",
+            "",
+            f"- majority-class: {baselines['majority_class']:.3f}",
+            f"- random (1/(skills+1)): {baselines['random']:.3f}",
+            "",
+        ]
+    if leakage:
+        lines += [
+            "## Leakage check (generated vs held-out)",
+            "",
+            f"- generated-set overall ({leakage.get('generated_basis', 'generated')}): "
+            f"{leakage['generated_overall']:.3f}",
+            f"- held-out overall: {leakage['heldout_overall']:.3f}",
+            f"- inflation (generated - heldout): {leakage['inflation']:.3f}",
+            "",
+        ]
 
     if len(summary.get("by_kind", {})) > 1:
         lines += ["", "## Per-kind", ""]
@@ -471,6 +499,7 @@ def main():
         help="skill catalog rendering mode",
     )
     ap.add_argument("--report", default="eval/reports/")
+    ap.add_argument("--heldout", help="held-out, non-model-generated slice (leakage check)")
     args = ap.parse_args()
 
     catalog = load_catalog(args.skills_dir, args.catalog_json)
@@ -515,7 +544,47 @@ def main():
         )
     )
     summary = summarize(results)
-    md = write_reports(results, summary, args.report, args.repeats)
+
+    baselines = {
+        "majority_class": majority_class_accuracy(cases),
+        "random": random_baseline_accuracy(cases, n_skills=len(catalog)),
+    }
+
+    leakage = None
+    if args.heldout:
+        heldout_cases = [
+            json.loads(line) for line in Path(args.heldout).read_text().splitlines() if line.strip()
+        ]
+        heldout_results = asyncio.run(
+            evaluate(
+                heldout_cases,
+                client,
+                args.model,
+                catalog,
+                args.repeats,
+                args.select_attempts,
+                args.temperature,
+                args.concurrency,
+                hosted_tools=hosted_tools,
+                catalog_mode=args.catalog_mode,
+            )
+        )
+        heldout_summary = summarize(heldout_results)
+        gen_overall = subset_overall(results, cases, "generated")
+        basis = "generated"
+        if gen_overall is None:
+            gen_overall = summary["overall"]
+            basis = "working-set (no source=generated cases)"
+        leakage = {
+            "generated_overall": gen_overall,
+            "generated_basis": basis,
+            "heldout_overall": heldout_summary["overall"],
+            "inflation": inflation_estimate(gen_overall, heldout_summary["overall"]),
+        }
+
+    md = write_reports(
+        results, summary, args.report, args.repeats, baselines=baselines, leakage=leakage
+    )
 
     print(
         f"\noverall: {summary['overall']:.3f}  "

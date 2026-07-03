@@ -256,7 +256,7 @@ A live A/B on RunPod (`eval/reports/ab_agentic_fix_loop_report.md`) drove a seco
 
 **Graph trim (Option A, Part 2): no-op** — the audit found no provably-dead graph code, i.e. the LangGraph outer layer is still load-bearing (a data point *against* rewriting it as a lightweight loop; the deferred "Option B" spike is `docs/superpowers/plans/2026-06-26-lite-orchestrator-spike.md`).
 
-**Open follow-up — retry sizing:** goal-level retry already exists (reflect→retry, `MAX_GOAL_ATTEMPTS=2`, error-class gated — *terminal* failures don't retry, *flaky* ones do). Whether to raise it for flaky edit goals is gated on the multi-trial per-attempt pass-rate (§9) — measure first, then tune; do NOT add a new retry mechanism.
+**Retry sizing — MEASURED 2026-07-03 (12B, PR #46): keep `MAX_GOAL_ATTEMPTS=2`.** goal-level retry already exists (reflect→retry, error-class gated — *terminal* failures don't retry, *flaky* ones do). A one-flag A/B raising it 2→3 on the flaky c2 (7 trials) gave 5/7→6/7 (d=+0.15, Wilson CIs overlap) — **no separable benefit**, so the cap stays at 2. Do NOT add a new retry mechanism. (Re-measure via `FLAG=MAX_GOAL_ATTEMPTS ... bash eval/seq_ab/run_flag_ab.sh` if the model/harness changes.)
 
 ---
 
@@ -324,6 +324,15 @@ python eval/run_routing_eval.py \
   --report eval/reports/
 ```
 Acceptance: new skill ≥ 0.80, no existing skill drops > 0.05. If a skill mis-routes, improve its `SKILL.md` description — that's the routing signal. Never modify `eval/routing_eval.seed.jsonl`.
+
+- **Eval methodology (2026-07-02):** metric captions (`eval/metric_meaning.py`), Wilson-CI
+  win check (`eval/seq_ab/{variance,compare}.py` + `run_flag_ab.sh`, policy in
+  `docs/superpowers/eval-variance-policy.md`), provenance headers +
+  controlled-comparison protocol (`eval/provenance.py` +
+  `docs/superpowers/eval-controlled-comparison-protocol.md`), held-out leakage slice
+  (`eval/routing_eval.heldout.jsonl` + `--heldout`), trivial baselines
+  (`eval/routing_metrics.py`, `eval/seq_ab/baselines.py`). Stale 31B baselines archived
+  as `results-*.31b.ref.json`; re-capture on 12B per the protocol doc.
 
 ### 6. Semantic codegraph search (run when `services/codegraph_embedder/` is changed)
 
