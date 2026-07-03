@@ -15,6 +15,7 @@ import redis
 
 from eval.metric_meaning import seq_ab_meaning_block
 from eval.seq_ab.local_tool_responder import LocalToolResponder
+from eval.seq_ab.variance import wilson_interval
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 MODE = sys.argv[1] if len(sys.argv) > 1 else "unknown"
@@ -87,10 +88,13 @@ def aggregate_trials(trial_results):
     trials_run = len(trial_results)
     pass_count = sum(1 for t in trial_results if t.get("ok") is True)
     pass_rate = round(pass_count / trials_run, 2) if trials_run else 0.0
+    ci_low, ci_high = wilson_interval(pass_count, trials_run)
     return {
         "pass_count": pass_count,
         "trials_run": trials_run,
         "pass_rate": pass_rate,
+        "pass_rate_ci_low": round(ci_low, 3),
+        "pass_rate_ci_high": round(ci_high, 3),
         "median_llm_calls": median([t.get("llm_calls") for t in trial_results]),
         "median_wall_s": median([t.get("wall_s") for t in trial_results]),
         "trials": trial_results,
