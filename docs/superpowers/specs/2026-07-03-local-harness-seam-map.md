@@ -33,7 +33,7 @@ The flag reader is `services/orchestrator/local_mode.py::local_mode_enabled()`
   workspaces, checkpoints, telemetry). Continuity (`search_turns` /
   `context_manager` reads) becomes a local DB read.
 - **Test seam already present:** `StorageManager.from_clients()`
-  (`storage_manager.py:76`) + `tests/services/orchestrator/conftest.py`
+  (`storage_manager.py:77`) + `tests/services/orchestrator/conftest.py`
   `storage` fixture.
 
 ## Seam 3 — Chroma / semantic search (Piece 3)
@@ -41,7 +41,7 @@ The flag reader is `services/orchestrator/local_mode.py::local_mode_enabled()`
   lazy `chromadb.AsyncHttpClient`) feeding `search_memories()` (line 288).
   Consumers: `memory_search.py` (`MemorySearch`), `session_search.py`
   (`SessionSearch`), and the pod codegraph embedder
-  (`main.py:265` `pod_codegraph_enabled()`).
+  (`main.py:267` `pod_codegraph_enabled()`).
 - **Local impl:** drop Chroma; `search_memories`/`memory_search` become an
   agentic grep/read + `AGENTS.md` path, or a no-op behind the flag. Optional
   future SQLite-FTS. `session_search` already uses Mongo `$text` → moves with
