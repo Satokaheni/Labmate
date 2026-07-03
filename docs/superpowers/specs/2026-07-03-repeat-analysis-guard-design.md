@@ -1,8 +1,11 @@
 # Repeat-Analysis Guard — Design Spec
 
 > Implementation plan: `docs/superpowers/plans/2026-07-03-repeat-analysis-guard.md`.
-> This is a **harness-behavior** change (touches the ReAct loop), so it ships **flag-gated,
-> default-OFF** and byte-identical when off. Whether it lifts pass-rate is a live A/B question.
+> This is a **harness-behavior** change (touches the ReAct loop). It shipped flag-gated and
+> was measured via the c2 A/B; **default flipped to ON 2026-07-03** (no regression, cheaper on
+> average, eliminates the budget-exhaustion churn tail). Set `ENABLE_REPEAT_ANALYSIS_GUARD=0`
+> to disable. It reduces tail-risk (the rare expensive churn), not the median — pass-rate was
+> not CI-separable at c2's near-ceiling baseline.
 
 **Goal:** Stop the ReAct loop from burning its iteration budget on **repeated read-only
 analysis** (re-running `code-review` on a file it already reviewed) and instead steer the
@@ -55,8 +58,9 @@ with `write_file` and run the tests; don't re-review."*
   cap (the A/B showed exactly this — guard fired, zero effect on loop turns). Refunding is what
   the `load_skill` precedent does and is safe (persistent re-review is bounded by the wall-clock
   deadline, and the steer redirects to the edit just as "already loaded" redirects to the tools).
-- **Flag** — `ENABLE_REPEAT_ANALYSIS_GUARD` default `"0"` (**OFF**). Off ⇒ byte-identical to
-  today. Measure via whole-suite A/B (Q4) before any default flip.
+- **Flag** — `ENABLE_REPEAT_ANALYSIS_GUARD` default `"1"` (**ON**, flipped 2026-07-03 after the
+  c2 A/B validated it: no regression, cheaper on average, churn tail eliminated). Set `=0` to
+  restore the byte-identical no-op behavior.
 - **State** — loop-local `seen_analysis: set[str]`, **not** checkpointed (best-effort; a
   crash-resume that resets it merely allows one extra review — acceptable, keeps surface small).
 

@@ -13,11 +13,12 @@ def test_default_guarded_skills_include_review_not_sandbox():
     assert not is_guarded_analysis("run_tests")
 
 
-def test_flag_defaults_off(monkeypatch):
+def test_flag_defaults_on(monkeypatch):
+    # Adopted default ON 2026-07-03 after the c2 A/B (no regression, cheaper, curbs churn tail).
     monkeypatch.delenv("ENABLE_REPEAT_ANALYSIS_GUARD", raising=False)
-    assert repeat_analysis_guard_enabled() is False
-    monkeypatch.setenv("ENABLE_REPEAT_ANALYSIS_GUARD", "1")
     assert repeat_analysis_guard_enabled() is True
+    monkeypatch.setenv("ENABLE_REPEAT_ANALYSIS_GUARD", "0")
+    assert repeat_analysis_guard_enabled() is False
 
 
 def test_key_same_target_ignores_reworded_args():

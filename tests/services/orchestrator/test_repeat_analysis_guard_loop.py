@@ -102,8 +102,8 @@ async def _run_goal(monkeypatch, sequencing_mode="react"):
 
 @pytest.mark.asyncio
 async def test_repeat_analysis_flag_off_executes_twice(monkeypatch):
-    """Default (flag unset): guard must be a no-op — behavior-preserving."""
-    monkeypatch.delenv("ENABLE_REPEAT_ANALYSIS_GUARD", raising=False)
+    """Flag explicitly =0: guard is a no-op (the default is now ON, so this pins the off path)."""
+    monkeypatch.setenv("ENABLE_REPEAT_ANALYSIS_GUARD", "0")
 
     result, skill_router, fake_emitter = await _run_goal(monkeypatch)
 

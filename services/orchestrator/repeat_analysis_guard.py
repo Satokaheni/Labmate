@@ -1,7 +1,8 @@
 """Guard against re-running a read-only ANALYSIS skill (code-review, critique, …) on a target
 the ReAct loop already analyzed this goal. Mirrors load_skill_guard.py, but for call_skill_tool:
 a re-review is short-circuited with a steer toward the edit instead of burning another iteration.
-Flag-gated (ENABLE_REPEAT_ANALYSIS_GUARD), default OFF ⇒ behavior-preserving.
+Flag-gated (ENABLE_REPEAT_ANALYSIS_GUARD); **default ON** (adopted 2026-07-03 after the c2 A/B:
+no regression, cheaper on average, eliminates the budget-exhaustion churn tail). Set =0 to disable.
 """
 
 import os
@@ -23,7 +24,7 @@ def analysis_skills() -> frozenset[str]:
 
 
 def repeat_analysis_guard_enabled() -> bool:
-    return os.getenv("ENABLE_REPEAT_ANALYSIS_GUARD", "0") == "1"
+    return os.getenv("ENABLE_REPEAT_ANALYSIS_GUARD", "1") == "1"
 
 
 def is_guarded_analysis(skill: str) -> bool:
