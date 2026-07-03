@@ -52,3 +52,20 @@ def compare_runs(baseline: dict, variant: dict, min_trials: int = 3) -> dict:
     any_win = any(c["win"] for c in cases)
     verdict = "WIN" if any_win else "no measured win"
     return {"cases": cases, "any_win": any_win, "verdict_line": verdict, "min_trials": min_trials}
+
+
+if __name__ == "__main__":
+    import json as _json
+    import sys as _sys
+
+    baseline = _json.loads(open(_sys.argv[1]).read())
+    variant = _json.loads(open(_sys.argv[2]).read())
+    report = compare_runs(baseline, variant)
+    print(f"verdict: {report['verdict_line']}  (min_trials={report['min_trials']})")
+    for c in report["cases"]:
+        mark = "WIN" if c["win"] else ("~" if c["delta"] else "=")
+        print(
+            f"  [{mark}] {c['id']}: {c['baseline_rate']} {c['baseline_ci']} -> "
+            f"{c['variant_rate']} {c['variant_ci']}  d={c['delta']} "
+            f"disjoint={c['cis_disjoint']} floor={c['noop_floor']}"
+        )

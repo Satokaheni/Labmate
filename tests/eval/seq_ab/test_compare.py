@@ -1,3 +1,5 @@
+import json
+
 from eval.seq_ab.compare import compare_case, compare_runs
 
 
@@ -43,3 +45,22 @@ def test_compare_runs_matches_by_id_and_rolls_up():
     assert out["any_win"] is True
     ids = {c["id"] for c in out["cases"]}
     assert ids == {"c2", "c5"}
+
+
+def test_compare_runs_from_json_files(tmp_path):
+    base = {
+        "cases": [
+            {"id": "c2", "kind": "compound", "pass_count": 0, "trials_run": 4, "pass_rate": 0.0}
+        ]
+    }
+    var = {
+        "cases": [
+            {"id": "c2", "kind": "compound", "pass_count": 4, "trials_run": 4, "pass_rate": 1.0}
+        ]
+    }
+    (tmp_path / "b.json").write_text(json.dumps(base))
+    (tmp_path / "v.json").write_text(json.dumps(var))
+    loaded_b = json.loads((tmp_path / "b.json").read_text())
+    loaded_v = json.loads((tmp_path / "v.json").read_text())
+    out = compare_runs(loaded_b, loaded_v)
+    assert out["any_win"] is True
