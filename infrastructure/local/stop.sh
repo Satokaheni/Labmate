@@ -23,13 +23,34 @@ STOP_MODEL=false
 info() { echo "[local] $*"; }
 
 _stop_pid() {
-  local name="$1" pidfile="$2"
-  if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
-    info "stopping $name (pid $(cat "$pidfile")) ..."
-    kill "$(cat "$pidfile")" 2>/dev/null || true
-    rm -f "$pidfile"
-  else
-    pkill -f "$name" 2>/dev/null && info "stopped stray $name" || info "$name not running"
+  local name="$1" pidfile="$2" pid="" _i
+  [[ -f "$pidfile" ]] && pid="$(cat "$pidfile" 2>/dev/null || true)"
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    info "stopping $name (pid $pid) ..."
+    kill "$pid" 2>/dev/null || true
+    # A cooperative-SIGTERM service (e.g. the orchestrator, whose handler only
+    # schedules an async stop) blocked mid-generation can outlive a plain kill.
+    # Wait for graceful exit, then escalate to SIGKILL so it never orphans.
+    for _i in $(seq 1 10); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+    if kill -0 "$pid" 2>/dev/null; then
+      info "$name (pid $pid) ignored SIGTERM — sending SIGKILL"
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+  fi
+  rm -f "$pidfile"
+  # ALWAYS sweep untracked strays (the leak fix): repeated restarts have left
+  # orchestrators the pidfile never tracked, and they share the Redis consumer
+  # group — silently splitting/contaminating later runs. Reap every match by
+  # module name, escalating to SIGKILL. (Safe: this script's own argv does not
+  # contain "$name", so pgrep -f cannot match the caller.)
+  local strays
+  strays="$(pgrep -f "$name" 2>/dev/null || true)"
+  if [[ -n "$strays" ]]; then
+    info "reaping stray $name: $(echo "$strays" | tr '\n' ' ')"
+    kill $strays 2>/dev/null || true
+    for _i in $(seq 1 10); do pgrep -f "$name" >/dev/null 2>&1 || break; sleep 1; done
+    strays="$(pgrep -f "$name" 2>/dev/null || true)"
+    [[ -n "$strays" ]] && kill -9 $strays 2>/dev/null || true
   fi
 }
 

@@ -15,16 +15,42 @@ export MCP_BRIDGE_ARGS="/workspace/Labmate/services/mcp-bridge/dist/index.js"
 export SEQUENCING_MODE="$MODE"
 export TRIALS="${TRIALS:-3}"   # per-case trials; pass-rate scoring (RunPod-only fixtures)
 
-# stop existing orchestrator by pidfile (never pkill -f — it matches this script)
-if [ -f .data/pids/orchestrator.pid ]; then
-  kill "$(cat .data/pids/orchestrator.pid)" 2>/dev/null
-  for _ in $(seq 1 30); do kill -0 "$(cat .data/pids/orchestrator.pid)" 2>/dev/null || break; sleep 1; done
+# Stop ALL existing orchestrators before starting a new one. A cooperative-SIGTERM
+# orchestrator blocked mid-generation outlives a plain `kill`, and prior runs have
+# leaked untracked instances; multiple orchestrators share the Redis consumer group
+# and would silently split (and cross-contaminate) this run's trials with the wrong
+# env config. The module-path pattern cannot match this script's own argv
+# (`bash .../run_mode.sh <mode>`), so pgrep/pkill are safe here.
+ORCH_PAT='services\.orchestrator\.main'
+if pgrep -f "$ORCH_PAT" >/dev/null; then
+  echo "[$MODE] stopping orchestrator(s): $(pgrep -f "$ORCH_PAT" | tr '\n' ' ')"
+  kill $(pgrep -f "$ORCH_PAT") 2>/dev/null
+  for _ in $(seq 1 30); do pgrep -f "$ORCH_PAT" >/dev/null || break; sleep 1; done
+  if pgrep -f "$ORCH_PAT" >/dev/null; then
+    echo "[$MODE] SIGTERM timed out — SIGKILL $(pgrep -f "$ORCH_PAT" | tr '\n' ' ')"
+    kill -9 $(pgrep -f "$ORCH_PAT") 2>/dev/null; sleep 1
+  fi
+fi
+rm -f .data/pids/orchestrator.pid
+
+# Pre-flight guard: refuse to start on top of a survivor (would corrupt the A/B).
+if pgrep -f "$ORCH_PAT" >/dev/null; then
+  echo "[$MODE] FATAL: orchestrator(s) survived reap: $(pgrep -f "$ORCH_PAT" | tr '\n' ' ')" >&2
+  exit 1
 fi
 
 nohup python -m services.orchestrator.main > .data/logs/orchestrator-$MODE.log 2>&1 &
 echo $! > .data/pids/orchestrator.pid
 NEW=$(cat .data/pids/orchestrator.pid)
 echo "[$MODE] orchestrator pid $NEW"
+
+# Pre-flight guard: confirm EXACTLY ONE orchestrator now serves the Redis group.
+sleep 1
+N_ORCH=$(pgrep -f "$ORCH_PAT" | wc -l | tr -d ' ')
+if [ "$N_ORCH" -ne 1 ]; then
+  echo "[$MODE] FATAL: expected exactly 1 orchestrator, found $N_ORCH: $(pgrep -f "$ORCH_PAT" | tr '\n' ' ')" >&2
+  exit 1
+fi
 
 for _ in $(seq 1 90); do
   grep -qE "skill router ready" ".data/logs/orchestrator-$MODE.log" 2>/dev/null && break
