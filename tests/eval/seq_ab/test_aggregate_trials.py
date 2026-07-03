@@ -116,3 +116,13 @@ def test_aggregate_ci_empty_is_full_range():
     agg = aggregate_trials([])
     assert agg["pass_rate_ci_low"] == 0.0
     assert agg["pass_rate_ci_high"] == 1.0
+
+
+# ---- repeat-analysis-guard instrument ----
+def test_aggregate_reports_median_analysis_deduped():
+    agg = aggregate_trials(
+        [{"ok": True, "analysis_deduped": 2}, {"ok": True, "analysis_deduped": 4}]
+    )
+    assert agg["median_analysis_deduped"] == 3
+    line = summarize_line("skill_first", "c2_review_fix", agg)
+    assert "median_deduped=3" in line
