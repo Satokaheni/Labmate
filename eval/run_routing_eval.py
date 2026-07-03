@@ -46,6 +46,8 @@ from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
+from eval.metric_meaning import routing_header_lines
+
 try:
     import yaml
 except ImportError:
@@ -404,6 +406,7 @@ def write_reports(results, summary, report_dir, repeats):
     lines = [
         f"# Routing eval — {stamp}",
         "",
+        *routing_header_lines(),
         f"- cases: {summary['n']}  |  repeats: {repeats}",
         f"- overall accuracy: {summary['overall']:.3f}",
         f"- mean stability: {summary['mean_stability']:.3f}",
