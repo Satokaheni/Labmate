@@ -23,3 +23,10 @@ def random_baseline_accuracy(cases: list[dict], n_skills: int) -> float:
     if not cases or n_skills < 0:
         return 0.0
     return 1.0 / (n_skills + 1)
+
+
+def inflation_estimate(generated_overall: float, heldout_overall: float) -> float:
+    """Leakage inflation = accuracy on model-generated cases minus accuracy on the
+    held-out (non-model-generated) slice. Positive => the headline is inflated by cases
+    that echo SKILL.md wording the router also sees."""
+    return round(generated_overall - heldout_overall, 4)
