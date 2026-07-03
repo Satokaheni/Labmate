@@ -32,6 +32,12 @@ from .message_repair import message_repair_enabled, sanitize_messages
 from .model_client import acompletion_with_failover, resolve_bases
 from .progress_breaker import ProgressBreaker, ProgressStep
 from .prompt_assembler import PromptAssembler, measure_prompt_segments
+from .repeat_analysis_guard import (
+    analysis_key,
+    build_analysis_steer,
+    is_guarded_analysis,
+    repeat_analysis_guard_enabled,
+)
 from .sandbox_edits import detect_sandbox_writes
 from .session_search import SessionSearch
 from .steer_inject import inject_steer
@@ -603,6 +609,12 @@ class AsyncOrchestrator:
         # so the model stops churning its iteration budget re-loading skills.
         loaded_skills: set[str] = set()
 
+        # Analysis-skill invocations already seen THIS goal (skill + best-effort
+        # target key). A repeat guarded-analysis call for a seen key is short-
+        # circuited with a steer toward editing (see call_skill_tool dispatch
+        # below). Loop-local, not checkpointed.
+        seen_analysis: set[str] = set()
+
         # ReAct loop — bounded by an IterationBudget (replaces the bare
         # range(max_steps) cap). The budget grants ONE grace turn after
         # exhaustion and refunds cheap read-only iterations (CHEAP_TOOLS).
@@ -1082,62 +1094,78 @@ class AsyncOrchestrator:
                                     content = json.dumps(obs)
 
                     elif name == "call_skill_tool" and self.skill_router is not None:
-                        res = await self.skill_router.execute(
-                            args.get("skill", ""),
-                            args.get("tool", ""),
-                            args.get("arguments", {}),
-                        )
-                        content = ground_tool_result(json.dumps(res), LABMATE_TOOL_RESULT_BUDGET)
-                        # Emit artifact.created if the skill produced a file
-                        if isinstance(res, dict):
-                            _result = (
-                                res.get("result") if isinstance(res.get("result"), dict) else {}
+                        _skill = args.get("skill", "")
+                        _steer = None
+                        if repeat_analysis_guard_enabled() and is_guarded_analysis(_skill):
+                            _akey = analysis_key(_skill, args.get("arguments", {}))
+                            if _akey in seen_analysis:
+                                _steer = build_analysis_steer(_skill, _akey)
+                            else:
+                                seen_analysis.add(_akey)
+                        if _steer is not None:
+                            content = json.dumps(_steer)
+                            await events.emit("analysis.deduped", skill=_skill, key=_akey)
+                        else:
+                            res = await self.skill_router.execute(
+                                args.get("skill", ""),
+                                args.get("tool", ""),
+                                args.get("arguments", {}),
                             )
-                            _path = _result.get("path") or _result.get("file") or ""
-                            _content_str = _result.get("content") or _result.get("output") or ""
-                            if _path and _content_str and isinstance(_content_str, str):
-                                try:
-                                    await events.emit(
-                                        "artifact_created",
-                                        artifact={
-                                            "id": "art-" + uuid.uuid4().hex[:8],
-                                            "name": _path.split("/")[-1] or _path,
-                                            "path": _path,
-                                            "language": _infer_language(_path),
-                                            "mime": _infer_mime(_path),
-                                            "sizeBytes": len(_content_str.encode()),
-                                            "lineCount": _content_str.count("\n") + 1,
-                                            "preview": "code"
-                                            if _path.endswith((".py", ".ts", ".js", ".rs", ".go"))
-                                            else "doc",
-                                            "content": _content_str,
-                                            "downloadUrl": f"/artifacts/{_path}",
-                                        },
-                                    )
-                                except Exception:
-                                    pass  # artifact emission is best-effort
-                        # Verification-stop: an assertion-bearing code-sandbox run
-                        # that exits 0 is a real verification for tasks with no
-                        # test suite (so a correct fix is not downgraded to ok=False).
-                        if is_assertion_verification(
-                            args.get("skill", ""),
-                            args.get("tool", ""),
-                            args.get("arguments", {}),
-                            res,
-                        ):
-                            tests_passed = True
-                        # Edit-accounting: files written via code-sandbox (the
-                        # workaround used when no local-tool client is attached)
-                        # must count as edits so reconcile_cutoff can credit a
-                        # verified run.
-                        _sb_writes = detect_sandbox_writes(
-                            args.get("skill", ""),
-                            args.get("tool", ""),
-                            args.get("arguments", {}),
-                            res,
-                        )
-                        if _sb_writes:
-                            edited_files |= _sb_writes
+                            content = ground_tool_result(
+                                json.dumps(res), LABMATE_TOOL_RESULT_BUDGET
+                            )
+                            # Emit artifact.created if the skill produced a file
+                            if isinstance(res, dict):
+                                _result = (
+                                    res.get("result") if isinstance(res.get("result"), dict) else {}
+                                )
+                                _path = _result.get("path") or _result.get("file") or ""
+                                _content_str = _result.get("content") or _result.get("output") or ""
+                                if _path and _content_str and isinstance(_content_str, str):
+                                    try:
+                                        await events.emit(
+                                            "artifact_created",
+                                            artifact={
+                                                "id": "art-" + uuid.uuid4().hex[:8],
+                                                "name": _path.split("/")[-1] or _path,
+                                                "path": _path,
+                                                "language": _infer_language(_path),
+                                                "mime": _infer_mime(_path),
+                                                "sizeBytes": len(_content_str.encode()),
+                                                "lineCount": _content_str.count("\n") + 1,
+                                                "preview": "code"
+                                                if _path.endswith(
+                                                    (".py", ".ts", ".js", ".rs", ".go")
+                                                )
+                                                else "doc",
+                                                "content": _content_str,
+                                                "downloadUrl": f"/artifacts/{_path}",
+                                            },
+                                        )
+                                    except Exception:
+                                        pass  # artifact emission is best-effort
+                            # Verification-stop: an assertion-bearing code-sandbox run
+                            # that exits 0 is a real verification for tasks with no
+                            # test suite (so a correct fix is not downgraded to ok=False).
+                            if is_assertion_verification(
+                                args.get("skill", ""),
+                                args.get("tool", ""),
+                                args.get("arguments", {}),
+                                res,
+                            ):
+                                tests_passed = True
+                            # Edit-accounting: files written via code-sandbox (the
+                            # workaround used when no local-tool client is attached)
+                            # must count as edits so reconcile_cutoff can credit a
+                            # verified run.
+                            _sb_writes = detect_sandbox_writes(
+                                args.get("skill", ""),
+                                args.get("tool", ""),
+                                args.get("arguments", {}),
+                                res,
+                            )
+                            if _sb_writes:
+                                edited_files |= _sb_writes
 
                     elif name == "run_tests":
                         # First-class test runner. Two paths:
