@@ -44,6 +44,13 @@ describe('LoginScreen', () => {
     expect(screen.getByText(/local instance reachable/i)).toBeInTheDocument();
   });
 
+  it('renders the decorative experiment graphic', () => {
+    render(<LoginScreen onSubmit={vi.fn()} />);
+    expect(screen.getByTestId('experiment-graphic')).toBeInTheDocument();
+    expect(screen.getByText(/read the diff, draft the paper/i)).toBeInTheDocument();
+    expect(screen.getByText(/fig\.1 — training run/i)).toBeInTheDocument();
+  });
+
   it('toggles password visibility', async () => {
     render(<LoginScreen onSubmit={vi.fn()} />);
     const pw = screen.getByLabelText('Password') as HTMLInputElement;
