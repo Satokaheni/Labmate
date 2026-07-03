@@ -47,11 +47,14 @@ with `write_file` and run the tests; don't re-review."*
 - **Key granularity** — `analysis_key(skill, arguments)` = `skill` + a best-effort *target*
   pulled from common arg fields (`file`/`path`/`filename`/`target`); no target → key on skill
   alone. So re-reviewing the **same** file is caught; reviewing a **different** file is allowed.
-- **Effect** — short-circuit (skip the skill run) + return the steer + **consume the turn (no
-  refund)**. Rationale: refunding every short-circuit could let re-review recur unbounded (the
-  no-progress breaker won't catch it either); consuming keeps the budget backstop intact and
-  still saves the redundant skill-execution latency. (Contrast `load_skill` dedup, which
-  refunds — a re-load is idempotent/harmless; a re-review is the behavior we want to discourage.)
+- **Effect** — short-circuit (skip the skill run) + return the steer + **refund the turn**
+  (`budget.refund()`, mirroring the `load_skill` dedup). **CORRECTED 2026-07-03 after the first
+  A/B:** the original design consumed the turn (no refund), reasoning it kept a budget backstop.
+  That was wrong — it defeats the guard's *purpose*: the whole point is to free an iteration for
+  the actual edit, so consuming it means the churn still drains the budget and punts at the same
+  cap (the A/B showed exactly this — guard fired, zero effect on loop turns). Refunding is what
+  the `load_skill` precedent does and is safe (persistent re-review is bounded by the wall-clock
+  deadline, and the steer redirects to the edit just as "already loaded" redirects to the tools).
 - **Flag** — `ENABLE_REPEAT_ANALYSIS_GUARD` default `"0"` (**OFF**). Off ⇒ byte-identical to
   today. Measure via whole-suite A/B (Q4) before any default flip.
 - **State** — loop-local `seen_analysis: set[str]`, **not** checkpointed (best-effort; a

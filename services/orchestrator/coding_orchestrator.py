@@ -1104,7 +1104,15 @@ class AsyncOrchestrator:
                                 seen_analysis.add(_akey)
                         if _steer is not None:
                             content = json.dumps(_steer)
-                            await events.emit("analysis.deduped", skill=_skill, key=_akey)
+                            # Refund the turn (mirror the load_skill dedup): a short-circuited
+                            # re-review must NOT drain the edit budget — the whole point is to
+                            # free iterations for the actual fix. Consuming it defeats the guard
+                            # (the churn still punts at the same budget cap). Persistent re-review
+                            # is bounded by the wall-clock deadline, exactly as with load_skill.
+                            budget.refund()
+                            await events.emit(
+                                "analysis.deduped", skill=_skill, key=_akey, refunded=True
+                            )
                         else:
                             res = await self.skill_router.execute(
                                 args.get("skill", ""),
