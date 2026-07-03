@@ -14,6 +14,7 @@ import time
 import redis
 
 from eval.metric_meaning import seq_ab_meaning_block
+from eval.provenance import build_provenance, capture_env_flags, current_git_sha
 from eval.seq_ab.local_tool_responder import LocalToolResponder
 from eval.seq_ab.variance import wilson_interval
 
@@ -173,7 +174,19 @@ def main():
         tag = "-".join(only).replace("/", "_")
         out_path = f"eval/seq_ab/results-{MODE}-only-{tag}.json"
         print(f"[{MODE}] AB_ONLY={only} -> {len(cases)} case(s) -> {out_path}", flush=True)
-    out = {"mode": MODE, "trials": TRIALS, "metric_meaning": seq_ab_meaning_block(), "cases": []}
+    provenance = build_provenance(
+        model=os.path.basename(os.getenv("MODEL", "")) or "unknown",
+        git_sha=current_git_sha(),
+        captured_at=time.strftime("%Y-%m-%dT%H:%M:%S"),
+        env=capture_env_flags(os.environ),
+    )
+    out = {
+        "mode": MODE,
+        "trials": TRIALS,
+        "provenance": provenance,
+        "metric_meaning": seq_ab_meaning_block(),
+        "cases": [],
+    }
     for case in cases:
         print(f"[{MODE}] running {case['id']} x{TRIALS} ...", flush=True)
         trial_results = []

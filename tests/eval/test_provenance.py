@@ -1,5 +1,7 @@
 """Tests for eval.provenance module."""
 
+import os
+
 from eval.provenance import (
     TRACKED_FLAGS,
     build_provenance,
@@ -43,3 +45,11 @@ def test_compare_provenance_clean_when_same():
 def test_tracked_flags_covers_the_load_bearing_ones():
     for f in ("SEQUENCING_MODE", "ROUTE_EDIT_TO_REACT", "MAX_GOAL_ATTEMPTS"):
         assert f in TRACKED_FLAGS
+
+
+def test_runner_snapshot_reflects_process_env(monkeypatch):
+    monkeypatch.setenv("SEQUENCING_MODE", "skill_first")
+    monkeypatch.setenv("ROUTE_EDIT_TO_REACT", "1")
+    snap = capture_env_flags(os.environ)
+    assert snap.get("SEQUENCING_MODE") == "skill_first"
+    assert snap.get("ROUTE_EDIT_TO_REACT") == "1"
