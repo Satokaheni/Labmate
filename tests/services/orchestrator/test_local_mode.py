@@ -31,3 +31,12 @@ def test_read_at_call_time_not_import(monkeypatch):
     assert local_mode_enabled() is False
     monkeypatch.setenv("LABMATE_LOCAL_MODE", "1")
     assert local_mode_enabled() is True
+
+
+def test_main_imports_flag_reader():
+    """main.py wires the flag reader (guards against the import being dropped)."""
+    import services.orchestrator.main as main_mod
+
+    assert hasattr(main_mod, "local_mode_enabled")
+    # Callable and returns a bool regardless of env.
+    assert isinstance(main_mod.local_mode_enabled(), bool)
