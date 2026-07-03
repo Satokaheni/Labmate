@@ -51,6 +51,7 @@ from eval.routing_metrics import (
     inflation_estimate,
     majority_class_accuracy,
     random_baseline_accuracy,
+    subset_overall,
 )
 
 try:
@@ -433,7 +434,8 @@ def write_reports(results, summary, report_dir, repeats, baselines=None, leakage
         lines += [
             "## Leakage check (generated vs held-out)",
             "",
-            f"- generated-set overall: {leakage['generated_overall']:.3f}",
+            f"- generated-set overall ({leakage.get('generated_basis', 'generated')}): "
+            f"{leakage['generated_overall']:.3f}",
             f"- held-out overall: {leakage['heldout_overall']:.3f}",
             f"- inflation (generated - heldout): {leakage['inflation']:.3f}",
             "",
@@ -568,10 +570,16 @@ def main():
             )
         )
         heldout_summary = summarize(heldout_results)
+        gen_overall = subset_overall(results, cases, "generated")
+        basis = "generated"
+        if gen_overall is None:
+            gen_overall = summary["overall"]
+            basis = "working-set (no source=generated cases)"
         leakage = {
-            "generated_overall": summary["overall"],
+            "generated_overall": gen_overall,
+            "generated_basis": basis,
             "heldout_overall": heldout_summary["overall"],
-            "inflation": inflation_estimate(summary["overall"], heldout_summary["overall"]),
+            "inflation": inflation_estimate(gen_overall, heldout_summary["overall"]),
         }
 
     md = write_reports(

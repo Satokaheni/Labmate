@@ -30,3 +30,17 @@ def inflation_estimate(generated_overall: float, heldout_overall: float) -> floa
     held-out (non-model-generated) slice. Positive => the headline is inflated by cases
     that echo SKILL.md wording the router also sees."""
     return round(generated_overall - heldout_overall, 4)
+
+
+def subset_overall(results: list[dict], cases: list[dict], source: str) -> float | None:
+    """Accuracy over only the results whose case carries the given `source` tag.
+
+    Returns None when no case has that source (the caller decides the fallback),
+    so the leakage metric measures the model-generated slice specifically rather
+    than the whole (mostly hand-written) working set.
+    """
+    ids = {c["id"] for c in cases if c.get("source") == source}
+    subset = [r for r in results if r.get("id") in ids]
+    if not subset:
+        return None
+    return sum(1 for r in subset if r.get("correct")) / len(subset)

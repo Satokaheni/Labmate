@@ -6,6 +6,7 @@ from eval.routing_metrics import (
     inflation_estimate,
     majority_class_accuracy,
     random_baseline_accuracy,
+    subset_overall,
 )
 from eval.run_routing_eval import write_reports
 
@@ -39,6 +40,21 @@ def test_inflation_can_be_negative():
     assert inflation_estimate(0.70, 0.75) == pytest.approx(-0.05)
 
 
+def test_subset_overall_filters_by_source():
+    cases = [
+        {"id": "g1", "source": "generated"},
+        {"id": "g2", "source": "generated"},
+        {"id": "s1", "source": "seed"},
+    ]
+    results = [
+        {"id": "g1", "correct": True},
+        {"id": "g2", "correct": False},
+        {"id": "s1", "correct": True},
+    ]
+    assert subset_overall(results, cases, "generated") == pytest.approx(0.5)  # 1 of 2 generated
+    assert subset_overall(results, cases, "longtail") is None  # no such source
+
+
 def test_report_includes_baselines_and_leakage(tmp_path):
     summary = {
         "overall": 0.90,
@@ -51,8 +67,14 @@ def test_report_includes_baselines_and_leakage(tmp_path):
         "confusion": [],
     }
     baselines = {"majority_class": 0.30, "random": 0.09}
-    leakage = {"generated_overall": 0.90, "heldout_overall": 0.72, "inflation": 0.18}
+    leakage = {
+        "generated_overall": 0.90,
+        "generated_basis": "generated",
+        "heldout_overall": 0.72,
+        "inflation": 0.18,
+    }
     md = write_reports([], summary, str(tmp_path), 3, baselines=baselines, leakage=leakage)
     body = Path(md).read_text()
     assert "majority" in body.lower() and "0.30" in body
     assert "inflation" in body.lower() and "0.18" in body
+    assert "generated" in body.lower() and "0.90" in body
