@@ -37,10 +37,14 @@ export HF_HOME="${HF_HOME:-/workspace/.hf-cache}"
 LLAMA_DIR="${LLAMA_DIR:-/workspace/llama.cpp}"
 # Served model — keep in sync with local.env's MODEL (serve-model.sh serves that path).
 # The 12B is the default (single-GPU; ~2x faster than the 31B and fits its full 262144 ctx
-# on a 48 GB card). Override GGUF_REPO/MODEL_DIR/GGUF_FILE via env for a different model.
+# on a 48 GB card). Pick a quant with QUANT=<name> (e.g. QUANT=Q6_K for higher fidelity —
+# the download step verifies it exists in the repo and lists the alternatives if it doesn't).
+# Override GGUF_REPO/MODEL_DIR/GGUF_STEM/QUANT/GGUF_FILE via env for a different model or quant.
 MODEL_DIR="${MODEL_DIR:-/workspace/models/gemma-4-12b-gguf}"
 GGUF_REPO="${GGUF_REPO:-unsloth/gemma-4-12b-it-GGUF}"   # verify matches your HF source; env-overridable
-GGUF_FILE="${GGUF_FILE:-gemma-4-12b-it-UD-Q4_K_XL.gguf}"
+GGUF_STEM="${GGUF_STEM:-gemma-4-12b-it}"                # filename prefix before the quant tag
+QUANT="${QUANT:-UD-Q4_K_XL}"                            # default; try Q6_K / Q8_0 for more fidelity
+GGUF_FILE="${GGUF_FILE:-${GGUF_STEM}-${QUANT}.gguf}"
 
 # Tokenizer for the ast-repo-map skill's token budgeting. We download only the
 # tokenizer FILES of the served model (not the weights), so it costs no VRAM and
@@ -191,9 +195,22 @@ else
     log "GGUF already present: ${MODEL_DIR}/${GGUF_FILE}"
   else
     have hf || $PIP "huggingface-hub>=0.34"
-    log "downloading ${GGUF_REPO}/${GGUF_FILE} (~18.8GB) ..."
+    # Verify the requested quant actually exists in the repo BEFORE the (large) download,
+    # so a bad QUANT fails fast and prints the quants that ARE published. This is the
+    # "fetch the Q6 if it exists" guard: set QUANT and it either fetches or tells you what's there.
+    avail="$(python3 -c "from huggingface_hub import list_repo_files; print('\n'.join(f for f in list_repo_files('$GGUF_REPO') if f.endswith('.gguf')))" 2>/dev/null)" || avail=""
+    if [[ -z "$avail" ]]; then
+      log "WARN: could not list ${GGUF_REPO} (offline or repo missing) — attempting the download anyway."
+    elif ! grep -qxF "$GGUF_FILE" <<<"$avail"; then
+      log "ERROR: '${GGUF_FILE}' is not in ${GGUF_REPO}. Available GGUF quants:"
+      echo "$avail" | sed 's/^/    /' >&2
+      log "Re-run with QUANT=<name> (e.g. QUANT=Q6_K) or GGUF_FILE=<exact file> from the list above."
+      exit 1
+    fi
+    log "downloading ${GGUF_REPO}/${GGUF_FILE} ..."
     mkdir -p "$MODEL_DIR"
     hf download "$GGUF_REPO" "$GGUF_FILE" --local-dir "$MODEL_DIR"
+    log "to SERVE this quant: export MODEL=${MODEL_DIR}/${GGUF_FILE} (or edit local.env's MODEL), then serve-model.sh"
   fi
 fi
 

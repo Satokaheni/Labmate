@@ -71,7 +71,20 @@ target `llama-server`. Output: `/workspace/llama.cpp/build/bin/llama-server`.
 (~7.4 GB, Unsloth *Dynamic* — higher accuracy than plain Q4_0/Q4_K per §8.5),
 downloaded to `/workspace/models/gemma-4-12b-gguf/` (kept in sync with `local.env`'s
 `MODEL`). The 12B fits its full 262144-token context on a 48 GB card and routes on par
-with the 31B; override `GGUF_REPO`/`MODEL_DIR`/`GGUF_FILE` to serve a different model.
+with the 31B; override `GGUF_REPO`/`MODEL_DIR`/`GGUF_STEM`/`QUANT`/`GGUF_FILE` for a
+different model or quant.
+
+**Choosing a higher-fidelity quant.** Pass `QUANT=<name>` to fetch a different quantization
+of the same 12B — e.g. `QUANT=Q6_K infrastructure/local/install.sh` for less quantization
+error (~10 GB, still fits the 48 GB card). The download **verifies the quant exists in the
+repo first** and, if not, prints the quants that *are* published so you can pick a valid one
+— so this is safe to try even if you're unsure the Q6 is available. Both quants coexist under
+`MODEL_DIR`; to actually **serve** the new one, point `MODEL` at it and restart:
+```bash
+QUANT=Q6_K infrastructure/local/install.sh                       # fetch (or list available)
+export MODEL=/workspace/models/gemma-4-12b-gguf/gemma-4-12b-it-Q6_K.gguf   # or edit local.env
+infrastructure/local/serve-model.sh                              # serve the Q6
+```
 
 **Serve:** `llama-server -m <gguf> --jinja --n-gpu-layers 999 --ctx-size 16384`
 on `127.0.0.1:8000`. `--jinja` uses the GGUF's embedded chat template, which
