@@ -36,13 +36,13 @@ mkdir -p "${REPO_ROOT}/.data/logs" "${REPO_ROOT}/.data/pids"
 export HF_HOME="${HF_HOME:-/workspace/.hf-cache}"
 LLAMA_DIR="${LLAMA_DIR:-/workspace/llama.cpp}"
 # Served model — keep in sync with local.env's MODEL (serve-model.sh serves that path).
-# The 12B Q6_K is the default (single-GPU; higher fidelity than Q4 on the multi-step edit
-# loop, still fits the full 262144 ctx on a 48 GB card). Override GGUF_REPO/MODEL_DIR/GGUF_FILE
-# via env for a different model or quant; the download step verifies the file exists in the
-# repo and lists the available quants if it doesn't.
+# The 12B UD-Q4_K_XL is the default (single-GPU; ~2x faster than the 31B and fits its full
+# 262144 ctx on a 48 GB card). A Q6_K A/B on c2 showed no measured gain for ~50% more latency,
+# so Q4 stays the default. Override GGUF_REPO/MODEL_DIR/GGUF_FILE via env for a different model
+# or quant; the download step verifies the file exists in the repo and lists the quants if not.
 MODEL_DIR="${MODEL_DIR:-/workspace/models/gemma-4-12b-gguf}"
 GGUF_REPO="${GGUF_REPO:-unsloth/gemma-4-12b-it-GGUF}"   # verify matches your HF source; env-overridable
-GGUF_FILE="${GGUF_FILE:-gemma-4-12b-it-UD-Q6_K_XL.gguf}"
+GGUF_FILE="${GGUF_FILE:-gemma-4-12b-it-UD-Q4_K_XL.gguf}"
 
 # Tokenizer for the ast-repo-map skill's token budgeting. We download only the
 # tokenizer FILES of the served model (not the weights), so it costs no VRAM and
@@ -194,8 +194,8 @@ else
   else
     have hf || $PIP "huggingface-hub>=0.34"
     # Verify the requested GGUF actually exists in the repo BEFORE the (large) download,
-    # so a bad filename fails fast and prints the quants that ARE published. This is the
-    # "serve the Q6 if it exists" guard: if UD-Q6_K_XL isn't the repo's name, you'll see the real one.
+    # so a bad filename fails fast and prints the quants that ARE published (e.g. if you
+    # override GGUF_FILE to a quant the repo names differently, you'll see the real name).
     avail="$(python3 -c "from huggingface_hub import list_repo_files; print('\n'.join(f for f in list_repo_files('$GGUF_REPO') if f.endswith('.gguf')))" 2>/dev/null)" || avail=""
     if [[ -z "$avail" ]]; then
       log "WARN: could not list ${GGUF_REPO} (offline or repo missing) — attempting the download anyway."

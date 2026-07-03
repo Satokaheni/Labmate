@@ -21,8 +21,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 if [[ -f "${SCRIPT_DIR}/local.env" ]]; then set +u; source "${SCRIPT_DIR}/local.env"; set -u; fi
 
 LLAMA_SERVER="${LLAMA_SERVER:-/workspace/llama.cpp/build/bin/llama-server}"
-# Fallback default only (local.env normally sets MODEL to the 12B Q6_K).
-MODEL="${MODEL:-/workspace/models/gemma-4-12b-gguf/gemma-4-12b-it-UD-Q6_K_XL.gguf}"
+# Fallback default only (local.env normally sets MODEL to the 12B UD-Q4_K_XL).
+MODEL="${MODEL:-/workspace/models/gemma-4-12b-gguf/gemma-4-12b-it-UD-Q4_K_XL.gguf}"
 ALIAS="${ALIAS:-gemma-4}"
 PORT="${PORT:-8000}"
 # --ctx-size is the TOTAL KV budget SHARED across --parallel slots: each request gets
