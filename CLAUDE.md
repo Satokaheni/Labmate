@@ -325,6 +325,15 @@ python eval/run_routing_eval.py \
 ```
 Acceptance: new skill ≥ 0.80, no existing skill drops > 0.05. If a skill mis-routes, improve its `SKILL.md` description — that's the routing signal. Never modify `eval/routing_eval.seed.jsonl`.
 
+- **Eval methodology (2026-07-02):** metric captions (`eval/metric_meaning.py`), Wilson-CI
+  win check (`eval/seq_ab/{variance,compare}.py` + `run_flag_ab.sh`, policy in
+  `docs/superpowers/eval-variance-policy.md`), provenance headers +
+  controlled-comparison protocol (`eval/provenance.py` +
+  `docs/superpowers/eval-controlled-comparison-protocol.md`), held-out leakage slice
+  (`eval/routing_eval.heldout.jsonl` + `--heldout`), trivial baselines
+  (`eval/routing_metrics.py`, `eval/seq_ab/baselines.py`). Stale 31B baselines archived
+  as `results-*.31b.ref.json`; re-capture on 12B per the protocol doc.
+
 ### 6. Semantic codegraph search (run when `services/codegraph_embedder/` is changed)
 
 The orchestrator spawns the codegraph MCP server automatically — no separate start needed.

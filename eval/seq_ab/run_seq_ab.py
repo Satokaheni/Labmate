@@ -42,6 +42,14 @@ FIXTURES = {
         "    for i in range(len(seq)):\n        if seq[i] == target:\n"
         "            return i               # bug: returns FIRST match, not last\n    return -1\n"
     ),
+    "/workspace/ab_multi.py": (
+        "def normalize(xs):\n"
+        '    """Scale a list of numbers to sum to 1.0. Empty list -> []."""\n'
+        "    total = 0\n"
+        "    for x in xs:\n"
+        "        total = x            # bug 1: assignment, not accumulation\n"
+        "    return [x / total for x in xs]   # bug 2: no empty-list guard (ZeroDivisionError)\n"
+    ),
 }
 
 CASES = [
@@ -59,6 +67,11 @@ CASES = [
         "id": "c3_bug_then_test",
         "kind": "compound",
         "task": "Find the bug in /workspace/ab_off.py and write a unit test that exposes it.",
+    },
+    {
+        "id": "c6_multiedit_fix",
+        "kind": "compound",
+        "task": "Fix the two bugs in /workspace/ab_multi.py (the running total and the empty-list crash), then write and run a test that proves normalize works and handles [].",
     },
     {
         "id": "c4_single_review",
