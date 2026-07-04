@@ -290,13 +290,13 @@ class OrchestratorProcess:
                 gemma_api_base=GEMMA_BASE,
             )
 
-            # Wire the durable inner-loop checkpoint store when a Mongo-backed
-            # StorageManager is available. No-op when checkpointing is disabled
-            # (the flag is read inside _run_react_loop) or no storage exists.
+            # Wire the durable inner-loop checkpoint store backed by the local SQLite store.
+            # No-op when checkpointing is disabled (the flag is read inside _run_react_loop)
+            # or the store fails to open.
             try:
                 from .loop_checkpoint import CheckpointStore
 
-                async_orch.checkpoint_store = CheckpointStore(_sm.loop_checkpoint_collection)
+                async_orch.checkpoint_store = CheckpointStore(_sm.local_store)
             except Exception:  # best-effort wiring; never block startup
                 async_orch.checkpoint_store = None
 
