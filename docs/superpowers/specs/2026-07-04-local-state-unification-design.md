@@ -106,13 +106,24 @@ CREATE TABLE IF NOT EXISTS loop_checkpoints (
 Methods: `checkpoint_put(task_id, payload: dict) -> None` (upsert),
 `checkpoint_get(task_id) -> dict|None`, `checkpoint_delete(task_id) -> None`.
 
-**New method** `delete_session(session_id) -> None` — deletes the `sessions` row,
-its `chat_turns`, and its `session_kv` entries (title/debug), in one transaction.
+**New nullable column on `chat_turns`** — `payload TEXT` (added via
+`ALTER TABLE chat_turns ADD COLUMN payload TEXT` guarded by a
+`PRAGMA table_info` check, since `CREATE TABLE IF NOT EXISTS` won't alter an
+existing table). Holds the full rich gateway turn dict as JSON (`id`,
+`reasoning` object, `toolCalls` list, `status`, etc.) so the frontend gets exact
+fidelity. Orchestrator-written turns leave it NULL; existing
+`append_turn`/`all_turns`/`recent_turns` are UNCHANGED (they ignore `payload`).
+New methods: `append_turn_payload(session_id, role, text, payload: dict, *, created_at=None) -> int`
+(writes role/text/created_at columns AND the JSON `payload`, returns seq) and
+`turns_with_payload(session_id) -> list[dict]` (returns `[{seq, role, text,
+created_at, payload}]`, `payload` parsed to a dict or None).
 
-`session_kv` (existing) holds gateway per-session metadata: namespace `"gw"` with
-keys stored as JSON `{"title":..., "debug":...}` per session_id (or two
-namespaces `gw_title`/`gw_debug` — implementer's choice, kept internal to
-`SqliteSessionStore`).
+**New method** `delete_session(session_id) -> None` — deletes the `sessions` row,
+its `chat_turns`, and its `session_kv` entries (title/mode/debug), in one transaction.
+
+`session_kv` (existing) holds gateway per-session metadata: one namespace `"gw"`
+with the value a JSON blob `{"title":..., "mode":..., "debug":...}` per
+session_id (kept internal to `SqliteSessionStore`).
 
 ### 2. `SqliteUserStore` (`services/ws_gateway/user_store.py`)
 
@@ -123,16 +134,56 @@ lowercases email. Constructed with a `LocalStore` (or `get_local_store()`).
 
 ### 3. `SqliteSessionStore` (`services/ws_gateway/sqlite_session_store.py`, new file)
 
-Implements the session-store interface, delegating to `LocalStore`:
+Implements the session-store interface, delegating to `LocalStore` — `chat_turns`
+is the single turn store (frontend history + orchestrator continuity read the
+same rows). The gateway turn dicts (exact shapes, `server.py`):
+- user_turn `{id, sessionId, role:"user", text, createdAt, status}`
+- assistant_turn `{id, sessionId, role:"assistant", text, reasoning, toolCalls, createdAt, status}`
+- session `{id, title, mode, turnCount, contextTokens, createdAt, updatedAt}`
+
 | Method | LocalStore backing |
 |---|---|
-| `create(...) -> dict` | `record_session(session_id, user_id=LOCAL_USER, task_preview=title)` + store title in `session_kv` |
-| `list() -> list[dict]` | `list_sessions(LOCAL_USER, limit=...)` → map to gateway dict + title/debug from `session_kv` |
-| `get(sid) -> dict\|None` | session row + `session_kv` title/debug |
-| `rename(sid, title) -> dict\|None` | `session_kv` set title |
-| `delete(sid) -> bool` | `delete_session(sid)` |
-| `turns(sid) -> list[dict]` | `all_turns(sid)` → map `{seq,role,text}` to the gateway turn shape |
-| `add_turn(sid, turn) -> None` | `append_turn(sid, role, text, reasoning=, tool_calls=)` |
+| `create(*, title, mode, session_id=, updated_at=) -> dict` | `record_session(session_id, user_id=LOCAL_USER, task_preview=title, created_at=now)` + `session_kv` set `{title,mode,debug:false}`; return the session dict (turnCount=0, contextTokens=0) |
+| `list() -> list[dict]` | `list_sessions(LOCAL_USER, limit=200)` → each hydrated to the session dict from its `session_kv` blob + `turnCount` = len(`turns_with_payload`); sorted by updatedAt desc |
+| `get(sid) -> dict\|None` | session row + `session_kv` blob → session dict (None if absent) |
+| `rename(sid, title) -> dict\|None` | `session_kv` set title (+ bump updatedAt); return updated dict |
+| `delete(sid) -> bool` | `delete_session(sid)`; True if it existed |
+| `turns(sid) -> list[dict]` | `turns_with_payload(sid)` → return each row's `payload` dict verbatim when present (exact frontend fidelity), else reconstruct `{id:f"{sid}-{seq}", sessionId:sid, role, text, createdAt, status:"complete"}` |
+| `add_turn(sid, turn) -> None` | `append_turn_payload(sid, role=turn["role"], text=turn.get("text",""), payload=turn)`; bump session `updatedAt` |
+| `set_debug/get_debug(sid)` | `session_kv` blob `debug` field |
+
+`LOCAL_USER` = the seeded admin's id (single-user local harness; gateway `list()`
+is unscoped → `list_sessions(LOCAL_USER)`). Turn-dict shape for `add_turn`/`turns`
+is preserved verbatim (payload round-trip) so `build_sessions_router` +
+`_relay_task` are behavior-unchanged.
+
+### 3b. Turn-writer coordination — single source of truth (hermes `skip_db` pattern)
+
+Two writers persist the same conversation today (benign only because they hit
+different stores): the **gateway** (`server.py::_relay_task` + `_handle_send`
+`store.add_turn`, rich dicts) and the **orchestrator**
+(`main.py::_persist_turns` → `LocalStore.append_turn`, plain `{role,text}`).
+Once both target `chat_turns`, that double-writes. Resolve it the way hermes does
+(`append_to_transcript(..., skip_db=True)` "prevents duplicate writes when the
+agent already persisted") — coordinate so exactly one writer persists each turn:
+
+- **The gateway is the preferred writer** (it owns the rich turn dict + session
+  lifecycle). When `_handle_send` begins a task with a session store, it records
+  that the relay **owns persistence** for that `task_id` — a per-task flag on the
+  shared in-process runtime, e.g. `runtime.signals` gains
+  `mark_persistence_owned(task_id)` / `is_persistence_owned(task_id)` (set at
+  submit, cleared when the task result is cleared).
+- **`_persist_turns` becomes the fallback writer**: it checks
+  `storage`/runtime for `is_persistence_owned(session-or-task)`; if a relay owns
+  it, it **skips** (the gateway will persist the rich turn); otherwise (headless/
+  CLI-without-relay) it writes the plain turn via `append_turn` as today. This is
+  ownership-based, not race-based — no ordering hazard.
+- Result: one turn store, one write per turn, the gateway's rich machinery
+  untouched (no UI-fidelity risk on the interactive path), headless still
+  persists. Continuity (`recent_turns`) and history (`turns`) read the same rows.
+
+The flag lives on `SignalRegistry` (already per-task, in `inproc_bus.py`) so both
+the gateway and the orchestrator reach it through the shared runtime.
 | `set_debug/get_debug` | `session_kv` debug flag |
 
 `LOCAL_USER` = a fixed local account id (the seeded admin) — the local harness is
@@ -250,8 +301,9 @@ so infra never lags the code:
   tests (unchanged).
 - New unit tests (tmp DB file via `LocalStore(tmp_path/'state.db')`):
   - `SqliteUserStore`: create → find_by_email (case-insensitive) → count; duplicate-email error.
-  - `SqliteSessionStore`: create/list/get/rename/delete/turns/add_turn/set_debug/get_debug round-trips; title+debug persist via session_kv; delete removes turns+kv.
-  - `LocalStore`: `auth_user_*`, `checkpoint_*`, `delete_session` direct tests.
+  - `SqliteSessionStore`: create/list/get/rename/delete/turns/add_turn/set_debug/get_debug round-trips; title+mode+debug persist via session_kv; **`add_turn` then `turns` returns the rich dict verbatim** (payload round-trip — reasoning/toolCalls/id preserved); delete removes turns+kv.
+  - `LocalStore`: `auth_user_*`, `checkpoint_*`, `delete_session`, and `append_turn_payload`/`turns_with_payload` direct tests (payload JSON round-trip; NULL payload for plain `append_turn`).
+  - **Turn-writer coordination:** `_persist_turns` SKIPS when the task's persistence is relay-owned (`is_persistence_owned` true) and WRITES when not (headless) — assert no duplicate `chat_turns` rows when a relay owns the task, and a single plain row when it doesn't. `SignalRegistry.mark/is_persistence_owned` unit test + `clear_task` clears it.
   - `CheckpointStore` over SQLite: put/get/delete + best-effort swallow.
 - Full `tests/services/orchestrator` (CI scope) + `tests/services/ws_gateway` +
   `tests/services/local` stay green. No live E2E (GPU off).
@@ -269,8 +321,14 @@ so infra never lags the code:
 ## Risks
 
 - **Turn-shape drift** between `InMemorySessionStore` and `SqliteSessionStore` →
-  frontend history breaks. Mitigation: copy the turn dict shape verbatim; a test
-  asserts `turns()` output matches the InMemory store's for the same input.
+  frontend history breaks. Mitigation: `SqliteSessionStore` round-trips the FULL
+  turn dict through the `payload` column (no lossy field mapping); a test asserts
+  `turns()` output equals the input turn dict (plus `seq`).
+- **Double-write** if the coordination flag is wrong (turns appear twice in
+  history/continuity). Mitigation: ownership-based skip (not race-based) +
+  explicit "no duplicate rows when relay-owned" test. Un-live-testable UI path is
+  de-risked by keeping the gateway's turn-dict machinery untouched (only its
+  backing store changes to `chat_turns`).
 - **Single-user assumption** (`LOCAL_USER`) — correct for the local harness;
   documented so a future multi-user mode revisits it.
 - **`StorageManager` consumers** — verify every attribute still resolves after
