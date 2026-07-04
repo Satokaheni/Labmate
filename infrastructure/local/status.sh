@@ -1,35 +1,26 @@
 #!/usr/bin/env bash
-# status.sh — Report health of the native Labmate support stack.
+# status.sh — Report health of the native Labmate local harness.
 set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+PIDS="${REPO_ROOT}/.data/pids"
 
 ok()   { echo "  [UP]   $*"; }
 down() { echo "  [DOWN] $*"; }
 
-echo "Labmate local support stack:"
+echo "Labmate local harness:"
 
-# MongoDB + replica set state
-if mongosh --quiet --host 127.0.0.1 --port 27017 --eval 'db.adminCommand("ping").ok' >/dev/null 2>&1; then
-  state="$(mongosh --quiet --host 127.0.0.1 --port 27017 --eval 'try{rs.status().myState}catch(e){"no-rs"}' 2>/dev/null | tail -1)"
-  case "$state" in
-    1) ok "MongoDB :27017  (replica set rs0, PRIMARY)" ;;
-    *) ok "MongoDB :27017  (replica set state=$state — change streams need PRIMARY=1)" ;;
-  esac
+# Local harness (single process: gateway + orchestrator)
+LOCAL_PORT="${LOCAL_PORT:-8787}"
+if curl -fsS "http://127.0.0.1:${LOCAL_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+  if [[ -f "$PIDS/local.pid" ]]; then
+    ok "local harness :${LOCAL_PORT}  (services.local.main, pid $(cat "$PIDS/local.pid"))"
+  else
+    ok "local harness :${LOCAL_PORT}  (services.local.main)"
+  fi
 else
-  down "MongoDB :27017"
-fi
-
-# Redis
-if redis-cli -p 6379 ping 2>/dev/null | grep -q PONG; then
-  ok "Redis   :6379   ($(redis-cli -p 6379 info server 2>/dev/null | grep -i redis_version | tr -d '\r'))"
-else
-  down "Redis   :6379"
-fi
-
-# Chroma — check the body, not just HTTP status (RunPod proxy returns 200 pages)
-if curl -fsS "http://127.0.0.1:8765/api/v2/heartbeat" 2>/dev/null | grep -q heartbeat; then
-  ok "Chroma  :8765"
-else
-  down "Chroma  :8765"
+  down "local harness :${LOCAL_PORT}  (services.local.main) — run start.sh"
 fi
 
 # SearXNG — validate the JSON API the web-search skill actually uses
