@@ -54,6 +54,13 @@ class LocalStore:
             return
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = await aiosqlite.connect(str(self.db_path))
+        # WAL + a busy timeout so this aiosqlite connection coexists with the
+        # separate sync sqlite3 connection the LangGraph SqliteSaver holds on the
+        # SAME file: WAL lets a reader and a writer proceed concurrently, and the
+        # busy timeout absorbs the brief exclusive lock a checkpoint write takes
+        # instead of raising SQLITE_BUSY.
+        await conn.execute("PRAGMA journal_mode=WAL")
+        await conn.execute("PRAGMA busy_timeout=5000")
         await conn.executescript(_SCHEMA)
         await conn.commit()
         self._conn = conn
@@ -161,7 +168,11 @@ class LocalStore:
                 pat = re.compile(query, re.IGNORECASE)
                 hits = [r for r in rows if pat.search(r[2] or "")][:limit]
             else:
-                like = f"%{query}%"
+                # Literal-substring match: escape the LIKE metacharacters (\, %, _)
+                # so a query like "50%" matches "50%" literally, not "50<anything>".
+                # The ESCAPE '\' clause below makes '\' the escape character.
+                escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                like = f"%{escaped}%"
                 if session_id:
                     cur = await conn.execute(
                         "SELECT session_id, seq, text FROM chat_turns"

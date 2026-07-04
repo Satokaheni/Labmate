@@ -144,3 +144,20 @@ async def test_search_turns_text_and_regex(tmp_path):
         assert len(allhits) == 2
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_search_turns_text_mode_treats_wildcards_literally(tmp_path):
+    """LIKE metacharacters in the query match literally (escaped), not as wildcards."""
+    store = LocalStore(tmp_path / "s.sqlite")
+    await store.connect()
+    try:
+        await store.append_turn("s", "user", "discount is 50% today")
+        await store.append_turn("s", "user", "the number 500 appears")
+        # "50%" must match only the literal "50%" turn, not "500".
+        hits = await store.search_turns("50%", mode="text", session_id="s")
+        assert [h["text"] for h in hits] == ["discount is 50% today"]
+        # "_" is literal too: matches nothing when no underscore present.
+        assert await store.search_turns("5_0", mode="text", session_id="s") == []
+    finally:
+        await store.close()
