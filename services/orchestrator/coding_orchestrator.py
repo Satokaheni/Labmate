@@ -15,7 +15,7 @@ from aiolimiter import AsyncLimiter
 
 from . import client_context, events
 from .completion_guard import is_assertion_verification, reconcile_cutoff, reconcile_ok
-from .edit_intent import exposes_bug_intent, requires_editing
+from .edit_intent import exposes_bug_intent, requires_editing, requires_local_tools
 from .iteration_budget import REFUNDABLE_TOOLS, IterationBudget
 from .load_skill_guard import already_loaded_message, is_repeat_load
 from .local_tools import (
@@ -408,7 +408,7 @@ class AsyncOrchestrator:
         # (skills stay callable inside the loop via call_skill_tool). Gated by
         # ROUTE_EDIT_TO_REACT (default ON); when off, behavior is identical to
         # before. No effect in 'react' mode (already runs the loop).
-        if SEQUENCING_MODE != "react" and requires_editing(goal):
+        if SEQUENCING_MODE != "react" and requires_local_tools(goal):
             return await self._run_react_loop(goal, self.max_steps)
 
         if SEQUENCING_MODE != "react":

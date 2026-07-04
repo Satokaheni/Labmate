@@ -1939,6 +1939,27 @@ class TestEditIntentRouting:
         assert not loop_spy.called, "flag off must preserve today's skill_first path"
         assert "read-only review output" in result["summary"]
 
+    @pytest.mark.asyncio
+    async def test_file_read_goal_enters_react_loop_not_skill_first(self):
+        """Piece 5 fix-B: a read-only file-access goal ('read x.py and summarize')
+        must ALSO bypass _run_skill_first and reach _run_react_loop, since the
+        single-skill fast-path has no file-tool access. requires_local_tools
+        broadens the loop-entry gate beyond requires_editing for this case."""
+        orch = self._make_orch()
+
+        with (
+            patch.object(orch, "_run_skill_first", new_callable=AsyncMock) as skill_first_spy,
+            patch.object(orch, "_run_react_loop", new_callable=AsyncMock) as loop_spy,
+        ):
+            loop_spy.return_value = {"ok": True, "summary": "read x.py and summarized it"}
+            result = await orch.react_execute("read x.py and summarize it")
+
+        assert (
+            not skill_first_spy.called
+        ), "skill-first fast-path must be skipped for file-access goals"
+        assert loop_spy.called, "the multi-tool ReAct loop must run for file-access goals"
+        assert result["ok"] is True
+
 
 def _vt_tool_msg(name, arguments):
     """A litellm-style assistant message that calls a single tool (verify-stop tests)."""
