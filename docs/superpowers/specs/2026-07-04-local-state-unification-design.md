@@ -1,8 +1,8 @@
-# Local State Unification (Mongo → SQLite) — Design
+# Local State Unification (Mongo → SQLite) + Infra/Docs Local-ization — Design
 
 **Date:** 2026-07-04
 **Branch target:** `experimental` (pod version on `main` untouched)
-**Piece:** "Memory piece" (state), sequenced **before** Piece 7 packaging (per user decision 2026-07-04).
+**Piece:** "Memory piece" (state) + infra/docs local-ization, sequenced **before** Piece 7 packaging polish (per user decisions 2026-07-04).
 **Execution:** subagent-driven-development (haiku implement → opus review).
 
 ## Goal
@@ -11,13 +11,21 @@ Drop **MongoDB** as a boot dependency of the local single-process harness
 (`services/local/main.py`) so the only remote dependency is the model endpoint
 (`GEMMA_BASE`). All persistent state moves to the existing SQLite `LocalStore`,
 which becomes the **single source of truth** read by both the orchestrator and
-the ws_gateway.
+the ws_gateway. **In the same piece**, bring the infrastructure scripts and
+documentation into line with the local single-process runtime — they currently
+lag the code (they launch the pre-Piece-4 split topology and provision three
+services the runtime no longer uses).
 
 ## Non-Goals / Out of Scope
 
 - **Markdown long-term memory** (`remember`/`recall`, MEMORY.md tooling) — still
   deferred to **post-Piece-7** (per `project_local_memory_model`). This piece is
   STATE only (sessions, auth users, turns, loop checkpoints).
+- **Piece 7 packaging polish** — a real install *experience* for 2-3 users
+  (guided `GEMMA_BASE` configuration, one-command bootstrap, cross-platform Mac
+  paths) remains its own piece. THIS piece only removes the dead
+  Mongo/Redis/Chroma provisioning + fixes the launch entrypoint + updates the
+  core docs so nothing lags the code; it does not rewrite the install UX.
 - **Cross-device session sync** — explicitly NOT built. Labmate is local-only
   ("runs entirely on your own machine"). Cross-machine pickup is handled at the
   memory layer by **git-tracked AGENTS.md + MEMORY.md**, not a sync server. (The
@@ -174,6 +182,60 @@ same `LocalStore` DB file). Admin seeding (`if await user_store.count() == 0`)
 works unchanged against SQLite. One DB file holds auth users, sessions,
 chat_turns, workspaces, session_kv, loop_checkpoints.
 
+## Infrastructure & Documentation (local-ization)
+
+The `infrastructure/local/` scripts and top-level docs lag the code: they launch
+the **pre-Piece-4 split topology** (`services.orchestrator.main` +
+`services.ws_gateway.server` as two processes — which breaks the Piece-4
+co-location that requires ONE process sharing the in-proc bus) and provision
+**mongod + Redis + Chroma**, none of which the runtime uses (Chroma removed
+Piece 3, Redis Piece 4, Mongo this piece). Bring them in line — in this piece,
+so infra never lags the code:
+
+### 8. `infrastructure/local/start.sh`
+- **Launch the single process:** replace the separate orchestrator + ws_gateway
+  `nohup python -m ...` blocks with one `python -m services.local.main` (writes
+  one `local.pid`; readiness = gateway `/healthz` OK + the orchestrator "ready"
+  log line). Keep the MCP-bridge `npm run build` step and the `serve-model.sh`
+  guidance.
+- **Remove** the mongod (replSet rs0), Redis, and Chroma start blocks + their
+  wait/health loops + the `$DATA/{mongo,redis,chroma}` dir creation.
+
+### 9. `infrastructure/local/stop.sh` + `status.sh`
+- Stop/status the single `local.pid` process (+ the model server), not the old
+  5 targets (mongod/redis/chroma/orchestrator/ws_gateway). Remove the
+  Mongo/Redis/Chroma stop + health checks.
+
+### 10. `infrastructure/local/install.sh`
+- Remove MongoDB / Redis / Chroma installation + replica-set init steps. Keep
+  Python deps, the MCP-bridge/node build, model-serving prerequisites, and add
+  **ripgrep** (`rg`) as a recommended dep (the `search_files` tool prefers it;
+  Python fallback exists) — record it in `docs/local-execution-prerequisites.md`.
+
+### 11. `infrastructure/local/local.env`
+- Remove `MONGO_URI`, `MONGO_URL`, `CHROMA_HOST/PORT/URL`, `REDIS_URL`. Keep
+  `GEMMA_BASE`/`QWEN_BASE`, `WORKSPACE_PATH`, `LABMATE_GATEWAY_URL`,
+  `CORS_ORIGINS`, `LOCAL_HOST`/`LOCAL_PORT`, model/tokenizer paths. Note the
+  header comment that Mongo/Redis/Chroma are gone (single-process SQLite).
+
+### 12. Docs — `infrastructure/local/{README.md,INSTALL.md}` + top-level `README.md` + `CLAUDE.md`
+- Rewrite the architecture/requirements/service-URL sections to the **local
+  single-process SQLite** topology: drop MongoDB/Redis/Chroma from the required
+  services, drop the `lm-<name>` Docker container language and RunPod-required
+  framing, describe `services.local.main` as the one process + `serve-model.sh`.
+- `CLAUDE.md`: update the Architecture Map, Service URLs, and the "Memory /
+  queues: MongoDB/Chroma/Redis" block to reflect SQLite-only local state
+  (targeted edits — the harness-robustness/agentic-fix-loop sections stay).
+- **Stale-comment sweep (Mongo/Redis/Chroma scope):** update the deferred prose
+  refs noted in Piece 5 5d (`eval/seq_ab/local_tool_responder.py`,
+  `test_tool_manifest.py:707`) and any code comments that still describe Mongo as
+  the store. Broad packaging-doc polish stays Piece 7.
+
+> Live E2E of the scripts (actually starting the process) needs the model server,
+> which is powered off — so script changes are verified by **shellcheck/dry
+> structure review + the code suites**, not a live boot. A live smoke is a
+> Piece-7 / hands-on-hardware step.
+
 ## Error Handling
 
 - SQLite stores raise on real errors (parity with Mongo variants) except the
@@ -194,7 +256,15 @@ chat_turns, workspaces, session_kv, loop_checkpoints.
 - Full `tests/services/orchestrator` (CI scope) + `tests/services/ws_gateway` +
   `tests/services/local` stay green. No live E2E (GPU off).
 - Grep gate: no `motor`/`pymongo`/`AsyncIOMotorClient`/`MongoUserStore`/
-  `MongoSessionStore`/`db_indexes` references remain (non-comment).
+  `MongoSessionStore`/`db_indexes` references remain (non-comment) anywhere,
+  **including** `infrastructure/local/` and the docs.
+- **Infra scripts:** `shellcheck infrastructure/local/*.sh` clean (no new
+  warnings vs baseline); a structural review confirms start.sh launches
+  `services.local.main` (one process) and no script references mongod/redis/
+  chroma. NOT live-booted (model off) — a live smoke is a Piece-7 step.
+- **Docs:** a grep confirms the top-level `README.md`, `CLAUDE.md`, and
+  `infrastructure/local/{README,INSTALL}.md` no longer list MongoDB/Redis/Chroma
+  as required local services.
 
 ## Risks
 
