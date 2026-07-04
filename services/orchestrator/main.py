@@ -52,6 +52,7 @@ from services.orchestrator import call_counter, client_context, ctx_window, even
 from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
 from services.orchestrator.completion_guard import reconcile_final_answer
 from services.orchestrator.graph import GEMMA_BASE, QWEN_BASE, build_graph
+from services.orchestrator.local_mode import local_mode_enabled
 from services.orchestrator.mcp_client_manager import MCPClientManager
 from services.orchestrator.memory_search import MemorySearch
 from services.orchestrator.session_search import SessionSearch
@@ -242,6 +243,7 @@ class OrchestratorProcess:
 
         async with StorageManager() as _sm:
             _log.info("storage ready")
+            _log.info("orchestrator mode: %s", "local" if local_mode_enabled() else "pod")
 
             # Single source of truth for the context gauge: ask llama-server what
             # context window it actually loaded (best-effort; falls back to the
