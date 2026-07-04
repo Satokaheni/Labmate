@@ -200,3 +200,16 @@ async def test_result_registry_clear_task_drops_stored_result():
 
     with pytest.raises(asyncio.TimeoutError):
         await registry.wait_result("task-1", timeout=0.05)
+
+
+@pytest.mark.asyncio
+async def test_close_drains_buffered_frames_then_stops():
+    """close() must not drop frames already delivered to the subscriber:
+    buffered frames drain first, then iteration stops (turn.done tail safety)."""
+    bus = EventBus()
+    sub = bus.subscribe("events:t")
+    bus.publish("events:t", {"seq": 1})
+    bus.publish("events:t", {"seq": 2})
+    sub.close()  # close with 2 frames still buffered
+    got = [frame async for frame in sub]
+    assert [f["seq"] for f in got] == [1, 2]

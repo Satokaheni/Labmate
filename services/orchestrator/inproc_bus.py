@@ -46,10 +46,15 @@ class Subscription:
         return self
 
     async def __anext__(self) -> dict:
-        if self._closed:
-            raise StopAsyncIteration
+        # No eager `if self._closed` short-circuit: close() unregisters the
+        # subscriber (so no NEW frames arrive) and appends the _CLOSED sentinel
+        # AFTER any already-buffered frames. Draining the queue here yields
+        # those buffered frames first, then the sentinel stops iteration — so a
+        # close() never drops the final events already delivered to this
+        # subscriber (important for the turn.done event-stream tail).
         item = await self._queue.get()
         if item is Subscription._CLOSED:
+            self._closed = True
             raise StopAsyncIteration
         return item
 
@@ -97,6 +102,8 @@ class EventBus:
         subscribers = self._topics.get(topic)
         if not subscribers:
             return
+        # NOTE: the SAME frame object is fanned out to every subscriber — callers
+        # must treat received frames as read-only (do not mutate a received frame).
         for queue in list(subscribers):
             try:
                 queue.put_nowait(frame)
@@ -146,7 +153,7 @@ class ResultRegistry:
     def _get_or_create_future(self, task_id: str) -> asyncio.Future[dict]:
         future = self._futures.get(task_id)
         if future is None:
-            future = asyncio.get_event_loop().create_future()
+            future = asyncio.get_running_loop().create_future()
             self._futures[task_id] = future
         return future
 
@@ -156,7 +163,7 @@ class ResultRegistry:
             # No waiter yet (or already resolved): store a fresh future
             # already holding the value so a later wait_result gets it
             # immediately.
-            future = asyncio.get_event_loop().create_future()
+            future = asyncio.get_running_loop().create_future()
             future.set_result(result)
             self._futures[task_id] = future
         else:
