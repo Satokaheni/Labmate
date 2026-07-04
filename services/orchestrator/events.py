@@ -174,3 +174,9 @@ def current_task_id() -> str | None:
     """
     em = current_emitter.get()
     return em._task_id if em is not None else None
+
+
+def current_bus() -> EventBus | None:
+    """The EventBus of the active task's emitter, or None (no active task)."""
+    em = current_emitter.get()
+    return em._bus if em is not None else None

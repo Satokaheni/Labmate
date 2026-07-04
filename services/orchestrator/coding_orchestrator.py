@@ -1196,7 +1196,7 @@ class AsyncOrchestrator:
                                 )
                                 _test_timeout_s = max(30.0, _ms / 1000.0 + 15.0)
                                 result = await request_local_tool(
-                                    self.redis, "run_tests", args, timeout=_test_timeout_s
+                                    "run_tests", args, timeout=_test_timeout_s
                                 )
                                 if isinstance(result, dict):
                                     shaped = {
@@ -1278,7 +1278,7 @@ class AsyncOrchestrator:
                     elif name in local_tool_names:
                         if self.redis is not None:
                             try:
-                                result = await request_local_tool(self.redis, name, args)
+                                result = await request_local_tool(name, args)
                                 # Reliable write: after a write_file the client may
                                 # report success without the bytes landing. Read the
                                 # file back and confirm it matches what we asked to
@@ -1288,7 +1288,6 @@ class AsyncOrchestrator:
                                     requested = str(args.get("content", ""))
                                     try:
                                         readback = await request_local_tool(
-                                            self.redis,
                                             "read_file",
                                             {"path": args.get("path", "")},
                                         )

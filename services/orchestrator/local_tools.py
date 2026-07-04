@@ -2,17 +2,20 @@
 Local tool delegation: the remote orchestrator asks a local client (CLI or
 Electron, via ws_gateway) to run a filesystem tool on the USER's machine.
 
-Protocol:
-  1. emit  {type:"tool.request", tool_request_id, task_id, name, args}
-           onto labmate:events:<task_id>  (the normal event stream)
-  2. XREAD BLOCK on  labmate:tool-results:<task_id>  for a frame whose
-     decoded JSON has matching tool_request_id
-  3. return its `result` payload, or raise on `error` / timeout
+Protocol (transport: in-process EventBus, Piece 4):
+  1. subscribe to the topic  tool-results:<task_id>  (MUST happen before step 2
+     — the bus is post-subscribe-only, so subscribing after emitting would
+     miss a fast fulfiller's reply)
+  2. emit  {type:"tool.request", tool_request_id, task_id, name, args}
+           onto events:<task_id>  (the normal event stream)
+  3. await a frame on the tool-results topic whose tool_request_id matches
+  4. return its `result` payload, or raise on `error` / timeout
 
 Only read_file / write_file / list_dir are delegated. run_bash stays
 server-side (sandbox rule). Path validation lives in the CLIENT executor,
 never here — the orchestrator never touches the user's disk.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -21,15 +24,15 @@ import os
 import shlex
 import time
 import uuid
-from typing import Any
-
-import redis.asyncio as aioredis
+from typing import TYPE_CHECKING, Any
 
 from . import events
 
+if TYPE_CHECKING:
+    from .inproc_bus import EventBus
+
 LOCAL_TOOL_NAMES: frozenset[str] = frozenset({"read_file", "write_file", "list_dir"})
-TOOL_RESULTS_PREFIX = "labmate:tool-results:"
-TOOL_RESULTS_MAXLEN = 200
+TOOL_RESULTS_TOPIC_PREFIX = "tool-results:"
 DEFAULT_TIMEOUT_S = 30.0
 
 RUN_TESTS_DEFAULT_CMD = "pytest"
@@ -99,79 +102,75 @@ def _current_task_id() -> str:
 
 
 async def request_local_tool(
-    redis: aioredis.Redis,
     name: str,
     args: dict[str, Any],
     *,
     timeout: float = DEFAULT_TIMEOUT_S,
 ) -> Any:
-    """Emit a tool.request and block on the per-task tool-results stream.
+    """Emit a tool.request and await the matching frame on the tool-results topic.
 
+    Gets the EventBus from the active task's EventEmitter (events.current_bus()).
     Returns the decoded `result` payload. Raises TimeoutError if no matching
     result arrives within `timeout`, or RuntimeError if the client reports an
     error for this request.
     """
     task_id = _current_task_id()
+    bus = events.current_bus()
+    if bus is None:
+        raise RuntimeError("request_local_tool called with no active event bus")
+
     tool_request_id = uuid.uuid4().hex
 
-    await events.emit(
-        "tool.request",
-        tool_request_id=tool_request_id,
-        name=name,
-        args=args,
-    )
+    # CRITICAL ORDERING: the bus is post-subscribe-only (no replay), so we
+    # MUST subscribe before emitting tool.request — otherwise a fast
+    # fulfiller's reply, published before we start listening, is missed.
+    sub = bus.subscribe(f"{TOOL_RESULTS_TOPIC_PREFIX}{task_id}")
+    try:
+        await events.emit(
+            "tool.request",
+            tool_request_id=tool_request_id,
+            name=name,
+            args=args,
+        )
 
-    results_stream = f"{TOOL_RESULTS_PREFIX}{task_id}"
-    # Start reading only NEW entries; a stale result for another request must
-    # not be consumed. "$" yields only frames added after this XREAD begins.
-    cur = "$"
-    deadline = time.monotonic() + timeout
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError(
-                f"local tool {name!r} (request {tool_request_id}) timed out after {timeout}s"
-            )
-        block_ms = max(1, int(min(remaining, 5.0) * 1000))
-        resp = await redis.xread({results_stream: cur}, count=10, block=block_ms)
-        if not resp:
-            continue
-        for _stream, entries in resp:
-            for entry_id, fields in entries:
-                cur = entry_id
-                raw = fields.get("result")
-                if raw is None:
-                    continue
-                try:
-                    frame = json.loads(raw)
-                except (TypeError, json.JSONDecodeError):
-                    continue
-                if frame.get("tool_request_id") != tool_request_id:
-                    continue
-                err = frame.get("error")
-                if err:
-                    raise RuntimeError(f"local tool {name!r} failed: {err}")
-                return frame.get("result")
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"local tool {name!r} (request {tool_request_id}) timed out after {timeout}s"
+                )
+            try:
+                frame = await asyncio.wait_for(sub.__anext__(), timeout=remaining)
+            except TimeoutError:
+                continue  # loop re-checks the deadline
+            except StopAsyncIteration:
+                continue  # subscription closed externally; deadline check will fire
+            if frame.get("tool_request_id") != tool_request_id:
+                continue
+            err = frame.get("error")
+            if err:
+                raise RuntimeError(f"local tool {name!r} failed: {err}")
+            return frame.get("result")
+    finally:
+        sub.close()
 
 
 async def write_tool_result(
-    redis: aioredis.Redis,
+    bus: EventBus,
     task_id: str,
     tool_request_id: str,
     result: Any,
     error: str | None = None,
 ) -> None:
-    """Helper used by local clients (and tests) to post a tool.result frame."""
-    await redis.xadd(
-        f"{TOOL_RESULTS_PREFIX}{task_id}",
-        {
-            "result": json.dumps(
-                {"tool_request_id": tool_request_id, "result": result, "error": error},
-                default=str,
-            )
-        },
-        maxlen=TOOL_RESULTS_MAXLEN,
-        approximate=True,
+    """Helper used by local clients (and tests) to post a tool.result frame.
+
+    `bus` is passed explicitly (not read from current_emitter) because the
+    fulfiller side runs outside the delegating task's emitter context.
+    """
+    bus.publish(
+        f"{TOOL_RESULTS_TOPIC_PREFIX}{task_id}",
+        {"tool_request_id": tool_request_id, "result": result, "error": error},
     )
 
 

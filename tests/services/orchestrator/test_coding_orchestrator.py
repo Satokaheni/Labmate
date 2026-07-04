@@ -1527,7 +1527,7 @@ class TestReactExecuteBudget:
 
         orch = AsyncOrchestrator(skill_router=None, mcp=MagicMock(), max_steps=6)
 
-        async def _local(redis, name, args):
+        async def _local(name, args):
             if name == "read_file":
                 return args.get("content", "")  # echo so write verifies
             return {"ok": True}
@@ -1574,13 +1574,10 @@ class TestReactExecuteBudget:
 @pytest.mark.asyncio
 async def test_react_routes_read_file_to_local_tool():
     """ReAct loop routes read_file through request_local_tool and returns the result."""
-    import fakeredis.aioredis
-
     from services.orchestrator import events
     from services.orchestrator.inproc_bus import EventBus
-    from services.orchestrator.local_tools import TOOL_RESULTS_PREFIX
+    from services.orchestrator.local_tools import write_tool_result
 
-    redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
     bus = EventBus()
     task_id = "task-react-file"
     sub = bus.subscribe(f"{events.EVENTS_TOPIC_PREFIX}{task_id}")
@@ -1588,23 +1585,14 @@ async def test_react_routes_read_file_to_local_tool():
     token = events.current_emitter.set(emitter)
 
     orch = AsyncOrchestrator(skill_router=None, max_steps=3)
-    orch.redis = redis
+    orch.redis = MagicMock()  # truthy so the local-tool branch is taken
 
     # Responder: posts a tool.result as soon as tool.request lands on the event bus.
     async def responder():
         async for ev in sub:
             if ev.get("type") == "tool.request":
-                await redis.xadd(
-                    f"{TOOL_RESULTS_PREFIX}{task_id}",
-                    {
-                        "result": json.dumps(
-                            {
-                                "tool_request_id": ev["tool_request_id"],
-                                "result": {"content": "FILE BODY"},
-                                "error": None,
-                            }
-                        )
-                    },
+                await write_tool_result(
+                    bus, task_id, ev["tool_request_id"], {"content": "FILE BODY"}
                 )
                 return
 
@@ -1627,7 +1615,6 @@ async def test_react_routes_read_file_to_local_tool():
     finally:
         events.current_emitter.reset(token)
         sub.close()
-        await redis.aclose()
 
     assert out["ok"] is True
     assert out["summary"] == "read complete"
@@ -1645,14 +1632,11 @@ async def test_react_routes_search_files_to_local_tool():
     it routed to the client, not a pod/unknown path), and (c) assert the hits payload was fed
     back into the turn-2 model call.
     """
-    import fakeredis.aioredis
-
     from services.orchestrator import client_context, events
     from services.orchestrator.inproc_bus import EventBus
-    from services.orchestrator.local_tools import TOOL_RESULTS_PREFIX
+    from services.orchestrator.local_tools import write_tool_result
     from services.orchestrator.tool_manifest import parse_manifest
 
-    redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
     bus = EventBus()
     task_id = "task-react-search"
     sub = bus.subscribe(f"{events.EVENTS_TOPIC_PREFIX}{task_id}")
@@ -1664,7 +1648,7 @@ async def test_react_routes_search_files_to_local_tool():
     ctx_token = client_context.set_manifest(manifest)
 
     orch = AsyncOrchestrator(skill_router=None, max_steps=3)
-    orch.redis = redis
+    orch.redis = MagicMock()  # truthy so the local-tool branch is taken
 
     # Responder: records which tool.request names it saw and posts a tool.result for them.
     seen: list[str] = []
@@ -1673,22 +1657,16 @@ async def test_react_routes_search_files_to_local_tool():
         async for ev in sub:
             if ev.get("type") == "tool.request":
                 seen.append(ev.get("name", ""))
-                await redis.xadd(
-                    f"{TOOL_RESULTS_PREFIX}{task_id}",
+                await write_tool_result(
+                    bus,
+                    task_id,
+                    ev["tool_request_id"],
                     {
-                        "result": json.dumps(
-                            {
-                                "tool_request_id": ev["tool_request_id"],
-                                "result": {
-                                    "hits": [
-                                        {"file": "a.py", "line": 1, "text": "def foo():"},
-                                        {"file": "b.py", "line": 42, "text": "def bar():"},
-                                    ],
-                                    "truncated": False,
-                                },
-                                "error": None,
-                            }
-                        )
+                        "hits": [
+                            {"file": "a.py", "line": 1, "text": "def foo():"},
+                            {"file": "b.py", "line": 42, "text": "def bar():"},
+                        ],
+                        "truncated": False,
                     },
                 )
                 return
@@ -1713,7 +1691,6 @@ async def test_react_routes_search_files_to_local_tool():
         client_context.reset_manifest(ctx_token)
         events.current_emitter.reset(token)
         sub.close()
-        await redis.aclose()
 
     assert out["ok"] is True
     assert out["summary"] == "found functions"
@@ -1988,7 +1965,7 @@ async def test_verification_stop_nudges_then_accepts_after_tests_pass(monkeypatc
 
     # Stub redis so write_file succeeds through request_local_tool.
     # For write_file calls, return success. For read_file (verification), return the content.
-    async def _fake_local_tool(redis, name, args):
+    async def _fake_local_tool(name, args):
         if name == "read_file":
             # Return the content for verification
             return "x = 1"
@@ -2074,7 +2051,7 @@ async def test_run_tests_client_routed_pass(monkeypatch):
     monkeypatch.setattr("services.orchestrator.coding_orchestrator.client_context", FakeContext())
 
     # Mock request_local_tool to return a passing test result.
-    async def _fake_local_tool(redis, name, args, timeout=None):
+    async def _fake_local_tool(name, args, timeout=None):
         assert name == "run_tests", f"expected run_tests, got {name}"
         assert timeout is not None and timeout >= 30.0, f"timeout too short: {timeout}"
         return {"ok": True, "exit_code": 0, "raw_output": "3 passed"}
@@ -2139,7 +2116,7 @@ async def test_run_tests_client_routed_fail(monkeypatch):
 
     monkeypatch.setattr("services.orchestrator.coding_orchestrator.client_context", FakeContext())
 
-    async def _fake_local_tool(redis, name, args, timeout=None):
+    async def _fake_local_tool(name, args, timeout=None):
         if name == "run_tests":
             return {"ok": False, "exit_code": 1, "raw_output": "1 failed"}
         return {}
@@ -2347,7 +2324,7 @@ async def test_verification_stop_cap_accepts_finish_honestly(monkeypatch):
     monkeypatch.setattr("services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "react")
     orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
 
-    async def _fake_local_tool(redis, name, args):
+    async def _fake_local_tool(name, args):
         if name == "read_file":
             return "x = 1"
         return {"path": args.get("path"), "written": True}
@@ -2396,7 +2373,7 @@ async def test_react_loop_tolerates_two_identical_write_file_calls(monkeypatch):
 
     # write_file goes through the local-tool seam; make read-back match so the
     # write is reported as verified (content "x").
-    async def _local(redis, name, args):
+    async def _local(name, args):
         if name == "read_file":
             return "x"
         return {"ok": True}
