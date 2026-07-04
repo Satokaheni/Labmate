@@ -389,6 +389,19 @@ class LocalStore:
             for r in rows
         ]
 
+    async def distinct_session_ids(self) -> list[str]:
+        """Distinct non-empty session ids present in chat_turns, most-recently
+        active first. Replaces the Mongo `chat_turns.distinct("sessionId")` the
+        background compactor used (ordering is a bonus — the compactor takes a
+        bounded prefix, so recent-first is preferable to Mongo's unordered set)."""
+        conn = await self._connected()
+        cur = await conn.execute(
+            "SELECT session_id, MAX(created_at) AS last FROM chat_turns"
+            " WHERE session_id != '' GROUP BY session_id ORDER BY last DESC"
+        )
+        rows = await cur.fetchall()
+        return [r[0] for r in rows]
+
     # ── workspaces ───────────────────────────────────────────────────────
     async def upsert_workspace(self, workspace_id: str, user_id: str) -> None:
         """Insert a workspace on first sight; no-op if it already exists."""

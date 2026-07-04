@@ -33,10 +33,8 @@ async def test_background_compactor_compacts_idle_session(monkeypatch):
 
     storage = MagicMock()
     storage.context_manager = context_manager
-    # storage._db["chat_turns"].distinct("sessionId") → one candidate session.
-    chat_turns_col = MagicMock()
-    chat_turns_col.distinct = AsyncMock(return_value=["sess-1"])
-    storage._db = {"chat_turns": chat_turns_col}
+    # storage.local_store.distinct_session_ids() → one candidate session.
+    storage.local_store.distinct_session_ids = AsyncMock(return_value=["sess-1"])
 
     # Run one sweep, then signal shutdown so the loop exits.
     task = asyncio.create_task(proc._background_compactor(orch, storage))
@@ -70,9 +68,7 @@ async def test_background_compactor_skips_when_maybe_returns_none(monkeypatch):
 
     storage = MagicMock()
     storage.context_manager = context_manager
-    chat_turns_col = MagicMock()
-    chat_turns_col.distinct = AsyncMock(return_value=["sess-1"])
-    storage._db = {"chat_turns": chat_turns_col}
+    storage.local_store.distinct_session_ids = AsyncMock(return_value=["sess-1"])
 
     task = asyncio.create_task(proc._background_compactor(orch, storage))
     for _ in range(50):

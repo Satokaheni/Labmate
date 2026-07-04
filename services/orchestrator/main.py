@@ -462,7 +462,7 @@ class OrchestratorProcess:
                 if self._shutdown.is_set():
                     break
 
-                session_ids = await storage._db["chat_turns"].distinct("sessionId")
+                session_ids = await storage.local_store.distinct_session_ids()
                 for session_id in session_ids[:BG_COMPACT_MAX_SESSIONS]:
                     if self._shutdown.is_set():
                         break
