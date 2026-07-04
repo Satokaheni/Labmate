@@ -161,6 +161,17 @@ def test_signal_registry_clear_task_resets_steer_too():
     assert registry.read_and_clear_steer("task-1") is None
 
 
+def test_persistence_ownership_flag():
+    from services.orchestrator.inproc_bus import SignalRegistry
+
+    sig = SignalRegistry()
+    assert sig.is_persistence_owned("t1") is False
+    sig.mark_persistence_owned("t1")
+    assert sig.is_persistence_owned("t1") is True
+    sig.clear_task("t1")
+    assert sig.is_persistence_owned("t1") is False
+
+
 # ---------------------------------------------------------------------------
 # ResultRegistry
 # ---------------------------------------------------------------------------

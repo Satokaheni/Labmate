@@ -126,6 +126,7 @@ class SignalRegistry:
     def __init__(self) -> None:
         self._cancelled: set[str] = set()
         self._steer: dict[str, str] = {}
+        self._persist_owned: set[str] = set()
 
     def request_cancel(self, task_id: str) -> None:
         self._cancelled.add(task_id)
@@ -139,9 +140,16 @@ class SignalRegistry:
     def read_and_clear_steer(self, task_id: str) -> str | None:
         return self._steer.pop(task_id, None)
 
+    def mark_persistence_owned(self, task_id: str) -> None:
+        self._persist_owned.add(task_id)
+
+    def is_persistence_owned(self, task_id: str) -> bool:
+        return task_id in self._persist_owned
+
     def clear_task(self, task_id: str) -> None:
         self._cancelled.discard(task_id)
         self._steer.pop(task_id, None)
+        self._persist_owned.discard(task_id)
 
 
 class ResultRegistry:
