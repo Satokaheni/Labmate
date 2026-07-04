@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import re
+import weakref
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -25,6 +26,21 @@ import aiosqlite
 from .local_mode import local_state_db_path
 
 logger = logging.getLogger(__name__)
+
+# Every connected LocalStore registers here so the harness can close them all on
+# shutdown (and tests can drain them between cases — an unclosed aiosqlite
+# connection outliving its event loop raises "Event loop is closed" in its worker
+# thread). WeakSet: a garbage-collected store drops out on its own.
+_LIVE_STORES: weakref.WeakSet = weakref.WeakSet()
+
+
+async def close_all_local_stores() -> None:
+    """Close every open LocalStore connection (graceful shutdown / test teardown)."""
+    for store in list(_LIVE_STORES):
+        try:
+            await store.close()
+        except Exception:  # noqa: BLE001 — best-effort cleanup
+            pass
 
 
 def _iso_now() -> str:
@@ -97,6 +113,7 @@ class LocalStore:
         await conn.executescript(_SCHEMA)
         await conn.commit()
         self._conn = conn
+        _LIVE_STORES.add(self)
 
     async def _connected(self) -> aiosqlite.Connection:
         if self._conn is None:
