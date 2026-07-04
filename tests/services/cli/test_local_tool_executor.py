@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from services.cli import local_tool_executor
 from services.cli.local_tool_executor import execute_local_tool
 
 # ── execute_local_tool ─────────────────────────────────────────────────────────
@@ -88,6 +89,84 @@ def test_read_file_exotic_line_separator_parity(tmp_path: Path):
     # TS slices [0:1] → ["a\x0bb\n"]
     # TS joins → "a\x0bb\n"
     assert out == {"content": "a\x0bb\n"}
+
+
+# ── search_files ───────────────────────────────────────────────────────────────
+
+
+def _relfile(hit: dict) -> str:
+    """Normalize a hit's file path: ripgrep emits a './' prefix (cwd=root, searches '.'),
+    the Python fallback does not — strip it so assertions hold under both backends."""
+    f = hit["file"]
+    return f[2:] if f.startswith("./") else f
+
+
+def test_search_files_finds_matches_across_files(tmp_path: Path):
+    (tmp_path / "a.txt").write_text("line1\n# TODO fix this\nline3\n", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("TODO other\nmore\n", encoding="utf-8")
+    out = execute_local_tool("search_files", {"query": "TODO"}, workspace=str(tmp_path))
+    assert out["count"] == 2
+    files = {_relfile(h) for h in out["hits"]}
+    assert files == {"a.txt", "b.txt"}
+    by_file = {_relfile(h): h for h in out["hits"]}
+    assert by_file["a.txt"]["line"] == 2
+    assert "TODO" in by_file["a.txt"]["text"]
+    assert by_file["b.txt"]["line"] == 1
+
+
+def test_search_files_path_scoping(tmp_path: Path):
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "inner.txt").write_text("NEEDLE here\n", encoding="utf-8")
+    (tmp_path / "outer.txt").write_text("NEEDLE there\n", encoding="utf-8")
+    out = execute_local_tool(
+        "search_files", {"query": "NEEDLE", "path": "sub"}, workspace=str(tmp_path)
+    )
+    assert out["count"] == 1
+    assert _relfile(out["hits"][0]) == "inner.txt"
+
+
+def test_search_files_glob_filters_by_extension(tmp_path: Path):
+    (tmp_path / "match.py").write_text("MARKER in py\n", encoding="utf-8")
+    (tmp_path / "match.txt").write_text("MARKER in txt\n", encoding="utf-8")
+    out = execute_local_tool(
+        "search_files", {"query": "MARKER", "glob": "*.py"}, workspace=str(tmp_path)
+    )
+    assert out["count"] == 1
+    assert _relfile(out["hits"][0]) == "match.py"
+
+
+def test_search_files_max_results_caps_hits(tmp_path: Path):
+    (tmp_path / "many.txt").write_text("\n".join(f"HIT{i}" for i in range(10)), encoding="utf-8")
+    out = execute_local_tool(
+        "search_files", {"query": "HIT", "max_results": 3}, workspace=str(tmp_path)
+    )
+    assert out["count"] == 3
+    assert len(out["hits"]) == 3
+
+
+def test_search_files_no_match_returns_empty(tmp_path: Path):
+    (tmp_path / "a.txt").write_text("nothing interesting\n", encoding="utf-8")
+    out = execute_local_tool("search_files", {"query": "NOPE_NOT_FOUND"}, workspace=str(tmp_path))
+    assert out == {"hits": [], "count": 0}
+
+
+def test_search_files_empty_query_returns_empty(tmp_path: Path):
+    out = execute_local_tool("search_files", {"query": "   "}, workspace=str(tmp_path))
+    assert out == {"hits": [], "count": 0}
+
+
+def test_search_files_path_escape_is_rejected(tmp_path: Path):
+    with pytest.raises(ValueError, match="outside workspace"):
+        execute_local_tool("search_files", {"query": "x", "path": "../.."}, workspace=str(tmp_path))
+
+
+def test_search_files_forced_python_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Force the Python-walk fallback by hiding ripgrep, and confirm it still finds hits."""
+    monkeypatch.setattr(local_tool_executor.shutil, "which", lambda _: None)
+    (tmp_path / "a.txt").write_text("line1\nFALLBACK_NEEDLE\nline3\n", encoding="utf-8")
+    out = execute_local_tool("search_files", {"query": "FALLBACK_NEEDLE"}, workspace=str(tmp_path))
+    assert out["count"] == 1
+    assert out["hits"][0] == {"file": "a.txt", "line": 2, "text": "FALLBACK_NEEDLE"}
 
 
 # ── _ToolInterceptingStream integration ───────────────────────────────────────

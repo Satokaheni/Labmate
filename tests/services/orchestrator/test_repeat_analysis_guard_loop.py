@@ -2,7 +2,7 @@
 """Integration test: repeat-analysis guard wired into _run_react_loop.
 
 Mirrors the harness in test_load_skill_churn_bdd.py / test_coding_orchestrator.py's
-run_tests pod-path test: a fake litellm-shaped model response sequence driven through
+call_skill_tool tests: a fake litellm-shaped model response sequence driven through
 AsyncOrchestrator.react_execute, with skill_router.execute stubbed to record call
 counts. Flag is default-OFF, so with ENABLE_REPEAT_ANALYSIS_GUARD unset the guard must
 be a no-op (execute called for every call_skill_tool invocation, byte-identical to

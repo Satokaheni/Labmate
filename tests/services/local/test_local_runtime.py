@@ -9,22 +9,19 @@ websocket against the real gateway app (services.ws_gateway.server.build_app).
 Cases:
   1. Relay/translate happy path (turn.start -> reasoning -> answer.delta -> turn.done)
   2. steer / cancel signal round-trip
-  3. tool.request local fulfillment — the REAL request_local_tool() closes the
-     loop against the gateway's co-located fulfiller (services/ws_gateway/server.py
-     _relay_task), with no client on the other end of the WS at all.
+
+(The former case 3 — tool.request local fulfillment via request_local_tool — was
+removed in Piece 5 5d: local tools now execute directly via execute_local_tool,
+so the tool.request bus round-trip no longer exists.)
 """
 
 from __future__ import annotations
-
-import asyncio
 
 import pytest
 from argon2 import PasswordHasher
 from fastapi.testclient import TestClient
 
-from services.orchestrator import events
 from services.orchestrator.inproc_bus import EventBus, ResultRegistry, SignalRegistry
-from services.orchestrator.local_tools import request_local_tool
 from services.ws_gateway.config import Config
 from services.ws_gateway.server import build_app
 from services.ws_gateway.user_store import InMemoryUserStore
@@ -33,9 +30,7 @@ from services.ws_gateway.user_store import InMemoryUserStore
 class FakeRuntime:
     """Fake `runtime` for the gateway: real bus/signals/results, scripted goals.
 
-    `submit_goal` either replays a canned event script onto the bus (cases 1/2)
-    or spawns a background task that drives the REAL `request_local_tool` (case
-    3), proving the gateway's co-located fulfiller closes the loop.
+    `submit_goal` replays a canned event script onto the bus (cases 1/2).
     """
 
     def __init__(self) -> None:
@@ -44,7 +39,6 @@ class FakeRuntime:
         self.results = ResultRegistry()
         self.submitted: list[dict] = []
         self._script = None  # callable(task_id) -> list[event dicts]
-        self._tool_driver = None  # callable(task_id) -> coroutine
 
     async def submit_goal(self, payload: dict) -> str:
         task_id = payload.get("task_id") or "t-test"
@@ -52,8 +46,6 @@ class FakeRuntime:
         if self._script:
             for ev in self._script(task_id):
                 self.bus.publish(f"events:{task_id}", ev)
-        if self._tool_driver:
-            asyncio.create_task(self._tool_driver(task_id))
         return task_id
 
 
@@ -174,64 +166,3 @@ def test_steer_then_cancel(seeded_store):
         assert runtime.signals.is_cancelled(task_id)
     finally:
         ws.__exit__(None, None, None)
-
-
-def test_tool_request_local_fulfillment(seeded_store, tmp_path):
-    """The key case: request_local_tool() round-trips through the co-located
-    gateway fulfiller with no WS client on the other end at all.
-
-    FakeRuntime's submit_goal spawns a background task that, with a real
-    EventEmitter set as current_emitter (mirroring main._handle), calls
-    request_local_tool("write_file", ...) then request_local_tool("read_file", ...).
-    The gateway's _relay_task (subscribed via runtime.bus, workspace_root=tmp_path)
-    must execute both locally and post results back — closing the loop.
-    """
-    runtime = FakeRuntime()
-    workspace = str(tmp_path)
-    outcome: dict = {}
-
-    async def tool_driver(task_id: str) -> None:
-        from services.orchestrator.events import EventEmitter
-
-        emitter = EventEmitter(runtime.bus, task_id)
-        token = events.current_emitter.set(emitter)
-        try:
-            write_result = await request_local_tool(
-                "write_file", {"path": "f.txt", "content": "hi"}
-            )
-            read_result = await request_local_tool("read_file", {"path": "f.txt"})
-            outcome["write_result"] = write_result
-            outcome["read_result"] = read_result
-        except Exception as exc:  # noqa: BLE001 — surface any failure to the test
-            outcome["error"] = str(exc)
-        finally:
-            events.current_emitter.reset(token)
-            # Signal completion via turn.done so the relay (and the test) can stop.
-            runtime.bus.publish(f"events:{task_id}", {"type": "turn.done", "status": "complete"})
-
-    runtime._tool_driver = tool_driver
-    c, _app = _make_client(runtime, seeded_store)
-    ws, ws_ctx = _login_and_connect(c)
-    try:
-        ws_ctx.send_json(
-            {"type": "send", "text": "write then read", "sessionId": "", "workspaceRoot": workspace}
-        )
-        ev = ws_ctx.receive_json()
-        assert ev["type"] == "turn.created"
-        ev = ws_ctx.receive_json()
-        assert ev["type"] == "turn.created"
-
-        # Drain events until turn.done — the tool.request/tool.result frames are
-        # handled entirely server-side (fulfiller) and never reach the WS client.
-        ev = ws_ctx.receive_json()
-        while ev["type"] != "turn.done":
-            ev = ws_ctx.receive_json()
-    finally:
-        ws.__exit__(None, None, None)
-
-    assert "error" not in outcome, outcome.get("error")
-    assert outcome["write_result"] == {"ok": True, "bytes": 2}
-    assert outcome["read_result"] == {"content": "hi"}
-    written = tmp_path / "f.txt"
-    assert written.exists()
-    assert written.read_text(encoding="utf-8") == "hi"
