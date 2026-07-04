@@ -395,3 +395,72 @@ async def test_upsert_user_and_touch(tmp_path):
         assert await store.get_user("missing") is None
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_session_kv_set_get_roundtrip(tmp_path):
+    """Set a KV value and get it back; missing (namespace, session_id) returns None."""
+    store = LocalStore(tmp_path / "s.sqlite")
+    await store.connect()
+    try:
+        # Set and get
+        await store.session_kv_set("summary", "s1", "hello")
+        value = await store.session_kv_get("summary", "s1")
+        assert value == "hello"
+
+        # Missing (namespace, session_id) returns None
+        assert await store.session_kv_get("summary", "s2") is None
+        assert await store.session_kv_get("anchor", "s1") is None
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_session_kv_set_overwrites(tmp_path):
+    """Set a KV value, then set again with a new value; get returns the latest."""
+    store = LocalStore(tmp_path / "s.sqlite")
+    await store.connect()
+    try:
+        await store.session_kv_set("summary", "s1", "hello")
+        assert await store.session_kv_get("summary", "s1") == "hello"
+
+        await store.session_kv_set("summary", "s1", "world")
+        assert await store.session_kv_get("summary", "s1") == "world"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_session_kv_namespaced_and_scoped(tmp_path):
+    """(summary, s1), (anchor, s1), and (summary, s2) are independent keys."""
+    store = LocalStore(tmp_path / "s.sqlite")
+    await store.connect()
+    try:
+        await store.session_kv_set("summary", "s1", "val-summary-s1")
+        await store.session_kv_set("anchor", "s1", "val-anchor-s1")
+        await store.session_kv_set("summary", "s2", "val-summary-s2")
+
+        assert await store.session_kv_get("summary", "s1") == "val-summary-s1"
+        assert await store.session_kv_get("anchor", "s1") == "val-anchor-s1"
+        assert await store.session_kv_get("summary", "s2") == "val-summary-s2"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_session_kv_delete(tmp_path):
+    """Delete a KV entry; after deletion, get returns None. Delete of missing key is no-op."""
+    store = LocalStore(tmp_path / "s.sqlite")
+    await store.connect()
+    try:
+        await store.session_kv_set("summary", "s1", "value")
+        assert await store.session_kv_get("summary", "s1") == "value"
+
+        await store.session_kv_delete("summary", "s1")
+        assert await store.session_kv_get("summary", "s1") is None
+
+        # Delete of missing key is no-op (no raise)
+        await store.session_kv_delete("summary", "s1")
+        await store.session_kv_delete("anchor", "s2")
+    finally:
+        await store.close()

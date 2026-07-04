@@ -179,8 +179,7 @@ def test_storage_manager_exposes_loop_checkpoint_collection():
     db.__getitem__ = MagicMock(return_value=sentinel)
     mongo = MagicMock()
     mongo.__getitem__ = MagicMock(return_value=db)
-    redis = MagicMock()
-    sm = StorageManager.from_clients(mongo=mongo, redis=redis)
+    sm = StorageManager.from_clients(mongo=mongo)
     col = sm.loop_checkpoint_collection
     db.__getitem__.assert_called_with(CHECKPOINT_COLLECTION)
     assert col is sentinel
@@ -241,7 +240,7 @@ async def test_run_react_loop_resumes_from_preseeded_checkpoint(monkeypatch):
 
     orch = co.AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
     orch.checkpoint_store = store
-    orch.redis = MagicMock()
+    orch.local_client = MagicMock()
 
     # Active emitter so current_task_id() returns our task id.
     em = events.EventEmitter(MagicMock(), "task-resume")
@@ -286,7 +285,7 @@ async def test_flag_off_performs_no_checkpoint_io(monkeypatch):
 
     orch = co.AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
     orch.checkpoint_store = store
-    orch.redis = MagicMock()
+    orch.local_client = MagicMock()
 
     em = events.EventEmitter(MagicMock(), "task-off")
     token = events.current_emitter.set(em)
@@ -343,7 +342,7 @@ async def test_resumed_loop_restores_loaded_skills_and_does_not_recharge_budget(
 
     orch = co.AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
     orch.checkpoint_store = store
-    orch.redis = MagicMock()
+    orch.local_client = MagicMock()
 
     # Active emitter so current_task_id() returns our task id.
     em = events.EventEmitter(MagicMock(), "task-skills")

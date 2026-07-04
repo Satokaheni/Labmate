@@ -5,17 +5,16 @@ Consumes: skill_telemetry (new_entry/record_use/compute_state/apply_transitions/
           SkillRouter from skill_router.py
           run_async from tests.conftest
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pytest_bdd import scenarios, given, when, then, parsers
+from pytest_bdd import given, parsers, scenarios, then, when
 
 from services.orchestrator import skill_telemetry as st
-from services.orchestrator import skill_router as sr
 from services.orchestrator.skill_router import SkillRouter
 from services.skill_runner.skill_runner import SkillRunner
 from tests.conftest import run_async
@@ -24,7 +23,7 @@ pytestmark = [pytest.mark.bdd, pytest.mark.mocked]
 
 scenarios("features/skill_usage_telemetry.feature")
 
-NOW = datetime(2026, 6, 26, 12, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 6, 26, 12, 0, 0, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -86,7 +85,7 @@ def _dispatch_via_router(ctx, name):
     runner.catalog = {name: MagicMock()}
     router = SkillRouter(
         runner=runner,
-        redis=AsyncMock(),
+        registry=AsyncMock(),
         gemma_api_base="http://localhost:8000/v1",
         telemetry_path=ctx["path"],
     )

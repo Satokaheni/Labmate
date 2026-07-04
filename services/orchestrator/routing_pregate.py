@@ -20,10 +20,9 @@ PREGATE_SIM_THRESHOLD = float(os.getenv("PREGATE_SIM_THRESHOLD", "0.58"))
 
 
 class SkillPreGate:
-    def __init__(self, catalog, *, redis=None, threshold=PREGATE_SIM_THRESHOLD, embed_fn=embed):
+    def __init__(self, catalog, *, threshold=PREGATE_SIM_THRESHOLD, embed_fn=embed):
         # catalog: {skill_name: description}. Sorted for deterministic embedding order.
         self._entries = sorted(catalog.items())
-        self._redis = redis
         self._threshold = threshold
         self._embed_fn = embed_fn
         self._cat_vecs: list[list[float]] | None = None
@@ -32,7 +31,7 @@ class SkillPreGate:
         if self._cat_vecs is not None or not self._entries:
             return
         texts = [f"{name}: {desc}" for name, desc in self._entries]
-        self._cat_vecs = await self._embed_fn(texts, self._redis)
+        self._cat_vecs = await self._embed_fn(texts)
 
     async def max_similarity(self, task: str) -> float:
         """Return the best cosine similarity between *task* and any catalog entry.
@@ -46,7 +45,7 @@ class SkillPreGate:
             return float("-inf")
         try:
             await self._ensure_catalog()
-            (task_vec,) = await self._embed_fn([task], self._redis)
+            (task_vec,) = await self._embed_fn([task])
             return max(_dot(task_vec, v) for v in (self._cat_vecs or []))
         except Exception:  # noqa: BLE001 — fail-safe: proceed to the full vote
             return float("inf")

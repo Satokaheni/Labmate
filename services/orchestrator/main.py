@@ -3,14 +3,13 @@ Orchestrator process entrypoint.
 
 Bootstraps in order:
   1. Logging (stderr only)
-  2. StorageManager  (MongoDB + Redis — reads MONGO_URI / REDIS_URL)
+  2. StorageManager  (MongoDB — reads MONGO_URI)
   3. MCPClientManager (spawns MCP bridge subprocess, waits for ready)
   4. LangGraph       (build_graph with local SqliteSaver checkpointer)
-  5. Goal loop       (XREADGROUP labmate:goals → run_task → write result)
+  5. Goal loop       (in-process asyncio.Queue → run_task → ResultRegistry)
 
 Env vars:
   MONGO_URI          mongodb://localhost:27017/labmate
-  REDIS_URL          redis://localhost:6379/0
   GEMMA_BASE         http://localhost:8000/v1
   QWEN_BASE          (defaults to GEMMA_BASE on single-GPU)
   MCP_BRIDGE_CMD     node
@@ -19,38 +18,40 @@ Env vars:
   SANDBOX_CONTAINER  labmate-sandbox   (Docker container name for code execution)
   LOG_LEVEL          info
 
-Redis Streams contract (CLAUDE.md rule #5):
-  Consume: XREADGROUP GROUP orchestrators <worker-id> COUNT 1 BLOCK 5000
-           STREAMS labmate:goals >
-  Ack:     XACK labmate:goals orchestrators <msg-id>
+Goal ingress, events, and skill dispatch (Piece 4 — the whole harness is one
+Redis-free process; only GEMMA_BASE/QWEN_BASE, the model server, is remote):
+  Submit:  task_id = await proc.submit_goal(payload)   # enqueues onto asyncio.Queue
+  Result:  result = await proc.results.wait_result(task_id)   # ResultRegistry
+  Events:  the agent event stream is published on the in-process EventBus
+           (services/orchestrator/inproc_bus.py); steer/cancel signals route
+           through the in-process SignalRegistry.
+  Skills:  a shared SkillRegistry is built at boot with all runnable skills
+           registered, and SkillRouter dispatches to it directly
+           (services/skill_runner/skill_dispatch.py) — fully in-process.
 
-Goal payload (JSON in the "payload" field):
+Goal payload (dict passed to submit_goal):
   { "task_id": "<str>", "task": "<str>", "session_id": "<str|null>", "user_id": "<str|null>", "workspace_id": "<str|null>" }
-
-Result (24 h TTL):
-  SET  labmate:result:<task_id>  <JSON>  EX 86400
-  PUBLISH  labmate:result:<task_id>  "ready"
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import re as _re
 import signal
 import socket
 import sys
+import uuid
 from pathlib import Path
 
-import redis.asyncio as aioredis
 from mcp import StdioServerParameters
 
 from services.orchestrator import call_counter, client_context, ctx_window, events, skill_curator
 from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
 from services.orchestrator.completion_guard import reconcile_final_answer
 from services.orchestrator.graph import GEMMA_BASE, QWEN_BASE, build_graph
+from services.orchestrator.inproc_bus import EventBus, ResultRegistry, SignalRegistry
 from services.orchestrator.mcp_client_manager import MCPClientManager
 from services.orchestrator.session_search import SessionSearch
 from services.orchestrator.skill_curator import (
@@ -61,15 +62,11 @@ from services.orchestrator.skill_curator import (
 from services.orchestrator.skill_router import SkillRouter
 from services.orchestrator.storage_manager import StorageManager
 from services.orchestrator.tool_manifest import parse_manifest
+from services.skill_runner.skill_registry import SkillRegistry
 from services.skill_runner.skill_runner import SkillRunner
+from services.skill_worker.manifest_loader import discover_manifests
 
 _log = logging.getLogger("orchestrator")
-
-GOALS_STREAM = "labmate:goals"
-GOALS_GROUP = "orchestrators"
-RESULT_PREFIX = "labmate:result:"
-RESULT_TTL = 86_400  # 24 h
-BLOCK_MS = 5_000
 
 # Per-request context window the model actually serves (= llama-server --ctx-size
 # DIVIDED BY --parallel). This ceiling drives the context gauge (used/free shown to
@@ -223,9 +220,20 @@ class OrchestratorProcess:
     def __init__(self) -> None:
         self._worker_id = _worker_id()
         self._shutdown = asyncio.Event()
-        self._redis: aioredis.Redis | None = None
+        # In-process event/signal/result primitives (Piece 4): the agent event
+        # stream and steer/cancel signals route through these; goals/results
+        # transport and skill/tool dispatch are all in-process too (below).
+        self.bus = EventBus()
+        self.signals = SignalRegistry()
+        self.results = ResultRegistry()
+        # In-process goal ingress (Piece 4 T5): submit_goal() enqueues here;
+        # _loop() drains it. Replaces the prior Redis goal-stream consumer.
+        self._goal_queue: asyncio.Queue = asyncio.Queue()
         self._mcp: MCPClientManager | None = None
         self._codegraph_mcp: MCPClientManager | None = None
+        # Shared SkillRegistry (Piece 4 T7a): owns the runnable skills' MCP
+        # subprocesses so SkillRouter.execute can dispatch in-process (no Redis).
+        self._skill_registry: SkillRegistry | None = None
         self._recent_sequences = RecentSequences()
         self._last_goal_at: float = 0.0
         # Per-session carried context fill (peak prompt tokens of the last turn), so
@@ -235,7 +243,6 @@ class OrchestratorProcess:
     # ── top-level run ──────────────────────────────────────────────────────
 
     async def run(self) -> None:
-        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
         workspace = os.getenv("WORKSPACE_PATH", "/workspace")
 
         async with StorageManager() as _sm:
@@ -293,38 +300,55 @@ class OrchestratorProcess:
             except Exception:  # best-effort wiring; never block startup
                 async_orch.checkpoint_store = None
 
-            # Initialize Redis BEFORE skill router (CLAUDE.md: "after self._redis is created")
-            pool = aioredis.ConnectionPool.from_url(
-                redis_url,
-                max_connections=8,
-                decode_responses=True,
-            )
-            self._redis = aioredis.Redis(connection_pool=pool)
-            await self._ensure_group()
-
             # Build skill router (optional, wrapped in try/except so startup never fails)
             skill_router = None
             try:
                 skills_root = Path(__file__).resolve().parent.parent / "skills"
                 runner = SkillRunner(roots=[skills_root])
                 runner.discover()
+
+                # Shared SkillRegistry: spawns/owns the runnable skills' MCP
+                # subprocesses so SkillRouter.execute can dispatch in-process.
+                self._skill_registry = SkillRegistry(
+                    call_timeout=float(os.getenv("SKILL_CALL_TIMEOUT", "135"))
+                )
+                for manifest in discover_manifests(skills_root):
+                    try:
+                        await self._skill_registry.register(manifest)
+                        _log.info("registered skill: %s", manifest.name)
+                    except Exception:
+                        _log.exception("failed to register %s — skipping", manifest.name)
+
                 skill_router = SkillRouter(
                     runner=runner,
-                    redis=self._redis,
+                    registry=self._skill_registry,
                     gemma_api_base=GEMMA_BASE,
                 )
                 # Wire skill_router into async_orch for react_execute
                 async_orch.skill_router = skill_router
                 async_orch.mcp = self._mcp
                 async_orch.workspace = workspace
-                _log.info("skill router ready (%d skills)", len(runner.catalog))
+                _log.info(
+                    "skill router ready (%d skills, %d registered procs)",
+                    len(runner.catalog),
+                    len(self._skill_registry._skills),
+                )
             except Exception:
                 _log.warning(
                     "failed to initialize skill router — continuing without skills", exc_info=True
                 )
 
-            # Wire redis and codegraph_mcp outside the try/except (always available)
-            async_orch.redis = self._redis
+            # Wire local_client and codegraph_mcp outside the try/except (always available).
+            # local_client_attached is a truthy sentinel meaning "a local-tool client is
+            # attached to this process" — it gates the local-tool dispatch branches in
+            # the ReAct loop (services/orchestrator/coding_orchestrator.py). Always True
+            # here since the orchestrator process always has local_tools wired; unit tests
+            # set async_orch.local_client = None to simulate no client attached.
+            async_orch.local_client = True
+            # Piece 4: steer/cancel read from the in-process SignalRegistry; wired
+            # alongside local_client so the ReAct loop's `self.signals is not None`
+            # guard degrades cleanly in tests that never set it.
+            async_orch.signals = self.signals
             async_orch.codegraph_mcp = self._codegraph_mcp
             async_orch.session_search = SessionSearch(_sm)
             # Wire context_manager for conversation continuity (best-effort)
@@ -390,37 +414,22 @@ class OrchestratorProcess:
     async def stop(self) -> None:
         self._shutdown.set()
 
+    async def submit_goal(self, payload: dict) -> str:
+        """In-process goal ingress (replaces the Redis goal-stream XADD). Returns task_id."""
+        task_id = payload.get("task_id") or uuid.uuid4().hex
+        payload = {**payload, "task_id": task_id}
+        await self._goal_queue.put(payload)
+        return task_id
+
     # ── goal loop ──────────────────────────────────────────────────────────
 
     async def _loop(self, orch: CodingOrchestrator, storage: StorageManager) -> None:
         while not self._shutdown.is_set():
             try:
-                raw = await self._redis.xreadgroup(
-                    groupname=GOALS_GROUP,
-                    consumername=self._worker_id,
-                    streams={GOALS_STREAM: ">"},
-                    count=1,
-                    block=BLOCK_MS,
-                )
-            except (aioredis.TimeoutError, TimeoutError):
-                # Defensive: a blocking xreadgroup should tolerate a read-timeout
-                # and re-poll. This does NOT fire on the pinned redis-py 5.x
-                # (which returns [] cleanly when BLOCK elapses), but redis-py
-                # 8.x regressed blocking-read handling and raises TimeoutError
-                # here under a busy event loop — which, if uncaught, silently
-                # kills goal consumption. Keep the catch regardless of version.
+                payload = await asyncio.wait_for(self._goal_queue.get(), timeout=1.0)
+            except TimeoutError:
                 continue
-            except aioredis.ResponseError as exc:
-                _log.error("xreadgroup error: %s", exc)
-                await asyncio.sleep(1)
-                continue
-
-            if not raw:
-                continue
-
-            for _stream, entries in raw:
-                for msg_id, fields in entries:
-                    await self._handle(msg_id, fields, orch, storage)
+            await self._handle(payload, orch, storage)
 
     async def _background_compactor(
         self,
@@ -516,13 +525,13 @@ class OrchestratorProcess:
 
     async def _handle(
         self,
-        msg_id: str,
-        fields: dict[str, str],
+        payload: dict,
         orch: CodingOrchestrator,
         storage: StorageManager,
     ) -> None:
         # Safe defaults — must be bound before try so finally never raises NameError
-        task_id = msg_id
+        task_id = payload.get("task_id") if isinstance(payload, dict) else None
+        task_id = task_id or uuid.uuid4().hex
         user_id = ""
         workspace_id = ""
         session_id = ""
@@ -540,8 +549,7 @@ class OrchestratorProcess:
         _ctx_floor = 0
 
         try:
-            payload = json.loads(fields.get("payload", "{}"))
-            task_id = payload.get("task_id", msg_id)
+            task_id = payload.get("task_id", task_id)
             task_text = payload.get("task", "")
             session_id = payload.get("session_id") or task_id
             user_id = payload.get("user_id", "")
@@ -571,7 +579,7 @@ class OrchestratorProcess:
                 await self._write_result(task_id, {"ok": True, **result})
                 return
 
-            _emitter = events.EventEmitter(self._redis, task_id)
+            _emitter = events.EventEmitter(self.bus, task_id)
             _token = events.current_emitter.set(_emitter)
             # Per-task LLM call counter (A/B instrumentation): set a fresh counter for
             # this task's context; the litellm success callback increments it.
@@ -880,12 +888,9 @@ class OrchestratorProcess:
                 client_context.reset_manifest(_manifest_token)
             if _ws_root_token is not None:
                 client_context.reset_workspace_root(_ws_root_token)
-            await self._redis.xack(GOALS_STREAM, GOALS_GROUP, msg_id)
 
     async def _write_result(self, task_id: str, result: dict) -> None:
-        key = f"{RESULT_PREFIX}{task_id}"
-        await self._redis.set(key, json.dumps(result, default=str), ex=RESULT_TTL)
-        await self._redis.publish(key, "ready")
+        self.results.set_result(task_id, result)
 
     async def _persist_turns(
         self, storage: StorageManager, session_id: str, user_text: str, assistant_text: str
@@ -903,18 +908,6 @@ class OrchestratorProcess:
                 await store.append_turn(session_id, "assistant", assistant_text)
         except Exception:  # noqa: BLE001 — persistence is best-effort
             _log.warning("turn persistence failed for session %s", session_id, exc_info=True)
-
-    async def _ensure_group(self) -> None:
-        try:
-            await self._redis.xgroup_create(
-                GOALS_STREAM,
-                GOALS_GROUP,
-                id="0",
-                mkstream=True,
-            )
-        except aioredis.ResponseError as exc:
-            if "BUSYGROUP" not in str(exc):
-                raise
 
 
 def _setup_logging() -> None:

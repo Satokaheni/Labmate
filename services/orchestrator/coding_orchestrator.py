@@ -287,7 +287,8 @@ class AsyncOrchestrator:
         mcp=None,
         workspace: str = ".",
         max_steps: int = 6,
-        redis=None,
+        local_client=None,
+        signals=None,
         now: Callable[[], float] | None = None,
     ) -> None:
         self.sem = asyncio.Semaphore(max_inflight)
@@ -314,7 +315,15 @@ class AsyncOrchestrator:
         )
         self.workspace = workspace
         self.max_steps = max_steps
-        self.redis = redis
+        # Truthy sentinel: "a local-tool client is attached to this process".
+        # Gates the local-tool dispatch branches below (request_local_tool
+        # requires a real client on the other end of the event bus). None in
+        # unit tests that don't attach a client.
+        self.local_client = local_client
+        # In-process steer/cancel signal registry (Piece 4). None in unit tests
+        # / when unwired, in which case the ReAct loop's steer/cancel checks
+        # are skipped (mirrors the `self.local_client is not None` guard).
+        self.signals = signals
         # Injected post-construction by the orchestrator bootstrap when a Mongo
         # handle is available (CheckpointStore over the loop_checkpoints
         # collection). None in unit tests / when checkpointing is unwired.
@@ -641,8 +650,8 @@ class AsyncOrchestrator:
             _task_id = None
 
         _prewritten_steer: str | None = None
-        if _task_id is not None and self.redis is not None:
-            _prewritten_steer = await events.read_and_clear_steer(self.redis, _task_id)
+        if _task_id is not None and self.signals is not None:
+            _prewritten_steer = await events.read_and_clear_steer(self.signals, _task_id)
 
         _pending_steer: str | None = None
 
@@ -684,7 +693,7 @@ class AsyncOrchestrator:
             while True:
                 # ── Live interrupt: cancel + steer (top of every turn) ──────────
                 # task_id comes from the active EventEmitter (set per-task in
-                # main._handle); None in unit tests with no emitter / no redis,
+                # main._handle); None in unit tests with no emitter attached,
                 # in which case both checks are skipped and the loop is unchanged.
                 try:
                     _task_id = events.current_task_id()
@@ -693,10 +702,10 @@ class AsyncOrchestrator:
                 _new_midloop_steer = None
                 _to_inject = None  # steer to inject into THIS turn's model call
 
-                if _task_id is not None and self.redis is not None:
+                if _task_id is not None and self.signals is not None:
                     # (1) Cancel — honest partial halt (this is the in-loop cancel
                     #     check that was previously MISSING entirely).
-                    if await events.is_cancelled(self.redis, _task_id):
+                    if await events.is_cancelled(self.signals, _task_id):
                         await events.emit("turn.cancelled", task_id=_task_id, steps=budget.used)
                         return {
                             "ok": False,
@@ -710,7 +719,7 @@ class AsyncOrchestrator:
                     #     Pre-written (read before loop): defer to turn 2 (unit test).
                     #     Mid-loop (written during loop): inject immediately on next turn.
                     # Read any newly available steer from mid-loop writes.
-                    _new_midloop_steer = await events.read_and_clear_steer(self.redis, _task_id)
+                    _new_midloop_steer = await events.read_and_clear_steer(self.signals, _task_id)
 
                     # Deferral logic for pre-written steers:
                     # On turn 1, set _pending_steer to _prewritten_steer for use on turn 2.
@@ -785,7 +794,7 @@ class AsyncOrchestrator:
                     _steer_this_turn = _to_inject
                 if _steer_this_turn:
                     _messages_for_model = inject_steer(messages, _steer_this_turn)
-                    if _task_id is not None and self.redis is not None:
+                    if _task_id is not None and self.signals is not None:
                         await events.emit("steer.injected", task_id=_task_id, text=_steer_this_turn)
                     # Clear the pending steer so it is not re-injected on subsequent turns.
                     # Mid-loop steers (_to_inject) are already cleared at line 517 each turn.
@@ -1176,7 +1185,7 @@ class AsyncOrchestrator:
                         # 2. Pod code-sandbox fallback (when no client attached).
                         # In both cases, apply the same verification accounting
                         # (tests_passed, infra_error_streak, _bug_exposed).
-                        if self.redis is not None and "run_tests" in local_tool_names:
+                        if self.local_client is not None and "run_tests" in local_tool_names:
                             # Client-routed: tests run on the client side via local
                             # tool handler; we get back {ok, exit_code, raw_output}.
                             try:
@@ -1191,7 +1200,7 @@ class AsyncOrchestrator:
                                 )
                                 _test_timeout_s = max(30.0, _ms / 1000.0 + 15.0)
                                 result = await request_local_tool(
-                                    self.redis, "run_tests", args, timeout=_test_timeout_s
+                                    "run_tests", args, timeout=_test_timeout_s
                                 )
                                 if isinstance(result, dict):
                                     shaped = {
@@ -1271,9 +1280,9 @@ class AsyncOrchestrator:
                             content = json.dumps({"error": "no test runner available"})
 
                     elif name in local_tool_names:
-                        if self.redis is not None:
+                        if self.local_client is not None:
                             try:
-                                result = await request_local_tool(self.redis, name, args)
+                                result = await request_local_tool(name, args)
                                 # Reliable write: after a write_file the client may
                                 # report success without the bytes landing. Read the
                                 # file back and confirm it matches what we asked to
@@ -1283,7 +1292,6 @@ class AsyncOrchestrator:
                                     requested = str(args.get("content", ""))
                                     try:
                                         readback = await request_local_tool(
-                                            self.redis,
                                             "read_file",
                                             {"path": args.get("path", "")},
                                         )

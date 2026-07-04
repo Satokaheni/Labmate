@@ -1,6 +1,5 @@
 motor>=3.5
 pymongo>=4.9
-redis>=5.0,<6   # pin <6: redis-py 8.x regressed blocking xreadgroup (raises TimeoutError on empty BLOCK)
 transformers>=4.40
 pydantic>=2.0
 pytest>=8.0

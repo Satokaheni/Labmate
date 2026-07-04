@@ -15,12 +15,11 @@ def make_runner(catalog: dict[str, str] | None = None) -> MagicMock:
     return runner
 
 
-def make_redis() -> MagicMock:
-    """A redis.asyncio double; xadd/get are awaitable."""
-    redis = MagicMock()
-    redis.xadd = AsyncMock()
-    redis.get = AsyncMock(return_value=None)
-    return redis
+def make_registry() -> MagicMock:
+    """A SkillRegistry double; call_tool is awaitable (unused by these routing tests)."""
+    registry = MagicMock()
+    registry.call_tool = AsyncMock(return_value=None)
+    return registry
 
 
 def tool_call_response(skill_name: str) -> MagicMock:
@@ -95,7 +94,7 @@ def test_route_result_sub_intents_independent():
 async def test_validate_solvable_true_when_skill_matches():
     from services.orchestrator.skill_router import SkillRouter
 
-    router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
+    router = SkillRouter(make_runner(), make_registry(), "http://test/v1")
     with patch("services.orchestrator.skill_router.litellm.acompletion") as m:
         m.return_value = tool_call_response("dataset-search")
         assert await router._validate_solvable("find a dataset") is True
@@ -105,7 +104,7 @@ async def test_validate_solvable_true_when_skill_matches():
 async def test_validate_solvable_false_when_no_skill():
     from services.orchestrator.skill_router import SkillRouter
 
-    router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
+    router = SkillRouter(make_runner(), make_registry(), "http://test/v1")
     with patch("services.orchestrator.skill_router.litellm.acompletion") as m:
         m.return_value = no_tool_response()
         assert await router._validate_solvable("do something undefined") is False
@@ -116,7 +115,7 @@ async def test_validate_solvable_single_sample():
     """Solvability gate runs exactly one _sample_select call at budget 0."""
     from services.orchestrator.skill_router import SkillRouter
 
-    router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
+    router = SkillRouter(make_runner(), make_registry(), "http://test/v1")
     with patch("services.orchestrator.skill_router.litellm.acompletion") as m:
         m.return_value = tool_call_response("dataset-search")
         await router._validate_solvable("find a dataset")
@@ -128,7 +127,7 @@ async def test_validate_solvable_single_sample():
 async def test_confidence_check_unanimous():
     from services.orchestrator.skill_router import SkillRouter
 
-    router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
+    router = SkillRouter(make_runner(), make_registry(), "http://test/v1")
     with patch("services.orchestrator.skill_router.litellm.acompletion") as m:
         m.return_value = tool_call_response("dataset-search")
         skill, conf = await router._confidence_check("find a dataset")
@@ -141,7 +140,7 @@ async def test_confidence_check_unanimous():
 async def test_confidence_check_majority():
     from services.orchestrator.skill_router import SkillRouter
 
-    router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
+    router = SkillRouter(make_runner(), make_registry(), "http://test/v1")
     with patch("services.orchestrator.skill_router.litellm.acompletion") as m:
         m.side_effect = [
             tool_call_response("dataset-search"),
@@ -158,7 +157,7 @@ async def test_confidence_check_three_way_split():
     from services.orchestrator.skill_router import SkillRouter
 
     router = SkillRouter(
-        make_runner({"a": "x", "b": "y", "c": "z"}), make_redis(), "http://test/v1"
+        make_runner({"a": "x", "b": "y", "c": "z"}), make_registry(), "http://test/v1"
     )
     with patch("services.orchestrator.skill_router.litellm.acompletion") as m:
         m.side_effect = [
@@ -176,7 +175,7 @@ async def test_confidence_check_three_way_split():
 async def test_confidence_check_no_skill():
     from services.orchestrator.skill_router import SkillRouter
 
-    router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
+    router = SkillRouter(make_runner(), make_registry(), "http://test/v1")
     with patch("services.orchestrator.skill_router.litellm.acompletion") as m:
         m.return_value = no_tool_response()
         skill, conf = await router._confidence_check("undefined")
@@ -189,7 +188,7 @@ async def test_confidence_check_partial_none():
     """Some samples return None; confidence is over the 3 attempts, not over hits."""
     from services.orchestrator.skill_router import SkillRouter
 
-    router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
+    router = SkillRouter(make_runner(), make_registry(), "http://test/v1")
     with patch("services.orchestrator.skill_router.litellm.acompletion") as m:
         m.side_effect = [
             tool_call_response("dataset-search"),
@@ -205,7 +204,7 @@ async def test_confidence_check_partial_none():
 async def test_confidence_check_all_zero_budget():
     from services.orchestrator.skill_router import SkillRouter
 
-    router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
+    router = SkillRouter(make_runner(), make_registry(), "http://test/v1")
     with patch("services.orchestrator.skill_router.litellm.acompletion") as m:
         m.return_value = tool_call_response("dataset-search")
         await router._confidence_check("find a dataset")
@@ -222,9 +221,8 @@ async def test_route_single_intent_high_confidence():
     """One intent, confident skill → RouteResult with that skill, no clarification."""
     from services.orchestrator.skill_router import SkillRouter
 
-    router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
-    with patch.object(router, "_confidence_check",
-                      AsyncMock(return_value=("dataset-search", 1.0))):
+    router = SkillRouter(make_runner(), make_registry(), "http://test/v1")
+    with patch.object(router, "_confidence_check", AsyncMock(return_value=("dataset-search", 1.0))):
         result = await router.route("find a dataset")
     assert result.needs_clarification is False
     assert result.skills == ["dataset-search"]
@@ -238,9 +236,8 @@ async def test_route_no_skill_falls_through_to_direct_answer():
     route() NEVER clarifies — the assess_ambiguity gate owns ambiguity."""
     from services.orchestrator.skill_router import SkillRouter
 
-    router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
-    with patch.object(router, "_confidence_check",
-                      AsyncMock(return_value=(None, 0.0))):
+    router = SkillRouter(make_runner(), make_registry(), "http://test/v1")
+    with patch.object(router, "_confidence_check", AsyncMock(return_value=(None, 0.0))):
         result = await router.route("explain something")
     assert result.needs_clarification is False
     assert result.skills == []
@@ -253,9 +250,10 @@ async def test_route_low_confidence_falls_through_to_direct_answer():
     (skills=[], needs_clarification False)."""
     from services.orchestrator.skill_router import SkillRouter
 
-    router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
-    with patch.object(router, "_confidence_check",
-                      AsyncMock(return_value=("dataset-search", 1 / 3))):
+    router = SkillRouter(make_runner(), make_registry(), "http://test/v1")
+    with patch.object(
+        router, "_confidence_check", AsyncMock(return_value=("dataset-search", 1 / 3))
+    ):
         result = await router.route("ambiguous thing")
     assert result.needs_clarification is False
     assert result.skills == []
@@ -268,9 +266,8 @@ async def test_route_is_single_intent_only():
     regardless of how many '+' or 'and' appear in the task text (no decompose)."""
     from services.orchestrator.skill_router import SkillRouter
 
-    router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
-    with patch.object(router, "_confidence_check",
-                      AsyncMock(return_value=("dataset-search", 1.0))):
+    router = SkillRouter(make_runner(), make_registry(), "http://test/v1")
+    with patch.object(router, "_confidence_check", AsyncMock(return_value=("dataset-search", 1.0))):
         result = await router.route("search a dataset and generate examples")
     assert result.sub_intents == ["search a dataset and generate examples"]
     assert result.skills == ["dataset-search"]
@@ -282,9 +279,10 @@ async def test_route_threshold_boundary_passes_at_two_thirds():
     """confidence exactly 0.67 (2/3) must be accepted (>= threshold)."""
     from services.orchestrator.skill_router import SkillRouter
 
-    router = SkillRouter(make_runner(), make_redis(), "http://test/v1")
-    with patch.object(router, "_confidence_check",
-                      AsyncMock(return_value=("dataset-search", 2 / 3))):
+    router = SkillRouter(make_runner(), make_registry(), "http://test/v1")
+    with patch.object(
+        router, "_confidence_check", AsyncMock(return_value=("dataset-search", 2 / 3))
+    ):
         result = await router.route("thing")
     assert result.needs_clarification is False
     assert result.skills == ["dataset-search"]

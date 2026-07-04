@@ -3,20 +3,13 @@ back by ContextManager through the shared LocalStore (fix-A)."""
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
 from services.memory.context_manager import ContextManager
 from services.orchestrator.local_store import LocalStore
 from services.orchestrator.main import OrchestratorProcess
-
-
-def _fake_redis():
-    """Redis stub: every .get returns None (no summary/anchor/watermark yet)."""
-    r = MagicMock()
-    r.get = AsyncMock(return_value=None)
-    return r
 
 
 async def _noop_embed(texts):
@@ -36,7 +29,6 @@ async def test_second_turn_sees_first_turn(tmp_path):
 
     # Turn 2 begins: the context manager assembles recent turns for the same session.
     cm = ContextManager(
-        redis=_fake_redis(),
         mongo_db=None,
         chroma_cols={},
         embedder=_noop_embed,
@@ -60,8 +52,6 @@ async def test_other_session_is_isolated(tmp_path):
     proc = OrchestratorProcess.__new__(OrchestratorProcess)
     await proc._persist_turns(storage, "sess-A", "secret A", "reply A")
 
-    cm = ContextManager(
-        redis=_fake_redis(), mongo_db=None, chroma_cols={}, embedder=_noop_embed, local_store=store
-    )
+    cm = ContextManager(mongo_db=None, chroma_cols={}, embedder=_noop_embed, local_store=store)
     # A different session sees none of sess-A's turns.
     assert await cm._recent_turns("sess-B", budget=1000) == ""

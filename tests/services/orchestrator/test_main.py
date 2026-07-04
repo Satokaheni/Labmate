@@ -2,19 +2,14 @@
 
 from __future__ import annotations
 
-import json
 import os
 import socket
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-import redis.asyncio as aioredis
 
+from services.orchestrator.inproc_bus import ResultRegistry
 from services.orchestrator.main import (
-    GOALS_GROUP,
-    GOALS_STREAM,
-    RESULT_PREFIX,
-    RESULT_TTL,
     OrchestratorProcess,
     _build_mcp_params,
     _worker_id,
@@ -51,71 +46,68 @@ def test_build_mcp_params_default_args_point_to_dist():
     assert "mcp-bridge" in params.args[0]
 
 
-# ── _write_result ──────────────────────────────────────────────────────────────
+# ── submit_goal ─────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_write_result_sets_key_with_ttl():
+async def test_submit_goal_returns_task_id_and_enqueues():
     proc = OrchestratorProcess()
-    proc._redis = AsyncMock()
+    task_id = await proc.submit_goal({"task": "x", "session_id": "s"})
+    assert task_id
+    assert proc._goal_queue.qsize() == 1
+    queued = proc._goal_queue.get_nowait()
+    assert queued["task_id"] == task_id
+    assert queued["task"] == "x"
+    assert queued["session_id"] == "s"
+
+
+@pytest.mark.asyncio
+async def test_submit_goal_preserves_explicit_task_id():
+    proc = OrchestratorProcess()
+    task_id = await proc.submit_goal({"task_id": "explicit-1", "task": "y"})
+    assert task_id == "explicit-1"
+    queued = proc._goal_queue.get_nowait()
+    assert queued["task_id"] == "explicit-1"
+
+
+# ── _write_result / ResultRegistry ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_write_result_delivers_via_result_registry():
+    proc = OrchestratorProcess()
     await proc._write_result("task-abc", {"ok": True})
-    proc._redis.set.assert_awaited_once_with(
-        f"{RESULT_PREFIX}task-abc",
-        json.dumps({"ok": True}),
-        ex=RESULT_TTL,
-    )
+    result = await proc.results.wait_result("task-abc", timeout=1.0)
+    assert result == {"ok": True}
 
 
 @pytest.mark.asyncio
-async def test_write_result_publishes_ready():
-    proc = OrchestratorProcess()
-    proc._redis = AsyncMock()
-    await proc._write_result("task-abc", {"ok": True})
-    proc._redis.publish.assert_awaited_once_with(f"{RESULT_PREFIX}task-abc", "ready")
+async def test_write_result_wait_before_set():
+    """wait_result called before _write_result still resolves once the result lands."""
+    proc = OrchestratorProcess.__new__(OrchestratorProcess)
+    proc.results = ResultRegistry()
 
+    async def _delayed_write():
+        import asyncio
 
-# ── _ensure_group ─────────────────────────────────────────────────────────────
+        await asyncio.sleep(0.01)
+        await proc._write_result("task-late", {"ok": True, "state": {}})
 
+    import asyncio
 
-@pytest.mark.asyncio
-async def test_ensure_group_creates_stream():
-    proc = OrchestratorProcess()
-    proc._redis = AsyncMock()
-    await proc._ensure_group()
-    proc._redis.xgroup_create.assert_awaited_once_with(
-        GOALS_STREAM,
-        GOALS_GROUP,
-        id="0",
-        mkstream=True,
-    )
-
-
-@pytest.mark.asyncio
-async def test_ensure_group_ignores_busygroup():
-    proc = OrchestratorProcess()
-    proc._redis = AsyncMock()
-    proc._redis.xgroup_create.side_effect = aioredis.ResponseError(
-        "BUSYGROUP Consumer Group name already exists"
-    )
-    await proc._ensure_group()  # must not raise
-
-
-@pytest.mark.asyncio
-async def test_ensure_group_re_raises_other_errors():
-    proc = OrchestratorProcess()
-    proc._redis = AsyncMock()
-    proc._redis.xgroup_create.side_effect = aioredis.ResponseError("WRONGTYPE")
-    with pytest.raises(aioredis.ResponseError, match="WRONGTYPE"):
-        await proc._ensure_group()
+    waiter = asyncio.create_task(proc.results.wait_result("task-late", timeout=1.0))
+    writer = asyncio.create_task(_delayed_write())
+    result = await waiter
+    await writer
+    assert result["ok"] is True
 
 
 # ── _handle ────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_handle_calls_run_task_and_acks():
+async def test_handle_calls_run_task():
     proc = OrchestratorProcess()
-    proc._redis = AsyncMock()
 
     orch = AsyncMock()
     orch.run_task.return_value = {"session_id": "s1", "goal_tree": {}}
@@ -125,38 +117,17 @@ async def test_handle_calls_run_task_and_acks():
     storage.workspaces.record_session = AsyncMock()
     storage.workspaces.complete_session = AsyncMock()
     storage.workspaces.load_agent_instructions = AsyncMock(return_value="")
-    payload = json.dumps({"task_id": "t1", "task": "do something", "session_id": "s1"})
-    await proc._handle("100-0", {"payload": payload}, orch, storage)
+    payload = {"task_id": "t1", "task": "do something", "session_id": "s1"}
+    await proc._handle(payload, orch, storage)
 
     orch.run_task.assert_awaited_once_with(
         "do something", "s1", user_id="", workspace_id="", agent_instructions=""
     )
-    proc._redis.xack.assert_awaited_once_with(GOALS_STREAM, GOALS_GROUP, "100-0")
-
-
-@pytest.mark.asyncio
-async def test_handle_acks_on_failure():
-    proc = OrchestratorProcess()
-    proc._redis = AsyncMock()
-
-    orch = AsyncMock()
-    orch.run_task.side_effect = RuntimeError("graph exploded")
-
-    storage = AsyncMock()
-    storage.workspaces = AsyncMock()
-    storage.workspaces.record_session = AsyncMock()
-    storage.workspaces.complete_session = AsyncMock()
-    payload = json.dumps({"task_id": "t2", "task": "fail", "session_id": "s2"})
-    await proc._handle("200-0", {"payload": payload}, orch, storage)
-
-    # ACK must happen even on failure
-    proc._redis.xack.assert_awaited_once_with(GOALS_STREAM, GOALS_GROUP, "200-0")
 
 
 @pytest.mark.asyncio
 async def test_handle_writes_error_result_on_failure():
     proc = OrchestratorProcess()
-    proc._redis = AsyncMock()
 
     orch = AsyncMock()
     orch.run_task.side_effect = RuntimeError("boom")
@@ -165,18 +136,16 @@ async def test_handle_writes_error_result_on_failure():
     storage.workspaces = AsyncMock()
     storage.workspaces.record_session = AsyncMock()
     storage.workspaces.complete_session = AsyncMock()
-    payload = json.dumps({"task_id": "err-task", "task": "fail"})
-    await proc._handle("300-0", {"payload": payload}, orch, storage)
+    payload = {"task_id": "err-task", "task": "fail"}
+    await proc._handle(payload, orch, storage)
 
-    set_args = proc._redis.set.call_args[0]
-    stored = json.loads(set_args[1])
+    stored = await proc.results.wait_result("err-task", timeout=1.0)
     assert stored["ok"] is False
 
 
 @pytest.mark.asyncio
 async def test_handle_uses_task_id_as_session_id_when_absent():
     proc = OrchestratorProcess()
-    proc._redis = AsyncMock()
 
     orch = AsyncMock()
     orch.run_task.return_value = {}
@@ -188,8 +157,8 @@ async def test_handle_uses_task_id_as_session_id_when_absent():
     storage.workspaces.load_agent_instructions = AsyncMock(return_value="")
 
     # No session_id in payload — should fall back to task_id
-    payload = json.dumps({"task_id": "standalone-task", "task": "do it"})
-    await proc._handle("400-0", {"payload": payload}, orch, storage)
+    payload = {"task_id": "standalone-task", "task": "do it"}
+    await proc._handle(payload, orch, storage)
 
     orch.run_task.assert_awaited_once_with(
         "do it", "standalone-task", user_id="", workspace_id="", agent_instructions=""
@@ -237,7 +206,6 @@ def test_logging_goes_to_stderr_not_stdout():
 async def test_handle_parses_user_and_workspace():
     """_handle extracts user_id and workspace_id from payload."""
     proc = OrchestratorProcess()
-    proc._redis = AsyncMock()
 
     orch = AsyncMock()
     orch.run_task.return_value = {"session_id": "s-1", "goal_tree": {}}
@@ -250,16 +218,14 @@ async def test_handle_parses_user_and_workspace():
     storage.workspaces._db = AsyncMock()
     storage.workspaces._db.__getitem__ = MagicMock(return_value=AsyncMock())
 
-    payload = json.dumps(
-        {
-            "task_id": "t-1",
-            "task": "do something",
-            "session_id": "s-1",
-            "user_id": "u-abc",
-            "workspace_id": "ws-xyz",
-        }
-    )
-    await proc._handle("msg-1", {"payload": payload}, orch, storage)
+    payload = {
+        "task_id": "t-1",
+        "task": "do something",
+        "session_id": "s-1",
+        "user_id": "u-abc",
+        "workspace_id": "ws-xyz",
+    }
+    await proc._handle(payload, orch, storage)
 
     call_kwargs = orch.run_task.call_args.kwargs
     assert call_kwargs.get("user_id") == "u-abc"
@@ -270,7 +236,6 @@ async def test_handle_parses_user_and_workspace():
 async def test_handle_defaults_missing_user_workspace():
     """Missing user_id/workspace_id default to empty string without error."""
     proc = OrchestratorProcess()
-    proc._redis = AsyncMock()
 
     orch = AsyncMock()
     orch.run_task.return_value = {"session_id": "s-2", "goal_tree": {}}
@@ -280,8 +245,8 @@ async def test_handle_defaults_missing_user_workspace():
     storage.workspaces.record_session = AsyncMock()
     storage.workspaces.complete_session = AsyncMock()
 
-    payload = json.dumps({"task_id": "t-2", "task": "hi", "session_id": "s-2"})
-    await proc._handle("msg-2", {"payload": payload}, orch, storage)
+    payload = {"task_id": "t-2", "task": "hi", "session_id": "s-2"}
+    await proc._handle(payload, orch, storage)
 
     call_kwargs = orch.run_task.call_args.kwargs
     assert call_kwargs.get("user_id") == ""
@@ -289,30 +254,9 @@ async def test_handle_defaults_missing_user_workspace():
 
 
 @pytest.mark.asyncio
-async def test_handle_acks_malformed_payload():
-    """Malformed JSON payload must still be acked (no poison pill)."""
-    proc = OrchestratorProcess()
-    proc._redis = AsyncMock()
-
-    orch = AsyncMock()
-    storage = AsyncMock()
-    storage.workspaces = AsyncMock()
-    storage.workspaces.record_session = AsyncMock()
-    storage.workspaces.complete_session = AsyncMock()
-
-    # Malformed JSON that will fail json.loads()
-    fields = {"payload": "not-json"}
-    await proc._handle("msg-bad", fields, orch, storage)
-
-    # xack must have been called even though parsing failed
-    proc._redis.xack.assert_awaited_once_with(GOALS_STREAM, GOALS_GROUP, "msg-bad")
-
-
-@pytest.mark.asyncio
 async def test_complete_session_called_with_ok_true_on_success():
     """complete_session must record ok=True when task succeeds (error is None)."""
     proc = OrchestratorProcess()
-    proc._redis = AsyncMock()
 
     orch = AsyncMock()
     # Task succeeds with error: None
@@ -326,16 +270,14 @@ async def test_complete_session_called_with_ok_true_on_success():
     storage.workspaces._db = AsyncMock()
     storage.workspaces._db.__getitem__ = MagicMock(return_value=AsyncMock())
 
-    payload = json.dumps(
-        {
-            "task_id": "t-ok",
-            "task": "succeed",
-            "session_id": "s-ok",
-            "user_id": "u-1",
-            "workspace_id": "ws-1",
-        }
-    )
-    await proc._handle("msg-ok", fields={"payload": payload}, orch=orch, storage=storage)
+    payload = {
+        "task_id": "t-ok",
+        "task": "succeed",
+        "session_id": "s-ok",
+        "user_id": "u-1",
+        "workspace_id": "ws-1",
+    }
+    await proc._handle(payload, orch, storage)
 
     # complete_session must be called with ok=True (because error is None)
     storage.workspaces.complete_session.assert_awaited()
@@ -351,7 +293,6 @@ async def test_complete_session_called_with_ok_true_on_success():
 async def test_complete_session_called_with_ok_false_on_run_task_exception():
     """complete_session must record ok=False when run_task raises an exception."""
     proc = OrchestratorProcess()
-    proc._redis = AsyncMock()
 
     orch = AsyncMock()
     # Task fails with exception
@@ -365,16 +306,14 @@ async def test_complete_session_called_with_ok_false_on_run_task_exception():
     storage.workspaces._db = AsyncMock()
     storage.workspaces._db.__getitem__ = MagicMock(return_value=AsyncMock())
 
-    payload = json.dumps(
-        {
-            "task_id": "t-fail",
-            "task": "fail",
-            "session_id": "s-fail",
-            "user_id": "u-2",
-            "workspace_id": "ws-2",
-        }
-    )
-    await proc._handle("msg-fail", fields={"payload": payload}, orch=orch, storage=storage)
+    payload = {
+        "task_id": "t-fail",
+        "task": "fail",
+        "session_id": "s-fail",
+        "user_id": "u-2",
+        "workspace_id": "ws-2",
+    }
+    await proc._handle(payload, orch, storage)
 
     # complete_session must be called with ok=False (because run_task raised)
     storage.workspaces.complete_session.assert_awaited()
@@ -390,7 +329,6 @@ async def test_complete_session_called_with_ok_false_on_run_task_exception():
 async def test_write_result_ok_false_when_final_state_has_error():
     """FIX #2: _write_result derives ok=False from final_state.error (not exception)."""
     proc = OrchestratorProcess()
-    proc._redis = AsyncMock()
 
     orch = AsyncMock()
     # Graph finalized with FAILED root and error set (no exception raised)
@@ -408,21 +346,18 @@ async def test_write_result_ok_false_when_final_state_has_error():
     storage.workspaces._db = AsyncMock()
     storage.workspaces._db.__getitem__ = MagicMock(return_value=AsyncMock())
 
-    payload = json.dumps(
-        {
-            "task_id": "t-graph-failed",
-            "task": "subtask fails",
-            "session_id": "s-graph-failed",
-            "user_id": "u-3",
-            "workspace_id": "ws-3",
-        }
-    )
-    await proc._handle("msg-graph-fail", fields={"payload": payload}, orch=orch, storage=storage)
+    payload = {
+        "task_id": "t-graph-failed",
+        "task": "subtask fails",
+        "session_id": "s-graph-failed",
+        "user_id": "u-3",
+        "workspace_id": "ws-3",
+    }
+    await proc._handle(payload, orch, storage)
 
-    # _write_result must be called with ok=False (derived from error != None)
-    set_args = proc._redis.set.call_args[0]
-    result = json.loads(set_args[1])
-    assert result["ok"] is False, "Redis result should have ok=False when final_state.error is set"
+    # result must be ok=False (derived from error != None)
+    result = await proc.results.wait_result("t-graph-failed", timeout=1.0)
+    assert result["ok"] is False, "result should have ok=False when final_state.error is set"
 
     # complete_session must also record ok=False
     storage.workspaces.complete_session.assert_awaited()
@@ -438,12 +373,9 @@ async def test_write_result_ok_false_when_final_state_has_error():
 
 @pytest.mark.asyncio
 async def test_handle_emits_turn_start_and_done():
+    import asyncio
+
     proc = OrchestratorProcess()
-    proc._redis = MagicMock()
-    proc._redis.xadd = AsyncMock()
-    proc._redis.set = AsyncMock()
-    proc._redis.publish = AsyncMock()
-    proc._redis.xack = AsyncMock()
 
     orch = MagicMock()
     orch.run_task = AsyncMock(return_value={"final_answer": "done", "error": None})
@@ -454,52 +386,21 @@ async def test_handle_emits_turn_start_and_done():
     storage.workspaces.complete_session = AsyncMock()
     storage.workspaces.upsert_workspace = AsyncMock()
 
-    fields = {"payload": json.dumps({"task_id": "t-1", "task": "do it", "session_id": "t-1"})}
-    await proc._handle("1-0", fields, orch, storage)
+    # Events now travel over the in-process bus instead of Redis xadd.
+    sub = proc.bus.subscribe("events:t-1")
+    payload = {"task_id": "t-1", "task": "do it", "session_id": "t-1"}
+    await proc._handle(payload, orch, storage)
 
-    streams = [c.args[0] for c in proc._redis.xadd.await_args_list]
-    assert "labmate:events:t-1" in streams
-    types = [json.loads(c.args[1]["event"])["type"] for c in proc._redis.xadd.await_args_list]
+    types = []
+    while True:
+        try:
+            evt = await asyncio.wait_for(sub.__anext__(), timeout=0.2)
+        except TimeoutError:
+            break
+        types.append(evt["type"])
+    sub.close()
+
     # agent_status (active) is emitted first, then turn.start
     assert types[0] == "agent_status"
     assert "turn.start" in types
     assert "turn.done" in types
-
-
-def test_skill_router_wiring_order():
-    """Code inspection: verify redis is initialized before skill router in main.py.
-
-    This test documents the fix for the bug where SkillRouter was created with
-    redis=None, causing all skill routes to fail at runtime with AttributeError
-    on None.xadd(). The fix: move redis pool/client creation BEFORE the
-    skill-router try/except block.
-    """
-    from pathlib import Path
-
-    # Path from test file: tests/services/orchestrator/test_main.py
-    # -> services/orchestrator/main.py
-    main_py = (
-        Path(__file__).parent.parent.parent.parent / "services" / "orchestrator" / "main.py"
-    ).read_text()
-    lines = main_py.split("\n")
-
-    # Find line numbers of key sections (1-indexed for clarity in error messages)
-    redis_pool_line = None
-    skill_router_comment_line = None
-
-    for i, line in enumerate(lines, 1):
-        if "pool = aioredis.ConnectionPool.from_url" in line:
-            redis_pool_line = i
-        if "# Build skill router" in line:
-            skill_router_comment_line = i
-
-    # Both sections must exist
-    assert redis_pool_line is not None, "Redis pool creation not found in main.py"
-    assert skill_router_comment_line is not None, "Skill router comment block not found in main.py"
-
-    # Redis MUST be initialized BEFORE the skill router block
-    assert redis_pool_line < skill_router_comment_line, (
-        f"BUG: redis pool created at line {redis_pool_line}, "
-        f"but skill router block starts at line {skill_router_comment_line}. "
-        "Redis must be created first so SkillRouter.__init__ receives a non-None redis client."
-    )

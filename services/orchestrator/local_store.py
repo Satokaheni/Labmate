@@ -87,6 +87,13 @@ CREATE TABLE IF NOT EXISTS users (
     created_at   TEXT,
     last_active  TEXT
 );
+CREATE TABLE IF NOT EXISTS session_kv (
+    namespace  TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    value      TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (namespace, session_id)
+);
 """
 
 
@@ -462,6 +469,36 @@ class LocalStore:
         conn = await self._connected()
         await conn.execute(
             "UPDATE users SET last_active = ? WHERE user_id = ?", (_iso_now(), user_id)
+        )
+        await conn.commit()
+
+    # ── per-session KV (compaction state: core/summary/anchor/summarized_through) ──
+    async def session_kv_get(self, namespace: str, session_id: str) -> str | None:
+        """Get a KV value for (namespace, session_id). Returns None if not found."""
+        conn = await self._connected()
+        cur = await conn.execute(
+            "SELECT value FROM session_kv WHERE namespace = ? AND session_id = ?",
+            (namespace, session_id),
+        )
+        row = await cur.fetchone()
+        return row[0] if row else None
+
+    async def session_kv_set(self, namespace: str, session_id: str, value: str) -> None:
+        """Set or replace a KV value for (namespace, session_id)."""
+        conn = await self._connected()
+        await conn.execute(
+            "INSERT OR REPLACE INTO session_kv (namespace, session_id, value, updated_at)"
+            " VALUES (?, ?, ?, ?)",
+            (namespace, session_id, value, _iso_now()),
+        )
+        await conn.commit()
+
+    async def session_kv_delete(self, namespace: str, session_id: str) -> None:
+        """Delete a KV entry for (namespace, session_id). No-op if not found."""
+        conn = await self._connected()
+        await conn.execute(
+            "DELETE FROM session_kv WHERE namespace = ? AND session_id = ?",
+            (namespace, session_id),
         )
         await conn.commit()
 

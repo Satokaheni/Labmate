@@ -1,11 +1,12 @@
 """Step definitions for the run_tests tool + reliable write_file BDD feature."""
+
 from __future__ import annotations
 
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pytest_bdd import scenarios, given, when, then, parsers
+from pytest_bdd import given, parsers, scenarios, then, when
 
 from services.orchestrator.coding_orchestrator import AsyncOrchestrator
 from services.orchestrator.prompt_assembler import PromptAssembler
@@ -15,6 +16,7 @@ scenarios("features/run_tests_tool.feature")
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
+
 
 def _tool_call_msg(name: str, arguments: dict):
     tc = MagicMock()
@@ -35,12 +37,13 @@ def ctx():
     return {
         "responses": [],
         "result": None,
-        "tool_results": [],   # captured tool-message contents (role == "tool")
+        "tool_results": [],  # captured tool-message contents (role == "tool")
         "assembler": None,
     }
 
 
 # ── Background ───────────────────────────────────────────────────────────────
+
 
 @given("an AsyncOrchestrator with no skill router and no mcp")
 def _orch_no_mcp(ctx):
@@ -60,11 +63,12 @@ def _orch_stub_bash(ctx):
 @given("an AsyncOrchestrator with no skill router and a local tool client")
 def _orch_local_client(ctx):
     orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
-    orch.redis = MagicMock()  # presence triggers the LOCAL_TOOL_NAMES branch
+    orch.local_client = MagicMock()  # presence triggers the LOCAL_TOOL_NAMES branch
     ctx["orch"] = orch
 
 
 # ── Given: prompt assembler / bash seam / local client programming ───────────
+
 
 @given("the prompt assembler builds the tool list")
 def _build_tools(ctx):
@@ -95,19 +99,24 @@ def _bash_returns(ctx, code, output):
         ctx["skill_router"].execute.return_value = envelope
 
 
-@given(parsers.parse('the write_file client reports success but the file reads back as "{readback}"'))
+@given(
+    parsers.parse('the write_file client reports success but the file reads back as "{readback}"')
+)
 def _client_mismatch(ctx, readback):
     ctx["readback"] = readback
     ctx["write_ok"] = True
 
 
-@given(parsers.parse('the write_file client reports success and the file reads back as "{readback}"'))
+@given(
+    parsers.parse('the write_file client reports success and the file reads back as "{readback}"')
+)
 def _client_match(ctx, readback):
     ctx["readback"] = readback
     ctx["write_ok"] = True
 
 
 # ── Given: scripted model turns ──────────────────────────────────────────────
+
 
 def _ensure_len(ctx, turn):
     while len(ctx["responses"]) < turn:
@@ -120,12 +129,14 @@ def _run_tests_turn(ctx, path, turn):
     ctx["responses"][turn - 1] = _tool_call_msg("run_tests", {"path": path})
 
 
-@given(parsers.parse('the model calls write_file with path "{path}" and content "{content}" on turn {turn:d}'))
+@given(
+    parsers.parse(
+        'the model calls write_file with path "{path}" and content "{content}" on turn {turn:d}'
+    )
+)
 def _write_file_turn(ctx, path, content, turn):
     _ensure_len(ctx, turn)
-    ctx["responses"][turn - 1] = _tool_call_msg(
-        "write_file", {"path": path, "content": content}
-    )
+    ctx["responses"][turn - 1] = _tool_call_msg("write_file", {"path": path, "content": content})
 
 
 @given(parsers.parse('the model calls finish with summary "{summary}" on turn {turn:d}'))
@@ -135,6 +146,7 @@ def _finish_turn(ctx, summary, turn):
 
 
 # ── When ─────────────────────────────────────────────────────────────────────
+
 
 @when("the prompt assembler builds the tool list")
 def _when_build(ctx):
@@ -166,23 +178,27 @@ def _run_goal(ctx, goal):
     # Program the local tool client for write_file scenarios:
     #   first call  (write_file) -> success result
     #   second call (read_file)  -> the programmed read-back
-    async def _local(redis, name, args, **kw):
+    async def _local(name, args, **kw):
         if name == "read_file":
             return ctx.get("readback")
         return {"ok": True}
 
-    with patch("services.orchestrator.coding_orchestrator.litellm.acompletion",
-               new_callable=AsyncMock, side_effect=ctx["responses"]), \
-         patch("services.orchestrator.coding_orchestrator.events.emit",
-               new=_emit), \
-         patch("services.orchestrator.coding_orchestrator.request_local_tool",
-               new=_local):
+    with (
+        patch(
+            "services.orchestrator.coding_orchestrator.litellm.acompletion",
+            new_callable=AsyncMock,
+            side_effect=ctx["responses"],
+        ),
+        patch("services.orchestrator.coding_orchestrator.events.emit", new=_emit),
+        patch("services.orchestrator.coding_orchestrator.request_local_tool", new=_local),
+    ):
         ctx["result"] = run_async(orch.react_execute(goal))
 
     ctx["tool_results"] = captured
 
 
 # ── Then: tool list assertions ───────────────────────────────────────────────
+
 
 @then(parsers.parse('the tool list contains a tool named "{name}"'))
 def _tool_list_has(ctx, name):
@@ -197,6 +213,7 @@ def _run_tests_has_param(ctx, param):
 
 
 # ── Then: run_tests result assertions ────────────────────────────────────────
+
 
 def _run_tests_payload(ctx) -> dict:
     # The run_tests tool.done result is the json string {ok, exit_code, raw_output}.
@@ -226,6 +243,7 @@ def _result_raw_contains(ctx, needle):
 
 
 # ── Then: write_file verification assertions ─────────────────────────────────
+
 
 def _write_payload_text(ctx) -> str:
     # Concatenate all tool-result strings; the write_file branch result is among them.

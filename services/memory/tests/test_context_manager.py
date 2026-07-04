@@ -24,19 +24,11 @@ async def test_build_context_stays_within_budget(tmp_path):
     ):
         from services.memory.context_manager import ContextBudget, ContextManager
 
-        redis = AsyncMock()
-
-        def _redis_get(key):
-            if "core" in key:
-                return "goal: finish MCP bridge"
-            elif "summarized_through" in key:
-                return None  # watermark defaults to -1 when absent
-            else:
-                return "old summary"
-
-        redis.get = AsyncMock(side_effect=_redis_get)
-
         store = await _make_local_store(tmp_path)
+        await store.session_kv_set("core", "s1", "goal: finish MCP bridge")
+        await store.session_kv_set("summary", "s1", "old summary")
+        # summarized_through left unset -> watermark defaults to -1
+
         await store.append_turn("s1", "user", "hello")
         await store.append_turn("s1", "assistant", "hi there")
 
@@ -44,7 +36,6 @@ async def test_build_context_stays_within_budget(tmp_path):
 
         budget = ContextBudget(max_tokens=200, completion_reserve=20)
         cm = ContextManager(
-            redis=redis,
             mongo_db=MagicMock(),
             chroma_cols={},
             embedder=embed,
@@ -71,16 +62,14 @@ async def test_build_context_pins_core_memory_even_when_over_budget(tmp_path):
     ):
         from services.memory.context_manager import ContextBudget, ContextManager
 
-        redis = AsyncMock()
         long_core = "GOAL: " + "x" * 1994  # 2000 chars → 500 tokens at 1/4 rate
-        redis.get = AsyncMock(side_effect=lambda key: long_core if "core" in key else "")
 
         store = await _make_local_store(tmp_path)  # no turns seeded
+        await store.session_kv_set("core", "s1", long_core)
 
         embed = AsyncMock(return_value=[[0.1]])
         budget = ContextBudget(max_tokens=700, completion_reserve=100)
         cm = ContextManager(
-            redis=redis,
             mongo_db=MagicMock(),
             chroma_cols={},
             embedder=embed,
@@ -97,7 +86,6 @@ def test_trim_to_budget_drops_oldest_lines():
         from services.memory.context_manager import ContextManager
 
         cm = ContextManager(
-            redis=AsyncMock(),
             mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
@@ -123,37 +111,14 @@ def test_context_budget_effective_budget():
 # ── Compaction tests ─────────────────────────────────────────────────────────
 
 
-def _make_redis(redis_data=None):
-    """Build an AsyncMock redis backed by a plain dict."""
-    redis = AsyncMock()
-    _store: dict = redis_data or {}
-
-    async def _redis_get(key):
-        return _store.get(key)
-
-    async def _redis_set(key, value):
-        _store[key] = value
-
-    async def _redis_delete(key):
-        _store.pop(key, None)
-
-    redis.get = AsyncMock(side_effect=_redis_get)
-    redis.set = AsyncMock(side_effect=_redis_set)
-    redis.delete = AsyncMock(side_effect=_redis_delete)
-    return redis, _store
-
-
 @pytest.mark.asyncio
 async def test_recent_turns_reads_local_store_with_watermark(tmp_path):
     """_recent_turns filters by watermark and formats ROLE: text, newest tail only."""
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
         from services.memory.context_manager import ContextManager
 
-        redis_store: dict = {"summarized_through:s1": "5"}  # watermark = 5
-        redis = AsyncMock()
-        redis.get = AsyncMock(side_effect=lambda k: redis_store.get(k))
-
         store = await _make_local_store(tmp_path)
+        await store.session_kv_set("summarized_through", "s1", "5")  # watermark = 5
         # seq is assigned in append order (0-based); seed 7 turns so seqs 6,7 don't
         # exist naturally — instead seed exactly the seqs needed via direct inserts.
         await store.append_turn("s1", "user", "hello")  # seq 0
@@ -166,7 +131,6 @@ async def test_recent_turns_reads_local_store_with_watermark(tmp_path):
         await store.append_turn("s1", "assistant", "fine")  # seq 7, > watermark(5)
 
         cm = ContextManager(
-            redis=redis,
             mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
@@ -187,16 +151,11 @@ async def test_recent_turns_defaults_watermark_to_minus_one(tmp_path):
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
         from services.memory.context_manager import ContextManager
 
-        redis_store: dict = {}  # no watermark key
-        redis = AsyncMock()
-        redis.get = AsyncMock(side_effect=lambda k: redis_store.get(k))
-
-        store = await _make_local_store(tmp_path)
+        store = await _make_local_store(tmp_path)  # no watermark key set
         await store.append_turn("s1", "user", "first")
         await store.append_turn("s1", "assistant", "reply")
 
         cm = ContextManager(
-            redis=redis,
             mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
@@ -225,7 +184,6 @@ async def test_last_activity_seconds_reads_local_store_iso_timestamp(tmp_path):
         await store.append_turn("s1", "user", "hi", created_at=iso_ts)
 
         cm = ContextManager(
-            redis=AsyncMock(),
             mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
@@ -242,8 +200,6 @@ async def test_full_compact_watermark_nondestructive(tmp_path):
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
         from services.memory.context_manager import ContextManager
 
-        redis, redis_store = _make_redis()
-
         store = await _make_local_store(tmp_path)
         # 40 turns so _KEEP_RECENT=15 leaves 25 to compact
         for i in range(40):
@@ -258,7 +214,6 @@ async def test_full_compact_watermark_nondestructive(tmp_path):
             return "summary of old turns"
 
         cm = ContextManager(
-            redis=redis,
             mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
@@ -267,14 +222,14 @@ async def test_full_compact_watermark_nondestructive(tmp_path):
         await cm.full_compact("s1", _llm)
 
         # Verify watermark was advanced
-        watermark_key = "summarized_through:s1"
-        assert watermark_key in redis_store
+        watermark = await store.session_kv_get("summarized_through", "s1")
+        assert watermark is not None
         # watermark should be max_seq - _KEEP_RECENT = 39 - 15 = 24
-        assert redis_store[watermark_key] == "24"
+        assert watermark == "24"
 
         # Verify summary was written
-        assert "summary:s1" in redis_store
-        assert redis_store["summary:s1"] == "summary of old turns"
+        summary = await store.session_kv_get("summary", "s1")
+        assert summary == "summary of old turns"
 
         # CRITICAL: all 40 turns must still be readable (chat_turns is immutable)
         all_turns = await store.all_turns("s1")
@@ -287,9 +242,8 @@ async def test_full_compact_respects_watermark_on_second_call(tmp_path):
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
         from services.memory.context_manager import ContextManager
 
-        redis, redis_store = _make_redis({"summarized_through:s1": "24"})  # from prior compaction
-
         store = await _make_local_store(tmp_path)
+        await store.session_kv_set("summarized_through", "s1", "24")  # from prior compaction
         # 45 turns: watermark=24, _KEEP_RECENT=15 → new to_compact = turns 25-29 (5 turns)
         for i in range(45):
             await store.append_turn("s1", "user" if i % 2 == 0 else "assistant", f"turn {i}")
@@ -303,7 +257,6 @@ async def test_full_compact_respects_watermark_on_second_call(tmp_path):
             return "new summary segment"
 
         cm = ContextManager(
-            redis=redis,
             mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
@@ -322,9 +275,7 @@ async def test_microcompact_and_clear_tool_results_removed():
     """Verify microcompact and clear_tool_results methods are deleted."""
     from services.memory.context_manager import ContextManager
 
-    cm = ContextManager(
-        redis=AsyncMock(), mongo_db=MagicMock(), chroma_cols={}, embedder=AsyncMock()
-    )
+    cm = ContextManager(mongo_db=MagicMock(), chroma_cols={}, embedder=AsyncMock())
 
     # These methods should not exist
     assert not hasattr(cm, "microcompact"), "microcompact should be deleted"
@@ -336,8 +287,6 @@ async def test_full_compact_returns_reflections(tmp_path):
     """full_compact should call llm_fn multiple times and return reflection strings."""
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
         from services.memory.context_manager import ContextManager
-
-        redis, redis_store = _make_redis()
 
         store = await _make_local_store(tmp_path)
         # 20 turns so _KEEP_RECENT=15 leaves 5 to compact
@@ -353,7 +302,6 @@ async def test_full_compact_returns_reflections(tmp_path):
             return "summary of old turns"
 
         cm = ContextManager(
-            redis=redis,
             mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
@@ -364,7 +312,7 @@ async def test_full_compact_returns_reflections(tmp_path):
         assert result["pruned_messages"] == 0  # no deletion; watermark-only
         assert result["reflections"] == ["decided to use Python", "Redis is fast"]
         # Anchor should be set on first compact
-        assert redis_store.get("anchor:s1") is not None
+        assert await store.session_kv_get("anchor", "s1") is not None
 
 
 @pytest.mark.asyncio
@@ -374,9 +322,9 @@ async def test_full_compact_saves_anchor_only_on_first_compact(tmp_path):
         from services.memory.context_manager import ContextManager
 
         original_anchor = "anchor from first compact"
-        redis, redis_store = _make_redis({"anchor:s1": original_anchor})
-
         store = await _make_local_store(tmp_path)
+        await store.session_kv_set("anchor", "s1", original_anchor)
+
         for i in range(20):
             await store.append_turn("s1", "user", f"msg {i}")
 
@@ -384,7 +332,6 @@ async def test_full_compact_saves_anchor_only_on_first_compact(tmp_path):
             return '{"decisions": []}' if "JSON" in prompt else "new summary"
 
         cm = ContextManager(
-            redis=redis,
             mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
@@ -393,7 +340,7 @@ async def test_full_compact_saves_anchor_only_on_first_compact(tmp_path):
         await cm.full_compact("s1", _llm)
 
         # Anchor must not have changed
-        assert redis_store["anchor:s1"] == original_anchor
+        assert await store.session_kv_get("anchor", "s1") == original_anchor
 
 
 @pytest.mark.asyncio
@@ -402,9 +349,7 @@ async def test_parallel_summarize_calls_llm_per_block():
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
         from services.memory.context_manager import ContextManager
 
-        cm = ContextManager(
-            redis=AsyncMock(), mongo_db=MagicMock(), chroma_cols={}, embedder=AsyncMock()
-        )
+        cm = ContextManager(mongo_db=MagicMock(), chroma_cols={}, embedder=AsyncMock())
         # 45 turns → 3 blocks of 20/20/5 → 3 block calls + 1 merge call = 4 total
         turns = [{"role": "user", "content": f"msg {i}"} for i in range(45)]
         llm_calls = []
@@ -448,20 +393,16 @@ async def test_build_context_surfaces_anchor_when_diverged(tmp_path):
     ):
         from services.memory.context_manager import ContextBudget, ContextManager
 
-        store_data = {
-            "core:s1": "GOAL: build MCP bridge",
-            "summary:s1": "discussed unrelated weather topics today",
-            "anchor:s1": "project uses Gemma model with Redis streams for goals",
-        }
-        redis = AsyncMock()
-        redis.get = AsyncMock(side_effect=lambda k: store_data.get(k))
-
         store = await _make_local_store(tmp_path)  # no turns seeded
+        await store.session_kv_set("core", "s1", "GOAL: build MCP bridge")
+        await store.session_kv_set("summary", "s1", "discussed unrelated weather topics today")
+        await store.session_kv_set(
+            "anchor", "s1", "project uses Gemma model with Redis streams for goals"
+        )
 
         embed = AsyncMock(return_value=[[0.1]])
         budget = ContextBudget(max_tokens=4000, completion_reserve=100)
         cm = ContextManager(
-            redis=redis,
             mongo_db=MagicMock(),
             chroma_cols={},
             embedder=embed,
@@ -483,20 +424,20 @@ async def test_build_context_omits_anchor_when_contained_in_summary(tmp_path):
     ):
         from services.memory.context_manager import ContextBudget, ContextManager
 
-        store_data = {
-            "core:s1": "GOAL: build MCP bridge",
-            "summary:s1": "project uses Gemma model with Redis streams for goals and more detail",
-            "anchor:s1": "project uses Gemma model with Redis streams for goals",
-        }
-        redis = AsyncMock()
-        redis.get = AsyncMock(side_effect=lambda k: store_data.get(k))
-
         store = await _make_local_store(tmp_path)  # no turns seeded
+        await store.session_kv_set("core", "s1", "GOAL: build MCP bridge")
+        await store.session_kv_set(
+            "summary",
+            "s1",
+            "project uses Gemma model with Redis streams for goals and more detail",
+        )
+        await store.session_kv_set(
+            "anchor", "s1", "project uses Gemma model with Redis streams for goals"
+        )
 
         embed = AsyncMock(return_value=[[0.1]])
         budget = ContextBudget(max_tokens=4000, completion_reserve=100)
         cm = ContextManager(
-            redis=redis,
             mongo_db=MagicMock(),
             chroma_cols={},
             embedder=embed,
@@ -513,8 +454,6 @@ async def test_full_compact_emits_compact_quality_event(tmp_path):
     """full_compact emits compact.quality with ratio, counts, and tokens saved."""
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
         from services.memory.context_manager import ContextManager
-
-        redis, redis_store = _make_redis()
 
         store = await _make_local_store(tmp_path)
         for i in range(20):
@@ -533,7 +472,6 @@ async def test_full_compact_emits_compact_quality_event(tmp_path):
             captured[type] = fields
 
         cm = ContextManager(
-            redis=redis,
             mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
@@ -570,7 +508,6 @@ async def test_last_activity_seconds_reports_idle_time(tmp_path):
         await store.append_turn("s1", "user", "hi", created_at=old_iso)
 
         cm = ContextManager(
-            redis=AsyncMock(),
             mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
@@ -591,7 +528,6 @@ async def test_maybe_background_compact_skips_when_not_idle(tmp_path):
 
         llm = AsyncMock()
         cm = ContextManager(
-            redis=AsyncMock(),
             mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
@@ -615,7 +551,6 @@ async def test_maybe_background_compact_runs_when_idle_and_full():
         old_ts = _dt.datetime.now(_dt.UTC) - _dt.timedelta(seconds=1200)
 
         cm = ContextManager(
-            redis=AsyncMock(),
             mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
@@ -648,9 +583,7 @@ def test_anchor_diverges_heuristic_boundaries():
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
         from services.memory.context_manager import ContextManager
 
-        cm = ContextManager(
-            redis=AsyncMock(), mongo_db=MagicMock(), chroma_cols={}, embedder=AsyncMock()
-        )
+        cm = ContextManager(mongo_db=MagicMock(), chroma_cols={}, embedder=AsyncMock())
 
         # Build anchor with 10 distinct >3-char words
         anchor_words = [
@@ -691,28 +624,19 @@ async def test_conversation_context_returns_summary_and_recent_turns(tmp_path):
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
         from services.memory.context_manager import ContextManager
 
-        redis = AsyncMock()
-
-        def _redis_get(key):
-            if "summary:" in key:
-                return "Summary of first part of the conversation"
-            elif "anchor:" in key:
-                return "Founding fact about the task"
-            elif "summarized_through:" in key:
-                return "0"  # watermark: first turn is compacted
-            else:
-                return None
-
-        redis.get = AsyncMock(side_effect=_redis_get)
-
         store = await _make_local_store(tmp_path)
+        await store.session_kv_set("summary", "s1", "Summary of first part of the conversation")
+        await store.session_kv_set("anchor", "s1", "Founding fact about the task")
+        await store.session_kv_set(
+            "summarized_through", "s1", "0"
+        )  # watermark: first turn compacted
+
         # Recent turns (seq > watermark=0, so seq 1,2 are recent)
         await store.append_turn("s1", "user", "compacted already")  # seq 0
         await store.append_turn("s1", "user", "what is AI?")  # seq 1
         await store.append_turn("s1", "assistant", "AI is machine learning")  # seq 2
 
         cm = ContextManager(
-            redis=redis,
             mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
@@ -733,9 +657,7 @@ async def test_conversation_context_returns_empty_on_no_session():
     """conversation_context returns empty string when session_id is empty."""
     from services.memory.context_manager import ContextManager
 
-    redis = AsyncMock()
     cm = ContextManager(
-        redis=redis,
         mongo_db=MagicMock(),
         chroma_cols={},
         embedder=AsyncMock(),
@@ -750,14 +672,14 @@ async def test_conversation_context_returns_empty_on_failure():
     """conversation_context returns empty string on any exception (best-effort)."""
     from services.memory.context_manager import ContextManager
 
-    redis = AsyncMock()
-    redis.get = AsyncMock(side_effect=RuntimeError("Redis error"))
+    broken_store = MagicMock()
+    broken_store.session_kv_get = AsyncMock(side_effect=RuntimeError("local store error"))
 
     cm = ContextManager(
-        redis=redis,
         mongo_db=MagicMock(),
         chroma_cols={},
         embedder=AsyncMock(),
+        local_store=broken_store,
     )
 
     result = await cm.conversation_context("s1", budget=500)
@@ -771,16 +693,12 @@ async def test_conversation_context_does_not_call_hybrid_retrieve(tmp_path):
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
         from services.memory.context_manager import ContextManager
 
-        redis = AsyncMock()
-        redis.get = AsyncMock(return_value=None)
-
-        store = await _make_local_store(tmp_path)  # no turns seeded
+        store = await _make_local_store(tmp_path)  # no turns seeded, no kv seeded
 
         # Mock hybrid_retrieve so we can verify it's NOT called
         hybrid_retrieve_mock = AsyncMock(return_value=[])
 
         cm = ContextManager(
-            redis=redis,
             mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),

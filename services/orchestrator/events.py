@@ -1,30 +1,31 @@
 """
 Transport-agnostic agent event stream.
 
-The orchestrator publishes JSON events to a per-task Redis Stream
-`labmate:events:<task_id>`. Any client tails it with XREAD BLOCK (CLI directly;
-a future WebSocket gateway relays). Event shapes are a subset of
-FRONTEND_SPEC.md §4 StreamEvent.
+The orchestrator publishes JSON events to a per-task topic on the in-process
+EventBus (services/orchestrator/inproc_bus.py), topic name `events:<task_id>`.
+Any local consumer subscribes to that topic (CLI directly; the WebSocket
+gateway relays). Event shapes are a subset of FRONTEND_SPEC.md §4 StreamEvent.
 
 A task-scoped EventEmitter lives in the `current_emitter` ContextVar, set once
 per goal in main._handle, so deeply-nested emit sites (skill router, ReAct
 executor) call the module-level `emit()` without threading an emitter through
 every signature. No emitter set (e.g. unit tests) => emit is a no-op.
 
-CRITICAL: emission is best-effort. A Redis failure must never break a task, so
-every XADD is wrapped in try/except. Never write to stdout — log to stderr.
+CRITICAL: emission is best-effort. A publish failure must never break a task,
+so every publish is wrapped in try/except. Never write to stdout - log to
+stderr.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import time
 from contextvars import ContextVar
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import redis.asyncio as aioredis
+if TYPE_CHECKING:
+    from .inproc_bus import EventBus, SignalRegistry
 
 _log = logging.getLogger("events")
 
@@ -42,8 +43,7 @@ def clean_reasoning(text: str) -> str:
     return _THINK_TAG_RE.sub("", text).strip()
 
 
-EVENTS_STREAM_PREFIX = "labmate:events:"
-EVENTS_MAXLEN = 2000
+EVENTS_TOPIC_PREFIX = "events:"
 
 current_emitter: ContextVar[EventEmitter | None] = ContextVar("current_emitter", default=None)
 
@@ -98,10 +98,10 @@ def tool_event_display(tool_name: str, args: dict | None) -> tuple[str, str]:
 
 
 class EventEmitter:
-    """Publishes ordered task events to a per-task Redis Stream (best-effort)."""
+    """Publishes ordered task events to a per-task EventBus topic (best-effort)."""
 
-    def __init__(self, redis: aioredis.Redis, task_id: str) -> None:
-        self._redis = redis
+    def __init__(self, bus: EventBus, task_id: str) -> None:
+        self._bus = bus
         self._task_id = task_id
         self._seq = 0
 
@@ -115,12 +115,10 @@ class EventEmitter:
             **fields,
         }
         try:
-            await self._redis.xadd(
-                f"{EVENTS_STREAM_PREFIX}{self._task_id}",
-                {"event": json.dumps(evt, default=str)},
-                maxlen=EVENTS_MAXLEN,
-                approximate=True,
-            )
+            # publish() is a synchronous, non-blocking call on the in-process
+            # bus; emit() stays `async` so the many `await events.emit(...)`
+            # call sites throughout the codebase need no changes.
+            self._bus.publish(f"{EVENTS_TOPIC_PREFIX}{self._task_id}", evt)
         except Exception as exc:
             _log.warning("event emit failed (%s): %s", type, exc)
 
@@ -133,40 +131,32 @@ async def emit(type: str, **fields: Any) -> None:
     await em.emit(type, **fields)
 
 
-CANCEL_PREFIX = "labmate:cancel:"
-
-
-async def is_cancelled(redis: aioredis.Redis, task_id: str) -> bool:
-    """Check if a cancel signal has been written for this task (best-effort)."""
+async def is_cancelled(signals: SignalRegistry, task_id: str) -> bool:
+    """Check if a cancel signal has been requested for this task (best-effort)."""
     try:
-        return bool(await redis.exists(f"{CANCEL_PREFIX}{task_id}"))
+        return signals.is_cancelled(task_id)
     except Exception:
         return False
 
 
-STEER_PREFIX = "labmate:steer:"
-STEER_TTL = 300  # seconds — a stale steer self-expires if never drained
-
-
-async def write_steer(redis: aioredis.Redis, task_id: str, text: str) -> None:
+async def write_steer(signals: SignalRegistry, task_id: str, text: str) -> None:
     """Queue an out-of-band steer message for a running task (best-effort).
 
     Overwrites any pending-but-undrained steer (latest user instruction wins).
     """
     try:
-        await redis.set(f"{STEER_PREFIX}{task_id}", text, ex=STEER_TTL)
+        signals.write_steer(task_id, text)
     except Exception as exc:  # never let signalling break the caller
         _log.warning("write_steer failed for %s: %s", task_id, exc)
 
 
-async def read_and_clear_steer(redis: aioredis.Redis, task_id: str) -> str | None:
-    """Atomically read AND delete the pending steer for task_id (consume-once).
+async def read_and_clear_steer(signals: SignalRegistry, task_id: str) -> str | None:
+    """Atomically read AND clear the pending steer for task_id (consume-once).
 
-    Uses GETDEL so a steer is delivered to exactly one turn. Returns None when
-    no steer is pending or on any Redis error (best-effort).
+    Returns None when no steer is pending or on any registry error (best-effort).
     """
     try:
-        return await redis.getdel(f"{STEER_PREFIX}{task_id}")
+        return signals.read_and_clear_steer(task_id)
     except Exception as exc:
         _log.warning("read_and_clear_steer failed for %s: %s", task_id, exc)
         return None
@@ -181,3 +171,9 @@ def current_task_id() -> str | None:
     """
     em = current_emitter.get()
     return em._task_id if em is not None else None
+
+
+def current_bus() -> EventBus | None:
+    """The EventBus of the active task's emitter, or None (no active task)."""
+    em = current_emitter.get()
+    return em._bus if em is not None else None

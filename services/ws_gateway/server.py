@@ -1,28 +1,23 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import time as _time
 import uuid
 from datetime import UTC
+from typing import Any
 
-import redis.asyncio as aioredis
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
+from services.cli.local_tool_executor import LOCAL_TOOL_NAMES, execute_local_tool
+from services.orchestrator import local_tools
+from services.orchestrator.inproc_bus import Subscription
 from services.ws_gateway.auth import AuthService, build_auth_router
 from services.ws_gateway.boot import CheckFn, run_boot_sequence
 from services.ws_gateway.config import Config
-from services.ws_gateway.redis_bridge import (
-    push_task,
-    tail_task_events,
-    translate_event,
-    write_cancel,
-    write_steer,
-    write_tool_result,
-)
+from services.ws_gateway.event_translate import translate_event
 from services.ws_gateway.sessions import InMemorySessionStore, build_sessions_router
 from services.ws_gateway.user_store import MongoUserStore
 
@@ -37,18 +32,31 @@ def _now_iso() -> str:
 
 async def _relay_task(
     ws: WebSocket,
-    redis: aioredis.Redis,
+    sub: Subscription,
     task_id: str,
     turn_id: str,
     *,
     debug: bool = False,
     store=None,
     session_id: str = "",
+    runtime: Any = None,
+    workspace_root: str | None = None,
 ) -> None:
-    """Tail the orchestrator event stream for one task and relay StreamEvents.
+    """Relay one task's in-process event-bus subscription as StreamEvents.
+
+    `sub` must already be subscribed (via `runtime.bus.subscribe(f"events:{task_id}")`)
+    BEFORE the goal was submitted, so no early events (e.g. turn.start) are lost —
+    the bus is post-subscribe-only and does not replay history.
 
     Synthesizes reasoning.done from accumulated reasoning events before turn.done.
     Assembles and persists the complete assistant turn on turn.done (best-effort).
+
+    Co-located local `tool.request` fulfillment (Piece 4 T7c): when the gateway
+    runs in the same process as the orchestrator, LOCAL FS tools (read_file/
+    write_file/list_dir) are executed right here against the user's own
+    machine instead of being relayed to a WS client — the loop closes via
+    `local_tools.write_tool_result`, which `request_local_tool` is already
+    waiting on (it subscribed to `tool-results:<task_id>` before emitting).
     """
     reasoning_chunks: list[str] = []
     reasoning_node: str = "chat_node"
@@ -59,114 +67,140 @@ async def _relay_task(
     answer_chunks: list[str] = []
     tool_calls: dict[str, dict] = {}  # Keyed by tool_id for updates
 
-    async for raw in tail_task_events(redis, task_id, block_ms=200):
-        etype = raw.get("type")
+    try:
+        async for raw in sub:
+            etype = raw.get("type")
 
-        # Accumulate answer text deltas
-        if etype == "answer.delta":
-            answer_chunks.append(raw.get("text", ""))
+            # Co-located local tool.request fulfillment: LOCAL FS tools are
+            # executed right here (not relayed to the WS client) and the
+            # result is posted back on the bus, closing the loop with
+            # `request_local_tool`. Non-local (or client-declared) tools fall
+            # through to the normal relay path below, unchanged.
+            if etype == "tool.request" and runtime is not None:
+                name = raw.get("name")
+                if name in LOCAL_TOOL_NAMES:
+                    args = raw.get("args") or {}
+                    req_id = raw.get("tool_request_id")
+                    try:
+                        result = execute_local_tool(name, args, workspace=workspace_root or ".")
+                        await local_tools.write_tool_result(runtime.bus, task_id, req_id, result)
+                    except Exception as exc:  # noqa: BLE001 — surface as a tool.result error frame
+                        await local_tools.write_tool_result(
+                            runtime.bus, task_id, req_id, None, error=str(exc)
+                        )
+                    continue  # handled locally; do NOT relay tool.request to the WS
 
-        # Accumulate reasoning text for synthesis
-        if etype == "reasoning":
-            reasoning_chunks.append(raw.get("text", ""))
-            reasoning_node = raw.get("node", reasoning_node)
-            if reasoning_start is None:
-                reasoning_start = _time.time()
+            # Accumulate answer text deltas
+            if etype == "answer.delta":
+                answer_chunks.append(raw.get("text", ""))
 
-        # Track tool calls: start creates entry, done updates it
-        if etype == "tool.start":
-            tool_id = raw.get("tool_id", "")
-            tool_calls[tool_id] = {
-                "id": tool_id,
-                "name": raw.get("name", ""),
-                "args": raw.get("args", {}),
-                "result": None,
-                "status": "pending",
-            }
-        elif etype == "tool.done":
-            tool_id = raw.get("tool_id", "")
-            if tool_id in tool_calls:
-                tool_calls[tool_id]["result"] = raw.get("result")
-                tool_calls[tool_id]["status"] = raw.get("status", "done")
+            # Accumulate reasoning text for synthesis
+            if etype == "reasoning":
+                reasoning_chunks.append(raw.get("text", ""))
+                reasoning_node = raw.get("node", reasoning_node)
+                if reasoning_start is None:
+                    reasoning_start = _time.time()
 
-        # Synthesize reasoning.done before relaying turn.done
-        if etype == "turn.done" and reasoning_chunks:
-            full_text = "".join(reasoning_chunks)
-            duration_ms = int((_time.time() - (reasoning_start or _time.time())) * 1000)
-            first_line = next(
-                (ln.strip() for ln in full_text.splitlines() if ln.strip()),
-                full_text[:120],
-            )
-            reasoning_obj = {
-                "summary": first_line[:120],
-                "text": full_text,
-                "node": reasoning_node,
-                "tokens": len(full_text) // 4,
-                "budget": 0,
-                "durationMs": duration_ms,
-            }
-            await ws.send_json(
-                {
-                    "type": "reasoning.done",
-                    "turnId": turn_id,
-                    "reasoning": reasoning_obj,
-                }
-            )
-            reasoning_chunks = []
-
-        # Emit tool.frame when debug mode is active
-        if debug and etype in ("tool.start", "tool.done"):
-            tool_id = raw.get("tool_id", "")
+            # Track tool calls: start creates entry, done updates it
             if etype == "tool.start":
-                frame_payload = {"name": raw.get("name", ""), "args": raw.get("args", {})}
-                frame_dir = "out"
-            else:
-                frame_payload = {"result": raw.get("result"), "status": raw.get("status", "done")}
-                frame_dir = "in"
-            await ws.send_json(
-                {
-                    "type": "tool.frame",
-                    "turnId": turn_id,
-                    "toolId": tool_id,
-                    "frame": {
-                        "dir": frame_dir,
-                        "method": "tools/call",
-                        "payload": frame_payload,
-                        "ts": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
-                    },
+                tool_id = raw.get("tool_id", "")
+                tool_calls[tool_id] = {
+                    "id": tool_id,
+                    "name": raw.get("name", ""),
+                    "args": raw.get("args", {}),
+                    "result": None,
+                    "status": "pending",
                 }
-            )
+            elif etype == "tool.done":
+                tool_id = raw.get("tool_id", "")
+                if tool_id in tool_calls:
+                    tool_calls[tool_id]["result"] = raw.get("result")
+                    tool_calls[tool_id]["status"] = raw.get("status", "done")
 
-        framed = translate_event(raw, turn_id=turn_id)
-        if framed is not None:
-            await ws.send_json(framed)
-
-        # On turn.done, assemble and persist the complete assistant turn (best-effort)
-        if etype == "turn.done":
-            if session_id and store is not None:
-                # Prefer final_answer from the event; fall back to concatenated deltas
-                final_answer = raw.get("final_answer")
-                text = final_answer if final_answer else "".join(answer_chunks)
-
-                # Build the turn document
-                assistant_turn = {
-                    "id": turn_id,
-                    "sessionId": session_id,
-                    "role": "assistant",
-                    "text": text,
-                    "reasoning": reasoning_obj,
-                    "toolCalls": list(tool_calls.values()),
-                    "createdAt": _now_iso(),
-                    "status": raw.get("status", "complete"),
+            # Synthesize reasoning.done before relaying turn.done
+            if etype == "turn.done" and reasoning_chunks:
+                full_text = "".join(reasoning_chunks)
+                duration_ms = int((_time.time() - (reasoning_start or _time.time())) * 1000)
+                first_line = next(
+                    (ln.strip() for ln in full_text.splitlines() if ln.strip()),
+                    full_text[:120],
+                )
+                reasoning_obj = {
+                    "summary": first_line[:120],
+                    "text": full_text,
+                    "node": reasoning_node,
+                    "tokens": len(full_text) // 4,
+                    "budget": 0,
+                    "durationMs": duration_ms,
                 }
+                await ws.send_json(
+                    {
+                        "type": "reasoning.done",
+                        "turnId": turn_id,
+                        "reasoning": reasoning_obj,
+                    }
+                )
+                reasoning_chunks = []
 
-                # Persist best-effort: log on failure, do not propagate
-                try:
-                    await store.add_turn(session_id, assistant_turn)
-                except Exception as e:
-                    logger.warning(
-                        "Failed to persist assistant turn for session %s: %s", session_id, e
-                    )
+            # Emit tool.frame when debug mode is active
+            if debug and etype in ("tool.start", "tool.done"):
+                tool_id = raw.get("tool_id", "")
+                if etype == "tool.start":
+                    frame_payload = {"name": raw.get("name", ""), "args": raw.get("args", {})}
+                    frame_dir = "out"
+                else:
+                    frame_payload = {
+                        "result": raw.get("result"),
+                        "status": raw.get("status", "done"),
+                    }
+                    frame_dir = "in"
+                await ws.send_json(
+                    {
+                        "type": "tool.frame",
+                        "turnId": turn_id,
+                        "toolId": tool_id,
+                        "frame": {
+                            "dir": frame_dir,
+                            "method": "tools/call",
+                            "payload": frame_payload,
+                            "ts": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+                        },
+                    }
+                )
+
+            framed = translate_event(raw, turn_id=turn_id)
+            if framed is not None:
+                await ws.send_json(framed)
+
+            # On turn.done, assemble and persist the complete assistant turn (best-effort)
+            if etype == "turn.done":
+                if session_id and store is not None:
+                    # Prefer final_answer from the event; fall back to concatenated deltas
+                    final_answer = raw.get("final_answer")
+                    text = final_answer if final_answer else "".join(answer_chunks)
+
+                    # Build the turn document
+                    assistant_turn = {
+                        "id": turn_id,
+                        "sessionId": session_id,
+                        "role": "assistant",
+                        "text": text,
+                        "reasoning": reasoning_obj,
+                        "toolCalls": list(tool_calls.values()),
+                        "createdAt": _now_iso(),
+                        "status": raw.get("status", "complete"),
+                    }
+
+                    # Persist best-effort: log on failure, do not propagate
+                    try:
+                        await store.add_turn(session_id, assistant_turn)
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to persist assistant turn for session %s: %s", session_id, e
+                        )
+                break
+    finally:
+        sub.close()
 
 
 def _default_session_store(config: Config):
@@ -209,7 +243,7 @@ def _title_from_message(text: str, max_len: int = 48) -> str:
 
 async def _handle_send(
     ws: WebSocket,
-    redis: aioredis.Redis,
+    runtime: Any,
     msg: dict,
     *,
     store: InMemorySessionStore,
@@ -260,23 +294,32 @@ async def _handle_send(
     }
     await ws.send_json({"type": "turn.created", "turn": assistant_turn})
 
-    await push_task(
-        redis,
-        task_id,
-        task=text,
-        session_id=session_id,
-        client_capabilities=client_capabilities,
-        workspace_root=msg.get("workspaceRoot", ""),
+    workspace_root = msg.get("workspaceRoot", "")
+
+    # Pre-subscribe BEFORE submitting the goal: the EventBus is post-subscribe-only
+    # (no replay), so subscribing after submit_goal risks losing early events like
+    # turn.start if the orchestrator's goal loop runs before we get to subscribe.
+    sub = runtime.bus.subscribe(f"events:{task_id}")
+    await runtime.submit_goal(
+        {
+            "task_id": task_id,
+            "task": text,
+            "session_id": session_id,
+            "client_capabilities": client_capabilities,
+            "workspace_root": workspace_root,
+        }
     )
     relay = asyncio.create_task(
         _relay_task(
             ws,
-            redis,
+            sub,
             task_id,
             assistant_turn_id,
             debug=debug,
             store=store,
             session_id=session_id,
+            runtime=runtime,
+            workspace_root=workspace_root,
         )
     )
     return task_id, relay
@@ -285,7 +328,7 @@ async def _handle_send(
 async def _ws_loop(
     ws: WebSocket,
     auth: AuthService,
-    redis: aioredis.Redis,
+    runtime: Any,
     boot_checks: dict[str, CheckFn],
     store: InMemorySessionStore,
 ) -> None:
@@ -340,7 +383,7 @@ async def _ws_loop(
             )
             active_task_id, relay = await _handle_send(
                 ws,
-                redis,
+                runtime,
                 msg,
                 store=store,
                 active_session_id=active_session_id,
@@ -349,8 +392,8 @@ async def _ws_loop(
             )
         elif mtype == "tool.result":
             if active_task_id is not None:
-                await write_tool_result(
-                    redis,
+                await local_tools.write_tool_result(
+                    runtime.bus,
                     active_task_id,
                     msg.get("toolRequestId", ""),
                     msg.get("result"),
@@ -361,9 +404,9 @@ async def _ws_loop(
             # Stop the relay task so no more events flow to the client
             if relay is not None and not relay.done():
                 relay.cancel()
-            # Write Redis cancel flag so the orchestrator can detect cancellation
+            # Signal cancellation so the orchestrator can detect it
             if active_task_id is not None:
-                await write_cancel(redis, active_task_id)
+                runtime.signals.request_cancel(active_task_id)
             await ws.send_json(
                 {"type": "turn.done", "turnId": turn_id_to_cancel, "status": "error"}
             )
@@ -376,7 +419,7 @@ async def _ws_loop(
             # keeps streaming, the turn is NOT cancelled.
             steer_text = msg.get("text", "")
             if active_task_id is not None and steer_text:
-                await write_steer(redis, active_task_id, steer_text)
+                runtime.signals.write_steer(active_task_id, steer_text)
             await ws.send_json({"type": "steer.ack", "taskId": active_task_id or ""})
         elif mtype == "session.new":
             mode = msg.get("mode", "chat")
@@ -416,40 +459,23 @@ async def _ws_loop(
                 await ws.send_json({"type": "compact.done", "ok": False, "error": "no_session"})
                 continue
             task_id = "compact-" + uuid.uuid4().hex[:12]
-            result_key = f"labmate:result:{task_id}"
 
-            # Subscribe BEFORE pushing to goals so we never miss the PUBLISH
-            pubsub = redis.pubsub()
-            await pubsub.subscribe(result_key)
+            # The orchestrator's _handle special-cases kind=="compact" and
+            # resolves it via self.results.set_result(task_id, ...) directly
+            # (no event-stream relay for this kind), so just submit + wait.
+            await runtime.submit_goal(
+                {
+                    "task_id": task_id,
+                    "kind": "compact",
+                    "session_id": active_session_id,
+                    "user_id": claims["sub"],
+                    "workspace_id": "",
+                }
+            )
             try:
-                await redis.xadd(
-                    "labmate:goals",
-                    {
-                        "payload": json.dumps(
-                            {
-                                "task_id": task_id,
-                                "kind": "compact",
-                                "session_id": active_session_id,
-                                "user_id": claims["sub"],
-                                "workspace_id": "",
-                            }
-                        ),
-                    },
-                )
-
-                async def _await_result(pubsub=pubsub, result_key=result_key) -> dict | None:
-                    async for pmsg in pubsub.listen():
-                        if pmsg["type"] == "message":
-                            raw = await redis.get(result_key)
-                            return json.loads(raw) if raw else None
-                    return None
-
-                try:
-                    result_dict = await asyncio.wait_for(_await_result(), timeout=60.0)
-                except TimeoutError:
-                    result_dict = None
-            finally:
-                await pubsub.aclose()
+                result_dict = await runtime.results.wait_result(task_id, timeout=60.0)
+            except TimeoutError:
+                result_dict = None
 
             if result_dict:
                 await ws.send_json({"type": "compact.done", **result_dict})
@@ -462,7 +488,7 @@ async def _ws_loop(
 def build_app(
     config: Config,
     *,
-    redis: aioredis.Redis | None = None,
+    runtime: Any,
     boot_checks: dict[str, CheckFn] | None = None,
     session_store: InMemorySessionStore | None = None,
     user_store=None,
@@ -480,9 +506,8 @@ def build_app(
     user_store = user_store or MongoUserStore(config.mongo_url)
     auth = AuthService(config, user_store)
     store = session_store or _default_session_store(config)
-    r = redis or aioredis.from_url(config.redis_url, decode_responses=True)
 
-    # default boot checks bind the live redis; brain check needs an http_get
+    # default boot checks; brain check needs an http_get
     if boot_checks is None:
         from services.ws_gateway import boot as boot_mod
 
@@ -498,12 +523,12 @@ def build_app(
             "brain": lambda: boot_mod.check_brain(http_get=_http_get),
             "nervous_system": lambda: boot_mod.check_nervous_system(mcp_ready=True),
             "hands": lambda: boot_mod.check_hands(),
-            "memory": lambda: boot_mod.check_memory(redis=r),
+            "memory": lambda: boot_mod.check_memory(),
             "workspace": lambda: boot_mod.check_workspace(),
         }
 
     app.state.auth = auth
-    app.state.redis = r
+    app.state.runtime = runtime
     app.state.store = store
 
     @app.on_event("startup")
@@ -527,7 +552,7 @@ def build_app(
     async def ws_endpoint(ws: WebSocket) -> None:
         await ws.accept()
         try:
-            await _ws_loop(ws, auth, r, boot_checks, store)
+            await _ws_loop(ws, auth, runtime, boot_checks, store)
         except WebSocketDisconnect:
             return
 
@@ -535,8 +560,13 @@ def build_app(
 
 
 def create_app() -> FastAPI:
-    """uvicorn entrypoint: `uvicorn services.ws_gateway.server:create_app --factory`."""
-    return build_app(Config.from_env())
+    """Not a standalone entrypoint. The gateway is co-located with the orchestrator
+    and needs the shared in-process runtime; run the single-process local harness:
+    ``python -m services.local.main`` (which calls ``build_app(config, runtime=proc)``)."""
+    raise NotImplementedError(
+        "The gateway is co-located: run `python -m services.local.main` (it builds the "
+        "app via build_app(config, runtime=OrchestratorProcess())). build_app needs a runtime."
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover

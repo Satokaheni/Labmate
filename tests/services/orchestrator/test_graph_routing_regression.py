@@ -51,7 +51,7 @@ def test_skill_router_runner_property_is_accessible():
 
     skill_router = SkillRouter(
         runner=runner,
-        redis=AsyncMock(),
+        registry=AsyncMock(),
         gemma_api_base="http://localhost:8000/v1",
     )
 

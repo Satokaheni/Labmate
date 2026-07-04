@@ -185,29 +185,8 @@ else
   info "MCP bridge already built (dist/index.js up to date)"
 fi
 
-# ─── Skill worker ─────────────────────────────────────────────────────────────
-_skill_worker_alive() {
-  [[ -f "$PIDS/skill-worker.pid" ]] && kill -0 "$(cat "$PIDS/skill-worker.pid")" 2>/dev/null
-}
-if _skill_worker_alive; then
-  info "skill-worker already running (pid $(cat "$PIDS/skill-worker.pid"))"
-else
-  info "starting skill-worker ..."
-  (
-    source "${SCRIPT_DIR}/local.env"
-    export PYTHONPATH="${REPO_ROOT}"
-    nohup python -m services.skill_worker.worker \
-      >"$LOGS/skill-worker.log" 2>&1 &
-    echo $! >"$PIDS/skill-worker.pid"
-  )
-fi
-# Brief readiness check: the worker logs "skill-worker ready" after connecting Redis.
-for i in $(seq 1 15); do
-  _skill_worker_alive && grep -q "skill-worker ready\|SkillWorker ready\|ready" "$LOGS/skill-worker.log" 2>/dev/null && break
-  _skill_worker_alive || { fail "skill-worker exited — see $LOGS/skill-worker.log"; }
-  sleep 1
-done
-pass "Skill worker running (pid $(cat "$PIDS/skill-worker.pid"))"
+# Skill dispatch runs in-process inside the orchestrator (SkillRegistry, Piece 4) —
+# no standalone skill-worker process to start.
 
 # ─── Orchestrator ─────────────────────────────────────────────────────────────
 _orchestrator_alive() {

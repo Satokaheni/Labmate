@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from services.orchestrator.inproc_bus import EventBus
 from services.ws_gateway.server import _relay_task
 
 
@@ -28,10 +29,18 @@ def fake_store():
     return store
 
 
-async def fake_tail_task_events(events_list):
-    """Async generator that yields events from a list."""
-    for event in events_list:
-        yield event
+def _seed_and_subscribe(task_id: str, events: list[dict]):
+    """Subscribe to the events topic, publish the canned events, return the sub.
+
+    Mirrors production ordering (subscribe-before-publish isn't required here
+    since publish is synchronous and happens before `_relay_task` starts
+    iterating, but matches how the real bus is used: subscribe first).
+    """
+    bus = EventBus()
+    sub = bus.subscribe(f"events:{task_id}")
+    for ev in events:
+        bus.publish(f"events:{task_id}", ev)
+    return sub
 
 
 @pytest.mark.asyncio
@@ -98,26 +107,18 @@ async def test_relay_persist_complete_turn(fake_ws, fake_store):
         },
     ]
 
-    # Mock tail_task_events to return our events
-    import services.ws_gateway.server as server_module
+    sub = _seed_and_subscribe(task_id, events)
 
-    original_tail = server_module.tail_task_events
-    server_module.tail_task_events = lambda redis, task_id, **kw: fake_tail_task_events(events)
-
-    try:
-        # Call _relay_task with store and session_id threaded in
-        await _relay_task(
-            fake_ws,
-            AsyncMock(),  # redis (not used in this test)
-            task_id,
-            assistant_turn_id,
-            store=fake_store,
-            session_id=session_id,
-            debug=False,
-        )
-    finally:
-        # Restore original
-        server_module.tail_task_events = original_tail
+    # Call _relay_task with store and session_id threaded in
+    await _relay_task(
+        fake_ws,
+        sub,
+        task_id,
+        assistant_turn_id,
+        store=fake_store,
+        session_id=session_id,
+        debug=False,
+    )
 
     # Verify store.add_turn was called exactly once
     assert fake_store.add_turn.call_count == 1
@@ -174,24 +175,18 @@ async def test_relay_persist_no_session_id_skips_store(fake_ws, fake_store):
         },
     ]
 
-    import services.ws_gateway.server as server_module
+    sub = _seed_and_subscribe(task_id, events)
 
-    original_tail = server_module.tail_task_events
-    server_module.tail_task_events = lambda redis, task_id, **kw: fake_tail_task_events(events)
-
-    try:
-        # Call with empty session_id
-        await _relay_task(
-            fake_ws,
-            AsyncMock(),
-            task_id,
-            assistant_turn_id,
-            store=fake_store,
-            session_id="",  # Empty session_id
-            debug=False,
-        )
-    finally:
-        server_module.tail_task_events = original_tail
+    # Call with empty session_id
+    await _relay_task(
+        fake_ws,
+        sub,
+        task_id,
+        assistant_turn_id,
+        store=fake_store,
+        session_id="",  # Empty session_id
+        debug=False,
+    )
 
     # Verify store.add_turn was NOT called
     assert fake_store.add_turn.call_count == 0
@@ -218,24 +213,18 @@ async def test_relay_persist_store_error_does_not_propagate(fake_ws, fake_store)
     # Make store.add_turn raise an exception
     fake_store.add_turn = AsyncMock(side_effect=RuntimeError("Mongo is down"))
 
-    import services.ws_gateway.server as server_module
+    sub = _seed_and_subscribe(task_id, events)
 
-    original_tail = server_module.tail_task_events
-    server_module.tail_task_events = lambda redis, task_id, **kw: fake_tail_task_events(events)
-
-    try:
-        # Should NOT raise, despite store.add_turn failing
-        await _relay_task(
-            fake_ws,
-            AsyncMock(),
-            task_id,
-            assistant_turn_id,
-            store=fake_store,
-            session_id=session_id,
-            debug=False,
-        )
-    finally:
-        server_module.tail_task_events = original_tail
+    # Should NOT raise, despite store.add_turn failing
+    await _relay_task(
+        fake_ws,
+        sub,
+        task_id,
+        assistant_turn_id,
+        store=fake_store,
+        session_id=session_id,
+        debug=False,
+    )
 
     # Verify the relay still sent frames (client gets the turn.done)
     assert fake_ws.send_json.call_count >= 1
@@ -260,23 +249,17 @@ async def test_relay_persist_uses_final_answer_if_present(fake_ws, fake_store):
         },
     ]
 
-    import services.ws_gateway.server as server_module
+    sub = _seed_and_subscribe(task_id, events)
 
-    original_tail = server_module.tail_task_events
-    server_module.tail_task_events = lambda redis, task_id, **kw: fake_tail_task_events(events)
-
-    try:
-        await _relay_task(
-            fake_ws,
-            AsyncMock(),
-            task_id,
-            assistant_turn_id,
-            store=fake_store,
-            session_id=session_id,
-            debug=False,
-        )
-    finally:
-        server_module.tail_task_events = original_tail
+    await _relay_task(
+        fake_ws,
+        sub,
+        task_id,
+        assistant_turn_id,
+        store=fake_store,
+        session_id=session_id,
+        debug=False,
+    )
 
     # Verify the turn text is the final_answer, not the concatenated deltas
     turn = fake_store.add_turn.call_args[0][1]
@@ -301,23 +284,17 @@ async def test_relay_persist_fallback_to_deltas_if_no_final_answer(fake_ws, fake
         },  # No final_answer
     ]
 
-    import services.ws_gateway.server as server_module
+    sub = _seed_and_subscribe(task_id, events)
 
-    original_tail = server_module.tail_task_events
-    server_module.tail_task_events = lambda redis, task_id, **kw: fake_tail_task_events(events)
-
-    try:
-        await _relay_task(
-            fake_ws,
-            AsyncMock(),
-            task_id,
-            assistant_turn_id,
-            store=fake_store,
-            session_id=session_id,
-            debug=False,
-        )
-    finally:
-        server_module.tail_task_events = original_tail
+    await _relay_task(
+        fake_ws,
+        sub,
+        task_id,
+        assistant_turn_id,
+        store=fake_store,
+        session_id=session_id,
+        debug=False,
+    )
 
     # Verify the turn text is the concatenated deltas
     turn = fake_store.add_turn.call_args[0][1]
@@ -342,23 +319,17 @@ async def test_relay_persist_error_status(fake_ws, fake_store):
         },
     ]
 
-    import services.ws_gateway.server as server_module
+    sub = _seed_and_subscribe(task_id, events)
 
-    original_tail = server_module.tail_task_events
-    server_module.tail_task_events = lambda redis, task_id, **kw: fake_tail_task_events(events)
-
-    try:
-        await _relay_task(
-            fake_ws,
-            AsyncMock(),
-            task_id,
-            assistant_turn_id,
-            store=fake_store,
-            session_id=session_id,
-            debug=False,
-        )
-    finally:
-        server_module.tail_task_events = original_tail
+    await _relay_task(
+        fake_ws,
+        sub,
+        task_id,
+        assistant_turn_id,
+        store=fake_store,
+        session_id=session_id,
+        debug=False,
+    )
 
     # Verify status is recorded
     turn = fake_store.add_turn.call_args[0][1]
@@ -383,23 +354,17 @@ async def test_relay_persist_no_reasoning_none(fake_ws, fake_store):
         },
     ]
 
-    import services.ws_gateway.server as server_module
+    sub = _seed_and_subscribe(task_id, events)
 
-    original_tail = server_module.tail_task_events
-    server_module.tail_task_events = lambda redis, task_id, **kw: fake_tail_task_events(events)
-
-    try:
-        await _relay_task(
-            fake_ws,
-            AsyncMock(),
-            task_id,
-            assistant_turn_id,
-            store=fake_store,
-            session_id=session_id,
-            debug=False,
-        )
-    finally:
-        server_module.tail_task_events = original_tail
+    await _relay_task(
+        fake_ws,
+        sub,
+        task_id,
+        assistant_turn_id,
+        store=fake_store,
+        session_id=session_id,
+        debug=False,
+    )
 
     # Verify reasoning is None when no reasoning events were present
     turn = fake_store.add_turn.call_args[0][1]

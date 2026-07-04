@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -110,25 +109,31 @@ async def test_tool_intercepting_stream_calls_send_result_callback(tmp_path: Pat
         {"type": "turn.done", "status": "complete", "seq": 2},
     ]
 
-    async def _fake_gen(evs):
-        for e in evs:
-            yield e
+    from services.cli.event_stream import _ToolInterceptingStream
 
-    from services.cli.event_stream import EventStream, _ToolInterceptingStream
+    class _FakeStream:
+        """Minimal duck-typed stream: _ToolInterceptingStream only needs .events()."""
+
+        def __init__(self, evs):
+            self._evs = evs
+
+        async def events(self):
+            for e in self._evs:
+                yield e
+
+        async def aclose(self) -> None:
+            pass
 
     calls: list[tuple] = []
 
     async def fake_send_result(tool_request_id, result, error):
         calls.append((tool_request_id, result, error))
 
-    with patch("services.cli.redis_event_stream.tail_events", return_value=_fake_gen(events_list)):
-        stream = EventStream("redis://x", "t-x")
-        _ = await stream.first(timeout=1.0)
-
-        interceptor = _ToolInterceptingStream(stream, fake_send_result, str(tmp_path))
-        seen = []
-        async for ev in interceptor.events():
-            seen.append(ev["type"])
+    stream = _FakeStream(events_list)
+    interceptor = _ToolInterceptingStream(stream, fake_send_result, str(tmp_path))
+    seen = []
+    async for ev in interceptor.events():
+        seen.append(ev["type"])
 
     assert seen == ["turn.start", "tool.request", "turn.done"]
     assert len(calls) == 1

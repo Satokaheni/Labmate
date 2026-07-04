@@ -1,9 +1,9 @@
-import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
 from services.orchestrator import events
+from services.orchestrator.inproc_bus import EventBus
 
 
 def test_extract_reasoning_returns_reasoning_content():
@@ -25,28 +25,32 @@ def test_reasoning_summary_first_line_truncated():
     assert len(events.reasoning_summary("x" * 500)) == 120
 
 
+async def _drain_one(sub, timeout: float = 1.0):
+    import asyncio
+
+    return await asyncio.wait_for(sub.__anext__(), timeout=timeout)
+
+
 @pytest.mark.asyncio
-async def test_emitter_xadds_event_with_envelope():
-    r = MagicMock()
-    r.xadd = AsyncMock()
-    em = events.EventEmitter(r, "task-123")
+async def test_emitter_publishes_event_with_envelope():
+    bus = EventBus()
+    sub = bus.subscribe("events:task-123")
+    em = events.EventEmitter(bus, "task-123")
     await em.emit("tool.start", name="pdf-parse", kind="skill")
-    assert r.xadd.await_count == 1
-    stream, fields = r.xadd.await_args.args[0], r.xadd.await_args.args[1]
-    assert stream == "labmate:events:task-123"
-    evt = json.loads(fields["event"])
+    evt = await _drain_one(sub)
     assert evt["type"] == "tool.start"
     assert evt["task_id"] == "task-123"
     assert evt["seq"] == 1
     assert evt["name"] == "pdf-parse" and evt["kind"] == "skill"
     assert "ts" in evt
+    sub.close()
 
 
 @pytest.mark.asyncio
 async def test_emitter_seq_increments_and_failure_is_swallowed():
-    r = MagicMock()
-    r.xadd = AsyncMock(side_effect=[None, RuntimeError("redis down")])
-    em = events.EventEmitter(r, "t")
+    bus = MagicMock()
+    bus.publish = MagicMock(side_effect=[None, RuntimeError("bus down")])
+    em = events.EventEmitter(bus, "t")
     await em.emit("turn.start")
     await em.emit("turn.done")  # must NOT raise
     assert em._seq == 2
@@ -60,39 +64,32 @@ async def test_module_emit_is_noop_without_contextvar():
 
 @pytest.mark.asyncio
 async def test_module_emit_uses_contextvar_emitter():
-    r = MagicMock()
-    r.xadd = AsyncMock()
-    em = events.EventEmitter(r, "ctx-task")
+    bus = EventBus()
+    sub = bus.subscribe("events:ctx-task")
+    em = events.EventEmitter(bus, "ctx-task")
     token = events.current_emitter.set(em)
     try:
         await events.emit("reasoning", node="route", text="why")
     finally:
         events.current_emitter.reset(token)
-    assert r.xadd.await_count == 1
+    evt = await _drain_one(sub)
+    assert evt["type"] == "reasoning"
+    sub.close()
 
 
 @pytest.mark.asyncio
 async def test_handle_emits_agent_status_active_and_idle():
     """_handle must emit agent_status active before run_task and idle in finally."""
-    import json
     from unittest.mock import AsyncMock, MagicMock
-
-    import fakeredis.aioredis
 
     from services.orchestrator.main import OrchestratorProcess
 
-    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-
-    fields = {
-        "payload": json.dumps(
-            {
-                "task_id": "t-agent-status",
-                "task": "hello",
-                "session_id": "s-1",
-                "user_id": "",
-                "workspace_id": "",
-            }
-        )
+    payload = {
+        "task_id": "t-agent-status",
+        "task": "hello",
+        "session_id": "s-1",
+        "user_id": "",
+        "workspace_id": "",
     }
 
     mock_orch = MagicMock()
@@ -106,19 +103,25 @@ async def test_handle_emits_agent_status_active_and_idle():
     mock_storage.workspaces.complete_session = AsyncMock()
 
     proc = OrchestratorProcess()
-    proc._redis = r
+    sub = proc.bus.subscribe("events:t-agent-status")
 
-    await proc._handle("msg-1", fields, mock_orch, mock_storage)
+    await proc._handle(payload, mock_orch, mock_storage)
 
-    entries = await r.xrange("labmate:events:t-agent-status")
-    event_types = [json.loads(f["event"])["type"] for _, f in entries]
+    import asyncio
+
+    event_types = []
+    agent_status_events = []
+    while True:
+        try:
+            evt = await asyncio.wait_for(sub.__anext__(), timeout=0.2)
+        except TimeoutError:
+            break
+        event_types.append(evt["type"])
+        if evt["type"] == "agent_status":
+            agent_status_events.append(evt)
+    sub.close()
+
     assert "agent_status" in event_types
-
-    agent_status_events = [
-        json.loads(f["event"])
-        for _, f in entries
-        if json.loads(f["event"]).get("type") == "agent_status"
-    ]
     states = [e["status"]["brain"]["state"] for e in agent_status_events]
     assert "active" in states
     assert "idle" in states
@@ -126,23 +129,21 @@ async def test_handle_emits_agent_status_active_and_idle():
 
 @pytest.mark.asyncio
 async def test_is_cancelled_returns_true_when_flag_set():
-    import fakeredis.aioredis
-
     from services.orchestrator.events import is_cancelled
+    from services.orchestrator.inproc_bus import SignalRegistry
 
-    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-    await r.set("labmate:cancel:task-x", "1", ex=60)
-    assert await is_cancelled(r, "task-x") is True
+    signals = SignalRegistry()
+    signals.request_cancel("task-x")
+    assert await is_cancelled(signals, "task-x") is True
 
 
 @pytest.mark.asyncio
 async def test_is_cancelled_returns_false_when_no_flag():
-    import fakeredis.aioredis
-
     from services.orchestrator.events import is_cancelled
+    from services.orchestrator.inproc_bus import SignalRegistry
 
-    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-    assert await is_cancelled(r, "task-y") is False
+    signals = SignalRegistry()
+    assert await is_cancelled(signals, "task-y") is False
 
 
 def test_tool_event_display_load_skill_shows_loaded_skill_name():

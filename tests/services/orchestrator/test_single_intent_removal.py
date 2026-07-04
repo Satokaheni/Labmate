@@ -17,6 +17,7 @@ These tests (NEW file) pin the invariants the removal must preserve:
 
 All mocked (no GPU / no services).
 """
+
 from __future__ import annotations
 
 import inspect
@@ -33,10 +34,9 @@ def _make_router():
     runner.catalog = {"dataset-search": "find datasets"}
     runner.catalog_prompt.return_value = "CATALOG"
     runner.tool_schema.return_value = {"type": "function", "function": {"name": "load_skill"}}
-    redis = MagicMock()
-    redis.xadd = AsyncMock()
-    redis.get = AsyncMock(return_value=None)
-    return SkillRouter(runner, redis, "http://test/v1")
+    registry = MagicMock()
+    registry.call_tool = AsyncMock(return_value=None)
+    return SkillRouter(runner, registry, "http://test/v1")
 
 
 # ── route() single-intent invariants ───────────────────────────────────────
@@ -59,9 +59,7 @@ async def test_route_confident_skill_returns_one_intent_result(monkeypatch):
 @pytest.mark.asyncio
 async def test_route_no_skill_returns_empty_no_clarification(monkeypatch):
     router = _make_router()
-    monkeypatch.setattr(
-        router, "_confidence_check", AsyncMock(return_value=(None, 0.0))
-    )
+    monkeypatch.setattr(router, "_confidence_check", AsyncMock(return_value=(None, 0.0)))
     result = await router.route("What is 2+2?")
     assert result.skills == []
     assert result.needs_clarification is False
@@ -113,10 +111,16 @@ def _plan_state(desc: str = "do a thing") -> dict:
         "session_id": "s1",
         "goal_tree": {
             "root": {
-                "id": "root", "parent_id": None, "children": [],
+                "id": "root",
+                "parent_id": None,
+                "children": [],
                 "description": desc,
-                "status": "PENDING", "result": None, "error": None,
-                "attempts": 0, "started_at": None, "updated_at": None,
+                "status": "PENDING",
+                "result": None,
+                "error": None,
+                "attempts": 0,
+                "started_at": None,
+                "updated_at": None,
             }
         },
         "current_goal_id": "root",
@@ -125,6 +129,7 @@ def _plan_state(desc: str = "do a thing") -> dict:
 
 def _make_orch(architect_return="ANSWER"):
     from services.orchestrator.coding_orchestrator import CodingOrchestrator
+
     orch = MagicMock(spec=CodingOrchestrator)
     orch.architect = AsyncMock(return_value=architect_return)
     return orch
@@ -132,6 +137,7 @@ def _make_orch(architect_return="ANSWER"):
 
 def _make_async_orch():
     from services.orchestrator.coding_orchestrator import AsyncOrchestrator
+
     return MagicMock(spec=AsyncOrchestrator)
 
 
@@ -207,8 +213,14 @@ def test_make_nodes_returns_seven_nodes_in_order():
     assert len(nodes) == 8
     names = [n.__name__ for n in nodes]
     assert names == [
-        "plan", "execute_node", "check", "reflect",
-        "approval", "assess_ambiguity", "verify", "revise",
+        "plan",
+        "execute_node",
+        "check",
+        "reflect",
+        "approval",
+        "assess_ambiguity",
+        "verify",
+        "revise",
     ]
 
 
@@ -263,6 +275,7 @@ def test_no_dead_references_in_orchestrator_source():
     """The orchestrator package must not REFERENCE the removed symbols in code
     (comments / docstrings explaining the removal are allowed)."""
     import re
+
     import services.orchestrator as pkg
 
     pkg_dir = Path(pkg.__file__).resolve().parent
@@ -270,10 +283,10 @@ def test_no_dead_references_in_orchestrator_source():
     # the removal don't false-positive. These match how the symbols would actually be
     # USED in code.
     forbidden = [
-        r"\bROUTING_MODE\b",            # the removed module constant (any code use)
-        r"\.decompose\(",              # method call
-        r"_generate_clarification",     # removed method (any reference)
-        r"routing_mode\s*[:=]",        # routing_mode= kwarg / param / dict key assign
+        r"\bROUTING_MODE\b",  # the removed module constant (any code use)
+        r"\.decompose\(",  # method call
+        r"_generate_clarification",  # removed method (any reference)
+        r"routing_mode\s*[:=]",  # routing_mode= kwarg / param / dict key assign
         r"""\[['"]routing_mode['"]\]""",  # state["routing_mode"]
         r"""\.get\(\s*['"]routing_mode['"]""",  # state.get("routing_mode")
     ]

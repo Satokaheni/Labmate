@@ -6,7 +6,6 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Config:
-    redis_url: str
     jwt_secret: str
     admin_email: str
     admin_password: str
@@ -15,10 +14,9 @@ class Config:
     mongo_url: str
 
     @classmethod
-    def from_env(cls) -> "Config":
+    def from_env(cls) -> Config:
         origins = os.getenv("CORS_ORIGINS", "http://localhost:5173")
         return cls(
-            redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
             jwt_secret=os.getenv("JWT_SECRET", "dev-insecure-secret"),
             admin_email=os.getenv("ADMIN_EMAIL", "admin@labmate.local"),
             admin_password=os.getenv("ADMIN_PASSWORD", ""),
