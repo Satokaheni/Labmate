@@ -1,19 +1,12 @@
 from __future__ import annotations
 
 import logging
-import os
 from datetime import UTC, datetime
 
-from motor.motor_asyncio import AsyncIOMotorClient
-
-from .db_indexes import ensure_indexes
 from .local_store import LocalStore, get_local_store
 from .workspace_manager import WorkspaceManager
 
 logger = logging.getLogger(__name__)
-
-DB_NAME = "labmate"
-META = "meta"
 
 
 def _utcnow() -> datetime:
@@ -21,29 +14,18 @@ def _utcnow() -> datetime:
 
 
 class StorageManager:
-    """MongoDB (source of truth)."""
+    """Local SQLite store (source of truth) facade."""
 
     def __init__(self) -> None:
-        mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/labmate")
-
-        self._mongo = AsyncIOMotorClient(mongo_uri)
-        self._db = self._mongo[DB_NAME]
-
-    @classmethod
-    def from_clients(cls, *, mongo) -> StorageManager:
-        """Build with injected clients (tests). Bypasses env/network setup."""
-        self = cls.__new__(cls)
-        self._mongo = mongo
-        self._db = mongo[DB_NAME]
-        return self
+        pass
 
     async def __aenter__(self) -> StorageManager:
-        await ensure_indexes(self._db)
+        await self.local_store.connect()
         return self
 
     async def __aexit__(self, *exc) -> None:
-        """Close the Mongo connection on exit."""
-        self._mongo.close()
+        """Nothing to close — the local store connection is process-cached."""
+        return None
 
     @property
     def context_manager(self):
@@ -62,7 +44,6 @@ class StorageManager:
                 return await _embed_fn(texts)
 
             self._context_manager = ContextManager(
-                mongo_db=self._db,
                 chroma_cols={},
                 embedder=_embedder,
                 local_store=self.local_store,
@@ -89,18 +70,6 @@ class StorageManager:
         if getattr(self, "_local_store", None) is None:
             self._local_store = get_local_store()
         return self._local_store
-
-    @property
-    def loop_checkpoint_collection(self):
-        """The Motor collection holding inner-loop checkpoints (one per task_id).
-
-        Used by CheckpointStore (services/orchestrator/loop_checkpoint.py) to
-        persist the per-turn ReAct-loop snapshot. No outbox: these are transient
-        crash-recovery records, cleared when a goal finishes.
-        """
-        from .loop_checkpoint import CHECKPOINT_COLLECTION
-
-        return self._db[CHECKPOINT_COLLECTION]
 
     # --- full-text / regex search over raw transcript (session_search) ----------
     async def search_turns(

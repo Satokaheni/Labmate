@@ -169,21 +169,13 @@ async def test_store_errors_are_swallowed_never_raised():
 # Storage manager accessor test
 # ─────────────────────────────────────────────────────────────────────────
 
-from services.orchestrator.loop_checkpoint import CHECKPOINT_COLLECTION  # noqa: E402
 
-
-def test_storage_manager_exposes_loop_checkpoint_collection():
+def test_storage_manager_has_no_loop_checkpoint_collection():
+    """StorageManager is Mongo-free (T9) — CheckpointStore is already off Mongo (T8)."""
     from services.orchestrator.storage_manager import StorageManager
 
-    db = MagicMock()
-    sentinel = MagicMock()
-    db.__getitem__ = MagicMock(return_value=sentinel)
-    mongo = MagicMock()
-    mongo.__getitem__ = MagicMock(return_value=db)
-    sm = StorageManager.from_clients(mongo=mongo)
-    col = sm.loop_checkpoint_collection
-    db.__getitem__.assert_called_with(CHECKPOINT_COLLECTION)
-    assert col is sentinel
+    sm = StorageManager()
+    assert not hasattr(sm, "loop_checkpoint_collection")
 
 
 # ─────────────────────────────────────────────────────────────────────────

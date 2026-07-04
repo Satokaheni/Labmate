@@ -26,45 +26,33 @@ def _reset_local_store():
 # ---------------------------------------------------------------------------
 
 
-async def test_context_manager_closes_connections_on_exit(mock_mongo):
-    """__aexit__ must close the Mongo connection."""
-    from unittest.mock import MagicMock
+async def test_storage_manager_opens_without_mongo(monkeypatch, tmp_path):
+    """StorageManager() opens no Mongo — it's a pure LocalStore facade."""
+    from services.orchestrator import storage_manager as sm_mod
+    from services.orchestrator.local_store import LocalStore
 
-    from services.orchestrator.storage_manager import StorageManager
-
-    mock_mongo_with_close = MagicMock()
-    mock_mongo_with_close.close = MagicMock()
-
-    storage = StorageManager.from_clients(mongo=mock_mongo_with_close)
-
-    await storage.__aexit__(None, None, None)
-
-    # Mongo should be closed
-    mock_mongo_with_close.close.assert_called_once()
+    monkeypatch.setattr(sm_mod, "get_local_store", lambda: LocalStore(tmp_path / "state.db"))
+    async with sm_mod.StorageManager() as sm:
+        assert sm.local_store is not None
+        assert sm.context_manager is not None  # constructs without mongo_db
 
 
-async def test_full_context_manager_usage_works(mock_mongo):
+async def test_full_context_manager_usage_works():
     """async with StorageManager() should work without crashing."""
     from services.orchestrator.storage_manager import StorageManager
 
-    storage = StorageManager.from_clients(mongo=mock_mongo)
+    storage = StorageManager()
 
     async with storage as sm:
         assert sm is storage
 
 
-async def test_from_clients_works_without_context_manager():
-    """from_clients path should not require async context manager entry."""
-    from unittest.mock import MagicMock
-
+async def test_storage_manager_constructs_without_args():
+    """StorageManager() takes nothing Mongo-related."""
     from services.orchestrator.storage_manager import StorageManager
 
-    mock_mongo = MagicMock()
+    storage = StorageManager()
 
-    # This should work without entering the context manager
-    storage = StorageManager.from_clients(mongo=mock_mongo)
-
-    # Should be able to call methods directly
     assert storage is not None
 
 
@@ -100,10 +88,10 @@ def test_context_manager_property_returns_context_manager_instance(storage):
     assert storage.context_manager is cm
 
 
-def test_context_manager_uses_storage_local_store_and_db(storage):
-    """ContextManager is wired to the StorageManager's LocalStore and MongoDB."""
+def test_context_manager_uses_storage_local_store(storage):
+    """ContextManager is wired to the StorageManager's LocalStore, with no Mongo."""
 
     cm = storage.context_manager
     assert cm.local_store is storage.local_store
-    assert cm.db is storage._db
     assert cm.chroma == {}  # empty; RAG skipped, compaction still works
+    assert not hasattr(cm, "db")

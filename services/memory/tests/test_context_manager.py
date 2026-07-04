@@ -36,7 +36,6 @@ async def test_build_context_stays_within_budget(tmp_path):
 
         budget = ContextBudget(max_tokens=200, completion_reserve=20)
         cm = ContextManager(
-            mongo_db=MagicMock(),
             chroma_cols={},
             embedder=embed,
             budget=budget,
@@ -70,7 +69,6 @@ async def test_build_context_pins_core_memory_even_when_over_budget(tmp_path):
         embed = AsyncMock(return_value=[[0.1]])
         budget = ContextBudget(max_tokens=700, completion_reserve=100)
         cm = ContextManager(
-            mongo_db=MagicMock(),
             chroma_cols={},
             embedder=embed,
             budget=budget,
@@ -86,7 +84,6 @@ def test_trim_to_budget_drops_oldest_lines():
         from services.memory.context_manager import ContextManager
 
         cm = ContextManager(
-            mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
         )
@@ -131,7 +128,6 @@ async def test_recent_turns_reads_local_store_with_watermark(tmp_path):
         await store.append_turn("s1", "assistant", "fine")  # seq 7, > watermark(5)
 
         cm = ContextManager(
-            mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
             local_store=store,
@@ -156,7 +152,6 @@ async def test_recent_turns_defaults_watermark_to_minus_one(tmp_path):
         await store.append_turn("s1", "assistant", "reply")
 
         cm = ContextManager(
-            mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
             local_store=store,
@@ -184,7 +179,6 @@ async def test_last_activity_seconds_reads_local_store_iso_timestamp(tmp_path):
         await store.append_turn("s1", "user", "hi", created_at=iso_ts)
 
         cm = ContextManager(
-            mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
             local_store=store,
@@ -214,7 +208,6 @@ async def test_full_compact_watermark_nondestructive(tmp_path):
             return "summary of old turns"
 
         cm = ContextManager(
-            mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
             local_store=store,
@@ -257,7 +250,6 @@ async def test_full_compact_respects_watermark_on_second_call(tmp_path):
             return "new summary segment"
 
         cm = ContextManager(
-            mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
             local_store=store,
@@ -275,7 +267,7 @@ async def test_microcompact_and_clear_tool_results_removed():
     """Verify microcompact and clear_tool_results methods are deleted."""
     from services.memory.context_manager import ContextManager
 
-    cm = ContextManager(mongo_db=MagicMock(), chroma_cols={}, embedder=AsyncMock())
+    cm = ContextManager(chroma_cols={}, embedder=AsyncMock())
 
     # These methods should not exist
     assert not hasattr(cm, "microcompact"), "microcompact should be deleted"
@@ -302,7 +294,6 @@ async def test_full_compact_returns_reflections(tmp_path):
             return "summary of old turns"
 
         cm = ContextManager(
-            mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
             local_store=store,
@@ -332,7 +323,6 @@ async def test_full_compact_saves_anchor_only_on_first_compact(tmp_path):
             return '{"decisions": []}' if "JSON" in prompt else "new summary"
 
         cm = ContextManager(
-            mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
             local_store=store,
@@ -349,7 +339,7 @@ async def test_parallel_summarize_calls_llm_per_block():
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
         from services.memory.context_manager import ContextManager
 
-        cm = ContextManager(mongo_db=MagicMock(), chroma_cols={}, embedder=AsyncMock())
+        cm = ContextManager(chroma_cols={}, embedder=AsyncMock())
         # 45 turns → 3 blocks of 20/20/5 → 3 block calls + 1 merge call = 4 total
         turns = [{"role": "user", "content": f"msg {i}"} for i in range(45)]
         llm_calls = []
@@ -403,7 +393,6 @@ async def test_build_context_surfaces_anchor_when_diverged(tmp_path):
         embed = AsyncMock(return_value=[[0.1]])
         budget = ContextBudget(max_tokens=4000, completion_reserve=100)
         cm = ContextManager(
-            mongo_db=MagicMock(),
             chroma_cols={},
             embedder=embed,
             budget=budget,
@@ -438,7 +427,6 @@ async def test_build_context_omits_anchor_when_contained_in_summary(tmp_path):
         embed = AsyncMock(return_value=[[0.1]])
         budget = ContextBudget(max_tokens=4000, completion_reserve=100)
         cm = ContextManager(
-            mongo_db=MagicMock(),
             chroma_cols={},
             embedder=embed,
             budget=budget,
@@ -472,7 +460,6 @@ async def test_full_compact_emits_compact_quality_event(tmp_path):
             captured[type] = fields
 
         cm = ContextManager(
-            mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
             local_store=store,
@@ -508,7 +495,6 @@ async def test_last_activity_seconds_reports_idle_time(tmp_path):
         await store.append_turn("s1", "user", "hi", created_at=old_iso)
 
         cm = ContextManager(
-            mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
             local_store=store,
@@ -528,7 +514,6 @@ async def test_maybe_background_compact_skips_when_not_idle(tmp_path):
 
         llm = AsyncMock()
         cm = ContextManager(
-            mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
             local_store=store,
@@ -551,7 +536,6 @@ async def test_maybe_background_compact_runs_when_idle_and_full():
         old_ts = _dt.datetime.now(_dt.UTC) - _dt.timedelta(seconds=1200)
 
         cm = ContextManager(
-            mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
             budget=ContextBudget(max_tokens=400, completion_reserve=20),
@@ -583,7 +567,7 @@ def test_anchor_diverges_heuristic_boundaries():
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
         from services.memory.context_manager import ContextManager
 
-        cm = ContextManager(mongo_db=MagicMock(), chroma_cols={}, embedder=AsyncMock())
+        cm = ContextManager(chroma_cols={}, embedder=AsyncMock())
 
         # Build anchor with 10 distinct >3-char words
         anchor_words = [
@@ -637,7 +621,6 @@ async def test_conversation_context_returns_summary_and_recent_turns(tmp_path):
         await store.append_turn("s1", "assistant", "AI is machine learning")  # seq 2
 
         cm = ContextManager(
-            mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
             local_store=store,
@@ -658,7 +641,6 @@ async def test_conversation_context_returns_empty_on_no_session():
     from services.memory.context_manager import ContextManager
 
     cm = ContextManager(
-        mongo_db=MagicMock(),
         chroma_cols={},
         embedder=AsyncMock(),
     )
@@ -676,7 +658,6 @@ async def test_conversation_context_returns_empty_on_failure():
     broken_store.session_kv_get = AsyncMock(side_effect=RuntimeError("local store error"))
 
     cm = ContextManager(
-        mongo_db=MagicMock(),
         chroma_cols={},
         embedder=AsyncMock(),
         local_store=broken_store,
@@ -699,7 +680,6 @@ async def test_conversation_context_does_not_call_hybrid_retrieve(tmp_path):
         hybrid_retrieve_mock = AsyncMock(return_value=[])
 
         cm = ContextManager(
-            mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
             local_store=store,

@@ -30,7 +30,12 @@ async def _close_local_stores():
 
 @pytest.fixture
 def mock_mongo():
-    """AsyncIOMotorClient mock. client[db][collection] -> AsyncMock collection."""
+    """AsyncIOMotorClient mock. client[db][collection] -> AsyncMock collection.
+
+    Retained for tests that exercise Mongo-specific code (e.g. db_indexes.py,
+    which is out of scope for the local-state-sqlite migration until Task 10).
+    StorageManager no longer takes a Mongo client — see the `storage` fixture.
+    """
     client = MagicMock(name="AsyncIOMotorClient")
     db = MagicMock(name="db")
     collections: dict[str, AsyncMock] = {}
@@ -54,8 +59,8 @@ def mock_mongo():
 
 
 @pytest.fixture
-def storage(mock_mongo):
-    """A StorageManager with Mongo injected as a mock."""
+def storage():
+    """A plain StorageManager (pure LocalStore facade, no Mongo)."""
     from services.orchestrator.storage_manager import StorageManager
 
-    return StorageManager.from_clients(mongo=mock_mongo)
+    return StorageManager()
