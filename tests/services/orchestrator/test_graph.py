@@ -187,10 +187,10 @@ class TestPlanNode:
         runner.tool_schema.return_value = {"type": "function", "function": {"name": "load_skill"}}
 
         # Create a real SkillRouter (which now has a .runner property)
-        mock_redis = AsyncMock()
+        mock_registry = AsyncMock()
         skill_router = SkillRouter(
             runner=runner,
-            redis=mock_redis,
+            registry=mock_registry,
             gemma_api_base="http://localhost:8000/v1",
         )
 

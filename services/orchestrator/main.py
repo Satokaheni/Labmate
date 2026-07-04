@@ -26,12 +26,14 @@ Goal ingress (Piece 4 — in-process, Redis-free):
 Goal payload (dict passed to submit_goal):
   { "task_id": "<str>", "task": "<str>", "session_id": "<str|null>", "user_id": "<str|null>", "workspace_id": "<str|null>" }
 
-Redis is still constructed (self._redis) for skill/tool dispatch and storage
-(skill_router, local_tools, StorageManager) — later tasks (T6/T8) remove it.
+Redis is still constructed (self._redis) for local_tools and storage
+(StorageManager) — later tasks (T7b/c, T8) remove it. Skill dispatch itself
+(skill_router.execute) is now in-process: a shared SkillRegistry is built at
+boot with all runnable skills registered, and SkillRouter calls it directly
+(services/skill_runner/skill_dispatch.py) — no Redis skill-tasks stream.
 
-Note: Redis Streams remain the transport for the standalone skill-worker
-process (services/skill_worker/worker.py) — that is a separate module,
-unaffected by this file's in-process goal intake.
+Note: the standalone skill-worker process (services/skill_worker/worker.py)
+still runs its own Redis Streams consumer loop; it is retired in T8.
 """
 
 from __future__ import annotations
@@ -64,7 +66,9 @@ from services.orchestrator.skill_curator import (
 from services.orchestrator.skill_router import SkillRouter
 from services.orchestrator.storage_manager import StorageManager
 from services.orchestrator.tool_manifest import parse_manifest
+from services.skill_runner.skill_registry import SkillRegistry
 from services.skill_runner.skill_runner import SkillRunner
+from services.skill_worker.manifest_loader import discover_manifests
 
 _log = logging.getLogger("orchestrator")
 
@@ -233,6 +237,9 @@ class OrchestratorProcess:
         self._goal_queue: asyncio.Queue = asyncio.Queue()
         self._mcp: MCPClientManager | None = None
         self._codegraph_mcp: MCPClientManager | None = None
+        # Shared SkillRegistry (Piece 4 T7a): owns the runnable skills' MCP
+        # subprocesses so SkillRouter.execute can dispatch in-process (no Redis).
+        self._skill_registry: SkillRegistry | None = None
         self._recent_sequences = RecentSequences()
         self._last_goal_at: float = 0.0
         # Per-session carried context fill (peak prompt tokens of the last turn), so
@@ -317,16 +324,35 @@ class OrchestratorProcess:
                 skills_root = Path(__file__).resolve().parent.parent / "skills"
                 runner = SkillRunner(roots=[skills_root])
                 runner.discover()
+
+                # Shared SkillRegistry: spawns/owns the runnable skills' MCP
+                # subprocesses (mirrors skill_worker.SkillWorker.start()'s
+                # registration exactly) so SkillRouter.execute can dispatch
+                # in-process — no Redis skill-tasks stream.
+                self._skill_registry = SkillRegistry(
+                    call_timeout=float(os.getenv("SKILL_CALL_TIMEOUT", "135"))
+                )
+                for manifest in discover_manifests(skills_root):
+                    try:
+                        await self._skill_registry.register(manifest)
+                        _log.info("registered skill: %s", manifest.name)
+                    except Exception:
+                        _log.exception("failed to register %s — skipping", manifest.name)
+
                 skill_router = SkillRouter(
                     runner=runner,
-                    redis=self._redis,
+                    registry=self._skill_registry,
                     gemma_api_base=GEMMA_BASE,
                 )
                 # Wire skill_router into async_orch for react_execute
                 async_orch.skill_router = skill_router
                 async_orch.mcp = self._mcp
                 async_orch.workspace = workspace
-                _log.info("skill router ready (%d skills)", len(runner.catalog))
+                _log.info(
+                    "skill router ready (%d skills, %d registered procs)",
+                    len(runner.catalog),
+                    len(self._skill_registry._skills),
+                )
             except Exception:
                 _log.warning(
                     "failed to initialize skill router — continuing without skills", exc_info=True

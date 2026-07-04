@@ -27,6 +27,7 @@ Result (written to Redis, expires after RESULT_TTL seconds):
   SET  labmate:result:<task_id>  <JSON>  EX 3600
   PUBLISH  labmate:result:<task_id>  "ready"
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -41,7 +42,8 @@ from typing import Any
 
 import redis.asyncio as aioredis
 
-from services.skill_runner.skill_registry import SkillRegistry, SkillUnavailable
+from services.skill_runner.skill_dispatch import dispatch as _skill_dispatch
+from services.skill_runner.skill_registry import SkillRegistry
 from services.skill_worker.manifest_loader import discover_manifests
 
 _log = logging.getLogger("skill_worker")
@@ -49,10 +51,10 @@ _log = logging.getLogger("skill_worker")
 STREAM = "labmate:skill-tasks"
 GROUP = "skill-workers"
 RESULT_PREFIX = "labmate:result:"
-RESULT_TTL = 3600           # seconds
-BLOCK_MS = 5_000            # XREADGROUP blocking wait
-BATCH = 8                   # messages per read
-PENDING_IDLE_MS = 30_000    # reclaim pending msgs idle longer than this
+RESULT_TTL = 3600  # seconds
+BLOCK_MS = 5_000  # XREADGROUP blocking wait
+BATCH = 8  # messages per read
+PENDING_IDLE_MS = 30_000  # reclaim pending msgs idle longer than this
 
 
 def _worker_id() -> str:
@@ -191,47 +193,14 @@ class SkillWorker:
             finally:
                 await self._redis.xack(STREAM, GROUP, msg_id)
 
-    @staticmethod
-    def _jsonable(obj: Any) -> Any:
-        """Make a skill result JSON-serializable.
-
-        registry.call_tool() returns the raw MCP CallToolResult (a pydantic
-        model with content blocks) — json.dumps() can't serialize it, which
-        previously surfaced every successful call as "internal_error". Dump
-        pydantic models to plain JSON; fall back to str() for anything else.
-        """
-        if hasattr(obj, "model_dump"):
-            try:
-                return obj.model_dump(mode="json")
-            except Exception:
-                return str(obj)
-        try:
-            json.dumps(obj)
-            return obj
-        except (TypeError, ValueError):
-            return str(obj)
-
     async def _dispatch(self, payload: dict[str, Any]) -> dict[str, Any]:
-        skill = payload.get("skill", "")
-        tool = payload.get("tool", "")
-        arguments = payload.get("arguments", {})
-        qualified = f"{skill}.{tool}"
-        try:
-            result = await self._registry.call_tool(qualified, arguments)
-            # Check if the MCP result indicates a tool error (isError=True)
-            # This is a normal return, not an exception, so we must inspect the result
-            if hasattr(result, "isError") and result.isError:
-                return {
-                    "ok": False,
-                    "error": "tool_error",
-                    "result": self._jsonable(result),
-                }
-            return {"ok": True, "result": self._jsonable(result)}
-        except SkillUnavailable as exc:
-            return {"ok": False, "error": "skill_unavailable", "detail": str(exc)}
-        except Exception as exc:
-            _log.error("dispatch error for %s: %r", qualified, exc)
-            return {"ok": False, "error": "dispatch_failed", "detail": str(exc)}
+        """Delegate to the shared transport-free dispatch core.
+
+        Kept as a thin instance method (rather than inlining the call at
+        every use site) so existing tests that patch/assert on
+        worker._dispatch(...) keep working unchanged.
+        """
+        return await _skill_dispatch(self._registry, payload)
 
     async def _write_result(self, task_id: str, result: dict[str, Any]) -> None:
         key = f"{RESULT_PREFIX}{task_id}"

@@ -67,7 +67,7 @@ async def test_route_sample_select_caps_max_tokens():
     runner.catalog_prompt.return_value = "- some-skill: does a thing"
     runner.tool_schema.return_value = {"type": "function", "function": {"name": "load_skill"}}
     router = SkillRouter(
-        runner=runner, redis=AsyncMock(), gemma_api_base="http://localhost:8000/v1"
+        runner=runner, registry=AsyncMock(), gemma_api_base="http://localhost:8000/v1"
     )
 
     with patch(
