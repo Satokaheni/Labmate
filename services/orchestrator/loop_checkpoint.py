@@ -1,7 +1,7 @@
 """Durable per-turn checkpoint for the inner ReAct loop (_run_react_loop).
 
-The OUTER LangGraph layer is already crash-durable via AsyncMongoDBSaver, which
-checkpoints between super-steps. This module closes the complementary gap in the
+The OUTER LangGraph layer is already crash-durable via the local SqliteSaver
+checkpointer, which checkpoints between super-steps. This module closes the complementary gap in the
 INNER loop: a crash mid-_run_react_loop otherwise loses the whole turn-by-turn
 state (messages, iteration budget, edited files, verify-nudge count, loop-detector
 signatures, wall-clock start) and the loop restarts from turn 0 on the next

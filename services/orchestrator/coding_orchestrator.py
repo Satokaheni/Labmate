@@ -1545,7 +1545,7 @@ class CodingOrchestrator:
       run_task() -> graph.ainvoke() -> plan -> execute -> check -> [reflect | END]
 
     Crash recovery: re-invoke run_task() with the same session_id.
-    The AsyncMongoDBSaver will load the latest checkpoint and resume.
+    The local SqliteSaver checkpointer will load the latest checkpoint and resume.
     """
 
     def __init__(
