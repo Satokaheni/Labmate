@@ -145,31 +145,39 @@ class SignalRegistry:
 
 
 class ResultRegistry:
-    """Per-task result future, tolerant of set-before-wait and wait-before-set."""
+    """Per-task result, tolerant of set-before-wait and wait-before-set.
+
+    The resolved VALUE is stored loop-agnostically (``_values``) in addition to
+    resolving any pending waiter's future, so an already-set result is returned
+    by ``wait_result`` DIRECTLY — never by awaiting the future. This means a
+    result set in one event loop is readable from another. (An ``asyncio.Future``
+    is bound to the loop it was created in; awaiting it from a different loop
+    raises "The future belongs to a different loop" on Python < 3.12. Production
+    sets/reads in the one loop, but tests that drive set + read in separate
+    ``run_until_complete`` loops depend on this.)
+    """
 
     def __init__(self) -> None:
         self._futures: dict[str, asyncio.Future[dict]] = {}
+        self._values: dict[str, dict] = {}
 
     def _get_or_create_future(self, task_id: str) -> asyncio.Future[dict]:
         future = self._futures.get(task_id)
-        if future is None:
+        if future is None or future.done():
             future = asyncio.get_running_loop().create_future()
             self._futures[task_id] = future
         return future
 
     def set_result(self, task_id: str, result: dict) -> None:
+        self._values[task_id] = result
         future = self._futures.get(task_id)
-        if future is None or future.done():
-            # No waiter yet (or already resolved): store a fresh future
-            # already holding the value so a later wait_result gets it
-            # immediately.
-            future = asyncio.get_running_loop().create_future()
-            future.set_result(result)
-            self._futures[task_id] = future
-        else:
+        if future is not None and not future.done():
             future.set_result(result)
 
     async def wait_result(self, task_id: str, timeout: float | None = None) -> dict:
+        # Fast path: already resolved — return the value directly (loop-agnostic).
+        if task_id in self._values:
+            return self._values[task_id]
         future = self._get_or_create_future(task_id)
         if timeout is None:
             return await future
@@ -177,3 +185,4 @@ class ResultRegistry:
 
     def clear_task(self, task_id: str) -> None:
         self._futures.pop(task_id, None)
+        self._values.pop(task_id, None)

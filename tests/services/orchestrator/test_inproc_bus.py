@@ -213,3 +213,34 @@ async def test_close_drains_buffered_frames_then_stops():
     sub.close()  # close with 2 frames still buffered
     got = [frame async for frame in sub]
     assert [f["seq"] for f in got] == [1, 2]
+
+
+def test_result_registry_set_and_read_across_loops():
+    """A result set in one event loop must be readable from a DIFFERENT loop.
+
+    Guards the CI regression (Python < 3.12 raises "future belongs to a different
+    loop" when a loop-bound future is awaited from another loop). ResultRegistry
+    stores the value loop-agnostically, so wait_result returns it directly. This
+    mirrors the BDD pattern: set via _handle in one run_until_complete loop, read
+    via wait_result in another.
+    """
+    import asyncio as _asyncio
+
+    reg = ResultRegistry()
+
+    loop_a = _asyncio.new_event_loop()
+    try:
+        loop_a.run_until_complete(_set(reg, "t1", {"ok": True}))
+    finally:
+        loop_a.close()
+
+    loop_b = _asyncio.new_event_loop()
+    try:
+        got = loop_b.run_until_complete(reg.wait_result("t1", timeout=1.0))
+    finally:
+        loop_b.close()
+    assert got == {"ok": True}
+
+
+async def _set(reg, task_id, result):
+    reg.set_result(task_id, result)
