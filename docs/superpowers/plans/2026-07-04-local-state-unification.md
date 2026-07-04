@@ -1037,7 +1037,7 @@ Delete the mongod (replSet), Redis, and Chroma start blocks + their wait/health 
 
 - [ ] **Step 3: `install.sh`** — delete MongoDB/Redis/Chroma install + replica-set init steps. Keep Python deps, node/MCP-bridge build, model prerequisites. Add a ripgrep check/install (`command -v rg` → install hint per OS).
 
-- [ ] **Step 4: `local.env`** — delete `MONGO_URI`, `MONGO_URL`, `CHROMA_HOST`, `CHROMA_PORT`, `CHROMA_URL`, `REDIS_URL`. Keep `GEMMA_BASE`/`QWEN_BASE`, `WORKSPACE_PATH`, `LABMATE_GATEWAY_URL`, `CORS_ORIGINS`, model/tokenizer paths, and add `LOCAL_HOST`/`LOCAL_PORT` if absent (defaults 127.0.0.1 / 8787). Update the header comment: single-process SQLite; no Mongo/Redis/Chroma.
+- [ ] **Step 4: `local.env`** — delete `MONGO_URI`, `MONGO_URL`, `CHROMA_HOST`, `CHROMA_PORT`, `CHROMA_URL`, `REDIS_URL`. Keep `GEMMA_BASE`/`QWEN_BASE`, `WORKSPACE_PATH`, `LABMATE_GATEWAY_URL`, `CORS_ORIGINS`, model/tokenizer paths, and add `LOCAL_HOST`/`LOCAL_PORT` if absent (defaults 127.0.0.1 / 8787). Update the header comment: single-process SQLite; no Mongo/Redis/Chroma. **Set the dev seed credentials** so the admin auto-seeds on first boot: `export ADMIN_EMAIL="${ADMIN_EMAIL:-zach.stallbohm@gmail.com}"` and `export ADMIN_PASSWORD="${ADMIN_PASSWORD:-labmate-dev}"` (dev-only throwaway creds; Piece 7 should prompt for real ones + document rotation). Add a comment that these are dev defaults.
 
 - [ ] **Step 5: `docs/local-execution-prerequisites.md`** — add a ripgrep (`rg`) entry (used by `search_files`; Python fallback exists).
 
