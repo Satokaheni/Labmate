@@ -2,18 +2,12 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import UTC, datetime
 from pathlib import Path
 
-from motor.motor_asyncio import AsyncIOMotorDatabase
-
+from .local_store import LocalStore
 from .models import SessionMeta, User, Workspace
 
 logger = logging.getLogger(__name__)
-
-USERS = "users"
-WORKSPACES = "workspaces"
-SESSIONS = "sessions"
 
 # Project-instruction files read from each workspace root, in preference order.
 # AGENTS.md (the cross-tool standard, https://agents.md) wins over the legacy AGENT.md.
@@ -21,38 +15,38 @@ AGENT_INSTRUCTION_FILES = ("AGENTS.md", "AGENT.md")
 # Cap the concatenated instructions so a large file can't crowd out the context.
 AGENT_INSTRUCTIONS_MAX_CHARS = int(os.getenv("AGENT_INSTRUCTIONS_MAX_CHARS", "16000"))
 
-
-def _strip(doc: dict | None) -> dict | None:
-    """Remove MongoDB's _id before passing to Pydantic."""
-    if doc is None:
-        return None
-    doc.pop("_id", None)
-    return doc
+_WORKSPACE_MODEL_FIELDS = (
+    "workspace_id",
+    "name",
+    "user_id",
+    "description",
+    "paths",
+    "sources",
+    "created_at",
+    "updated_at",
+)
 
 
 class WorkspaceManager:
-    """CRUD layer for users, workspaces, and session metadata."""
+    """CRUD layer for users, workspaces, and session metadata (local SQLite store)."""
 
-    def __init__(self, db: AsyncIOMotorDatabase) -> None:
-        self._db = db
+    def __init__(self, store: LocalStore) -> None:
+        self._store = store
 
     # ── users ─────────────────────────────────────────────────────────────
 
     async def create_user(self, display_name: str) -> User:
         user = User(display_name=display_name)
-        await self._db[USERS].insert_one(user.model_dump())
+        await self._store.upsert_user(user.user_id, display_name)
         logger.info("created user %s (%s)", user.user_id, display_name)
         return user
 
     async def get_user(self, user_id: str) -> User | None:
-        doc = await self._db[USERS].find_one({"user_id": user_id})
-        return User(**_strip(doc)) if doc else None
+        doc = await self._store.get_user(user_id)
+        return User(**doc) if doc else None
 
     async def touch_user(self, user_id: str) -> None:
-        await self._db[USERS].update_one(
-            {"user_id": user_id},
-            {"$set": {"last_active": datetime.now(UTC)}},
-        )
+        await self._store.touch_user(user_id)
 
     # ── workspaces ────────────────────────────────────────────────────────
 
@@ -71,61 +65,48 @@ class WorkspaceManager:
             paths=paths or [],
             sources=sources or [],
             description=description,
+        )
+        await self._store.create_workspace(
+            ws.workspace_id,
+            user_id,
+            name=name,
+            paths=ws.paths,
+            sources=ws.sources,
+            description=description,
             instructions=instructions,
         )
-        await self._db[WORKSPACES].insert_one(ws.model_dump())
         logger.info("created workspace %s (%s)", ws.workspace_id, name)
         return ws
 
     async def get_workspace(self, workspace_id: str) -> Workspace | None:
-        doc = await self._db[WORKSPACES].find_one({"workspace_id": workspace_id})
-        return Workspace(**_strip(doc)) if doc else None
+        doc = await self._store.get_workspace(workspace_id)
+        if not doc:
+            return None
+        return Workspace(**{k: doc[k] for k in _WORKSPACE_MODEL_FIELDS})
 
     async def list_workspaces(self, user_id: str, limit: int = 100) -> list[Workspace]:
-        cursor = self._db[WORKSPACES].find({"user_id": user_id}).limit(limit)
-        docs = await cursor.to_list(length=limit)
-        return [Workspace(**_strip(d)) for d in docs]
+        docs = await self._store.list_workspaces(user_id, limit=limit)
+        return [Workspace(**{k: d[k] for k in _WORKSPACE_MODEL_FIELDS}) for d in docs]
 
     async def update_workspace(self, workspace_id: str, **fields) -> None:
-        _IMMUTABLE = {"workspace_id", "user_id", "created_at"}
-        fields = {k: v for k, v in fields.items() if k not in _IMMUTABLE}
-        fields["updated_at"] = datetime.now(UTC)
-        await self._db[WORKSPACES].update_one(
-            {"workspace_id": workspace_id},
-            {"$set": fields},
-        )
+        await self._store.update_workspace(workspace_id, **fields)
 
     async def upsert_workspace(self, workspace_id: str, user_id: str) -> None:
         """Persist a CLI-minted workspace on first sight. No-op if it already exists."""
-        now = datetime.now(UTC)
-        await self._db[WORKSPACES].update_one(
-            {"workspace_id": workspace_id},
-            {
-                "$setOnInsert": {
-                    "workspace_id": workspace_id,
-                    "user_id": user_id,
-                    "name": f"workspace-{workspace_id[:8]}",
-                    "paths": [],
-                    "sources": [],
-                    "description": None,
-                    "instructions": None,
-                    "created_at": now,
-                    "updated_at": now,
-                }
-            },
-            upsert=True,
-        )
+        await self._store.upsert_workspace(workspace_id, user_id)
 
     # ── session metadata ──────────────────────────────────────────────────
 
     async def record_session(self, meta: SessionMeta) -> None:
-        await self._db[SESSIONS].insert_one(meta.model_dump())
+        await self._store.record_session(
+            meta.session_id,
+            user_id=meta.user_id,
+            workspace_id=meta.workspace_id,
+            task_preview=meta.task_preview,
+        )
 
     async def complete_session(self, session_id: str, ok: bool = True) -> None:
-        await self._db[SESSIONS].update_one(
-            {"session_id": session_id},
-            {"$set": {"completed_at": datetime.now(UTC), "ok": ok}},
-        )
+        await self._store.complete_session(session_id, ok)
 
     async def list_sessions(
         self,
@@ -133,12 +114,23 @@ class WorkspaceManager:
         workspace_id: str | None = None,
         limit: int = 20,
     ) -> list[SessionMeta]:
-        q: dict = {"user_id": user_id}
-        if workspace_id:
-            q["workspace_id"] = workspace_id
-        cursor = self._db[SESSIONS].find(q).sort("created_at", -1).limit(limit)
-        docs = await cursor.to_list(length=limit)
-        return [SessionMeta(**_strip(d)) for d in docs]
+        rows = await self._store.list_sessions(user_id, workspace_id=workspace_id, limit=limit)
+        result = []
+        for r in rows:
+            kwargs = {
+                "session_id": r["session_id"],
+                "user_id": r["user_id"],
+                "workspace_id": r["workspace_id"],
+                "task_preview": r["task_preview"] or "",
+            }
+            if r.get("created_at"):
+                kwargs["created_at"] = r["created_at"]
+            if r.get("completed_at"):
+                kwargs["completed_at"] = r["completed_at"]
+            if r.get("ok") is not None:
+                kwargs["ok"] = r["ok"]
+            result.append(SessionMeta(**kwargs))
+        return result
 
     async def load_agent_instructions(self, workspace_id: str) -> str:
         """Project instructions for the agent, pinned for this session.
@@ -150,7 +142,7 @@ class WorkspaceManager:
         """
         if not workspace_id:
             return ""
-        ws_doc = await self._db[WORKSPACES].find_one({"workspace_id": workspace_id})
+        ws_doc = await self._store.get_workspace(workspace_id)
         if not ws_doc:
             return ""
 

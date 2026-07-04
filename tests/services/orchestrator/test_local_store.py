@@ -267,6 +267,100 @@ async def test_upsert_workspace_idempotent_and_get(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_create_workspace_then_get_returns_full_row(tmp_path):
+    """create_workspace then get_workspace round-trips every field, incl. lists."""
+    store = LocalStore(tmp_path / "s.sqlite")
+    await store.connect()
+    try:
+        await store.create_workspace(
+            "w-1",
+            "u-1",
+            name="my-lab",
+            paths=["/workspace/a", "/workspace/b"],
+            sources=["repo-a"],
+            description="a lab",
+            instructions="be concise",
+        )
+        ws = await store.get_workspace("w-1")
+
+        assert ws is not None
+        assert ws["workspace_id"] == "w-1"
+        assert ws["user_id"] == "u-1"
+        assert ws["name"] == "my-lab"
+        assert ws["paths"] == ["/workspace/a", "/workspace/b"]
+        assert ws["sources"] == ["repo-a"]
+        assert ws["description"] == "a lab"
+        assert ws["instructions"] == "be concise"
+        assert ws["created_at"] is not None
+        assert ws["updated_at"] is not None
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_list_workspaces_newest_first_scoped_to_user(tmp_path):
+    """list_workspaces returns newest-first, scoped to the given user."""
+    store = LocalStore(tmp_path / "s.sqlite")
+    await store.connect()
+    try:
+        await store.create_workspace("w-1", "u-1", name="first")
+        # Backdate w-1's created_at so ordering doesn't depend on same-second
+        # timestamp resolution (_iso_now() has 1-second granularity).
+        conn = await store._connected()
+        await conn.execute(
+            "UPDATE workspaces SET created_at = ? WHERE workspace_id = ?",
+            ("2020-01-01T00:00:00Z", "w-1"),
+        )
+        await conn.commit()
+        await store.create_workspace("w-2", "u-1", name="second")
+        await store.create_workspace("w-3", "u-2", name="other-user")
+
+        result = await store.list_workspaces("u-1")
+
+        names = [r["name"] for r in result]
+        assert names == ["second", "first"]  # newest-first
+        assert all(r["user_id"] == "u-1" for r in result)
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_update_workspace_changes_field_bumps_updated_at_ignores_immutable(tmp_path):
+    """update_workspace mutates a field, bumps updated_at, and ignores immutable keys."""
+    store = LocalStore(tmp_path / "s.sqlite")
+    await store.connect()
+    try:
+        await store.create_workspace("w-1", "u-1", name="my-lab", paths=["/a"])
+        # Backdate created_at/updated_at so the bump is observable despite
+        # _iso_now()'s 1-second granularity.
+        conn = await store._connected()
+        await conn.execute(
+            "UPDATE workspaces SET created_at = ?, updated_at = ? WHERE workspace_id = ?",
+            ("2020-01-01T00:00:00Z", "2020-01-01T00:00:00Z", "w-1"),
+        )
+        await conn.commit()
+        before = await store.get_workspace("w-1")
+
+        await store.update_workspace(
+            "w-1",
+            name="renamed",
+            paths=["/a", "/b"],
+            user_id="should-not-change",
+            created_at="should-not-change",
+        )
+        after = await store.get_workspace("w-1")
+
+        assert after["name"] == "renamed"
+        assert after["paths"] == ["/a", "/b"]
+        assert after["workspace_id"] == "w-1"
+        assert after["user_id"] == "u-1"
+        assert after["created_at"] == before["created_at"]
+        assert after["updated_at"] != before["updated_at"]
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
 async def test_upsert_user_and_touch(tmp_path):
     """Upsert user, get it back, touch it, and verify last_active updates."""
     store = LocalStore(tmp_path / "s.sqlite")

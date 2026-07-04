@@ -340,6 +340,85 @@ class LocalStore:
             "updated_at": r[8],
         }
 
+    async def create_workspace(
+        self,
+        workspace_id: str,
+        user_id: str,
+        *,
+        name: str,
+        paths: list[str] | None = None,
+        sources: list[str] | None = None,
+        description: str | None = None,
+        instructions: str | None = None,
+    ) -> None:
+        """Insert a fully-specified workspace (INSERT OR REPLACE)."""
+        conn = await self._connected()
+        now = _iso_now()
+        await conn.execute(
+            "INSERT OR REPLACE INTO workspaces"
+            " (workspace_id, user_id, name, paths, sources, description, instructions, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?,"
+            "   COALESCE((SELECT created_at FROM workspaces WHERE workspace_id = ?), ?), ?)",
+            (
+                workspace_id,
+                user_id,
+                name,
+                json.dumps(paths or []),
+                json.dumps(sources or []),
+                description,
+                instructions,
+                workspace_id,
+                now,
+                now,
+            ),
+        )
+        await conn.commit()
+
+    async def list_workspaces(self, user_id: str, *, limit: int = 100) -> list[dict]:
+        conn = await self._connected()
+        cur = await conn.execute(
+            "SELECT workspace_id, user_id, name, paths, sources, description, instructions,"
+            " created_at, updated_at FROM workspaces WHERE user_id = ?"
+            " ORDER BY created_at DESC LIMIT ?",
+            (user_id, limit),
+        )
+        rows = await cur.fetchall()
+        return [
+            {
+                "workspace_id": r[0],
+                "user_id": r[1],
+                "name": r[2],
+                "paths": json.loads(r[3]) if r[3] else [],
+                "sources": json.loads(r[4]) if r[4] else [],
+                "description": r[5],
+                "instructions": r[6],
+                "created_at": r[7],
+                "updated_at": r[8],
+            }
+            for r in rows
+        ]
+
+    async def update_workspace(self, workspace_id: str, **fields) -> None:
+        """Set arbitrary workspace columns (immutable: workspace_id/user_id/created_at).
+        paths/sources are JSON-encoded if passed as lists. Always bumps updated_at."""
+        immutable = {"workspace_id", "user_id", "created_at"}
+        cols, vals = [], []
+        for k, v in fields.items():
+            if k in immutable:
+                continue
+            if k in ("paths", "sources") and isinstance(v, list):
+                v = json.dumps(v)
+            cols.append(f"{k} = ?")
+            vals.append(v)
+        cols.append("updated_at = ?")
+        vals.append(_iso_now())
+        if not cols:
+            return
+        vals.append(workspace_id)
+        conn = await self._connected()
+        await conn.execute(f"UPDATE workspaces SET {', '.join(cols)} WHERE workspace_id = ?", vals)
+        await conn.commit()
+
     # ── users ────────────────────────────────────────────────────────────
     async def upsert_user(self, user_id: str, display_name: str = "") -> None:
         conn = await self._connected()
