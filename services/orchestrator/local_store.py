@@ -13,6 +13,7 @@ counter; recent_turns returns seq>watermark newest-capped, ascending.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -24,6 +25,11 @@ import aiosqlite
 from .local_mode import local_state_db_path
 
 logger = logging.getLogger(__name__)
+
+
+def _iso_now() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS chat_turns (
@@ -38,6 +44,33 @@ CREATE TABLE IF NOT EXISTS chat_turns (
 );
 CREATE INDEX IF NOT EXISTS idx_chat_turns_session_seq
     ON chat_turns (session_id, seq);
+CREATE TABLE IF NOT EXISTS sessions (
+    session_id   TEXT PRIMARY KEY,
+    user_id      TEXT,
+    workspace_id TEXT,
+    task_preview TEXT,
+    created_at   TEXT NOT NULL,
+    completed_at TEXT,
+    ok           INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user_created ON sessions (user_id, created_at);
+CREATE TABLE IF NOT EXISTS workspaces (
+    workspace_id TEXT PRIMARY KEY,
+    user_id      TEXT,
+    name         TEXT,
+    paths        TEXT,
+    sources      TEXT,
+    description  TEXT,
+    instructions TEXT,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT
+);
+CREATE TABLE IF NOT EXISTS users (
+    user_id      TEXT PRIMARY KEY,
+    display_name TEXT,
+    created_at   TEXT,
+    last_active  TEXT
+);
 """
 
 
@@ -191,6 +224,150 @@ class LocalStore:
         except Exception as exc:  # best-effort — mirror the Mongo search_turns contract
             logger.error("LocalStore.search_turns failed (mode=%s): %s", mode, exc)
             return []
+
+    # ── sessions ─────────────────────────────────────────────────────────
+    async def record_session(
+        self,
+        session_id: str,
+        *,
+        user_id: str = "",
+        workspace_id: str = "",
+        task_preview: str = "",
+        created_at: str | None = None,
+    ) -> None:
+        """Insert (or replace) a session metadata row."""
+        conn = await self._connected()
+        await conn.execute(
+            "INSERT OR REPLACE INTO sessions"
+            " (session_id, user_id, workspace_id, task_preview, created_at, completed_at, ok)"
+            " VALUES (?, ?, ?, ?, ?,"
+            "   (SELECT completed_at FROM sessions WHERE session_id = ?),"
+            "   (SELECT ok FROM sessions WHERE session_id = ?))",
+            (
+                session_id,
+                user_id,
+                workspace_id,
+                task_preview,
+                created_at or _iso_now(),
+                session_id,
+                session_id,
+            ),
+        )
+        await conn.commit()
+
+    async def complete_session(self, session_id: str, ok: bool = True) -> None:
+        conn = await self._connected()
+        await conn.execute(
+            "UPDATE sessions SET completed_at = ?, ok = ? WHERE session_id = ?",
+            (_iso_now(), 1 if ok else 0, session_id),
+        )
+        await conn.commit()
+
+    async def list_sessions(
+        self, user_id: str, *, workspace_id: str | None = None, limit: int = 20
+    ) -> list[dict]:
+        """Newest-first session rows for a user (optionally scoped to a workspace)."""
+        conn = await self._connected()
+        if workspace_id:
+            cur = await conn.execute(
+                "SELECT session_id, user_id, workspace_id, task_preview, created_at, completed_at, ok"
+                " FROM sessions WHERE user_id = ? AND workspace_id = ?"
+                " ORDER BY created_at DESC LIMIT ?",
+                (user_id, workspace_id, limit),
+            )
+        else:
+            cur = await conn.execute(
+                "SELECT session_id, user_id, workspace_id, task_preview, created_at, completed_at, ok"
+                " FROM sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+                (user_id, limit),
+            )
+        rows = await cur.fetchall()
+        return [
+            {
+                "session_id": r[0],
+                "user_id": r[1],
+                "workspace_id": r[2],
+                "task_preview": r[3],
+                "created_at": r[4],
+                "completed_at": r[5],
+                "ok": (None if r[6] is None else bool(r[6])),
+            }
+            for r in rows
+        ]
+
+    # ── workspaces ───────────────────────────────────────────────────────
+    async def upsert_workspace(self, workspace_id: str, user_id: str) -> None:
+        """Insert a workspace on first sight; no-op if it already exists."""
+        conn = await self._connected()
+        now = _iso_now()
+        await conn.execute(
+            "INSERT OR IGNORE INTO workspaces"
+            " (workspace_id, user_id, name, paths, sources, description, instructions, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                workspace_id,
+                user_id,
+                f"workspace-{workspace_id[:8]}",
+                json.dumps([]),
+                json.dumps([]),
+                None,
+                None,
+                now,
+                now,
+            ),
+        )
+        await conn.commit()
+
+    async def get_workspace(self, workspace_id: str) -> dict | None:
+        conn = await self._connected()
+        cur = await conn.execute(
+            "SELECT workspace_id, user_id, name, paths, sources, description, instructions,"
+            " created_at, updated_at FROM workspaces WHERE workspace_id = ?",
+            (workspace_id,),
+        )
+        r = await cur.fetchone()
+        if r is None:
+            return None
+        return {
+            "workspace_id": r[0],
+            "user_id": r[1],
+            "name": r[2],
+            "paths": json.loads(r[3]) if r[3] else [],
+            "sources": json.loads(r[4]) if r[4] else [],
+            "description": r[5],
+            "instructions": r[6],
+            "created_at": r[7],
+            "updated_at": r[8],
+        }
+
+    # ── users ────────────────────────────────────────────────────────────
+    async def upsert_user(self, user_id: str, display_name: str = "") -> None:
+        conn = await self._connected()
+        now = _iso_now()
+        await conn.execute(
+            "INSERT OR IGNORE INTO users (user_id, display_name, created_at, last_active)"
+            " VALUES (?, ?, ?, ?)",
+            (user_id, display_name, now, now),
+        )
+        await conn.commit()
+
+    async def get_user(self, user_id: str) -> dict | None:
+        conn = await self._connected()
+        cur = await conn.execute(
+            "SELECT user_id, display_name, created_at, last_active FROM users WHERE user_id = ?",
+            (user_id,),
+        )
+        r = await cur.fetchone()
+        if r is None:
+            return None
+        return {"user_id": r[0], "display_name": r[1], "created_at": r[2], "last_active": r[3]}
+
+    async def touch_user(self, user_id: str) -> None:
+        conn = await self._connected()
+        await conn.execute(
+            "UPDATE users SET last_active = ? WHERE user_id = ?", (_iso_now(), user_id)
+        )
+        await conn.commit()
 
 
 _STORE: LocalStore | None = None
