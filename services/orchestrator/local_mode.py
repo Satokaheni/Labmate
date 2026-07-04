@@ -1,34 +1,15 @@
-"""Single source of truth for the ``LABMATE_LOCAL_MODE`` strangler flag.
+"""Local state path helpers for the local-only harness.
 
-Piece 0 of the local-harness re-architecture
-(docs/superpowers/specs/2026-07-03-local-harness-rearchitecture-design.md).
-
-When ON, Labmate runs as a self-contained LOCAL harness (SQLite state,
-in-process events, direct local tools) instead of the pod-hosted service
-(networked Redis/Mongo/Chroma + tool-delegation). Piece 0 only READS and
-logs this flag; each later migration piece adds its own ``if
-local_mode_enabled():`` branch at its own insertion point (see
-docs/superpowers/specs/2026-07-03-local-harness-seam-map.md).
-
-Default OFF (pod mode). Read at call time so tests can flip it per-test;
-mirrors ``message_repair_enabled()`` / ``conditional_gates_enabled()``.
+Resolves where Labmate keeps its per-user local state (SQLite checkpoint DB
+and related local files). experimental is local-mode only, so there is no
+flag to read here anymore — these helpers are used unconditionally by
+``services/orchestrator/graph.py`` to locate the SqliteSaver DB.
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
-
-_FALSEY = {"0", "false", "no", "off", ""}
-
-
-def local_mode_enabled() -> bool:
-    """True when ``LABMATE_LOCAL_MODE`` is set to any non-falsey value.
-
-    Default OFF. Falsey set (case-insensitive, whitespace-stripped):
-    ``{"0", "false", "no", "off", ""}``.
-    """
-    return os.getenv("LABMATE_LOCAL_MODE", "0").strip().lower() not in _FALSEY
 
 
 def local_state_dir() -> Path:

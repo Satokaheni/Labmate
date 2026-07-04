@@ -121,9 +121,8 @@ def _build_graph_with_direct_answer(monkeypatch):
     # context_manager will be set by the test.
 
     real_cp = MemorySaver()
-    with patch("pymongo.MongoClient", return_value=MagicMock()):
-        with patch("langgraph.checkpoint.mongodb.MongoDBSaver", return_value=real_cp):
-            graph, _ = graph_mod.build_graph(mock_orch, MagicMock())
+    with patch("services.orchestrator.graph._make_sqlite_checkpointer", return_value=real_cp):
+        graph, _ = graph_mod.build_graph(mock_orch, MagicMock())
     return graph, mock_orch
 
 

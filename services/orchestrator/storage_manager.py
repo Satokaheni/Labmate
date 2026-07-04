@@ -12,6 +12,7 @@ import redis.asyncio as aioredis
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from .db_indexes import ensure_indexes
+from .local_store import LocalStore, get_local_store
 from .memory_consolidator import MemoryConsolidator
 from .workspace_manager import WorkspaceManager
 
@@ -142,6 +143,14 @@ class StorageManager:
     @property
     def workspaces(self) -> WorkspaceManager:
         return self._workspaces
+
+    @property
+    def local_store(self) -> LocalStore:
+        """The local SQLite store (process-cached). Lazy — the connection opens
+        on first store call."""
+        if getattr(self, "_local_store", None) is None:
+            self._local_store = get_local_store()
+        return self._local_store
 
     @property
     def loop_checkpoint_collection(self):
@@ -325,57 +334,16 @@ class StorageManager:
         mode: str = "text",
         session_id: str | None = None,
     ) -> list[dict]:
-        """Keyword / regex search over the ``chat_turns`` collection.
+        """Keyword/regex search over local chat turns.
 
-        Returns ``[{"sessionId": ..., "seq": ..., "text": ...}]``.
-
-        * Empty / whitespace query → ``[]`` (no Mongo query).
-        * ``mode="text"`` → MongoDB ``$text`` full-text search (requires the
-          text index created by ``ensure_indexes``), ranked by textScore.
-        * ``mode="regex"`` → case-insensitive ``$regex`` scan, sorted by
-          ``createdAt`` descending (most recent first; no relevance score).
-        * ``session_id`` → scope to one session; omit to search all sessions.
-        * Any Mongo exception (e.g. invalid regex) → logged to stderr, returns
-          ``[]`` (never raises into the caller).
+        Returns ``[{"sessionId": ..., "seq": ..., "text": ...}]``. Empty query →
+        ``[]``. ``mode="text"`` = case-insensitive substring; ``mode="regex"`` =
+        Python regex. ``session_id`` scopes to one session. Best-effort (any error
+        → ``[]``) — delegated to the local SQLite store.
         """
-        if not (query or "").strip():
-            return []
-
-        base_filter: dict = {}
-        if session_id:
-            base_filter["sessionId"] = session_id
-
-        try:
-            col = self._db["chat_turns"]
-            if mode == "regex":
-                filt = {**base_filter, "text": {"$regex": query, "$options": "i"}}
-                cursor = (
-                    col.find(
-                        filt,
-                        {"sessionId": 1, "seq": 1, "text": 1},
-                    )
-                    .sort([("createdAt", -1)])
-                    .limit(top_k)
-                )
-            else:
-                # default: $text full-text search
-                filt = {**base_filter, "$text": {"$search": query}}
-                cursor = (
-                    col.find(
-                        filt,
-                        {"score": {"$meta": "textScore"}, "sessionId": 1, "seq": 1, "text": 1},
-                    )
-                    .sort([("score", {"$meta": "textScore"})])
-                    .limit(top_k)
-                )
-
-            return [
-                {"sessionId": doc.get("sessionId"), "seq": doc.get("seq"), "text": doc.get("text")}
-                async for doc in cursor
-            ]
-        except Exception as exc:
-            logger.error("search_turns failed (mode=%s): %s", mode, exc)
-            return []
+        return await self.local_store.search_turns(
+            query, mode=mode, session_id=session_id, limit=top_k
+        )
 
     # --- working cache (Redis KV) ---------------------------------------
     async def cache_set(self, key: str, value: str, ttl: int = 3600) -> None:
