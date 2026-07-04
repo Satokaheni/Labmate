@@ -52,12 +52,11 @@ def _orch_no_mcp(ctx):
 
 @given("an AsyncOrchestrator with no skill router and a stub bash seam")
 def _orch_stub_bash(ctx):
-    # For run_tests, we need a mock skill_router since the code-sandbox skill
-    # dispatch path requires it (the old exec_run bash-seam path is gone).
-    skill_router = AsyncMock()
-    orch = AsyncOrchestrator(skill_router=skill_router, mcp=None, workspace="/tmp")
+    # run_tests now runs as a direct local subprocess (no skill_router / client
+    # needed); the "bash seam" is asyncio.create_subprocess_shell, stubbed via
+    # the `_bash_returns` step below.
+    orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
     ctx["orch"] = orch
-    ctx["skill_router"] = skill_router
 
 
 @given("an AsyncOrchestrator with no skill router and a local tool client")
@@ -77,26 +76,28 @@ def _build_tools(ctx):
 
 @given(parsers.parse('the bash seam returns exit code {code:d} with output "{output}"'))
 def _bash_returns(ctx, code, output):
-    # Set up skill_router to return a code-sandbox run_tests envelope.
-    # The skill_router.execute() method returns {ok, result, error, detail}.
-    # The shape_sandbox_test_result helper parses this into {ok, exit_code, raw_output}.
+    # Stub asyncio.create_subprocess_shell: a fake proc whose communicate()
+    # (AsyncMock) resolves to (raw_output_bytes, None) and whose .returncode
+    # is set, mirroring a real subprocess result.
     raw_output = output.replace("\\n", "\n")
-    test_result = {
-        "passed": 0 if code != 0 else 1,
-        "failed": 0 if code == 0 else 1,
-        "errors": 0,
-        "output": raw_output,
-        "timed_out": False,
-    }
-    envelope = {
-        "ok": True,
-        "result": {
-            "content": [{"type": "text", "text": json.dumps(test_result)}],
-            "isError": code != 0,
-        },
-    }
-    if "skill_router" in ctx:
-        ctx["skill_router"].execute.return_value = envelope
+    fake_proc = MagicMock()
+    fake_proc.communicate = AsyncMock(return_value=(raw_output.encode("utf-8"), None))
+    fake_proc.returncode = code
+    fake_proc.kill = MagicMock()
+    fake_proc.wait = AsyncMock()
+    ctx["fake_proc"] = fake_proc
+
+
+@given("the bash seam times out")
+def _bash_times_out(ctx):
+    # communicate() never resolves within the timeout; asyncio.wait_for raises
+    # TimeoutError. The handler must kill() + wait() the proc and report 124.
+    fake_proc = MagicMock()
+    fake_proc.communicate = AsyncMock(side_effect=TimeoutError())
+    fake_proc.returncode = None
+    fake_proc.kill = MagicMock()
+    fake_proc.wait = AsyncMock()
+    ctx["fake_proc"] = fake_proc
 
 
 @given(
@@ -185,6 +186,8 @@ def _run_goal(ctx, goal):
             return {"content": ctx.get("readback")}
         return {"ok": True}
 
+    subprocess_mock = AsyncMock(return_value=ctx.get("fake_proc"))
+
     with (
         patch(
             "services.orchestrator.coding_orchestrator.litellm.acompletion",
@@ -193,6 +196,10 @@ def _run_goal(ctx, goal):
         ),
         patch("services.orchestrator.coding_orchestrator.events.emit", new=_emit),
         patch("services.orchestrator.coding_orchestrator.execute_local_tool", new=_local),
+        patch(
+            "services.orchestrator.coding_orchestrator.asyncio.create_subprocess_shell",
+            new=subprocess_mock,
+        ),
     ):
         ctx["result"] = run_async(orch.react_execute(goal))
 
@@ -242,6 +249,12 @@ def _result_exit(ctx, code):
 @then(parsers.parse('the tool result raw_output contains "{needle}"'))
 def _result_raw_contains(ctx, needle):
     assert needle in _run_tests_payload(ctx)["raw_output"]
+
+
+@then("the subprocess was killed")
+def _subprocess_killed(ctx):
+    ctx["fake_proc"].kill.assert_called_once()
+    ctx["fake_proc"].wait.assert_awaited_once()
 
 
 # ── Then: write_file verification assertions ─────────────────────────────────

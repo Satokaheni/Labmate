@@ -45,25 +45,17 @@ def ctx():
 
 @given("a verification-stop AsyncOrchestrator with no skill router and no mcp")
 def _orch(ctx, tmp_path):
-    # Set up skill_router to return a code-sandbox run_tests envelope (PASSING).
-    skill_router = AsyncMock()
-    test_result = {
-        "passed": 1,
-        "failed": 0,
-        "errors": 0,
-        "output": "1 passed",
-        "timed_out": False,
-    }
-    envelope = {
-        "ok": True,
-        "result": {
-            "content": [{"type": "text", "text": json.dumps(test_result)}],
-            "isError": False,
-        },
-    }
-    skill_router.execute.return_value = envelope
+    # run_tests now runs as a direct local subprocess; stub
+    # asyncio.create_subprocess_shell with a fake proc reporting a PASSING run
+    # (exit 0), applied in the `_run` when-step below.
+    fake_proc = MagicMock()
+    fake_proc.communicate = AsyncMock(return_value=(b"1 passed", None))
+    fake_proc.returncode = 0
+    fake_proc.kill = MagicMock()
+    fake_proc.wait = AsyncMock()
+    ctx["fake_proc"] = fake_proc
 
-    orch = AsyncOrchestrator(skill_router=skill_router, mcp=None, workspace=str(tmp_path))
+    orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace=str(tmp_path))
     # write_file/read_file now execute directly (execute_local_tool) against a
     # real tmp_path workspace; the read-back verify reads the real file it
     # just wrote, so no local-tool mock is needed. local_client stays truthy
@@ -124,11 +116,17 @@ def _run(ctx, goal):
     async def run_with_capture():
         token = _events.current_emitter.set(_Emitter())
         try:
-            with patch(
-                "services.orchestrator.coding_orchestrator.litellm.acompletion",
-                new_callable=AsyncMock,
-                side_effect=ctx["responses"],
-            ) as mock_compl:
+            with (
+                patch(
+                    "services.orchestrator.coding_orchestrator.litellm.acompletion",
+                    new_callable=AsyncMock,
+                    side_effect=ctx["responses"],
+                ) as mock_compl,
+                patch(
+                    "services.orchestrator.coding_orchestrator.asyncio.create_subprocess_shell",
+                    new=AsyncMock(return_value=ctx["fake_proc"]),
+                ),
+            ):
                 result = await ctx["orch"].react_execute(goal)
                 ctx["mock"] = mock_compl
                 return result

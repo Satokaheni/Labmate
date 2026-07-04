@@ -48,3 +48,14 @@ Feature: First-class run_tests tool and reliable write_file
     When react_execute runs the goal "update the file"
     Then the write_file tool result contains "verified"
     And the write_file tool result does not contain "verification failed"
+
+  Scenario: run_tests that hangs past its timeout is killed and reported as exit code 124
+    Given an AsyncOrchestrator with no skill router and a stub bash seam
+    And the bash seam times out
+    And the model calls run_tests with path "tests/" on turn 1
+    And the model calls finish with summary "tests timed out" on turn 2
+    When react_execute runs the goal "run the tests"
+    Then the tool result json has ok False
+    And the tool result json has exit_code 124
+    And the tool result raw_output contains "timed out"
+    And the subprocess was killed

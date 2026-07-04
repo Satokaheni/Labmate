@@ -40,18 +40,21 @@ def ctx():
 
 @given("a ReAct orchestrator with a broken test toolchain")
 def _orch_broken_toolchain(ctx, tmp_path):
-    # skill_router that returns an infra error (no tool available)
-    # The error will be shaped by shape_sandbox_test_result into a response
-    # that classify_test_attempt will mark as infra_error
-    skill_router = AsyncMock()
-    error_envelope = {
-        "ok": False,
-        "error": "skill_unavailable",
-        "detail": "run_tests tool not available",
-    }
-    skill_router.execute.return_value = error_envelope
+    # run_tests now runs as a direct local subprocess. Simulate a broken
+    # toolchain the way a real shell would report it: the subprocess runs
+    # (does not raise) but exits non-zero with output classify_test_attempt
+    # recognizes as an infra marker ("command not found" -> pytest/test
+    # runner missing), so the SAME accounting path used by a real run
+    # (shape_run_tests_result -> classify_test_attempt) marks it infra_error,
+    # matching the pod-era "run_tests tool not available" scenario.
+    fake_proc = MagicMock()
+    fake_proc.communicate = AsyncMock(return_value=(b"/bin/sh: pytest: command not found", None))
+    fake_proc.returncode = 127
+    fake_proc.kill = MagicMock()
+    fake_proc.wait = AsyncMock()
+    ctx["fake_proc"] = fake_proc
 
-    orch = AsyncOrchestrator(skill_router=skill_router, mcp=None, workspace=str(tmp_path))
+    orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace=str(tmp_path))
     # write_file/read_file now execute directly (execute_local_tool) against a
     # real tmp_path workspace; the read-back verify reads the real file it
     # just wrote, so no local-tool mock is needed. local_client stays truthy
@@ -97,11 +100,17 @@ def _run(ctx):
     async def run_with_capture():
         token = _events.current_emitter.set(_Emitter())
         try:
-            with patch(
-                "services.orchestrator.coding_orchestrator.litellm.acompletion",
-                new_callable=AsyncMock,
-                side_effect=ctx["responses"],
-            ) as mock_compl:
+            with (
+                patch(
+                    "services.orchestrator.coding_orchestrator.litellm.acompletion",
+                    new_callable=AsyncMock,
+                    side_effect=ctx["responses"],
+                ) as mock_compl,
+                patch(
+                    "services.orchestrator.coding_orchestrator.asyncio.create_subprocess_shell",
+                    new=AsyncMock(return_value=ctx["fake_proc"]),
+                ),
+            ):
                 result = await ctx["orch"].react_execute("fix the bug")
                 ctx["mock"] = mock_compl
                 return result
@@ -133,7 +142,8 @@ def _no_pass_claim(ctx):
 @then("the unverified note contains the specific infra reason")
 def _infra_reason_captured(ctx):
     summary = ctx["result"]["summary"]
-    # The reason should be "test toolchain error: skill_unavailable" (from the mock error)
+    # The reason should be "test toolchain error: command not found" (the
+    # infra marker classify_test_attempt matched in the fake subprocess output).
     assert (
-        "skill_unavailable" in summary.lower()
-    ), f"Expected specific infra reason 'skill_unavailable' in summary, got: {summary}"
+        "command not found" in summary.lower()
+    ), f"Expected specific infra reason 'command not found' in summary, got: {summary}"

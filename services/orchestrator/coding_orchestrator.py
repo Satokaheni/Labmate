@@ -22,9 +22,9 @@ from .iteration_budget import REFUNDABLE_TOOLS, IterationBudget
 from .load_skill_guard import already_loaded_message, is_repeat_load
 from .local_tools import (
     LOCAL_TOOL_NAMES,
-    build_sandbox_test_args,
+    build_run_tests_command,
     request_local_tool,
-    shape_sandbox_test_result,
+    shape_run_tests_result,
     verify_written_content,
 )
 from .loop_checkpoint import LoopCheckpoint
@@ -320,8 +320,8 @@ class AsyncOrchestrator:
         # Truthy sentinel: "a local-tool client is attached to this process".
         # Gates the local-tool dispatch branches below (read_file/write_file/
         # list_dir execute directly via execute_local_tool now that the
-        # orchestrator is co-located; run_tests still uses request_local_tool,
-        # which requires a real client on the other end of the event bus).
+        # orchestrator is co-located; run_tests now runs as a direct local
+        # subprocess via asyncio.create_subprocess_shell, no client needed).
         # None in unit tests that don't attach a client.
         self.local_client = local_client
         # In-process steer/cancel signal registry (Piece 4). None in unit tests
@@ -1190,104 +1190,52 @@ class AsyncOrchestrator:
                                 edited_files |= _sb_writes
 
                     elif name == "run_tests":
-                        # First-class test runner. Two paths:
-                        # 1. Client-routed when the client declared run_tests.
-                        # 2. Pod code-sandbox fallback (when no client attached).
-                        # In both cases, apply the same verification accounting
-                        # (tests_passed, infra_error_streak, _bug_exposed).
-                        if self.local_client is not None and "run_tests" in local_tool_names:
-                            # Client-routed: tests run on the client side via local
-                            # tool handler; we get back {ok, exit_code, raw_output}.
+                        # Direct local subprocess (co-located; no client, no sandbox skill).
+                        try:
+                            command, _timeout_ms = build_run_tests_command(args)
+                            proc = await asyncio.create_subprocess_shell(
+                                command,
+                                cwd=self.workspace,
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.STDOUT,
+                            )
                             try:
-                                # Tests can run for minutes — give the round-trip a long
-                                # deadline. The client enforces its own timeout and returns
-                                # a 124 exit code if it times out.
-                                _tms = args.get("timeout_ms")
-                                _ms = (
-                                    float(_tms)
-                                    if isinstance(_tms, int | float) and _tms
-                                    else float(os.getenv("LABMATE_TEST_TIMEOUT_MS", "120000"))
+                                _out, _ = await asyncio.wait_for(
+                                    proc.communicate(), timeout=_timeout_ms / 1000.0
                                 )
-                                _test_timeout_s = max(30.0, _ms / 1000.0 + 15.0)
-                                result = await request_local_tool(
-                                    "run_tests", args, timeout=_test_timeout_s
-                                )
-                                if isinstance(result, dict):
-                                    shaped = {
-                                        "ok": bool(result.get("ok")),
-                                        "exit_code": int(result.get("exit_code", 1)),
-                                        "raw_output": str(result.get("raw_output", ""))[-8000:],
-                                    }
-                                else:
-                                    shaped = {
-                                        "ok": False,
-                                        "exit_code": 1,
-                                        "raw_output": str(result)[-8000:],
-                                    }
-                                content = ground_tool_result(
-                                    json.dumps(shaped), LABMATE_TOOL_RESULT_BUDGET
-                                )
-                                # SAME verification accounting as the pod path (kept in sync).
-                                if _run_tests_passed(content):
-                                    tests_passed = True
-                                _outcome = classify_test_attempt(content)
-                                if _outcome.infra_error:
-                                    infra_error_streak += 1
-                                    _last_infra_reason = _outcome.reason
-                                elif _outcome.ran:
-                                    infra_error_streak = 0
-                                # Expose-bug inversion: a test that RAN and FAILED
-                                # exposes the bug -> that IS the verification.
-                                if (
-                                    _expose_bug
-                                    and _outcome.ran
-                                    and not _outcome.passed
-                                    and not _outcome.infra_error
-                                ):
-                                    _bug_exposed = True
-                                    tests_passed = True
-                            except Exception as exc:
-                                content = json.dumps({"error": str(exc)})
-                        elif self.skill_router is not None:
-                            # Pod code-sandbox fallback (no client attached).
-                            # pytest is BLOCKED through the generic exec_run bash seam
-                            # (sandbox rule), so route to the code-sandbox skill's run_tests
-                            # tool, which runs the REAL pytest suite (LocalSubprocessExecutor
-                            # on RunPod). Always an ABSOLUTE test_path rooted at the workspace.
-                            sb_args = build_sandbox_test_args(args, self.workspace)
-                            try:
-                                envelope = await self.skill_router.execute(
-                                    "code-sandbox",
-                                    "run_tests",
-                                    sb_args,
-                                    timeout=min(sb_args["timeout"] + 15, SKILL_CALL_TIMEOUT),
-                                )
-                                shaped = shape_sandbox_test_result(envelope)
-                                content = ground_tool_result(
-                                    json.dumps(shaped), LABMATE_TOOL_RESULT_BUDGET
-                                )
-                                if _run_tests_passed(content):
-                                    tests_passed = True
-                                _outcome = classify_test_attempt(content)
-                                if _outcome.infra_error:
-                                    infra_error_streak += 1
-                                    _last_infra_reason = _outcome.reason
-                                elif _outcome.ran:
-                                    infra_error_streak = 0
-                                # Expose-bug inversion: a test that RAN and FAILED
-                                # exposes the bug -> that IS the verification.
-                                if (
-                                    _expose_bug
-                                    and _outcome.ran
-                                    and not _outcome.passed
-                                    and not _outcome.infra_error
-                                ):
-                                    _bug_exposed = True
-                                    tests_passed = True
-                            except Exception as exc:
-                                content = json.dumps({"error": str(exc)})
-                        else:
-                            content = json.dumps({"error": "no test runner available"})
+                                _exit = proc.returncode if proc.returncode is not None else 1
+                                _raw = (_out or b"").decode("utf-8", errors="replace")
+                            except TimeoutError:
+                                try:
+                                    proc.kill()
+                                    await proc.wait()
+                                except ProcessLookupError:
+                                    pass
+                                _exit = 124
+                                _raw = f"run_tests timed out after {_timeout_ms}ms"
+                            shaped = shape_run_tests_result(_exit, _raw)
+                            content = ground_tool_result(
+                                json.dumps(shaped), LABMATE_TOOL_RESULT_BUDGET
+                            )
+                            # Verification accounting (UNCHANGED from the prior paths).
+                            if _run_tests_passed(content):
+                                tests_passed = True
+                            _outcome = classify_test_attempt(content)
+                            if _outcome.infra_error:
+                                infra_error_streak += 1
+                                _last_infra_reason = _outcome.reason
+                            elif _outcome.ran:
+                                infra_error_streak = 0
+                            if (
+                                _expose_bug
+                                and _outcome.ran
+                                and not _outcome.passed
+                                and not _outcome.infra_error
+                            ):
+                                _bug_exposed = True
+                                tests_passed = True
+                        except Exception as exc:  # noqa: BLE001
+                            content = json.dumps({"error": str(exc)})
 
                     elif name in local_tool_names:
                         if self.local_client is not None:
