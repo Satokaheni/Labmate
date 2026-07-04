@@ -94,6 +94,14 @@ CREATE TABLE IF NOT EXISTS session_kv (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (namespace, session_id)
 );
+CREATE TABLE IF NOT EXISTS auth_users (
+    id            TEXT PRIMARY KEY,
+    email         TEXT UNIQUE NOT NULL,
+    display_name  TEXT,
+    password_hash TEXT NOT NULL,
+    role          TEXT NOT NULL,
+    created_at    TEXT NOT NULL
+);
 """
 
 
@@ -471,6 +479,50 @@ class LocalStore:
             "UPDATE users SET last_active = ? WHERE user_id = ?", (_iso_now(), user_id)
         )
         await conn.commit()
+
+    # ── auth users (ws_gateway account store) ────────────────────────────
+    async def auth_user_find_by_email(self, email: str) -> dict | None:
+        conn = await self._connected()
+        cur = await conn.execute(
+            "SELECT id, email, display_name, password_hash, role, created_at"
+            " FROM auth_users WHERE email = ?",
+            (email.lower(),),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row[0],
+            "email": row[1],
+            "displayName": row[2],
+            "passwordHash": row[3],
+            "role": row[4],
+            "createdAt": row[5],
+        }
+
+    async def auth_user_create(
+        self,
+        *,
+        id: str,
+        email: str,
+        display_name: str,
+        password_hash: str,
+        role: str,
+        created_at: str,
+    ) -> None:
+        conn = await self._connected()
+        await conn.execute(
+            "INSERT INTO auth_users (id, email, display_name, password_hash, role, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (id, email.lower(), display_name, password_hash, role, created_at),
+        )
+        await conn.commit()
+
+    async def auth_user_count(self) -> int:
+        conn = await self._connected()
+        cur = await conn.execute("SELECT COUNT(*) FROM auth_users")
+        (n,) = await cur.fetchone()
+        return int(n)
 
     # ── per-session KV (compaction state: core/summary/anchor/summarized_through) ──
     async def session_kv_get(self, namespace: str, session_id: str) -> str | None:
