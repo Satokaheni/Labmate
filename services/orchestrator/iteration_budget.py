@@ -30,7 +30,7 @@ CHEAP_TOOLS: frozenset[str] = frozenset(
 
 # Refundable tools: a SUPERSET of CHEAP_TOOLS. In addition to pure reads, a
 # turn that only ran verification (run_tests / run_bash) or inspection
-# (code_semantic_search / memory_search) is refunded, so checking the work
+# (code_semantic_search / session_search) is refunded, so checking the work
 # does not starve the editing budget. CHEAP_TOOLS stays intact for callers
 # that mean "pure read only".
 REFUNDABLE_TOOLS: frozenset[str] = CHEAP_TOOLS | frozenset(
@@ -38,7 +38,6 @@ REFUNDABLE_TOOLS: frozenset[str] = CHEAP_TOOLS | frozenset(
         "run_tests",
         "run_bash",
         "code_semantic_search",
-        "memory_search",
         "session_search",
     }
 )

@@ -1,15 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
-import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from rank_bm25 import BM25Okapi
-
-from services.memory.reranker import rerank
 from services.memory.tokenizer import token_count
 
 _logger = logging.getLogger(__name__)
@@ -109,7 +104,9 @@ class ContextManager:
         )
         remaining = b.effective_budget - pinned_tokens
 
-        # 2. RAG evidence — hybrid BM25 + dense → RRF → rerank
+        # 2. RAG evidence — INERT since Piece 3 dropped Chroma (hybrid_retrieve
+        #    returns []); the slot resolves to empty text. Kept as a no-op seam
+        #    for a future local recall backend (SQLite-FTS).
         rag_budget = min(b.slot(b.rag_share), max(0, remaining))
         rag_chunks = await self.hybrid_retrieve(current_task, token_budget=rag_budget)
         await self._boost_retrieved(rag_chunks)
@@ -205,94 +202,22 @@ class ContextManager:
         final_k: int = 8,
         token_budget: int = 2_800,
     ) -> list[dict]:
-        """Two-stage hybrid retrieval: BM25 + Chroma dense → RRF (k=60) → rerank.
+        """RAG retrieval is inert (no Chroma-backed vector store) — always returns [].
 
-        1. Dense: Chroma query per collection → candidate ids + docs
-        2. Sparse: BM25Okapi on the candidate set → ranked ids
-        3. RRF fusion (k=60): rank-based score sum across all rankings
-        4. Cross-encoder rerank of fused top-50 → final_k results
-        5. Pack into token_budget (highest score first)
+        Kept as a no-op so build_context()'s call site remains unchanged (the
+        RAG slot of the assembled prompt is simply empty). Continuity (recent
+        turns, summary, anchor) is unaffected — see conversation_context/
+        _recent_turns for the live continuity path.
         """
-        cols = collections or ["semantic", "episodic"]
-        query_vec = (await self.embed([query]))[0]
-
-        all_docs: dict[str, str] = {}
-        dense_rankings: list[list[str]] = []
-        bm25_rankings: list[list[str]] = []
-
-        for col_name in cols:
-            if col_name not in self.chroma:
-                continue
-            col = self.chroma[col_name]
-            res = await col.query(
-                query_embeddings=[query_vec],
-                n_results=min(top_k_first_stage, 100),
-                include=["documents", "metadatas"],
-            )
-            ids = res["ids"][0]
-            docs = res["documents"][0]
-
-            for cid, doc in zip(ids, docs, strict=False):
-                all_docs[cid] = doc
-            dense_rankings.append(ids)
-
-            if ids:
-                tokenized = [d.lower().split() for d in docs]
-                bm25 = BM25Okapi(tokenized, k1=1.5, b=0.75)
-                scores = bm25.get_scores(query.lower().split())
-                bm25_ranked = [ids[i] for i in sorted(range(len(scores)), key=lambda x: -scores[x])]
-                bm25_rankings.append(bm25_ranked)
-
-        if not all_docs:
-            return []
-
-        # RRF fusion (k=60)
-        rrf_scores: dict[str, float] = {}
-        for ranking in dense_rankings + bm25_rankings:
-            for rank, doc_id in enumerate(ranking, start=1):
-                rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + 1.0 / (60 + rank)
-
-        shortlist_ids = sorted(rrf_scores, key=lambda x: -rrf_scores[x])[:top_k_first_stage]
-        shortlist_docs = [all_docs[cid] for cid in shortlist_ids if cid in all_docs]
-
-        if not shortlist_docs:
-            return []
-
-        # Cross-encoder rerank
-        scores = await rerank(query, shortlist_docs)
-        ranked = sorted(
-            zip(scores, shortlist_ids, shortlist_docs, strict=False),
-            key=lambda x: -x[0],
-        )
-
-        # Pack into token budget (highest score first)
-        results = []
-        used = 0
-        for score, cid, text in ranked[:final_k]:
-            t = token_count(text)
-            if used + t > token_budget:
-                break
-            used += t
-            results.append({"id": cid, "text": text, "score": float(score)})
-
-        return results
+        return []
 
     async def _boost_retrieved(self, chunks: list[dict]) -> None:
-        """Increment importance on every retrieved memory (best-effort, non-blocking).
+        """No-op — importance-boost was semantic-memory/Chroma-only machinery.
 
-        Fire-and-forget: a boost failure must never break context assembly.
-        No-op when no storage hook is wired (e.g. unit tests of pure retrieval).
+        hybrid_retrieve always returns [] now, so this is never invoked with
+        real chunks, but kept as a stable no-op call site.
         """
-        if not self.storage or not chunks:
-            return
-        for c in chunks:
-            cid = c.get("id")
-            if not cid:
-                continue
-            try:
-                await self.storage.boost_memory_importance(cid, delta=0.1)
-            except Exception:
-                _logger.debug("importance boost failed for %s", cid)
+        return None
 
     # ── Compaction ────────────────────────────────────────────────────────────
 
@@ -613,109 +538,3 @@ class ContextManager:
         except Exception:
             _logger.warning("background compact failed (non-fatal)", exc_info=True)
             return None
-
-    # ── Consolidation worker ──────────────────────────────────────────────────
-
-    async def consolidation_worker(
-        self,
-        llm_extract,
-        llm_decide,
-    ) -> None:
-        """Background coroutine — reads from Redis Stream "consolidate", extracts
-        semantic facts, reconciles them with existing archival memory, trims core.
-
-        llm_extract: async (core_text: str) -> list[str]
-        llm_decide:  async (candidate: str, similar: list[dict]) -> "ADD"|"UPDATE"|"DELETE"|"NOOP"
-
-        Never called on the agent's hot path.
-        """
-        try:
-            await self.redis.xgroup_create(
-                "consolidate", "consolidation_workers", id="0", mkstream=True
-            )
-        except Exception:
-            pass  # BUSYGROUP — group already exists
-
-        while True:
-            entries = await self.redis.xreadgroup(
-                groupname="consolidation_workers",
-                consumername="consolidator-1",
-                streams={"consolidate": ">"},
-                count=5,
-                block=10_000,
-            )
-            if not entries:
-                continue
-            for _, messages in entries:
-                for entry_id, fields in messages:
-                    session_id = fields.get(b"session_id", fields.get("session_id", ""))
-                    try:
-                        await self._consolidate_session(session_id, llm_extract, llm_decide)
-                    except Exception as exc:
-                        _logger.exception("consolidation error for session %s: %s", session_id, exc)
-                    finally:
-                        await self.redis.xack("consolidate", "consolidation_workers", entry_id)
-
-    async def _consolidate_session(
-        self,
-        session_id: str,
-        llm_extract,
-        llm_decide,
-    ) -> None:
-        """Extract facts from core memory, reconcile against semantic, trim cap."""
-        core_text = await self.redis.get(f"core:{session_id}") or ""
-        if not core_text.strip():
-            return
-
-        facts: list[str] = await llm_extract(core_text)
-
-        for fact in facts:
-            similar = await self.hybrid_retrieve(fact, collections=["semantic"], final_k=5)
-            op: str = await llm_decide(fact, similar)
-
-            if op in ("ADD", "UPDATE"):
-                await self._upsert_semantic(session_id, fact)
-            elif op == "DELETE":
-                for s in similar:
-                    await self.chroma["semantic"].delete(ids=[s["id"]])
-            # NOOP: do nothing
-
-        await self._trim_core_memory(session_id)
-
-    async def _upsert_semantic(self, session_id: str, text: str) -> None:
-        """Embed a fact and upsert into the semantic Chroma collection.
-
-        Chroma ID is sha1(session_id:text) — idempotent across retries.
-        """
-        cid = hashlib.sha1(f"{session_id}:{text}".encode()).hexdigest()
-        vec = (await self.embed([text]))[0]
-        await self.chroma["semantic"].upsert(
-            ids=[cid],
-            embeddings=[vec],
-            documents=[text],
-            metadatas=[
-                {
-                    "session_id": session_id,
-                    "created_at": time.time(),
-                    "embed_model": "BAAI/bge-small-en-v1.5",
-                    "importance": 0.5,
-                    "source": "consolidation",
-                }
-            ],
-        )
-
-    async def _trim_core_memory(self, session_id: str) -> None:
-        """Evict oldest non-goal lines from core memory until under the 3,000-token cap.
-
-        Line 0 is the pinned goal — it is NEVER evicted (Sisyphus Trap prevention).
-        """
-        CORE_CAP = 3_000
-        key = f"core:{session_id}"
-        text = await self.redis.get(key) or ""
-        lines = [line for line in text.splitlines() if line.strip()]
-        if len(lines) <= 1:
-            return
-        pinned, evictable = lines[0], lines[1:]
-        while token_count("\n".join([pinned] + evictable)) > CORE_CAP and evictable:
-            evictable.pop(0)
-        await self.redis.set(key, "\n".join([pinned] + evictable))

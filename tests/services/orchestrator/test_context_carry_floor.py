@@ -42,12 +42,8 @@ def _make_storage(total_tokens: int):
     storage.workspaces.upsert_workspace = AsyncMock()
     storage.workspaces.complete_session = AsyncMock()
 
-    storage.cache_get = AsyncMock(return_value="1")  # decay already swept -> skip
+    storage.cache_get = AsyncMock(return_value="1")
     storage.cache_set = AsyncMock()
-    storage.decay_expired_memories = AsyncMock()
-
-    storage.consolidator.on_task_complete = AsyncMock()
-    storage.consolidator.write_reflections = AsyncMock()
     return storage
 
 

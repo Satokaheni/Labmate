@@ -10,7 +10,7 @@ from services.orchestrator.storage_manager import StorageManager
 
 
 def _storage():
-    return StorageManager.from_clients(mongo=MagicMock(), chroma=MagicMock(), redis=MagicMock())
+    return StorageManager.from_clients(mongo=MagicMock(), redis=MagicMock())
 
 
 @pytest.fixture(autouse=True)

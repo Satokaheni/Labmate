@@ -88,7 +88,6 @@ def test_build_tool_list_advertises_doc_skill_without_leaking_body():
         _manifest(),
         skill_router=None,
         codegraph_enabled=False,
-        memory_enabled=False,
         static_tail=_static_tail_schemas(),
     )
     load_skill = next((t for t in tools if t.get("function", {}).get("name") == "load_skill"), None)
@@ -105,7 +104,6 @@ def test_prompt_assembler_catalog_has_description_not_body():
     assembler = PromptAssembler(
         skill_router=None,
         codegraph_enabled=False,
-        memory_enabled=False,
         client_manifest=_manifest(),
     )
     system_text = assembler.system_message()["content"]

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 
 def pytest_configure(config):
@@ -53,22 +54,6 @@ def mock_mongo():
 
 
 @pytest.fixture
-def mock_chroma():
-    """chromadb.AsyncHttpClient mock with get_or_create_collection."""
-    client = AsyncMock(name="AsyncHttpClient")
-    collection = AsyncMock(name="chroma_collection")
-    collection.query.return_value = {
-        "ids": [["mongo_id_1"]],
-        "documents": [["a fact"]],
-        "metadatas": [[{"session_id": "s1"}]],
-        "distances": [[0.1]],
-    }
-    client.get_or_create_collection.return_value = collection
-    client._collection = collection  # test hook
-    return client
-
-
-@pytest.fixture
 def mock_redis():
     """redis.asyncio client mock."""
     r = AsyncMock(name="redis")
@@ -79,9 +64,8 @@ def mock_redis():
 
 
 @pytest.fixture
-def storage(mock_mongo, mock_chroma, mock_redis):
-    """A StorageManager with all three backends injected as mocks."""
+def storage(mock_mongo, mock_redis):
+    """A StorageManager with both backends injected as mocks."""
     from services.orchestrator.storage_manager import StorageManager
-    return StorageManager.from_clients(
-        mongo=mock_mongo, chroma=mock_chroma, redis=mock_redis
-    )
+
+    return StorageManager.from_clients(mongo=mock_mongo, redis=mock_redis)

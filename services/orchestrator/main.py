@@ -3,14 +3,13 @@ Orchestrator process entrypoint.
 
 Bootstraps in order:
   1. Logging (stderr only)
-  2. StorageManager  (MongoDB + Chroma + Redis — reads MONGO_URI / CHROMA_URL / REDIS_URL)
+  2. StorageManager  (MongoDB + Redis — reads MONGO_URI / REDIS_URL)
   3. MCPClientManager (spawns MCP bridge subprocess, waits for ready)
   4. LangGraph       (build_graph with local SqliteSaver checkpointer)
   5. Goal loop       (XREADGROUP labmate:goals → run_task → write result)
 
 Env vars:
   MONGO_URI          mongodb://localhost:27017/labmate
-  CHROMA_URL         http://localhost:8765          (RunPod) | http://chroma:8000 (Docker)
   REDIS_URL          redis://localhost:6379/0
   GEMMA_BASE         http://localhost:8000/v1
   QWEN_BASE          (defaults to GEMMA_BASE on single-GPU)
@@ -53,7 +52,6 @@ from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingO
 from services.orchestrator.completion_guard import reconcile_final_answer
 from services.orchestrator.graph import GEMMA_BASE, QWEN_BASE, build_graph
 from services.orchestrator.mcp_client_manager import MCPClientManager
-from services.orchestrator.memory_search import MemorySearch
 from services.orchestrator.session_search import SessionSearch
 from services.orchestrator.skill_curator import (
     CapturedSequence,
@@ -328,7 +326,6 @@ class OrchestratorProcess:
             # Wire redis and codegraph_mcp outside the try/except (always available)
             async_orch.redis = self._redis
             async_orch.codegraph_mcp = self._codegraph_mcp
-            async_orch.memory_search = MemorySearch(_sm)
             async_orch.session_search = SessionSearch(_sm)
             # Wire context_manager for conversation continuity (best-effort)
             try:
@@ -466,12 +463,6 @@ class OrchestratorProcess:
                         session_id,
                         _bg_llm,
                     )
-                    if result and result.get("reflections"):
-                        asyncio.create_task(
-                            storage.consolidator.write_reflections(
-                                session_id, result["reflections"]
-                            )
-                        )
                     if result:
                         _log.info(
                             "background compact: session %s pruned %d messages",
@@ -577,11 +568,6 @@ class OrchestratorProcess:
                     session_id,
                     llm_fn=_compact_llm,
                 )
-                # Write reflections extracted during compaction to semantic memory
-                if result.get("reflections"):
-                    asyncio.create_task(
-                        storage.consolidator.write_reflections(session_id, result["reflections"])
-                    )
                 await self._write_result(task_id, {"ok": True, **result})
                 return
 
@@ -707,22 +693,8 @@ class OrchestratorProcess:
                         task_id,
                         compact_result["pruned_messages"],
                     )
-                    if compact_result.get("reflections"):
-                        asyncio.create_task(
-                            storage.consolidator.write_reflections(
-                                session_id, compact_result["reflections"]
-                            )
-                        )
             except Exception as exc:
                 _log.warning("auto-compact check failed (non-fatal): %s", exc)
-
-            # Importance-based decay sweep (at most once/hour per session)
-            try:
-                if await storage.cache_get(f"decay_swept:{session_id}") is None:
-                    asyncio.create_task(storage.decay_expired_memories(session_id))
-                    await storage.cache_set(f"decay_swept:{session_id}", "1", ttl=3600)
-            except Exception:
-                pass  # decay is best-effort; never block task execution
 
             _log.info("task %s: %.80s", task_id, task_text)
             final_state = await orch.run_task(
@@ -815,18 +787,6 @@ class OrchestratorProcess:
                 )
             except Exception:
                 pass  # capture is best-effort
-            # Task-boundary reflection: write to semantic memory asynchronously
-            _final_answer = (
-                final_state.get("final_answer", "") if isinstance(final_state, dict) else ""
-            )
-            asyncio.create_task(
-                storage.consolidator.on_task_complete(
-                    session_id=session_id,
-                    goal=task_text[:500],
-                    success=ok_flag,
-                    summary=_final_answer[:1_000],
-                )
-            )
 
         except Exception:
             _log.exception("task %s failed", task_id)
@@ -837,15 +797,6 @@ class OrchestratorProcess:
                     "error": "task_failed",
                     "llm_calls": call_counter.get_count(),
                 },
-            )
-            # Failure reflection: always write — highest signal for learning
-            asyncio.create_task(
-                storage.consolidator.on_task_complete(
-                    session_id=session_id,
-                    goal=task_text[:500],
-                    success=False,
-                    summary="Task raised an unhandled exception.",
-                )
             )
         finally:
             # Stop the live context refresher before the final (accurate) emit below.
