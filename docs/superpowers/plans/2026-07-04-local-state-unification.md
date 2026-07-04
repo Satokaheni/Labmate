@@ -1077,6 +1077,8 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 - [ ] **Step 4: Stale-comment sweep** — fix the Mongo/round-trip prose in `eval/seq_ab/local_tool_responder.py` (docstring) and the `request_local_tool`/Mongo comment at `tests/services/orchestrator/test_tool_manifest.py:707` to reflect direct local execution + SQLite.
 
+- [ ] **Step 4b: Document the auth model** — in `infrastructure/local/INSTALL.md` (and a short note in `local.env` near ADMIN_EMAIL/ADMIN_PASSWORD), document: registration is CLOSED (no signup UI); the bootstrap **admin is auto-seeded on first boot** from `ADMIN_EMAIL`/`ADMIN_PASSWORD` (login is impossible if `ADMIN_PASSWORD` is unset — it must be set); **additional users** are created by an admin via `POST /auth/users` with the admin's Bearer token (admin-only, `services/ws_gateway/auth.py`), since the auth store now lives in the SQLite `auth_users` table. (A convenience add-user CLI / frontend affordance is deferred to Piece 7.)
+
 - [ ] **Step 5: Verify**
 
 Run:
