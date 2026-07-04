@@ -73,25 +73,6 @@ def test_translate_unknown_returns_none():
     assert translate_event(raw, turn_id="turn-1") is None
 
 
-def test_translate_tool_request_passthrough():
-    raw = {
-        "type": "tool.request",
-        "task_id": "t1",
-        "seq": 4,
-        "tool_request_id": "req-9",
-        "name": "read_file",
-        "args": {"path": "a.txt"},
-    }
-    out = translate_event(raw, turn_id="turn-1")
-    assert out == {
-        "type": "tool.request",
-        "turnId": "turn-1",
-        "toolRequestId": "req-9",
-        "name": "read_file",
-        "args": {"path": "a.txt"},
-    }
-
-
 def test_translate_context_to_context_update():
     raw = {
         "type": "context",

@@ -11,7 +11,6 @@ from typing import Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from services.cli.local_tool_executor import LOCAL_TOOL_NAMES, execute_local_tool
 from services.orchestrator import local_tools
 from services.orchestrator.inproc_bus import Subscription
 from services.ws_gateway.auth import AuthService, build_auth_router
@@ -50,13 +49,6 @@ async def _relay_task(
 
     Synthesizes reasoning.done from accumulated reasoning events before turn.done.
     Assembles and persists the complete assistant turn on turn.done (best-effort).
-
-    Co-located local `tool.request` fulfillment (Piece 4 T7c): when the gateway
-    runs in the same process as the orchestrator, LOCAL FS tools (read_file/
-    write_file/list_dir) are executed right here against the user's own
-    machine instead of being relayed to a WS client — the loop closes via
-    `local_tools.write_tool_result`, which `request_local_tool` is already
-    waiting on (it subscribed to `tool-results:<task_id>` before emitting).
     """
     reasoning_chunks: list[str] = []
     reasoning_node: str = "chat_node"
@@ -70,25 +62,6 @@ async def _relay_task(
     try:
         async for raw in sub:
             etype = raw.get("type")
-
-            # Co-located local tool.request fulfillment: LOCAL FS tools are
-            # executed right here (not relayed to the WS client) and the
-            # result is posted back on the bus, closing the loop with
-            # `request_local_tool`. Non-local (or client-declared) tools fall
-            # through to the normal relay path below, unchanged.
-            if etype == "tool.request" and runtime is not None:
-                name = raw.get("name")
-                if name in LOCAL_TOOL_NAMES:
-                    args = raw.get("args") or {}
-                    req_id = raw.get("tool_request_id")
-                    try:
-                        result = execute_local_tool(name, args, workspace=workspace_root or ".")
-                        await local_tools.write_tool_result(runtime.bus, task_id, req_id, result)
-                    except Exception as exc:  # noqa: BLE001 — surface as a tool.result error frame
-                        await local_tools.write_tool_result(
-                            runtime.bus, task_id, req_id, None, error=str(exc)
-                        )
-                    continue  # handled locally; do NOT relay tool.request to the WS
 
             # Accumulate answer text deltas
             if etype == "answer.delta":

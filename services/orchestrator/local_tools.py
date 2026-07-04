@@ -1,39 +1,27 @@
 """
-Local tool delegation: the remote orchestrator asks a local client (CLI or
-Electron, via ws_gateway) to run a filesystem tool on the USER's machine.
+Local tool execution helpers: pure builders/shapers used by the ReAct loop's
+local-tool dispatch (read_file/write_file/list_dir/search_files execute
+directly via execute_local_tool, co-located with the orchestrator; run_bash
+stays server-side per the sandbox rule). Path validation lives in the CLIENT
+executor, never here — this module never touches the user's disk directly.
 
-Protocol (transport: in-process EventBus, Piece 4):
-  1. subscribe to the topic  tool-results:<task_id>  (MUST happen before step 2
-     — the bus is post-subscribe-only, so subscribing after emitting would
-     miss a fast fulfiller's reply)
-  2. emit  {type:"tool.request", tool_request_id, task_id, name, args}
-           onto events:<task_id>  (the normal event stream)
-  3. await a frame on the tool-results topic whose tool_request_id matches
-  4. return its `result` payload, or raise on `error` / timeout
-
-Only read_file / write_file / list_dir are delegated. run_bash stays
-server-side (sandbox rule). Path validation lives in the CLIENT executor,
-never here — the orchestrator never touches the user's disk.
+`write_tool_result` remains: it is still called by the ws_gateway inbound
+`tool.result` WS-message handler (a real, non-co-located WS client posting
+back an answer), which is outside this task's scope (see Piece 5 5d brief).
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import shlex
-import time
-import uuid
 from typing import TYPE_CHECKING, Any
-
-from . import events
 
 if TYPE_CHECKING:
     from .inproc_bus import EventBus
 
 LOCAL_TOOL_NAMES: frozenset[str] = frozenset({"read_file", "write_file", "list_dir"})
 TOOL_RESULTS_TOPIC_PREFIX = "tool-results:"
-DEFAULT_TIMEOUT_S = 30.0
 
 RUN_TESTS_DEFAULT_CMD = "pytest"
 RUN_TESTS_TIMEOUT_MS_DEFAULT = 60000
@@ -92,68 +80,6 @@ def shape_run_tests_result(exit_code: int, raw_output: str) -> dict[str, Any]:
         "exit_code": int(exit_code),
         "raw_output": raw[-8000:],
     }
-
-
-def _current_task_id() -> str:
-    em = events.current_emitter.get()
-    if em is None:
-        raise RuntimeError("request_local_tool called with no active EventEmitter")
-    return em._task_id
-
-
-async def request_local_tool(
-    name: str,
-    args: dict[str, Any],
-    *,
-    timeout: float = DEFAULT_TIMEOUT_S,
-) -> Any:
-    """Emit a tool.request and await the matching frame on the tool-results topic.
-
-    Gets the EventBus from the active task's EventEmitter (events.current_bus()).
-    Returns the decoded `result` payload. Raises TimeoutError if no matching
-    result arrives within `timeout`, or RuntimeError if the client reports an
-    error for this request.
-    """
-    task_id = _current_task_id()
-    bus = events.current_bus()
-    if bus is None:
-        raise RuntimeError("request_local_tool called with no active event bus")
-
-    tool_request_id = uuid.uuid4().hex
-
-    # CRITICAL ORDERING: the bus is post-subscribe-only (no replay), so we
-    # MUST subscribe before emitting tool.request — otherwise a fast
-    # fulfiller's reply, published before we start listening, is missed.
-    sub = bus.subscribe(f"{TOOL_RESULTS_TOPIC_PREFIX}{task_id}")
-    try:
-        await events.emit(
-            "tool.request",
-            tool_request_id=tool_request_id,
-            name=name,
-            args=args,
-        )
-
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError(
-                    f"local tool {name!r} (request {tool_request_id}) timed out after {timeout}s"
-                )
-            try:
-                frame = await asyncio.wait_for(sub.__anext__(), timeout=remaining)
-            except TimeoutError:
-                continue  # loop re-checks the deadline
-            except StopAsyncIteration:
-                continue  # subscription closed externally; deadline check will fire
-            if frame.get("tool_request_id") != tool_request_id:
-                continue
-            err = frame.get("error")
-            if err:
-                raise RuntimeError(f"local tool {name!r} failed: {err}")
-            return frame.get("result")
-    finally:
-        sub.close()
 
 
 async def write_tool_result(

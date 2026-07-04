@@ -45,15 +45,6 @@ def translate_event(raw: dict, *, turn_id: str) -> dict | None:
             "durationMs": raw.get("duration_ms", 0),
         }
 
-    if etype == "tool.request":
-        return {
-            "type": "tool.request",
-            "turnId": turn_id,
-            "toolRequestId": raw.get("tool_request_id", ""),
-            "name": raw.get("name", ""),
-            "args": raw.get("args", {}),
-        }
-
     if etype == "answer.delta":
         return {"type": "answer.delta", "turnId": turn_id, "text": raw.get("text", "")}
 

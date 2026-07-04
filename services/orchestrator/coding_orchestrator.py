@@ -23,7 +23,6 @@ from .load_skill_guard import already_loaded_message, is_repeat_load
 from .local_tools import (
     LOCAL_TOOL_NAMES,
     build_run_tests_command,
-    request_local_tool,
     shape_run_tests_result,
     verify_written_content,
 )
@@ -1240,19 +1239,9 @@ class AsyncOrchestrator:
                     elif name in local_tool_names:
                         if self.local_client is not None:
                             try:
-                                # read_file/write_file/list_dir execute directly
-                                # (execute_local_tool, sync, no bus round-trip) now
-                                # that the orchestrator is co-located. Any other
-                                # manifest-declared local tool (e.g. search_files)
-                                # still goes through the request_local_tool bus
-                                # round-trip — execute_local_tool does not implement
-                                # it and would raise "unknown local tool".
-                                if name in LOCAL_TOOL_NAMES:
-                                    result = execute_local_tool(
-                                        name, args, workspace=self._tool_workspace()
-                                    )
-                                else:
-                                    result = await request_local_tool(name, args)
+                                result = execute_local_tool(
+                                    name, args, workspace=self._tool_workspace()
+                                )
                                 # Reliable write: after a write_file the client may
                                 # report success without the bytes landing. Read the
                                 # file back and confirm it matches what we asked to

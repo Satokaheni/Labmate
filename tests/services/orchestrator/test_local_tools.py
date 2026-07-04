@@ -3,129 +3,16 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
-from services.orchestrator import events
 from services.orchestrator.inproc_bus import EventBus
 from services.orchestrator.local_tools import (
     LOCAL_TOOL_NAMES,
     TOOL_RESULTS_TOPIC_PREFIX,
-    request_local_tool,
     write_tool_result,
 )
 
 
 def test_local_tool_names_are_the_three_file_tools():
     assert LOCAL_TOOL_NAMES == {"read_file", "write_file", "list_dir"}
-
-
-async def test_request_local_tool_emits_event_and_returns_result():
-    task_id = "task-abc"
-    bus = EventBus()
-    sub = bus.subscribe(f"{events.EVENTS_TOPIC_PREFIX}{task_id}")
-    emitter = events.EventEmitter(bus, task_id)
-    token = events.current_emitter.set(emitter)
-    seen_reqs: list[dict] = []
-    try:
-        # Simulate the local client: once a tool.request is published on the
-        # event bus, write a matching tool.result onto the tool-results topic.
-        async def fake_client() -> None:
-            async for ev in sub:
-                seen_reqs.append(ev)
-                if ev.get("type") == "tool.request":
-                    await write_tool_result(
-                        bus, task_id, ev["tool_request_id"], {"content": "hello"}
-                    )
-                    return
-
-        client_task = asyncio.create_task(fake_client())
-        out = await request_local_tool("read_file", {"path": "notes.txt"}, timeout=5.0)
-        await client_task
-        assert out == {"content": "hello"}
-
-        # The tool.request event was published with the expected shape.
-        reqs = [ev for ev in seen_reqs if ev.get("type") == "tool.request"]
-        assert len(reqs) == 1
-        assert reqs[0]["name"] == "read_file"
-        assert reqs[0]["args"] == {"path": "notes.txt"}
-        assert reqs[0]["task_id"] == task_id
-        assert "tool_request_id" in reqs[0]
-    finally:
-        events.current_emitter.reset(token)
-        sub.close()
-
-
-async def test_request_local_tool_times_out_when_no_result():
-    task_id = "task-timeout"
-    bus = EventBus()
-    emitter = events.EventEmitter(bus, task_id)
-    token = events.current_emitter.set(emitter)
-    try:
-        with pytest.raises(TimeoutError):
-            await request_local_tool("read_file", {"path": "x"}, timeout=0.3)
-    finally:
-        events.current_emitter.reset(token)
-
-
-async def test_request_local_tool_matches_only_its_own_request_id():
-    task_id = "task-mux"
-    bus = EventBus()
-    sub = bus.subscribe(f"{events.EVENTS_TOPIC_PREFIX}{task_id}")
-    emitter = events.EventEmitter(bus, task_id)
-    token = events.current_emitter.set(emitter)
-    try:
-        # The fake client only reacts once it observes the tool.request event,
-        # which request_local_tool only emits AFTER it has subscribed to the
-        # results topic — so both the stale (mismatched id) and real frames
-        # below are published to an already-subscribed listener. The stale
-        # frame must be skipped in favor of the one with the matching id.
-        async def fake_client() -> None:
-            async for ev in sub:
-                if ev.get("type") == "tool.request":
-                    # Stale/mismatched result first, then the real one.
-                    await write_tool_result(bus, task_id, "other", 1)
-                    await write_tool_result(bus, task_id, ev["tool_request_id"], 2)
-                    return
-
-        client_task = asyncio.create_task(fake_client())
-        out = await request_local_tool("list_dir", {"path": "."}, timeout=5.0)
-        await client_task
-        assert out == 2
-    finally:
-        events.current_emitter.reset(token)
-        sub.close()
-
-
-async def test_request_local_tool_raises_on_error_frame():
-    task_id = "task-err"
-    bus = EventBus()
-    sub = bus.subscribe(f"{events.EVENTS_TOPIC_PREFIX}{task_id}")
-    emitter = events.EventEmitter(bus, task_id)
-    token = events.current_emitter.set(emitter)
-    try:
-
-        async def fake_client_with_error() -> None:
-            async for ev in sub:
-                if ev.get("type") == "tool.request":
-                    await write_tool_result(
-                        bus, task_id, ev["tool_request_id"], None, error="permission denied"
-                    )
-                    return
-
-        client_task = asyncio.create_task(fake_client_with_error())
-        with pytest.raises(RuntimeError, match="permission denied"):
-            await request_local_tool("read_file", {"path": "x"}, timeout=5.0)
-        await client_task
-    finally:
-        events.current_emitter.reset(token)
-        sub.close()
-
-
-async def test_request_local_tool_raises_when_no_active_emitter():
-    # No current_emitter set (and thus no bus reachable) -> a clear error,
-    # not a hang.
-    with pytest.raises(RuntimeError):
-        await request_local_tool("read_file", {"path": "x"}, timeout=0.2)
 
 
 async def test_write_tool_result_publishes_frame_to_results_topic():
