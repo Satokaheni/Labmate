@@ -80,27 +80,16 @@ async def test_module_emit_uses_contextvar_emitter():
 @pytest.mark.asyncio
 async def test_handle_emits_agent_status_active_and_idle():
     """_handle must emit agent_status active before run_task and idle in finally."""
-    import json
     from unittest.mock import AsyncMock, MagicMock
-
-    import fakeredis.aioredis
 
     from services.orchestrator.main import OrchestratorProcess
 
-    # Goal-loop transport (xack/write_result) still uses Redis until T5;
-    # only the event stream itself has moved to the in-process bus.
-    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-
-    fields = {
-        "payload": json.dumps(
-            {
-                "task_id": "t-agent-status",
-                "task": "hello",
-                "session_id": "s-1",
-                "user_id": "",
-                "workspace_id": "",
-            }
-        )
+    payload = {
+        "task_id": "t-agent-status",
+        "task": "hello",
+        "session_id": "s-1",
+        "user_id": "",
+        "workspace_id": "",
     }
 
     mock_orch = MagicMock()
@@ -114,10 +103,9 @@ async def test_handle_emits_agent_status_active_and_idle():
     mock_storage.workspaces.complete_session = AsyncMock()
 
     proc = OrchestratorProcess()
-    proc._redis = r
     sub = proc.bus.subscribe("events:t-agent-status")
 
-    await proc._handle("msg-1", fields, mock_orch, mock_storage)
+    await proc._handle(payload, mock_orch, mock_storage)
 
     import asyncio
 

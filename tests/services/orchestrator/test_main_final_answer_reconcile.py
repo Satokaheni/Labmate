@@ -5,19 +5,15 @@ RENDERED final answer (post stream_final_answer) is a punt must be stored with
 ok=False. Genuine successes and verified fixes stay ok=True. This is the third
 reconciliation seam; it does not touch the skill-first / ReAct seams.
 """
+
 from __future__ import annotations
 
-import json
-
-import pytest
 from unittest.mock import AsyncMock
 
-from services.orchestrator.main import (
-    OrchestratorProcess,
-    GOALS_STREAM,
-    GOALS_GROUP,
-)
+import pytest
+
 from services.orchestrator import events as events_mod
+from services.orchestrator.main import OrchestratorProcess
 
 
 def _make_storage():
@@ -29,19 +25,18 @@ def _make_storage():
     return storage
 
 
-def _stored_payload(proc):
-    set_args = proc._redis.set.call_args[0]
-    return json.loads(set_args[1])
+async def _stored_payload(proc, task_id):
+    return await proc.results.wait_result(task_id, timeout=1.0)
 
 
 @pytest.mark.asyncio
 async def test_rendered_punt_flips_ok_to_false(monkeypatch):
     async def fake_emit(_type, **fields):
         pass
+
     monkeypatch.setattr(events_mod, "emit", fake_emit)
 
     proc = OrchestratorProcess()
-    proc._redis = AsyncMock()
 
     # Skill path produced a clean state (no error) — the false-ok the A/B saw.
     orch = AsyncMock()
@@ -57,33 +52,32 @@ async def test_rendered_punt_flips_ok_to_false(monkeypatch):
     )
 
     storage = _make_storage()
-    payload = json.dumps({
+    payload = {
         "task_id": "fa-punt-1",
         "task": "Find the bug in big_module.py",
         "session_id": "s1",
         "user_id": "u1",
         "workspace_id": "w1",
-    })
-    await proc._handle("800-0", {"payload": payload}, orch, storage)
+    }
+    await proc._handle(payload, orch, storage)
 
-    stored = _stored_payload(proc)
+    stored = await _stored_payload(proc, "fa-punt-1")
     assert stored["ok"] is False
     # The rendered punt is what was stored as the final answer.
     assert "too large" in stored["state"]["final_answer"].lower()
     # complete_session was told it failed.
     storage.workspaces.complete_session.assert_awaited()
     assert storage.workspaces.complete_session.call_args.kwargs.get("ok") is False
-    proc._redis.xack.assert_awaited_once_with(GOALS_STREAM, GOALS_GROUP, "800-0")
 
 
 @pytest.mark.asyncio
 async def test_rendered_genuine_success_stays_ok_true(monkeypatch):
     async def fake_emit(_type, **fields):
         pass
+
     monkeypatch.setattr(events_mod, "emit", fake_emit)
 
     proc = OrchestratorProcess()
-    proc._redis = AsyncMock()
 
     orch = AsyncMock()
     orch.run_task.return_value = {
@@ -97,14 +91,14 @@ async def test_rendered_genuine_success_stays_ok_true(monkeypatch):
     )
 
     storage = _make_storage()
-    payload = json.dumps({
+    payload = {
         "task_id": "fa-ok-1",
         "task": "Write a square function",
         "session_id": "s1",
-    })
-    await proc._handle("800-1", {"payload": payload}, orch, storage)
+    }
+    await proc._handle(payload, orch, storage)
 
-    stored = _stored_payload(proc)
+    stored = await _stored_payload(proc, "fa-ok-1")
     assert stored["ok"] is True
 
 
@@ -112,10 +106,10 @@ async def test_rendered_genuine_success_stays_ok_true(monkeypatch):
 async def test_preexisting_error_preserved_when_already_failed(monkeypatch):
     async def fake_emit(_type, **fields):
         pass
+
     monkeypatch.setattr(events_mod, "emit", fake_emit)
 
     proc = OrchestratorProcess()
-    proc._redis = AsyncMock()
 
     orch = AsyncMock()
     orch.run_task.return_value = {
@@ -130,14 +124,14 @@ async def test_preexisting_error_preserved_when_already_failed(monkeypatch):
     )
 
     storage = _make_storage()
-    payload = json.dumps({
+    payload = {
         "task_id": "fa-err-1",
         "task": "Parse the file",
         "session_id": "s1",
-    })
-    await proc._handle("800-2", {"payload": payload}, orch, storage)
+    }
+    await proc._handle(payload, orch, storage)
 
-    stored = _stored_payload(proc)
+    stored = await _stored_payload(proc, "fa-err-1")
     assert stored["ok"] is False
     assert stored["state"]["error"] == "1 subtask(s) failed: parse (error: boom)"
 
@@ -147,12 +141,13 @@ async def test_clarification_path_not_reconciled(monkeypatch):
     """Regression: a clarification question is not a punt-bearing answer path;
     awaiting_clarification states skip stream_final_answer and must not be
     flipped to ok=False by the new seam."""
+
     async def fake_emit(_type, **fields):
         pass
+
     monkeypatch.setattr(events_mod, "emit", fake_emit)
 
     proc = OrchestratorProcess()
-    proc._redis = AsyncMock()
 
     orch = AsyncMock()
     orch.run_task.return_value = {
@@ -165,13 +160,13 @@ async def test_clarification_path_not_reconciled(monkeypatch):
     orch.stream_final_answer = AsyncMock(return_value="UNUSED")
 
     storage = _make_storage()
-    payload = json.dumps({
+    payload = {
         "task_id": "fa-clar-1",
         "task": "fix it",
         "session_id": "s1",
-    })
-    await proc._handle("800-3", {"payload": payload}, orch, storage)
+    }
+    await proc._handle(payload, orch, storage)
 
-    stored = _stored_payload(proc)
+    stored = await _stored_payload(proc, "fa-clar-1")
     assert stored["ok"] is True
     orch.stream_final_answer.assert_not_called()

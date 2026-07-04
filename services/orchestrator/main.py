@@ -6,7 +6,7 @@ Bootstraps in order:
   2. StorageManager  (MongoDB + Redis — reads MONGO_URI / REDIS_URL)
   3. MCPClientManager (spawns MCP bridge subprocess, waits for ready)
   4. LangGraph       (build_graph with local SqliteSaver checkpointer)
-  5. Goal loop       (XREADGROUP labmate:goals → run_task → write result)
+  5. Goal loop       (in-process asyncio.Queue → run_task → ResultRegistry)
 
 Env vars:
   MONGO_URI          mongodb://localhost:27017/labmate
@@ -19,29 +19,31 @@ Env vars:
   SANDBOX_CONTAINER  labmate-sandbox   (Docker container name for code execution)
   LOG_LEVEL          info
 
-Redis Streams contract (CLAUDE.md rule #5):
-  Consume: XREADGROUP GROUP orchestrators <worker-id> COUNT 1 BLOCK 5000
-           STREAMS labmate:goals >
-  Ack:     XACK labmate:goals orchestrators <msg-id>
+Goal ingress (Piece 4 — in-process, Redis-free):
+  Submit:  task_id = await proc.submit_goal(payload)   # enqueues onto asyncio.Queue
+  Result:  result = await proc.results.wait_result(task_id)   # ResultRegistry
 
-Goal payload (JSON in the "payload" field):
+Goal payload (dict passed to submit_goal):
   { "task_id": "<str>", "task": "<str>", "session_id": "<str|null>", "user_id": "<str|null>", "workspace_id": "<str|null>" }
 
-Result (24 h TTL):
-  SET  labmate:result:<task_id>  <JSON>  EX 86400
-  PUBLISH  labmate:result:<task_id>  "ready"
+Redis is still constructed (self._redis) for skill/tool dispatch and storage
+(skill_router, local_tools, StorageManager) — later tasks (T6/T8) remove it.
+
+Note: Redis Streams remain the transport for the standalone skill-worker
+process (services/skill_worker/worker.py) — that is a separate module,
+unaffected by this file's in-process goal intake.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import re as _re
 import signal
 import socket
 import sys
+import uuid
 from pathlib import Path
 
 import redis.asyncio as aioredis
@@ -65,12 +67,6 @@ from services.orchestrator.tool_manifest import parse_manifest
 from services.skill_runner.skill_runner import SkillRunner
 
 _log = logging.getLogger("orchestrator")
-
-GOALS_STREAM = "labmate:goals"
-GOALS_GROUP = "orchestrators"
-RESULT_PREFIX = "labmate:result:"
-RESULT_TTL = 86_400  # 24 h
-BLOCK_MS = 5_000
 
 # Per-request context window the model actually serves (= llama-server --ctx-size
 # DIVIDED BY --parallel). This ceiling drives the context gauge (used/free shown to
@@ -232,6 +228,9 @@ class OrchestratorProcess:
         self.bus = EventBus()
         self.signals = SignalRegistry()
         self.results = ResultRegistry()
+        # In-process goal ingress (Piece 4 T5): submit_goal() enqueues here;
+        # _loop() drains it. Replaces the prior Redis goal-stream consumer.
+        self._goal_queue: asyncio.Queue = asyncio.Queue()
         self._mcp: MCPClientManager | None = None
         self._codegraph_mcp: MCPClientManager | None = None
         self._recent_sequences = RecentSequences()
@@ -301,14 +300,16 @@ class OrchestratorProcess:
             except Exception:  # best-effort wiring; never block startup
                 async_orch.checkpoint_store = None
 
-            # Initialize Redis BEFORE skill router (CLAUDE.md: "after self._redis is created")
+            # Initialize Redis BEFORE skill router (CLAUDE.md: "after self._redis is created").
+            # Piece 4: goals/results no longer transit Redis (in-process queue +
+            # ResultRegistry instead) — this pool is still used by skill_router,
+            # local_tools, and storage (removed in later tasks).
             pool = aioredis.ConnectionPool.from_url(
                 redis_url,
                 max_connections=8,
                 decode_responses=True,
             )
             self._redis = aioredis.Redis(connection_pool=pool)
-            await self._ensure_group()
 
             # Build skill router (optional, wrapped in try/except so startup never fails)
             skill_router = None
@@ -403,37 +404,22 @@ class OrchestratorProcess:
     async def stop(self) -> None:
         self._shutdown.set()
 
+    async def submit_goal(self, payload: dict) -> str:
+        """In-process goal ingress (replaces the Redis goal-stream XADD). Returns task_id."""
+        task_id = payload.get("task_id") or uuid.uuid4().hex
+        payload = {**payload, "task_id": task_id}
+        await self._goal_queue.put(payload)
+        return task_id
+
     # ── goal loop ──────────────────────────────────────────────────────────
 
     async def _loop(self, orch: CodingOrchestrator, storage: StorageManager) -> None:
         while not self._shutdown.is_set():
             try:
-                raw = await self._redis.xreadgroup(
-                    groupname=GOALS_GROUP,
-                    consumername=self._worker_id,
-                    streams={GOALS_STREAM: ">"},
-                    count=1,
-                    block=BLOCK_MS,
-                )
-            except (aioredis.TimeoutError, TimeoutError):
-                # Defensive: a blocking xreadgroup should tolerate a read-timeout
-                # and re-poll. This does NOT fire on the pinned redis-py 5.x
-                # (which returns [] cleanly when BLOCK elapses), but redis-py
-                # 8.x regressed blocking-read handling and raises TimeoutError
-                # here under a busy event loop — which, if uncaught, silently
-                # kills goal consumption. Keep the catch regardless of version.
+                payload = await asyncio.wait_for(self._goal_queue.get(), timeout=1.0)
+            except TimeoutError:
                 continue
-            except aioredis.ResponseError as exc:
-                _log.error("xreadgroup error: %s", exc)
-                await asyncio.sleep(1)
-                continue
-
-            if not raw:
-                continue
-
-            for _stream, entries in raw:
-                for msg_id, fields in entries:
-                    await self._handle(msg_id, fields, orch, storage)
+            await self._handle(payload, orch, storage)
 
     async def _background_compactor(
         self,
@@ -529,13 +515,13 @@ class OrchestratorProcess:
 
     async def _handle(
         self,
-        msg_id: str,
-        fields: dict[str, str],
+        payload: dict,
         orch: CodingOrchestrator,
         storage: StorageManager,
     ) -> None:
         # Safe defaults — must be bound before try so finally never raises NameError
-        task_id = msg_id
+        task_id = payload.get("task_id") if isinstance(payload, dict) else None
+        task_id = task_id or uuid.uuid4().hex
         user_id = ""
         workspace_id = ""
         session_id = ""
@@ -553,8 +539,7 @@ class OrchestratorProcess:
         _ctx_floor = 0
 
         try:
-            payload = json.loads(fields.get("payload", "{}"))
-            task_id = payload.get("task_id", msg_id)
+            task_id = payload.get("task_id", task_id)
             task_text = payload.get("task", "")
             session_id = payload.get("session_id") or task_id
             user_id = payload.get("user_id", "")
@@ -893,12 +878,9 @@ class OrchestratorProcess:
                 client_context.reset_manifest(_manifest_token)
             if _ws_root_token is not None:
                 client_context.reset_workspace_root(_ws_root_token)
-            await self._redis.xack(GOALS_STREAM, GOALS_GROUP, msg_id)
 
     async def _write_result(self, task_id: str, result: dict) -> None:
-        key = f"{RESULT_PREFIX}{task_id}"
-        await self._redis.set(key, json.dumps(result, default=str), ex=RESULT_TTL)
-        await self._redis.publish(key, "ready")
+        self.results.set_result(task_id, result)
 
     async def _persist_turns(
         self, storage: StorageManager, session_id: str, user_text: str, assistant_text: str
@@ -916,18 +898,6 @@ class OrchestratorProcess:
                 await store.append_turn(session_id, "assistant", assistant_text)
         except Exception:  # noqa: BLE001 — persistence is best-effort
             _log.warning("turn persistence failed for session %s", session_id, exc_info=True)
-
-    async def _ensure_group(self) -> None:
-        try:
-            await self._redis.xgroup_create(
-                GOALS_STREAM,
-                GOALS_GROUP,
-                id="0",
-                mkstream=True,
-            )
-        except aioredis.ResponseError as exc:
-            if "BUSYGROUP" not in str(exc):
-                raise
 
 
 def _setup_logging() -> None:

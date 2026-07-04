@@ -60,9 +60,7 @@ def _make_orch():
 
 async def _run_handle(proc, storage, orch, session_id, task="hi"):
     """Invoke _handle once, capturing every emitted context-window payload."""
-    import json
-
-    fields = {"payload": json.dumps({"task_id": "t1", "task": task, "session_id": session_id})}
+    payload = {"task_id": "t1", "task": task, "session_id": session_id}
 
     captured: list[dict] = []
 
@@ -86,7 +84,7 @@ async def _run_handle(proc, storage, orch, session_id, task="hi"):
         patch.object(events, "EventEmitter", _CapEmitter),
         patch.object(events, "emit", _mod_emit),
     ):
-        await proc._handle("m1", fields, orch, storage)
+        await proc._handle(payload, orch, storage)
 
     return captured
 
@@ -94,10 +92,6 @@ async def _run_handle(proc, storage, orch, session_id, task="hi"):
 @pytest.mark.asyncio
 async def test_turn_start_context_is_measured_floor_not_zero():
     proc = OrchestratorProcess()
-    proc._redis = MagicMock()
-    proc._redis.xack = AsyncMock()
-    proc._redis.set = AsyncMock()
-    proc._redis.publish = AsyncMock()
 
     storage = _make_storage(total_tokens=8000)
     orch = _make_orch()
@@ -118,10 +112,6 @@ async def test_turn_start_context_is_measured_floor_not_zero():
 @pytest.mark.asyncio
 async def test_carry_seeded_from_floor_when_no_peak():
     proc = OrchestratorProcess()
-    proc._redis = MagicMock()
-    proc._redis.xack = AsyncMock()
-    proc._redis.set = AsyncMock()
-    proc._redis.publish = AsyncMock()
 
     storage = _make_storage(total_tokens=8000)
     orch = _make_orch()
@@ -137,10 +127,6 @@ async def test_carry_seeded_from_floor_when_no_peak():
 async def test_second_turn_carry_holds_across_messages():
     """The 'every message' case: two turns on the same session keep a non-zero floor."""
     proc = OrchestratorProcess()
-    proc._redis = MagicMock()
-    proc._redis.xack = AsyncMock()
-    proc._redis.set = AsyncMock()
-    proc._redis.publish = AsyncMock()
 
     orch = _make_orch()
 
