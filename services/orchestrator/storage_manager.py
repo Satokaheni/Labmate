@@ -54,11 +54,12 @@ class StorageManager:
 
     @property
     def context_manager(self):
-        """Lazy ContextManager wired to this StorageManager's Redis + LocalStore.
+        """Lazy ContextManager wired to this StorageManager's LocalStore.
 
         chroma_cols is empty and Chroma was removed in Piece 3, so RAG retrieval
-        is inert (hybrid_retrieve returns []). Continuity (recent turns from the
-        LocalStore + Redis summary/anchor/watermark) is what this provides.
+        is inert (hybrid_retrieve returns []). Continuity (recent turns + summary/
+        anchor/watermark, all from the LocalStore's session_kv table) is what this
+        provides.
         """
         if not hasattr(self, "_context_manager"):
             from services.memory.context_manager import ContextManager
@@ -70,7 +71,6 @@ class StorageManager:
                 return await _embed_fn(texts, redis=_redis)
 
             self._context_manager = ContextManager(
-                redis=self._redis,
                 mongo_db=self._db,
                 chroma_cols={},
                 embedder=_embedder,
@@ -130,16 +130,6 @@ class StorageManager:
         return await self.local_store.search_turns(
             query, mode=mode, session_id=session_id, limit=top_k
         )
-
-    # --- working cache (Redis KV) ---------------------------------------
-    async def cache_set(self, key: str, value: str, ttl: int = 3600) -> None:
-        await self._redis.set(f"cache:{key}", value, ex=ttl)
-
-    async def cache_get(self, key: str) -> str | None:
-        v = await self._redis.get(f"cache:{key}")
-        if v is None:
-            return None
-        return v.decode() if isinstance(v, bytes | bytearray) else v
 
     # --- task queue (Redis Streams, rule #5) ----------------------------
     async def enqueue_task(self, stream: str, payload: dict) -> None:

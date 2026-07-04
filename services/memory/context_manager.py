@@ -67,7 +67,6 @@ class AssembledContext:
 class ContextManager:
     def __init__(
         self,
-        redis,
         mongo_db,
         chroma_cols: dict,
         embedder,
@@ -75,7 +74,6 @@ class ContextManager:
         storage=None,
         local_store=None,
     ) -> None:
-        self.redis = redis
         self.db = mongo_db
         self.chroma = chroma_cols
         self.embed = embedder
@@ -98,7 +96,7 @@ class ContextManager:
         b = self.budget
 
         # 1. Pinned slots — agent_instructions + system_prompt + core never trimmed
-        core = await self.redis.get(f"core:{session_id}") or ""
+        core = await self.local_store.session_kv_get("core", session_id) or ""
         pinned_tokens = (
             token_count(agent_instructions) + token_count(system_prompt) + token_count(core)
         )
@@ -115,14 +113,14 @@ class ContextManager:
 
         # 3. Summary buffer
         summary_budget = min(b.slot(b.summary_share), max(0, remaining))
-        summary = await self.redis.get(f"summary:{session_id}") or ""
+        summary = await self.local_store.session_kv_get("summary", session_id) or ""
         summary = self._trim_to_budget(summary, summary_budget)
         remaining -= token_count(summary)
 
         # 3b. Anchor buffer — surface founding facts only when they have drifted
         # out of the rolling summary, so the model keeps seeing them after many
         # compact cycles. Capped to a small dedicated slot.
-        anchor_raw = await self.redis.get(f"anchor:{session_id}") or ""
+        anchor_raw = await self.local_store.session_kv_get("anchor", session_id) or ""
         anchor_buffer = ""
         if self._anchor_diverges(anchor_raw, summary):
             anchor_budget = min(b.slot(b.anchor_share), max(0, remaining))
@@ -179,11 +177,12 @@ class ContextManager:
     async def _recent_turns(self, session_id: str, budget: int) -> str:
         """Load recent turns from the local store (immutable store), filtered by watermark.
 
-        Recent turns = turns with seq > watermark, where watermark is read from Redis.
-        Watermark defaults to -1 (meaning all turns are recent on first access).
+        Recent turns = turns with seq > watermark, where watermark is read from the
+        local store's session_kv table. Watermark defaults to -1 (meaning all turns
+        are recent on first access).
         """
-        # Get watermark from Redis (defaults to -1)
-        watermark_str = await self.redis.get(f"summarized_through:{session_id}")
+        # Get watermark from the local store (defaults to -1)
+        watermark_str = await self.local_store.session_kv_get("summarized_through", session_id)
         watermark = int(watermark_str) if watermark_str else -1
 
         # Read the NEWEST turns after the watermark from the local store —
@@ -323,7 +322,8 @@ class ContextManager:
         """Summarise old turns with anchoring and parallel blocks → advance watermark (non-destructive).
 
         Improvements over naive summarization:
-          1. Watermark-based non-destructive — advances a Redis watermark instead of deleting
+          1. Watermark-based non-destructive — advances a local-store watermark instead
+             of deleting
           2. Parallel blocks — concurrent summarization removes blocking stall
           3. Anchoring — first summary stored as anchor; passed to all subsequent
              compactions so the model cannot drift from early established facts
@@ -339,7 +339,7 @@ class ContextManager:
             return {"summary_tokens": 0, "pruned_messages": 0, "reflections": []}
 
         # Step 2: determine watermark and which turns are eligible for compaction
-        watermark_str = await self.redis.get(f"summarized_through:{session_id}")
+        watermark_str = await self.local_store.session_kv_get("summarized_through", session_id)
         watermark = int(watermark_str) if watermark_str else -1
         max_seq = all_turns[-1].get("seq", -1) if all_turns else -1
 
@@ -361,7 +361,7 @@ class ContextManager:
         )
 
         # Step 4: load anchor (stable early-session facts; empty on first compact)
-        anchor = await self.redis.get(f"anchor:{session_id}") or ""
+        anchor = await self.local_store.session_kv_get("anchor", session_id) or ""
 
         # Step 5: parallel anchored summarization (map text→content for _parallel_summarize)
         to_compact_mapped = [
@@ -371,11 +371,10 @@ class ContextManager:
 
         # Step 6: first compact → save result as the session anchor
         if not anchor:
-            await self.redis.set(f"anchor:{session_id}", new_summary)
+            await self.local_store.session_kv_set("anchor", session_id, new_summary)
 
         # Step 7: merge new summary into existing summary (or replace if none exists)
-        summary_key = f"summary:{session_id}"
-        old_summary = await self.redis.get(summary_key) or ""
+        old_summary = await self.local_store.session_kv_get("summary", session_id) or ""
 
         if old_summary:
             # Merge: send both summaries to the model
@@ -392,26 +391,28 @@ class ContextManager:
             # First-ever summary
             final_summary = new_summary
 
-        # Step 8: persist the merged summary to Redis (rollback on failure)
+        # Step 8: persist the merged summary to the local store (rollback on failure)
         try:
-            await self.redis.set(summary_key, final_summary)
+            await self.local_store.session_kv_set("summary", session_id, final_summary)
         except Exception:
             if old_summary:
-                await self.redis.set(summary_key, old_summary)
+                await self.local_store.session_kv_set("summary", session_id, old_summary)
             else:
-                await self.redis.delete(summary_key)
+                await self.local_store.session_kv_delete("summary", session_id)
             raise
 
-        # Step 9: advance watermark to max_seq in to_compact (rollback Redis on failure)
+        # Step 9: advance watermark to max_seq in to_compact (rollback on failure)
         max_compacted_seq = max([t.get("seq", -1) for t in to_compact])
         try:
-            await self.redis.set(f"summarized_through:{session_id}", str(max_compacted_seq))
+            await self.local_store.session_kv_set(
+                "summarized_through", session_id, str(max_compacted_seq)
+            )
         except Exception:
             # Rollback summary
             if old_summary:
-                await self.redis.set(summary_key, old_summary)
+                await self.local_store.session_kv_set("summary", session_id, old_summary)
             else:
-                await self.redis.delete(summary_key)
+                await self.local_store.session_kv_delete("summary", session_id)
             raise
 
         # Step 10: extract reflections for the caller to write to memory
@@ -460,11 +461,11 @@ class ContextManager:
             if budget is None:
                 budget = self.budget.slot(self.budget.recent_turns_share)
 
-            # Read summary from Redis
-            summary = await self.redis.get(f"summary:{session_id}") or ""
+            # Read summary from the local store
+            summary = await self.local_store.session_kv_get("summary", session_id) or ""
 
             # Read anchor, include only if it diverges from summary
-            anchor_raw = await self.redis.get(f"anchor:{session_id}") or ""
+            anchor_raw = await self.local_store.session_kv_get("anchor", session_id) or ""
             anchor_block = ""
             if anchor_raw and self._anchor_diverges(anchor_raw, summary):
                 anchor_block = f"KEY FACTS (anchored, always relevant):\n{anchor_raw}"

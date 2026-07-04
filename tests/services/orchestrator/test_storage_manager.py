@@ -32,15 +32,6 @@ async def test_enqueue_task_uses_xadd_not_rpush(storage, mock_redis):
     assert not hasattr(mock_redis, "rpush") or mock_redis.rpush.await_count == 0
 
 
-async def test_cache_set_get_roundtrip(storage, mock_redis):
-    await storage.cache_set("k", "v", ttl=60)
-    mock_redis.set.assert_awaited_once()
-    args, kwargs = mock_redis.set.await_args
-    assert kwargs.get("ex") == 60
-    mock_redis.get.return_value = b"v"
-    assert await storage.cache_get("k") == "v"
-
-
 # ---------------------------------------------------------------------------
 # StorageManager async context manager
 # ---------------------------------------------------------------------------
@@ -121,10 +112,10 @@ def test_context_manager_property_returns_context_manager_instance(storage):
     assert storage.context_manager is cm
 
 
-def test_context_manager_uses_storage_redis_and_db(storage):
-    """ContextManager is wired to the StorageManager's Redis and MongoDB."""
+def test_context_manager_uses_storage_local_store_and_db(storage):
+    """ContextManager is wired to the StorageManager's LocalStore and MongoDB."""
 
     cm = storage.context_manager
-    assert cm.redis is storage._redis
+    assert cm.local_store is storage.local_store
     assert cm.db is storage._db
     assert cm.chroma == {}  # empty; RAG skipped, compaction still works
