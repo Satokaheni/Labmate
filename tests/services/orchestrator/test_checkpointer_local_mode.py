@@ -1,11 +1,8 @@
-"""Piece 1: build_graph selects a local SqliteSaver in LABMATE_LOCAL_MODE,
-and keeps the MongoDBSaver pod path unchanged when the flag is off."""
+"""Piece 1: build_graph always builds a local SqliteSaver (local-only)."""
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
-
-from langgraph.checkpoint.memory import MemorySaver
+from unittest.mock import MagicMock
 
 from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
 from services.orchestrator.graph import build_graph
@@ -19,7 +16,6 @@ def test_local_mode_builds_sqlite_checkpointer(monkeypatch, tmp_path):
     from langgraph.checkpoint.sqlite import SqliteSaver
 
     db = tmp_path / "nested" / "state.sqlite"  # parent dir does not exist yet
-    monkeypatch.setenv("LABMATE_LOCAL_MODE", "1")
     monkeypatch.setenv("LABMATE_STATE_DB", str(db))
 
     mock_orch, mock_async = _mocks()
@@ -33,7 +29,6 @@ def test_local_mode_builds_sqlite_checkpointer(monkeypatch, tmp_path):
 def test_local_mode_checkpointer_round_trips(monkeypatch, tmp_path):
     """The returned SqliteSaver actually persists and reloads a checkpoint."""
     db = tmp_path / "state.sqlite"
-    monkeypatch.setenv("LABMATE_LOCAL_MODE", "1")
     monkeypatch.setenv("LABMATE_STATE_DB", str(db))
 
     mock_orch, mock_async = _mocks()
@@ -52,18 +47,3 @@ def test_local_mode_checkpointer_round_trips(monkeypatch, tmp_path):
     loaded = cp.get(cfg)
     assert loaded is not None
     assert loaded["channel_values"]["n"] == 7
-
-
-def test_pod_mode_still_builds_mongodb_saver(monkeypatch):
-    """Flag OFF (default) -> pod path: MongoDBSaver constructed via the patched
-    symbols, SqliteSaver branch NOT taken. Behavior-preserving."""
-    monkeypatch.delenv("LABMATE_LOCAL_MODE", raising=False)
-    monkeypatch.delenv("LABMATE_STATE_DB", raising=False)
-
-    mock_orch, mock_async = _mocks()
-    sentinel = MemorySaver()
-    with patch("pymongo.MongoClient", return_value=MagicMock()):
-        with patch("langgraph.checkpoint.mongodb.MongoDBSaver", return_value=sentinel):
-            graph, cp = build_graph(mock_orch, mock_async)
-    assert cp is sentinel  # the pod construction path ran
-    assert graph is not None

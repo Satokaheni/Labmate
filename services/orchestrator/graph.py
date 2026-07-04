@@ -12,7 +12,7 @@ from . import client_context, events
 from .coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
 from .error_classifier import ErrorClass, classify_error, is_terminal
 from .finalize_revision import build_revision_prompt, should_revise
-from .local_mode import local_mode_enabled, local_state_db_path
+from .local_mode import local_state_db_path
 from .task_complexity import classify_complexity
 from .tool_manifest import client_doc_skills
 from .types import State, Status, create_goal, get_ready_goals, update_status
@@ -988,18 +988,13 @@ def _make_sqlite_checkpointer():
 def build_graph(
     orch: CodingOrchestrator,
     async_orch: AsyncOrchestrator,
-    mongo_uri: str = MONGO_URI,
-    db_name: str = "labmate",
 ):
     """
-    Compile the StateGraph with a checkpointer selected by LABMATE_LOCAL_MODE:
-    local mode -> a local SqliteSaver (see _make_sqlite_checkpointer); pod mode
-    (default) -> a networked MongoDBSaver over `mongo_uri`/`db_name`.
-    Returns (compiled_graph, checkpointer). The caller MUST keep checkpointer
-    alive for the graph's lifetime.
+    Compile the StateGraph with a local SqliteSaver checkpointer (see
+    _make_sqlite_checkpointer). Returns (compiled_graph, checkpointer). The
+    caller MUST keep checkpointer alive for the graph's lifetime.
 
-    Call once at startup. The pod MongoDBSaver constructor creates its MongoDB
-    indexes (idempotent); the local SqliteSaver creates its tables lazily.
+    Call once at startup. The local SqliteSaver creates its tables lazily.
     """
     (
         plan_node,
@@ -1032,13 +1027,6 @@ def build_graph(
     b.add_edge("reflect", "execute")
     b.add_edge("approval", "execute")
 
-    if local_mode_enabled():
-        cp = _make_sqlite_checkpointer()
-    else:
-        from langgraph.checkpoint.mongodb import MongoDBSaver
-        from pymongo import MongoClient
-
-        client = MongoClient(mongo_uri)
-        cp = MongoDBSaver(client, db_name=db_name)
+    cp = _make_sqlite_checkpointer()
     graph = b.compile(checkpointer=cp)
     return graph, cp

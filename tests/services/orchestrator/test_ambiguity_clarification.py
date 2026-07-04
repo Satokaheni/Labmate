@@ -11,6 +11,7 @@ NEW file only. Covers:
 
 All tests are mocked (no GPU / no services).
 """
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -19,10 +20,10 @@ import pytest
 
 from services.orchestrator import events
 
-
 # ---------------------------------------------------------------------------
 # Fakes / helpers
 # ---------------------------------------------------------------------------
+
 
 class _FakeEmitter:
     def __init__(self):
@@ -62,16 +63,19 @@ def _make_state(**overrides) -> dict:
 # 1. High-ambiguity assess_ambiguity halts for clarification
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.mocked
 @pytest.mark.asyncio
 async def test_assess_ambiguity_high_halts_for_clarification(fake_emitter):
+    from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
     from services.orchestrator.graph import make_nodes
-    from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
     mock_orch = MagicMock(spec=CodingOrchestrator)
-    mock_orch.architect = AsyncMock(return_value=(
-        '{"assumptions": ["?"], "ambiguity": 0.8, "blocking_question": "What should I make better?"}'
-    ))
+    mock_orch.architect = AsyncMock(
+        return_value=(
+            '{"assumptions": ["?"], "ambiguity": 0.8, "blocking_question": "What should I make better?"}'
+        )
+    )
     mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
     nodes = make_nodes(mock_orch, mock_async_orch)
@@ -101,13 +105,13 @@ async def test_assess_ambiguity_high_halts_for_clarification(fake_emitter):
 @pytest.mark.asyncio
 async def test_assess_ambiguity_high_uses_generic_question_when_blank(fake_emitter):
     """When the model returns no blocking_question, a sensible generic fallback is used."""
+    from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
     from services.orchestrator.graph import make_nodes
-    from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
     mock_orch = MagicMock(spec=CodingOrchestrator)
-    mock_orch.architect = AsyncMock(return_value=(
-        '{"assumptions": [], "ambiguity": 0.9, "blocking_question": ""}'
-    ))
+    mock_orch.architect = AsyncMock(
+        return_value=('{"assumptions": [], "ambiguity": 0.9, "blocking_question": ""}')
+    )
     mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
     nodes = make_nodes(mock_orch, mock_async_orch)
@@ -126,16 +130,17 @@ async def test_assess_ambiguity_high_uses_generic_question_when_blank(fake_emitt
 # 2. Low-ambiguity assess_ambiguity does NOT halt
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.mocked
 @pytest.mark.asyncio
 async def test_assess_ambiguity_low_does_not_halt(fake_emitter):
+    from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
     from services.orchestrator.graph import make_nodes
-    from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
     mock_orch = MagicMock(spec=CodingOrchestrator)
-    mock_orch.architect = AsyncMock(return_value=(
-        '{"assumptions": [], "ambiguity": 0.1, "blocking_question": ""}'
-    ))
+    mock_orch.architect = AsyncMock(
+        return_value=('{"assumptions": [], "ambiguity": 0.1, "blocking_question": ""}')
+    )
     mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
     nodes = make_nodes(mock_orch, mock_async_orch)
@@ -153,10 +158,12 @@ async def test_assess_ambiguity_low_does_not_halt(fake_emitter):
 # 3. ambiguity_router
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.mocked
 def test_ambiguity_router_returns_end_when_high():
-    from services.orchestrator.graph import ambiguity_router
     from langgraph.graph import END
+
+    from services.orchestrator.graph import ambiguity_router
 
     assert ambiguity_router(_make_state(ambiguity=0.7)) == END
     assert ambiguity_router(_make_state(ambiguity=1.0)) == END
@@ -176,16 +183,23 @@ def test_ambiguity_router_returns_plan_when_below():
 # 4. Compiled-graph integration: high-ambiguity halts at END w/o plan/execute
 # ---------------------------------------------------------------------------
 
+
 def _root_state(description: str) -> dict:
     return {
         "session_id": "s-clar",
         "root_goal": description,
         "goal_tree": {
             "root": {
-                "id": "root", "parent_id": None, "children": [],
+                "id": "root",
+                "parent_id": None,
+                "children": [],
                 "description": description,
-                "status": "PENDING", "result": None, "error": None,
-                "attempts": 0, "started_at": None, "updated_at": None,
+                "status": "PENDING",
+                "result": None,
+                "error": None,
+                "attempts": 0,
+                "started_at": None,
+                "updated_at": None,
             }
         },
         "current_goal_id": "root",
@@ -199,9 +213,10 @@ def _root_state(description: str) -> dict:
 @pytest.mark.mocked
 @pytest.mark.asyncio
 async def test_high_ambiguity_halts_graph_before_plan_and_execute(monkeypatch):
-    from services.orchestrator import graph as graph_mod
-    from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
     from langgraph.checkpoint.memory import MemorySaver
+
+    from services.orchestrator import graph as graph_mod
+    from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
 
     async def fake_emit(type, **fields):
         pass
@@ -215,19 +230,20 @@ async def test_high_ambiguity_halts_graph_before_plan_and_execute(monkeypatch):
 
     mock_orch = MagicMock(spec=CodingOrchestrator)
     # High ambiguity -> the graph must halt at END before plan.
-    mock_orch.architect = AsyncMock(return_value=(
-        '{"assumptions": ["undefined referent"], "ambiguity": 0.85, '
-        '"blocking_question": "Which thing should I improve?"}'
-    ))
+    mock_orch.architect = AsyncMock(
+        return_value=(
+            '{"assumptions": ["undefined referent"], "ambiguity": 0.85, '
+            '"blocking_question": "Which thing should I improve?"}'
+        )
+    )
     mock_orch.skill_router = fake_router
 
     mock_async_orch = MagicMock(spec=AsyncOrchestrator)
     mock_async_orch.plan_and_dispatch = AsyncMock()
 
     real_cp = MemorySaver()
-    with patch("pymongo.MongoClient", return_value=MagicMock()):
-        with patch("langgraph.checkpoint.mongodb.MongoDBSaver", return_value=real_cp):
-            graph, _ = graph_mod.build_graph(mock_orch, mock_async_orch)
+    with patch("services.orchestrator.graph._make_sqlite_checkpointer", return_value=real_cp):
+        graph, _ = graph_mod.build_graph(mock_orch, mock_async_orch)
 
     final_state = await graph.ainvoke(
         _root_state("make it better"),
