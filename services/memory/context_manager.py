@@ -78,6 +78,7 @@ class ContextManager:
         embedder,
         budget: ContextBudget | None = None,
         storage=None,
+        local_store=None,
     ) -> None:
         self.redis = redis
         self.db = mongo_db
@@ -85,6 +86,7 @@ class ContextManager:
         self.embed = embedder
         self.budget = budget or ContextBudget()
         self.storage = storage  # orchestrator StorageManager hook for importance boost
+        self.local_store = local_store  # local SQLite store for chat-turn reads
 
     async def build_context(
         self,
@@ -178,7 +180,7 @@ class ContextManager:
         return overlap < 0.60
 
     async def _recent_turns(self, session_id: str, budget: int) -> str:
-        """Load recent turns from chat_turns (immutable store), filtered by watermark.
+        """Load recent turns from the local store (immutable store), filtered by watermark.
 
         Recent turns = turns with seq > watermark, where watermark is read from Redis.
         Watermark defaults to -1 (meaning all turns are recent on first access).
@@ -187,24 +189,9 @@ class ContextManager:
         watermark_str = await self.redis.get(f"summarized_through:{session_id}")
         watermark = int(watermark_str) if watermark_str else -1
 
-        # Read the NEWEST turns after the watermark from chat_turns (camelCase).
-        # The watermark filter goes in the QUERY (so a long post-watermark session
-        # isn't dropped), sorted DESC + limit → the recent tail, not the oldest 50.
-        cursor = (
-            self.db["chat_turns"]
-            .find(
-                {"sessionId": session_id, "seq": {"$gt": watermark}},
-                {"role": 1, "text": 1, "seq": 1},
-            )
-            .sort("seq", -1)  # newest first, so limit keeps the recent tail
-            .limit(50)
-        )
-        turns = [doc async for doc in cursor]
-
-        # Enforce the watermark in-memory too (test fakes may ignore the query
-        # filter), then sort chronologically by seq — robust to cursor ordering.
-        turns = [t for t in turns if t.get("seq", -1) > watermark]
-        turns.sort(key=lambda t: t.get("seq", 0))
+        # Read the NEWEST turns after the watermark from the local store —
+        # it already applies seq>watermark, newest-cap, and ascending order.
+        turns = await self.local_store.recent_turns(session_id, watermark=watermark, limit=50)
 
         # Format as "ROLE: text"
         lines = [f"{t['role'].upper()}: {t['text']}" for t in turns]
@@ -421,16 +408,8 @@ class ContextManager:
         llm_fn: async (prompt: str) -> str
         Returns {summary_tokens, pruned_messages, reflections: list[str]}.
         """
-        # Step 1: read all turns from chat_turns (immutable source)
-        cursor = (
-            self.db["chat_turns"]
-            .find(
-                {"sessionId": session_id},
-                {"seq": 1, "role": 1, "text": 1},
-            )
-            .sort("seq", 1)
-        )
-        all_turns = [doc async for doc in cursor]
+        # Step 1: read all turns from the local store (immutable source)
+        all_turns = await self.local_store.all_turns(session_id)
         if len(all_turns) <= self._KEEP_RECENT:
             return {"summary_tokens": 0, "pruned_messages": 0, "reflections": []}
 
@@ -579,20 +558,11 @@ class ContextManager:
     async def last_activity_seconds(self, session_id: str) -> float:
         """Seconds since the newest turn in this session was written.
 
-        Reads the newest turn's createdAt from chat_turns (ISO string format).
+        Reads the newest turn's createdAt from the local store (ISO string format).
         Returns 0.0 when the session has no turns or the field is absent/unparseable — i.e.
         "not idle", so a missing timestamp never triggers a surprise compaction.
         """
-        cursor = (
-            self.db["chat_turns"]
-            .find({"sessionId": session_id}, {"createdAt": 1})
-            .sort("seq", -1)
-            .limit(1)
-        )
-        newest_iso = None
-        async for doc in cursor:
-            newest_iso = doc.get("createdAt")
-            break
+        newest_iso = await self.local_store.last_activity_iso(session_id)
         if not newest_iso:
             return 0.0
 

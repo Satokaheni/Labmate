@@ -72,7 +72,6 @@ class StorageManager:
         self._chroma = None  # set lazily via _get_chroma()
         self._redis = aioredis.from_url(redis_url)
         self._db = self._mongo[DB_NAME]
-        self._workspaces = WorkspaceManager(self._db)
 
     @classmethod
     def from_clients(cls, *, mongo, chroma, redis) -> StorageManager:
@@ -83,7 +82,6 @@ class StorageManager:
         self._chroma_args = {}
         self._redis = redis
         self._db = mongo[DB_NAME]
-        self._workspaces = WorkspaceManager(self._db)
         return self
 
     async def __aenter__(self) -> StorageManager:
@@ -128,6 +126,7 @@ class StorageManager:
                 mongo_db=self._db,
                 chroma_cols={},
                 embedder=_embedder,
+                local_store=self.local_store,
             )
         return self._context_manager
 
@@ -142,6 +141,15 @@ class StorageManager:
 
     @property
     def workspaces(self) -> WorkspaceManager:
+        """Lazy WorkspaceManager sharing this StorageManager's LocalStore.
+
+        Lazy (like local_store/context_manager) so merely constructing a
+        StorageManager doesn't eagerly resolve/cache the process-wide LocalStore
+        singleton — tests that never touch .workspaces or .local_store shouldn't
+        pay for (or pollute) that side effect.
+        """
+        if getattr(self, "_workspaces", None) is None:
+            self._workspaces = WorkspaceManager(self.local_store)
         return self._workspaces
 
     @property

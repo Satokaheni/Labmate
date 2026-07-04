@@ -1,14 +1,30 @@
 from __future__ import annotations
 
 import pytest
-from unittest.mock import AsyncMock
 
 pytestmark = [pytest.mark.mocked, pytest.mark.asyncio]
+
+
+@pytest.fixture(autouse=True)
+def _reset_local_store():
+    """Isolate the process-cached LocalStore singleton (services.orchestrator.local_store._STORE).
+
+    Several tests in this file touch StorageManager.local_store (directly or via the
+    context_manager property), which lazily populates the module-global singleton.
+    Reset it around every test so this file never leaks a cached store into — or
+    picks one up from — other test modules (e.g. test_local_store.py's singleton test).
+    """
+    import services.orchestrator.local_store as ls
+
+    ls._STORE = None
+    yield
+    ls._STORE = None
 
 
 # ---------------------------------------------------------------------------
 # Task 2 — episode outbox tests
 # ---------------------------------------------------------------------------
+
 
 async def test_store_episode_single_atomic_mongo_write(storage, mock_mongo):
     await storage.store_episode("s1", "hello", {"role": "user"})
@@ -31,6 +47,7 @@ async def test_store_episode_does_not_write_chroma_or_redis(storage, mock_chroma
 # ---------------------------------------------------------------------------
 # Task 3 — memory write, search filtering, cache, queue
 # ---------------------------------------------------------------------------
+
 
 async def test_store_memory_outbox_marker(storage, mock_mongo):
     await storage.store_memory({"session_id": "s1", "fact": "user prefers dark mode"})
@@ -71,6 +88,7 @@ async def test_cache_set_get_roundtrip(storage, mock_redis):
 # Task 4 — OutboxWorker
 # ---------------------------------------------------------------------------
 
+
 class _FakeCursor:
     def __init__(self, docs):
         self._docs = docs
@@ -82,10 +100,13 @@ class _FakeCursor:
         async def gen():
             for d in self._docs:
                 yield d
+
         return gen()
 
 
-async def test_outbox_worker_projects_and_marks_processed(storage, mock_mongo, mock_chroma, mock_redis):
+async def test_outbox_worker_projects_and_marks_processed(
+    storage, mock_mongo, mock_chroma, mock_redis
+):
     from services.orchestrator.outbox_worker import OutboxWorker
 
     ep = mock_mongo._collections.setdefault(
@@ -96,12 +117,16 @@ async def test_outbox_worker_projects_and_marks_processed(storage, mock_mongo, m
         "memories",
         __import__("unittest.mock", fromlist=["AsyncMock"]).AsyncMock(),
     )
-    ep.find = lambda q: _FakeCursor([{
-        "_id": "e1",
-        "session_id": "s1",
-        "content": "hi",
-        "outbox": {"kind": "episode_vector"},
-    }])
+    ep.find = lambda q: _FakeCursor(
+        [
+            {
+                "_id": "e1",
+                "session_id": "s1",
+                "content": "hi",
+                "outbox": {"kind": "episode_vector"},
+            }
+        ]
+    )
     mem.find = lambda q: _FakeCursor([])
 
     worker = OutboxWorker(storage)
@@ -111,26 +136,27 @@ async def test_outbox_worker_projects_and_marks_processed(storage, mock_mongo, m
     mock_chroma._collection.upsert.assert_awaited_once()
     # point id == Mongo _id (idempotency)
     assert mock_chroma._collection.upsert.await_args.kwargs["ids"] == ["e1"]
-    mock_redis.xadd.assert_awaited()         # projected to tasks stream
-    ep.update_one.assert_awaited_once()      # marked processed
+    mock_redis.xadd.assert_awaited()  # projected to tasks stream
+    ep.update_one.assert_awaited_once()  # marked processed
 
 
 # ---------------------------------------------------------------------------
 # Task 5 — StorageManager async context manager
 # ---------------------------------------------------------------------------
 
+
 async def test_context_manager_starts_outbox_worker(mock_mongo, mock_chroma, mock_redis):
     """__aenter__ must create and start the OutboxWorker background task."""
-    from services.orchestrator.storage_manager import StorageManager
     from unittest.mock import patch
 
-    storage = StorageManager.from_clients(
-        mongo=mock_mongo, chroma=mock_chroma, redis=mock_redis
-    )
+    from services.orchestrator.storage_manager import StorageManager
+
+    storage = StorageManager.from_clients(mongo=mock_mongo, chroma=mock_chroma, redis=mock_redis)
 
     # Mock asyncio.create_task to avoid actually running the background task
     with patch("asyncio.create_task") as mock_create_task:
         from unittest.mock import MagicMock
+
         mock_task = MagicMock()
         mock_create_task.return_value = mock_task
 
@@ -150,15 +176,14 @@ async def test_context_manager_starts_outbox_worker(mock_mongo, mock_chroma, moc
 
 async def test_context_manager_cancels_outbox_on_exit(mock_mongo, mock_redis):
     """__aexit__ must cancel the outbox worker background task."""
-    from services.orchestrator.storage_manager import StorageManager
-    from unittest.mock import AsyncMock, MagicMock
     import asyncio
+    from unittest.mock import AsyncMock
+
+    from services.orchestrator.storage_manager import StorageManager
 
     mock_chroma = AsyncMock()
 
-    storage = StorageManager.from_clients(
-        mongo=mock_mongo, chroma=mock_chroma, redis=mock_redis
-    )
+    storage = StorageManager.from_clients(mongo=mock_mongo, chroma=mock_chroma, redis=mock_redis)
 
     # Create a real task that we can cancel and await
     async def dummy_coro():
@@ -178,8 +203,9 @@ async def test_context_manager_cancels_outbox_on_exit(mock_mongo, mock_redis):
 
 async def test_context_manager_closes_connections_on_exit(mock_mongo, mock_redis):
     """__aexit__ must close Redis and Mongo connections."""
-    from services.orchestrator.storage_manager import StorageManager
     from unittest.mock import AsyncMock, MagicMock
+
+    from services.orchestrator.storage_manager import StorageManager
 
     mock_chroma = AsyncMock()
     mock_mongo_with_close = MagicMock()
@@ -200,14 +226,13 @@ async def test_context_manager_closes_connections_on_exit(mock_mongo, mock_redis
 
 async def test_full_context_manager_usage_works(mock_mongo, mock_chroma, mock_redis):
     """async with StorageManager() should work without crashing."""
-    from services.orchestrator.storage_manager import StorageManager
-    from unittest.mock import patch, AsyncMock
     import asyncio
+    from unittest.mock import patch
+
+    from services.orchestrator.storage_manager import StorageManager
 
     # Build storage with mocks
-    storage = StorageManager.from_clients(
-        mongo=mock_mongo, chroma=mock_chroma, redis=mock_redis
-    )
+    storage = StorageManager.from_clients(mongo=mock_mongo, chroma=mock_chroma, redis=mock_redis)
 
     # Patch asyncio.create_task to return a cancellable task
     original_create_task = asyncio.create_task
@@ -220,9 +245,12 @@ async def test_full_context_manager_usage_works(mock_mongo, mock_chroma, mock_re
                 await coro
             except asyncio.CancelledError:
                 pass
+
         return original_create_task(wrapper())
 
-    with patch("services.orchestrator.storage_manager.asyncio.create_task", side_effect=mock_create_task):
+    with patch(
+        "services.orchestrator.storage_manager.asyncio.create_task", side_effect=mock_create_task
+    ):
         # This should not crash
         async with storage as sm:
             assert sm is storage
@@ -232,17 +260,16 @@ async def test_full_context_manager_usage_works(mock_mongo, mock_chroma, mock_re
 
 async def test_from_clients_works_without_context_manager():
     """from_clients path should not require async context manager entry."""
-    from services.orchestrator.storage_manager import StorageManager
     from unittest.mock import AsyncMock, MagicMock
+
+    from services.orchestrator.storage_manager import StorageManager
 
     mock_mongo = MagicMock()
     mock_chroma = AsyncMock()
     mock_redis = AsyncMock()
 
     # This should work without entering the context manager
-    storage = StorageManager.from_clients(
-        mongo=mock_mongo, chroma=mock_chroma, redis=mock_redis
-    )
+    storage = StorageManager.from_clients(mongo=mock_mongo, chroma=mock_chroma, redis=mock_redis)
 
     # Should be able to call methods directly
     assert storage is not None
@@ -255,18 +282,23 @@ async def test_from_clients_works_without_context_manager():
 async def test_storage_manager_has_workspace_manager(storage):
     """StorageManager exposes a WorkspaceManager via .workspaces property."""
     from services.orchestrator.workspace_manager import WorkspaceManager
+
     assert isinstance(storage.workspaces, WorkspaceManager)
 
 
 @pytest.mark.asyncio
-async def test_storage_manager_workspace_manager_uses_same_db(storage):
-    """WorkspaceManager receives the same db instance StorageManager uses."""
-    assert storage.workspaces._db is storage._db
+async def test_storage_manager_workspace_manager_uses_same_local_store(
+    storage, tmp_path, monkeypatch
+):
+    """WorkspaceManager shares the same LocalStore instance as StorageManager.local_store."""
+    monkeypatch.setenv("LABMATE_STATE_DB", str(tmp_path / "s.sqlite"))
+    assert storage.workspaces._store is storage.local_store
 
 
 # ---------------------------------------------------------------------------
 # context_manager property
 # ---------------------------------------------------------------------------
+
 
 def test_context_manager_property_returns_context_manager_instance(storage):
     """StorageManager.context_manager returns a ContextManager and is lazily cached."""
@@ -280,7 +312,6 @@ def test_context_manager_property_returns_context_manager_instance(storage):
 
 def test_context_manager_uses_storage_redis_and_db(storage):
     """ContextManager is wired to the StorageManager's Redis and MongoDB."""
-    from services.memory.context_manager import ContextManager
 
     cm = storage.context_manager
     assert cm.redis is storage._redis

@@ -792,6 +792,10 @@ class OrchestratorProcess:
                 },
             )
             _log.info("task %s complete", task_id)
+            _answer_for_turns = (
+                final_state.get("final_answer", "") if isinstance(final_state, dict) else ""
+            )
+            await self._persist_turns(storage, session_id, task_text, _answer_for_turns)
             # Skill-curator: record a SUCCESSFUL multi-tool sequence as a draft
             # candidate (best-effort; never blocks). RecentSequences itself drops
             # failed / too-short sequences.
@@ -931,6 +935,23 @@ class OrchestratorProcess:
         key = f"{RESULT_PREFIX}{task_id}"
         await self._redis.set(key, json.dumps(result, default=str), ex=RESULT_TTL)
         await self._redis.publish(key, "ready")
+
+    async def _persist_turns(
+        self, storage: StorageManager, session_id: str, user_text: str, assistant_text: str
+    ) -> None:
+        """Best-effort: persist the user + assistant turns for this goal to the local
+        store so the next turn of this session has conversation continuity. Never
+        raises into the caller (a persistence failure must not fail the task)."""
+        if not session_id:
+            return
+        try:
+            store = storage.local_store
+            if user_text:
+                await store.append_turn(session_id, "user", user_text)
+            if assistant_text:
+                await store.append_turn(session_id, "assistant", assistant_text)
+        except Exception:  # noqa: BLE001 — persistence is best-effort
+            _log.warning("turn persistence failed for session %s", session_id, exc_info=True)
 
     async def _ensure_group(self) -> None:
         try:
