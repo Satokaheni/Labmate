@@ -992,11 +992,14 @@ def build_graph(
     db_name: str = "labmate",
 ):
     """
-    Compile the StateGraph with a MongoDBSaver checkpointer.
+    Compile the StateGraph with a checkpointer selected by LABMATE_LOCAL_MODE:
+    local mode -> a local SqliteSaver (see _make_sqlite_checkpointer); pod mode
+    (default) -> a networked MongoDBSaver over `mongo_uri`/`db_name`.
     Returns (compiled_graph, checkpointer). The caller MUST keep checkpointer
     alive for the graph's lifetime.
 
-    Call once at startup; MongoDBSaver.from_conn_string() creates MongoDB indexes (idempotent).
+    Call once at startup. The pod MongoDBSaver constructor creates its MongoDB
+    indexes (idempotent); the local SqliteSaver creates its tables lazily.
     """
     (
         plan_node,
