@@ -7,8 +7,8 @@ A local, autonomous polyglot agent for high-end software engineering and profess
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  BRAIN                                                      │
-│  Gemma 4 MoE (4-bit) via vLLM  ·  Qwen2.5-Coder-32B       │
-│  Python orchestrator · LangGraph state machine              │
+│  Gemma 4 (4-bit GGUF) via llama.cpp (llama-server)          │
+│  Python orchestrator · LangGraph state machine               │
 │                        │                                    │
 │  NERVOUS SYSTEM         ▼                                   │
 │  Python MCP client ──► TypeScript MCP server                │
@@ -18,12 +18,19 @@ A local, autonomous polyglot agent for high-end software engineering and profess
 │  TypeScript skills · Rust skills · Python skills            │
 │  AST analysis · Academic writing · Critique & reflexion     │
 │                                                             │
-│  MEMORY                                                     │
-│  MongoDB (sessions) · Chroma (vectors) · Redis (queues)     │
+│  STATE                                                       │
+│  SQLite LocalStore (sessions, turns, auth, checkpoints)      │
+│  — one file, one co-located process: services.local.main    │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Target hardware:** RunPod RTX A6000 (48 GB VRAM) or equivalent local GPU.
+Everything above runs as a **single co-located process** (`services.local.main` —
+gateway + orchestrator on one asyncio loop) plus the `llama-server` inference
+process. There is no MongoDB, Redis, or Chroma, and no Docker — all state lives
+in one SQLite database file under `.data/`.
+
+**Target hardware:** Any host with an NVIDIA GPU (RTX A6000 48 GB or equivalent).
+RunPod works too, but nothing here requires it.
 
 ---
 
@@ -33,60 +40,57 @@ A local, autonomous polyglot agent for high-end software engineering and profess
 |-----------|--------|--------------|
 | M1 — Basic inference | ✅ Done | Unsloth model load, single-turn generation |
 | M2 — Active agency | ✅ Done | Regex tool loop, AgentMemory, Codegraph |
-| M3 — MCP bridge | 🔨 Next | TypeScript MCP server + Python MCP client |
-| M4 — Full memory | ⬜ Pending | MongoDB + Chroma + Redis, hybrid RAG |
-| M5 — Skills | ⬜ Pending | Polyglot skill framework, SKILL.md discovery |
-| M6 — vLLM serving | ⬜ Pending | Replace Unsloth direct load with vLLM API |
-| M7 — Discord | ⬜ Pending | Discord bot connector, edit-based streaming |
+| M3 — MCP bridge | ✅ Done | TypeScript MCP server + Python MCP client |
+| M4 — Local state | ✅ Done | SQLite LocalStore (sessions, turns, auth, checkpoints) — replaced MongoDB/Chroma/Redis |
+| M5 — Skills | ✅ Done | Polyglot skill framework, SKILL.md discovery |
+| M6 — llama.cpp serving | ✅ Done | `llama-server` OpenAI-compatible API (see the vLLM-vs-CUDA note in `infrastructure/local/INSTALL.md`) |
+| M7 — Discord | ⬜ Deferred | Discord bot connector, edit-based streaming (do not wire until explicitly instructed) |
 
 ---
 
 ## Prerequisites
 
-**Host (GPU machine / RunPod pod):**
+**Host (GPU machine):**
 - NVIDIA driver ≥ 525.60.11
 - CUDA 12.x
 - Python 3.11+
 - Node.js 20+
-- Docker + Docker CLI
+
+No Docker, no container runtime — everything runs as native host processes.
 
 **Verify GPU:**
 ```bash
-./infrastructure/docker/scripts/gpu-check.sh
+nvidia-smi
 ```
 
 ---
 
 ## Quick Start
 
-### 1. Start support services (MongoDB, Chroma, Redis)
+### 1. One-time install (system + Python + llama.cpp + GGUF model)
 ```bash
-./infrastructure/docker/scripts/run-services.sh --infra-only
+infrastructure/local/install.sh
 ```
 
-### 2. Start the inference server (host process, not in Docker)
+### 2. Start the inference server
 ```bash
-# Quantize the model first (one-time):
-python scripts/quantize.py
-
-# Then serve:
-vllm serve google/gemma-4-9b-it \
-  --quantization bitsandbytes \
-  --tool-call-parser gemma4 \
-  --enable-auto-tool-choice \
-  --port 8000
+infrastructure/local/serve-model.sh   # Gemma 4 via llama.cpp on :8000, waits until healthy
 ```
 
-### 3. Start app services (once images are built)
+### 3. Start the local harness (one process: gateway + orchestrator, SQLite state)
 ```bash
-./infrastructure/docker/scripts/run-services.sh
+infrastructure/local/start.sh
+infrastructure/local/status.sh        # all green before testing
 ```
 
-### 4. Run the current M2 agent (while M3 is in progress)
+### 4. Run the CLI
 ```bash
-pip install -r requirements.txt
-python main.py
+source infrastructure/local/local.env
+PYTHONPATH=. python -m services.cli "Write a Python function that returns the square of a number."
 ```
+
+See `infrastructure/local/README.md` and `infrastructure/local/INSTALL.md` for
+full details, ports, and the auth model (bootstrap admin + admin-created users).
 
 ---
 
@@ -104,20 +108,23 @@ labmate/
 │   ├── memory_tool.py             # AgentMemory HTTP client
 │   └── code_tool.py               # Codegraph search
 │
-├── services/                      # M3+ (to be built)
+├── services/
 │   ├── mcp-bridge/                # TypeScript MCP server
-│   ├── orchestrator/              # Python M3+ orchestrator (LangGraph)
+│   ├── orchestrator/              # Python orchestrator (LangGraph)
+│   ├── local/                     # services.local.main — single co-located
+│   │                              #   process: gateway + orchestrator, one loop
+│   ├── ws_gateway/                # FastAPI + WebSocket gateway (auth, SQLite stores)
+│   ├── cli/                       # WebSocket CLI client
+│   ├── frontend/                  # Electron frontend
 │   ├── skill-worker/              # Skill execution worker
 │   └── skills/                    # Individual SKILL.md skill definitions
 │
 ├── infrastructure/
-│   ├── docker-compose.yml         # Support services (mongo, chroma, redis)
-│   └── scripts/
-│       ├── run-services.sh        # Start all Docker services (no Compose needed)
-│       ├── gpu-check.sh           # Verify host GPU setup
-│       ├── compose-up.sh          # Docker Compose alternative
-│       ├── setup-cluster.sh       # Optional k3d cluster setup
-│       └── teardown.sh            # Tear down k3d cluster
+│   ├── local/                     # LIVE stack: install/start/stop/serve-model,
+│   │                              #   native host processes, no Docker, no Mongo/
+│   │                              #   Redis/Chroma — SQLite state under .data/
+│   └── docker/                    # Legacy Docker Compose stack (superseded by
+│                                   #   infrastructure/local/; kept for reference)
 │
 ├── research/
 │   └── llm-harness-research/
@@ -200,27 +207,36 @@ LIVE_TESTS=1 pytest -m live
 # TypeScript MCP server (development)
 cd services/mcp-bridge && npm run dev
 
-# Watch orchestrator logs
-docker logs -f lm-orchestrator
+# Watch the local harness logs (gateway + orchestrator, single co-located process)
+tail -f .data/logs/local.log
 ```
 
 ---
 
 ## Infrastructure
 
+The whole stack is two processes: `llama-server` (inference) and
+`services.local.main` (gateway + orchestrator, one asyncio loop, SQLite state).
+No Docker, no MongoDB, no Redis, no Chroma.
+
 ```bash
-# Start everything
-./infrastructure/docker/scripts/run-services.sh
+# One-time install (system + Python + llama.cpp + GGUF)
+infrastructure/local/install.sh
 
-# Infra only (mongo + chroma + redis)
-./infrastructure/docker/scripts/run-services.sh --infra-only
+# Start the model
+infrastructure/local/serve-model.sh
 
-# Scale skill workers
-./infrastructure/docker/scripts/run-services.sh --workers 4
+# Start the harness
+infrastructure/local/start.sh
 
 # Status
-./infrastructure/docker/scripts/run-services.sh --status
+infrastructure/local/status.sh
 
-# Stop everything
-./infrastructure/docker/scripts/run-services.sh --stop
+# Stop everything (data preserved under .data/)
+infrastructure/local/stop.sh
 ```
+
+See `infrastructure/local/README.md` for what runs, and `INSTALL.md` for the
+full from-scratch setup (including the llama.cpp-vs-vLLM CUDA gotcha).
+The legacy `infrastructure/docker/` Compose stack is superseded and kept only
+for reference.

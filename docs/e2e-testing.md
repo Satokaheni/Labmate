@@ -1,27 +1,26 @@
 # Labmate E2E Testing Runbook
 
-This document is for a Claude session on RunPod. It describes what Labmate is, what we are testing, and the exact steps to run the full stack end-to-end.
+This document describes what Labmate is, what we are testing, and the exact steps to run the full stack end-to-end. It applies to any host that can run the local stack (RunPod-style pods work but aren't required).
 
 ---
 
 ## What Labmate Is
 
-Labmate is a local autonomous coding agent. A user types a task into the CLI; it travels through Redis to the orchestrator, which runs a LangGraph state machine (plan → execute → check → reflect), calls the Gemma 4 31B model via llama.cpp, and returns a result. The CLI waits for the result and renders it.
+Labmate is a local autonomous coding agent. A user types a task into the CLI; it is submitted in-process to `services.local.main` (gateway + orchestrator on one asyncio loop), which runs a LangGraph state machine (plan → execute → check → reflect), calls the Gemma 4 model via llama.cpp, and returns a result. The CLI waits for the result and renders it.
 
 ```
 User (CLI)
-  └─ XADD labmate:goals ──► Redis Stream
-                                └─ XREADGROUP ──► Orchestrator (LangGraph)
-                                                      └─ HTTP ──► llama-server (Gemma 4, :8000)
-                                                      └─ stdio ──► MCP Bridge (TypeScript)
-                                SET labmate:result:<id>
-                                PUBLISH labmate:result:<id> "ready"
-  ◄── pubsub / GET ────────────────────────────────────────────────
+  └─ WebSocket ──► services.local.main (gateway + orchestrator, one asyncio loop)
+                      └─ submit_goal() ──► Orchestrator (LangGraph)
+                                              └─ HTTP ──► llama-server (Gemma 4, :8000)
+                                              └─ stdio ──► MCP Bridge (TypeScript)
+                      SQLite LocalStore ◄──── sessions / turns / checkpoints written
+  ◄── WebSocket result ─────────────────────────────────────────────
 ```
 
-**Storage:** MongoDB (sessions, workspaces, checkpoints), Chroma (vector memory), Redis (task stream + result cache).
+**Storage:** one SQLite `LocalStore` (sessions, workspaces, turns, auth, LangGraph checkpoints) under `.data/labmate_state.sqlite`. No MongoDB, no Chroma, no Redis.
 
-**Key constraint:** On this pod there is only one GPU, so `QWEN_BASE` defaults to `GEMMA_BASE` — Gemma 4 serves both the architect and editor roles.
+**Key constraint:** On a single-GPU host, `QWEN_BASE` defaults to `GEMMA_BASE` — Gemma 4 serves both the architect and editor roles.
 
 ---
 
@@ -61,19 +60,19 @@ curl -s http://localhost:8000/health | grep '"status":"ok"'
 
 ---
 
-## Step 3 — Start support services + orchestrator
+## Step 3 — Start the local harness
 
 ```bash
 infrastructure/local/start.sh
 ```
 
-Starts (natively, no Docker — this pod blocks container namespaces):
-- **MongoDB** `:27017` — replica set `rs0`, required for LangGraph checkpointing
-- **Redis** `:6379` — AOF persistence, hosts the `labmate:goals` stream
-- **Chroma** `:8765` — vector memory
+Starts (natively, no Docker, no MongoDB/Redis/Chroma):
+- **`services.local.main`** `:8787` — the gateway (FastAPI + WebSocket) and the
+  orchestrator (LangGraph loop) running together as one process on one asyncio
+  loop, sharing one SQLite `LocalStore`. Skill dispatch is in-process — there is
+  no standalone skill-worker.
 - **MCP Bridge** — built from `services/mcp-bridge/` if `dist/index.js` is missing; the orchestrator spawns it as a child process
-- **Skill worker** — pulls from Redis and dispatches skill MCP servers
-- **Orchestrator** — the LangGraph loop that processes goals
+- **SearXNG** (optional, native) — metasearch backend for the web-search skill; non-fatal if not installed
 
 The script is idempotent — already-running processes are left alone.
 
@@ -84,19 +83,14 @@ infrastructure/local/status.sh
 
 Or manually:
 ```bash
-redis-cli ping                                          # → PONG
-mongosh --quiet --eval 'rs.status().myState'            # → 1 (PRIMARY)
-curl -s http://localhost:8765/api/v2/heartbeat          # → {"nanosecond heartbeat": ...}
-curl -s http://localhost:8000/health | grep '"status"'  # → "ok"
+curl -s http://localhost:8000/health | grep '"status"'  # → "ok"   (llama-server)
+curl -fsS http://localhost:8787/healthz                 # → {"ok":true}   (services.local.main)
 ```
 
 **Logs:**
 ```
-.data/logs/orchestrator.log
-.data/logs/skill-worker.log
-.data/logs/mongod.log
-.data/logs/redis.log
-.data/logs/chroma.log
+.data/logs/local.log          ← services.local.main (gateway + orchestrator combined)
+.data/logs/llama-server.log
 ```
 
 ---
@@ -107,7 +101,7 @@ curl -s http://localhost:8000/health | grep '"status"'  # → "ok"
 infrastructure/local/start-cli.sh
 ```
 
-This sources `local.env`, checks Redis and the orchestrator are alive, then launches:
+This sources `local.env`, checks the local harness (`services.local.main`) is alive via its pidfile and `/healthz`, then launches:
 
 ```
 python -m services.cli
@@ -130,9 +124,9 @@ On first run it asks for a display name and saves your identity to `~/.labmate/i
 
 Run these in order — each builds on the previous.
 
-### Scenario 1 — Redis round-trip (smoke test)
+### Scenario 1 — Goal round-trip (smoke test)
 
-Verify that a task can be pushed and a result retrieved without the orchestrator doing anything meaningful.
+Verify that a task can be submitted and a result retrieved without the orchestrator doing anything meaningful.
 
 ```bash
 # In the REPL, type a trivial task:
@@ -184,17 +178,18 @@ Verify that a task can be pushed and a result retrieved without the orchestrator
 ### Scenario 5 — Checkpoint resume after crash
 
 ```bash
-# Start a long-ish task in the REPL, then kill the orchestrator mid-flight
-kill $(cat .data/pids/orchestrator.pid)
+# Start a long-ish task in the REPL, then kill the local harness mid-flight
+kill $(cat .data/pids/local.pid)
 
-# Restart the orchestrator
+# Restart the harness
 ./start.sh
 
 # Resume the session
 ./start-cli.sh --resume <session-id>
 
-# Success: LangGraph loads the AsyncMongoDBSaver checkpoint and continues
-# from where it left off (may re-run the current node)
+# Success: LangGraph loads the SqliteSaver checkpoint (same .data/labmate_state.sqlite
+# file the LocalStore uses) and continues from where it left off (may re-run the
+# current node)
 ```
 
 ---
@@ -204,16 +199,15 @@ kill $(cat .data/pids/orchestrator.pid)
 Open separate terminals for these while running CLI tests:
 
 ```bash
-tail -f .data/logs/orchestrator.log
+tail -f .data/logs/local.log
 tail -f .data/logs/llama-server.log
 ```
 
-The orchestrator log shows:
-- `goal received` — task pulled from Redis stream
+The local-harness log (`local.log`, combined gateway + orchestrator) shows:
+- `goal received` — task pulled off the in-process goal queue (`submit_goal`)
 - `plan node` — Gemma 4 architect call
 - `execute node` — sub-goal execution
-- `session recorded` / `session completed` — workspace tracking
-- `xack` — message acknowledged (means the loop completed without poison-pill)
+- `session recorded` / `session completed` — workspace tracking (SQLite `LocalStore`)
 
 ---
 
@@ -223,7 +217,7 @@ The orchestrator log shows:
 infrastructure/local/stop.sh
 ```
 
-Stops the orchestrator, skill worker, MCP bridge, MongoDB, Redis, and Chroma. Does **not** delete data — volumes in `.data/` persist.
+Stops `services.local.main` (gateway + orchestrator), the MCP bridge, and SearXNG (if running). Does **not** delete data — `.data/labmate_state.sqlite` persists.
 
 To also kill the model server:
 ```bash
@@ -234,22 +228,25 @@ kill $(cat .data/pids/llama-server.pid)
 
 ## Known gaps / things to verify
 
-These are non-blocking gaps Opus flagged during the last code review. Watch for them during e2e:
+These are non-blocking gaps flagged during past code reviews. Watch for them during e2e:
 
 | Gap | What to look for |
 |---|---|
-| Exception path records `ok=True` | If orchestrator throws during `run_task`, MongoDB session shows `ok=True` even though it failed. Check `.data/logs/orchestrator.log` for errors and verify the session document. |
+| Exception path records `ok=True` | If the orchestrator throws during `run_task`, the SQLite session row may show `ok=True` even though it failed. Check `.data/logs/local.log` for errors and verify the session row via the `LocalStore`. |
 | `--resume` silent fallthrough | If the workspace isn't in `~/.labmate/workspaces.json`, `--resume` silently drops to the workspace picker with no message. |
-| `stream()` drops user/workspace identity | If you use the streaming API path (not the Redis round-trip path), `user_id` and `workspace_id` won't be threaded through. The CLI uses Redis, so this won't surface here. |
+| `stream()` drops user/workspace identity | If you use the streaming API path directly (bypassing the CLI's normal goal submission), `user_id` and `workspace_id` won't be threaded through. The CLI's normal path submits goals in-process with identity attached, so this won't surface here. |
 
 ---
 
 ## What was just implemented (context for this session)
 
-The three tasks completed before this e2e run:
+The three tasks completed before the e2e run this runbook originally validated:
 
 1. **Discord unwired** — `services/connectors/deferred/` is intentionally excluded. Do not wire it.
-2. **Workspace + User tracking** — MongoDB `workspaces`, `users`, and `sessions` collections with full CRUD (`WorkspaceManager`). The orchestrator records a session on every goal, upserts the workspace on first sight, and marks completion with `ok` flag.
-3. **CLI connector** — `services/cli/` is a full Typer + Rich CLI with REPL, one-shot mode, session resume, workspace picker, pubsub-safe result retrieval, and local identity.
+2. **Workspace + User tracking** — `workspaces`, `users`, and `sessions` tracked with full CRUD (`WorkspaceManager`), now backed by the SQLite `LocalStore` (originally MongoDB collections, migrated by the local-state-sqlite rearchitecture). The orchestrator records a session on every goal, upserts the workspace on first sight, and marks completion with `ok` flag.
+3. **CLI connector** — `services/cli/` is a full Typer + Rich CLI with REPL, one-shot mode, session resume, workspace picker, and local identity.
 
-All 182 unit/integration tests pass. This e2e run is the first time the full stack runs together.
+> Note: the storage layer described above is stale relative to the current
+> architecture — see `README.md`, `CLAUDE.md`, and `infrastructure/local/README.md`
+> for the current single-process SQLite topology. This section is kept as
+> historical context for when the CLI/workspace tracking was first built.

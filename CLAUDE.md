@@ -27,10 +27,10 @@ Labmate is a local autonomous agent: Brain (LLM) → Nervous System (MCP bridge)
                 │       │ child process                                        │
                 │  services/skills/<name>/    ← TypeScript / Rust / Python    │
                 │                                                              │
-                │  Memory / queues:                                            │
-                │    MongoDB  :27017  (sessions, messages, outbox)             │
-                │    Chroma   :8765   (vector embeddings)                      │
-                │    Redis    :6379   (task queues via Streams, event cache)   │
+                │  State:                                                      │
+                │    SQLite LocalStore  (sessions, turns, auth, checkpoints)   │
+                │    — one file, shared in-process by the orchestrator and    │
+                │      the gateway (services.local.main runs both on one loop)│
                 │                                                              │
                 │  services/ws_gateway/  :8787  ← FastAPI + WebSocket gateway │
                 │                                                              │
@@ -61,14 +61,17 @@ tokenizer = AutoTokenizer.from_pretrained("google/gemma-4-9b-it")
 token_count = len(tokenizer.encode(text))
 ```
 
-### 4. Chroma — always client-server mode
-```python
-# CORRECT
-client = chromadb.AsyncHttpClient(host="chroma", port=8000)
-```
+### 4. Chroma — removed from the core state path (historical)
+MongoDB/Chroma/Redis were retired by the local-state-sqlite rearchitecture; core
+session/turn/auth/checkpoint state now lives in one SQLite `LocalStore` (see the
+Architecture Map above). A couple of embedding-specific skills (`codegraph_embedder`,
+`paper-rag`) still import `chromadb` as legacy/unwired code — do not treat that as
+the state model; do not add new Chroma dependencies for orchestrator/session state.
 
-### 5. Redis — Streams for queues, not BRPOP
-Use `XADD` / `XREADGROUP` / `XACK`. Pin `redis>=5.0,<6` — version 8.x breaks blocking `xreadgroup` on empty streams.
+### 5. Redis — removed (historical)
+Task queueing used to go through Redis Streams (`XADD`/`XREADGROUP`/`XACK`). The
+single co-located process (`services.local.main`) now dispatches goals via an
+in-process queue/EventBus — no Redis anywhere in the live stack.
 
 ### 6. llama.cpp — every request must set thinking_budget_tokens
 Post-April-2026 builds default to `INT_MAX` when unset, causing non-deterministic hangs.
@@ -81,11 +84,15 @@ extra_body={"thinking_budget_tokens": 0}
 ```
 Also required on every `litellm.acompletion` call: `api_key="not-needed"` (prevents OpenAI SDK credential error).
 
-### 7. MongoDB transactional outbox
-Never write to MongoDB and Chroma/Redis in two separate calls. Write document + outbox marker atomically in one MongoDB write; background OutboxWorker projects to Chroma/Redis.
+### 7. MongoDB transactional outbox — removed (historical)
+The MongoDB-write + outbox-projection-to-Chroma/Redis pattern no longer applies:
+all state (sessions, turns, auth, checkpoints) is one SQLite `LocalStore`, written
+directly — no cross-store outbox needed.
 
 ### 8. LangGraph checkpointer
-Use `AsyncMongoDBSaver` from `langgraph-checkpoint-mongodb`. Never use `MemorySaver`.
+Use the local `SqliteSaver` (`services/orchestrator/graph.py::_make_sqlite_checkpointer`),
+backed by the same SQLite `LocalStore` file. Never use `MemorySaver`. (`AsyncMongoDBSaver`
+is no longer used.)
 
 ---
 
@@ -95,10 +102,12 @@ Always read from environment variables. Never hardcode.
 
 ```python
 INFERENCE_URL = os.getenv("GEMMA_BASE",   "http://localhost:8000/v1")
-MONGO_URI     = os.getenv("MONGO_URI",    "mongodb://localhost:27017/labmate")
-CHROMA_URL    = os.getenv("CHROMA_URL",   "http://localhost:8765")
-REDIS_URL     = os.getenv("REDIS_URL",    "redis://localhost:6379/0")
+LOCAL_HOST    = os.getenv("LOCAL_HOST",   "127.0.0.1")   # services.local.main bind host
+LOCAL_PORT    = os.getenv("LOCAL_PORT",   "8787")        # gateway HTTP/WebSocket port
 ```
+
+`MONGO_URI` / `CHROMA_URL` / `REDIS_URL` no longer exist — state is a single SQLite
+`LocalStore` file under `.data/`, shared in-process by the gateway and orchestrator.
 
 ---
 
@@ -112,7 +121,9 @@ REDIS_URL     = os.getenv("REDIS_URL",    "redis://localhost:6379/0")
 | Python classes | PascalCase | `ContextManager` |
 | Python functions | `snake_case` | `build_context()` |
 | Skill names | `kebab-case` | `ast-repo-map` |
-| Docker containers | `lm-<name>` | `lm-mongodb` |
+
+No Docker containers in the current stack — `services.local.main` runs as a single
+native host process alongside `llama-server`.
 
 ---
 
@@ -122,7 +133,7 @@ REDIS_URL     = os.getenv("REDIS_URL",    "redis://localhost:6379/0")
 - `@pytest.mark.asyncio` on all async tests
 - `pytest` + `pytest-asyncio` — no other test runners
 - Assert structure, not literal text — LLM output is non-deterministic
-- Motor async cursor chains must support `.find().sort().skip()` — all three return `self` in mocks
+- SQLite `LocalStore` access is async (via `aiosqlite`/thread-offload) — mock at the `LocalStore` method boundary, not at a driver-cursor level (the old Motor cursor-chain mocking rule no longer applies; Mongo is gone)
 
 ---
 
@@ -132,7 +143,7 @@ REDIS_URL     = os.getenv("REDIS_URL",    "redis://localhost:6379/0")
 |-----------|-----------|
 | Orchestrator loop, LangGraph | `research/llm-harness-research/specs/spec_orchestrator.md` |
 | TypeScript MCP server | `research/llm-harness-research/specs/spec_mcp_bridge.md` |
-| MongoDB + Chroma + Redis | `research/llm-harness-research/specs/spec_memory.md` |
+| MongoDB + Chroma + Redis (**superseded** — see `local_store.py` / SQLite LocalStore) | `research/llm-harness-research/specs/spec_memory.md` |
 | llama.cpp serving | `research/llm-harness-research/specs/spec_inference.md` |
 | SKILL.md format, SkillRunner | `research/llm-harness-research/specs/spec_skills.md` |
 | Testing strategy | `research/llm-harness-research/specs/spec_testing.md` |
@@ -143,10 +154,10 @@ REDIS_URL     = os.getenv("REDIS_URL",    "redis://localhost:6379/0")
 ## Build Order
 
 1. `services/mcp-bridge/` — TypeScript MCP server
-2. Memory layer — `StorageManager` (MongoDB + Chroma + Redis)
+2. State layer — `StorageManager` / `LocalStore` (SQLite: sessions, turns, auth, checkpoints — MongoDB/Chroma/Redis retired)
 3. `services/orchestrator/` — Python orchestrator
 4. `services/skills/` — individual skill servers
-5. `services/skill-worker/` — Redis consumer that dispatches skills
+5. `services/skill-worker/` — dispatches skills (in-process queue, not Redis)
 6. `services/cli/` — WebSocket CLI client
 7. `services/frontend/` — Electron frontend
 8. Discord connector — **deferred; do not implement until explicitly instructed**
@@ -273,24 +284,15 @@ infrastructure/local/status.sh        # all services must be green before testin
 
 ### 1. Service health checks
 ```bash
-redis-cli ping                                               # → PONG
-mongosh --quiet --eval 'rs.status().myState'                # → 1
-curl -s http://localhost:8765/api/v2/heartbeat | head -c 80 # → {"nanosecond heartbeat":...}
-curl -s http://localhost:8000/health | grep '"status"'      # → "ok"
-curl -fsS http://localhost:8787/healthz                     # → {"ok":true}
+curl -s http://localhost:8000/health | grep '"status"'      # → "ok"   (llama-server)
+curl -fsS http://localhost:8787/healthz                     # → {"ok":true}   (services.local.main)
 ```
+No MongoDB/Redis/Chroma health checks — SQLite `LocalStore` is a file, not a service.
 
-### 2. Redis round-trip (no CLI, no GPU needed for the push)
-```bash
-TASK_ID="e2e-$(date +%s)"
-redis-cli XADD labmate:goals '*' payload \
-  "{\"task_id\":\"$TASK_ID\",\"task\":\"What is 2+2? Reply in one sentence.\",\"session_id\":\"$TASK_ID\"}"
-for i in $(seq 1 120); do
-  VAL=$(redis-cli GET "labmate:result:$TASK_ID" 2>/dev/null)
-  [ -n "$VAL" ] && echo "$VAL" && break; sleep 1
-done
-```
-Success: `{"ok": true, ...}`. Failure: timeout or `"ok": false`.
+### 2. One-shot goal round-trip (no CLI needed for the push)
+Goals go straight to `services.local.main` (in-process `submit_goal`, no Redis) via
+the CLI's one-shot mode or the gateway's WebSocket/REST API — see §4 below for the
+CLI smoke test, which is the simplest way to exercise this path end-to-end.
 
 ### 3. Unit tests
 ```bash
@@ -343,13 +345,8 @@ The orchestrator spawns the codegraph MCP server automatically — no separate s
 # Confirm orchestrator picked up the tool at startup
 grep "codegraph semantic search ready" .data/logs/orchestrator.log
 
-# Check Chroma collection is populated (~2794 nodes for current codebase)
-curl -s http://localhost:8765/api/v1/collections/code_symbols | python3 -c \
-  "import sys,json; d=json.load(sys.stdin); print(d.get('count', d))"
-
-# Semantic query via agent (golden-path test)
-redis-cli XADD labmate:goals '*' payload \
-  '{"task_id":"cg-test","task":"Find the function that handles WebSocket authentication","session_id":"cg-test"}'
+# Semantic query via agent (golden-path test) — push via the CLI (see §4)
+PYTHONPATH=. python -m services.cli "Find the function that handles WebSocket authentication"
 # Expected: result references ws_gateway/server.py near the auth handshake
 
 # Incremental update — touch a file, wait 5 s, check the log
@@ -358,7 +355,10 @@ sleep 6
 grep "incremental_update" .data/logs/codegraph-embedder.log | tail -3
 ```
 
-`full_index` is skipped on restart if `code_symbols` already has documents. To force a full re-index, delete the collection from Chroma first.
+`full_index` is skipped on restart if the codegraph index already has documents.
+(Note: `services/codegraph_embedder/` still uses a standalone `chromadb` client for
+its own vector store — separate from, and unrelated to, the retired core-state
+Chroma usage; this is legacy/unwired and out of scope for the SQLite migration.)
 
 ### 7. Log locations
 ```
@@ -371,8 +371,7 @@ grep "incremental_update" .data/logs/codegraph-embedder.log | tail -3
 | Log pattern | Likely cause |
 |-------------|-------------|
 | `task failed` + traceback | Exception in `run_task` or LangGraph node |
-| `xreadgroup error` | Redis not running or stream not created |
-| No `goal received` after XADD | Orchestrator not running or consumer group missing |
+| No `goal received` after submitting | `services.local.main` not running, or `submit_goal` never reached (check gateway logs) |
 | `MCP bridge did not become ready` | Bridge crash or missing `dist/index.js` — run `npm run build` in `services/mcp-bridge/` |
 | `codegraph MCP did not become ready` | `.codegraph/codegraph.db` missing or embed model not loaded — check codegraph-embedder.log |
 | `llama-server` 5xx / timeout | Model not loaded or VRAM OOM |

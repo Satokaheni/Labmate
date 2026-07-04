@@ -1,13 +1,13 @@
-# Local (no-Docker) Support Stack
+# Local (no-Docker) Single-Process Stack
 
-This directory runs Labmate's support services — MongoDB, Redis, Chroma — as
-**plain host processes**, no containers.
+This directory runs the entire Labmate harness — gateway, orchestrator, and all
+state — as **plain host processes**, no containers, no MongoDB, no Redis, no
+Chroma. All session/turn/auth/checkpoint state lives in one SQLite database
+file managed by the `LocalStore`.
 
 ## Why this exists
 
-The canonical deployment (see [`../docker/`](../docker/)) runs these services as
-Docker Compose containers. That requires a host that can create container
-networks and namespaces. The current dev pod **cannot**:
+The dev pod **cannot** run containers:
 
 - No `NET_ADMIN` capability → Docker/Podman cannot create a bridge
   (`Failed to create bridge docker0 via netlink: operation not permitted`).
@@ -15,58 +15,46 @@ networks and namespaces. The current dev pod **cannot**:
   rootless Podman and `--network=host` fail (every namespace type returns
   `Operation not permitted`).
 
-So no container engine can run here. Until Labmate moves to a privileged host /
-your own server, these scripts provide the same three backends natively.
-
-The application code is unaffected: `StorageManager` and the orchestrator read
-`MONGO_URI` / `CHROMA_URL` / `REDIS_URL` from the environment, so only the
-connection strings change.
+So no container engine can run here. Rather than provisioning MongoDB/Redis/Chroma
+as native host processes (the original design of this directory), the harness
+was re-architected (the `local-state-sqlite` piece) to remove those dependencies
+entirely: `services.local.main` runs the gateway and orchestrator together on one
+asyncio loop, backed by one SQLite file. There is nothing left to provision except
+the inference server.
 
 ## Layout
 
 ```
 infrastructure/
-  docker/   ← Docker Compose stack (the target deployment; use on a real host)
-  local/    ← this folder: native host runners for the constrained pod
+  docker/   ← legacy Docker Compose stack (superseded; kept for reference only)
+  local/    ← this folder: the live stack — install/start/stop/serve-model
 ```
 
 ## Usage
 
 ```bash
-infrastructure/local/install.sh    # ONE-TIME: system + python + llama.cpp + GGUF (idempotent)
+infrastructure/local/install.sh     # ONE-TIME: system + python + llama.cpp + GGUF (idempotent)
 
-infrastructure/local/start.sh      # start mongod + redis + chroma (idempotent)
 infrastructure/local/serve-model.sh # Gemma 4 via llama.cpp on :8000 (OpenAI API at /v1)
-infrastructure/local/status.sh     # health check (incl. model)
-infrastructure/local/stop.sh       # stop all (data preserved)
+infrastructure/local/start.sh       # start services.local.main (gateway + orchestrator, idempotent)
+infrastructure/local/status.sh      # health check (model + gateway)
+infrastructure/local/stop.sh        # stop all (SQLite data preserved)
 
-source infrastructure/local/local.env   # export MONGO_URI / CHROMA_URL / REDIS_URL
+source infrastructure/local/local.env   # export LOCAL_HOST / LOCAL_PORT / GEMMA_BASE / etc.
 ```
 
-Full from-scratch / reinstall instructions and the **vLLM-vs-CUDA-12.8 gotcha**
-(why the model runs on llama.cpp, not vLLM) are in [`INSTALL.md`](./INSTALL.md).
+Full from-scratch / reinstall instructions, the **llama.cpp-vs-vLLM-CUDA-12.8
+gotcha**, ports, and the auth model are in [`INSTALL.md`](./INSTALL.md).
 
-## What differs from the Docker stack
+## State model
 
-| | Docker (`../docker/`) | Local (this) |
-|-|-----------------------|--------------|
-| MongoDB host | `mongodb:27017` | `localhost:27017` |
-| Chroma port | `8000` | **`8765`** (`:8000`=host vLLM, `:8001`=RunPod proxy) |
-| Redis host | `redis:6379` | `localhost:6379` |
-| MongoDB mode | standalone (compose) | **single-node replica set `rs0`** |
-| Process mgmt | Docker restart policy | host processes, pidfiles in `.data/pids` |
-
-### MongoDB must be a replica set
-
-The `StorageManager` outbox worker tails a MongoDB **change stream**
-(`db.messages.watch()`), which only works on a replica set or sharded cluster —
-not a standalone `mongod`. `start.sh` therefore launches `mongod --replSet rs0`
-and runs `rs.initiate()` once.
-
-> Note: the Docker compose currently starts a **standalone** `mongo:7` with no
-> `--replSet`, so change streams would not work there either. When that stack is
-> used on a real host, add `command: ["--replSet","rs0"]` (plus a one-time
-> `rs.initiate()`) to the `mongodb` service.
+Everything that used to be MongoDB (sessions, messages) + Chroma (vectors) +
+Redis (task queue, event cache) is now one SQLite file: `services/orchestrator/local_store.py::LocalStore`,
+shared in-process by the gateway and the orchestrator (`services.local.main`
+constructs the orchestrator process first, then builds the gateway app against
+that same running process — one `LocalStore`, one asyncio loop, no cross-process
+transport). The LangGraph checkpointer (`SqliteSaver`) is backed by the same
+database file, so it stays consistent with the rest of the state.
 
 ## Data
 
@@ -74,7 +62,10 @@ All state lives under `<repo>/.data/` (gitignored):
 
 ```
 .data/
-  mongo/   redis/   chroma/        # databases
-  logs/    mongod.log redis.log chroma.log
-  pids/    mongod.pid redis.pid chroma.pid
+  labmate_state.sqlite   # SQLite: sessions, turns, auth_users, checkpoints (WAL mode)
+  logs/                  # local.log, llama-server.log, llama-build.log
+  pids/                  # local.pid, llama-server.pid
 ```
+
+(`LABMATE_STATE_DIR` / `LABMATE_STATE_DB` override the directory/file path — see
+`services/orchestrator/local_mode.py`.)

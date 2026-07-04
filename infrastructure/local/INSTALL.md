@@ -1,10 +1,16 @@
 # Labmate — Local Stack Install / Reinstall Guide
 
-Everything needed to bring Labmate up from scratch on a fresh RunPod-style pod that
-**cannot run containers** and whose **NVIDIA driver caps at CUDA 12.8**.
+Everything needed to bring Labmate up from scratch on a host that **cannot run
+containers** and whose **NVIDIA driver caps at CUDA 12.8** (this guide was written
+against a RunPod-style pod, but nothing here requires RunPod specifically).
+
+The runtime is two processes: `llama-server` (inference) and `services.local.main`
+(gateway + orchestrator, one asyncio loop). All application state — sessions,
+turns, auth, LangGraph checkpoints — lives in one SQLite database file. There is
+no MongoDB, no Redis, no Chroma, and no Docker anywhere in this stack.
 
 > **TL;DR:** `infrastructure/local/install.sh` does all of this idempotently.
-> Then `start.sh` (data services) and `serve-model.sh` (the model).
+> Then `serve-model.sh` (the model) and `start.sh` (the harness).
 
 ---
 
@@ -20,10 +26,10 @@ Re-running is safe — every step is guarded and skips work already done.
 Then:
 
 ```bash
-infrastructure/local/start.sh         # MongoDB(rs0) + Redis + Chroma
 infrastructure/local/serve-model.sh   # Gemma 4 via llama.cpp on :8000
-infrastructure/local/status.sh        # health of all four
-source infrastructure/local/local.env # export MONGO_URI / CHROMA_URL / REDIS_URL
+infrastructure/local/start.sh         # services.local.main (gateway + orchestrator, SQLite state)
+infrastructure/local/status.sh        # health of both
+source infrastructure/local/local.env # export LOCAL_HOST / LOCAL_PORT / GEMMA_BASE / etc.
 ```
 
 ---
@@ -34,16 +40,19 @@ source infrastructure/local/local.env # export MONGO_URI / CHROMA_URL / REDIS_UR
 | Package | Version | How |
 |---|---|---|
 | Node.js | 22 LTS | NodeSource (apt's default v18 is too old for the TS toolchain) |
-| MongoDB | 8.0 | official `mongodb-org-server` + `mongodb-mongosh` repo |
-| Redis | 7.x | apt `redis-server` |
+
+MongoDB, Redis, and Chroma are **not installed** — the local-state-sqlite
+rearchitecture removed them; all state is a SQLite file managed by
+`services/orchestrator/local_store.py::LocalStore`.
 
 ### 2. Node deps
 `npm install` in `services/mcp-bridge`.
 
 ### 3. Python deps
 System Python is **PEP-668 externally-managed**, so installs use
-`pip install --break-system-packages`. Requirements:
-`services/memory/requirements.txt` + `services/mcp-bridge/requirements.txt`.
+`pip install --break-system-packages`. Requirements come from the service
+`requirements.txt` files (`services/mcp-bridge/requirements.txt`, orchestrator/
+gateway requirements, etc.) — see `install.sh` for the exact list.
 
 ### 4. Inference engine — **llama.cpp, NOT vLLM** ⚠️
 
@@ -81,7 +90,7 @@ enables Gemma 4 tool calling. Served model name (`--alias`) = `gemma-4`.
 
 > If the pod is ever recreated with a **≥ 580 driver (CUDA 13)**, vLLM becomes
 > viable again and is preferred for continuous batching / multi-user throughput.
-> Swap `serve-model.sh` back to the vLLM command from `CLAUDE.md` Rule #6.
+> Swap `serve-model.sh` back to a vLLM serve command in that case.
 
 ---
 
@@ -90,13 +99,40 @@ enables Gemma 4 tool calling. Served model name (`--alias`) = `gemma-4`.
 | Service | Port | Notes |
 |---|---|---|
 | Gemma 4 (llama.cpp) | 8000 | OpenAI API at `/v1`, health at `/health` |
-| MongoDB (rs0) | 27017 | single-node replica set — change streams need it |
-| Redis | 6379 | |
-| Chroma | 8765 | `:8000`=model, `:8001`=RunPod nginx proxy — both taken |
+| Local harness (`services.local.main`) | 8787 | gateway HTTP/WebSocket API; `LOCAL_HOST`/`LOCAL_PORT` |
+
+No MongoDB, Redis, or Chroma ports — those services were retired; all
+application state is a single SQLite file (see "Auth model" below and
+`infrastructure/local/README.md` § State model).
 
 ## Data / logs
 
-Under `<repo>/.data/` (gitignored): `mongo/ redis/ chroma/`, `logs/`
-(`mongod.log`, `redis.log`, `chroma.log`, `llama-server.log`, `llama-build.log`),
-`pids/`. Model weights live outside the repo at `/workspace/models/` and the HF
-cache at `/workspace/.hf-cache`.
+Under `<repo>/.data/` (gitignored): `labmate_state.sqlite` (SQLite state —
+sessions, turns, `auth_users`, LangGraph checkpoints), `logs/` (`local.log`,
+`llama-server.log`, `llama-build.log`), `pids/` (`local.pid`, `llama-server.pid`).
+Model weights live outside the repo at `/workspace/models/` and the HF cache at
+`/workspace/.hf-cache`.
+
+---
+
+## Auth model
+
+Registration is **closed** — there is no signup UI or public registration endpoint.
+
+- **Bootstrap admin:** on first boot, `services.local.main` auto-seeds a single
+  admin account into the SQLite `auth_users` table from the `ADMIN_EMAIL` /
+  `ADMIN_PASSWORD` environment variables (see `infrastructure/local/local.env`).
+  **If `ADMIN_PASSWORD` is unset, login is impossible** — set it before first
+  boot (the shipped default in `local.env` is a dev-only throwaway; override it
+  for anything beyond local dev).
+- **Additional users:** created by an admin via `POST /auth/users` against the
+  gateway, authenticated with the admin's Bearer token (admin-only endpoint —
+  see `services/ws_gateway/auth.py`). There is no CLI or frontend affordance for
+  this yet (deferred to Piece 7); use `curl` or an HTTP client directly, e.g.:
+
+  ```bash
+  curl -X POST "http://localhost:8787/auth/users" \
+    -H "Authorization: Bearer <admin JWT from /auth/login>" \
+    -H "Content-Type: application/json" \
+    -d '{"email": "teammate@example.com", "password": "..."}'
+  ```
