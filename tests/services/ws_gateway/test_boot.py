@@ -40,8 +40,8 @@ async def test_check_brain_failed_when_healthz_errors():
 
 
 @pytest.mark.asyncio
-async def test_check_memory_ready_when_redis_pings(redis):
-    state, detail, message = await check_memory(redis=redis)
+async def test_check_memory_ready_in_process():
+    state, detail, message = await check_memory()
     assert state == "ready"
 
 
@@ -56,7 +56,7 @@ async def test_check_hands_counts_skill_dirs(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_run_boot_sequence_emits_updates_then_ready(redis):
+async def test_run_boot_sequence_emits_updates_then_ready():
     emitted = []
 
     async def emit(ev):

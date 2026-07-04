@@ -4,8 +4,6 @@ import os
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
-import redis.asyncio as aioredis
-
 if TYPE_CHECKING:
     from services.ws_gateway.sessions import InMemorySessionStore
 
@@ -17,7 +15,7 @@ _PLAN = [
     {"id": "brain", "label": "Brain", "detail": "llama.cpp", "required": True},
     {"id": "nervous_system", "label": "Nervous System", "detail": "MCP bridge", "required": True},
     {"id": "hands", "label": "Hands", "detail": "skills", "required": False},
-    {"id": "memory", "label": "Memory", "detail": "Redis + Mongo", "required": True},
+    {"id": "memory", "label": "Memory", "detail": "Mongo/local", "required": True},
     {"id": "workspace", "label": "Workspace", "detail": "config", "required": False},
 ]
 
@@ -61,12 +59,13 @@ async def check_hands(*, skills_dir: str | None = None) -> CheckResult:
     return ("ready", f"{count} skills", "")
 
 
-async def check_memory(*, redis: aioredis.Redis) -> CheckResult:
-    try:
-        await redis.ping()
-        return ("ready", "Redis reachable", "")
-    except Exception as exc:  # noqa: BLE001
-        return ("failed", "Redis unreachable", str(exc))
+async def check_memory() -> CheckResult:
+    """Memory is the in-process runtime + local SQLite store — always ready.
+
+    Piece 4 co-locates the gateway with the orchestrator (Redis-free); there is
+    no separate memory service left to ping.
+    """
+    return ("ready", "in-process", "")
 
 
 async def check_workspace(*, workspace_path: str | None = None) -> CheckResult:
