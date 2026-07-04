@@ -13,7 +13,6 @@ networkx>=3.0
 docker>=7.0
 redis>=5.0,<6   # pin <6: redis-py 8.x regressed blocking xreadgroup (raises TimeoutError on empty BLOCK)
 pymongo>=4.0
-chromadb>=0.5
 GitPython>=3.1
 anyio>=4.0
 pytest>=8.0

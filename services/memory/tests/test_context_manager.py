@@ -21,7 +21,6 @@ async def _make_local_store(tmp_path, name="s.sqlite") -> LocalStore:
 async def test_build_context_stays_within_budget(tmp_path):
     with (
         patch("services.memory.context_manager.token_count", side_effect=_mock_token_count),
-        patch("services.memory.context_manager.rerank", new_callable=AsyncMock, return_value=[]),
     ):
         from services.memory.context_manager import ContextBudget, ContextManager
 
@@ -69,7 +68,6 @@ async def test_build_context_pins_core_memory_even_when_over_budget(tmp_path):
     """Core memory is never trimmed — only summary and recent turns are."""
     with (
         patch("services.memory.context_manager.token_count", side_effect=_mock_token_count),
-        patch("services.memory.context_manager.rerank", new_callable=AsyncMock, return_value=[]),
     ):
         from services.memory.context_manager import ContextBudget, ContextManager
 
@@ -447,7 +445,6 @@ async def test_build_context_surfaces_anchor_when_diverged(tmp_path):
     """When the anchor's facts are absent from the summary, anchor_buffer is populated."""
     with (
         patch("services.memory.context_manager.token_count", side_effect=_mock_token_count),
-        patch("services.memory.context_manager.rerank", new_callable=AsyncMock, return_value=[]),
     ):
         from services.memory.context_manager import ContextBudget, ContextManager
 
@@ -483,7 +480,6 @@ async def test_build_context_omits_anchor_when_contained_in_summary(tmp_path):
     """When the summary already contains the anchor's facts, anchor_buffer is empty."""
     with (
         patch("services.memory.context_manager.token_count", side_effect=_mock_token_count),
-        patch("services.memory.context_manager.rerank", new_callable=AsyncMock, return_value=[]),
     ):
         from services.memory.context_manager import ContextBudget, ContextManager
 
@@ -613,7 +609,6 @@ async def test_maybe_background_compact_runs_when_idle_and_full():
 
     with (
         patch("services.memory.context_manager.token_count", side_effect=_mock_token_count),
-        patch("services.memory.context_manager.rerank", new_callable=AsyncMock, return_value=[]),
     ):
         from services.memory.context_manager import ContextBudget, ContextManager
 

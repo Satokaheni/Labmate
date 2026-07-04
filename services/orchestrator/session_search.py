@@ -1,11 +1,11 @@
 """Thin, unit-testable wrapper turning Labmate's raw chat_turns transcript into
 a flat, ReAct-loop-callable tool.
 
-Mirrors ``memory_search.py`` exactly: the orchestrator holds an optional
-``SessionSearch`` instance and the loop dispatches to it when the model calls
-the ``session_search`` tool.  The wrapper takes an INJECTABLE store (anything
-exposing ``async search_turns(query, top_k, mode, session_id) -> list[dict]``,
-which ``StorageManager`` already does) so it is testable with a fake store and
+The orchestrator holds an optional ``SessionSearch`` instance and the loop
+dispatches to it when the model calls the ``session_search`` tool.  The
+wrapper takes an INJECTABLE store (anything exposing ``async
+search_turns(query, top_k, mode, session_id) -> list[dict]``, which
+``StorageManager`` already does) so it is testable with a fake store and
 never touches live Mongo itself.
 
 Output is RAW: the retrieved turn text is returned verbatim, ranked, and
@@ -20,8 +20,8 @@ from typing import Any
 
 _logger = logging.getLogger("orchestrator")
 
-# Budget-aware caps: per-snippet and total limits.  Mirror memory_search caps
-# (per-snippet 600 / total 4000) because output shape is a ranked list.
+# Budget-aware caps: per-snippet and total limits (per-snippet 600 / total 4000)
+# because output shape is a ranked list.
 _MAX_SNIPPET_CHARS = 600
 _MAX_TOTAL_CHARS = 4000
 _MAX_K = 20  # matches the code_semantic_search "max 20 results" contract

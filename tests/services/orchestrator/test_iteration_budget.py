@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from services.orchestrator.iteration_budget import IterationBudget, CHEAP_TOOLS, REFUNDABLE_TOOLS
+from services.orchestrator.iteration_budget import CHEAP_TOOLS, REFUNDABLE_TOOLS, IterationBudget
 
 
 @pytest.mark.mocked
@@ -78,10 +78,10 @@ class TestIterationBudgetRefund:
     def test_refund_then_consume_allows_extra_turn(self):
         # Cap of 2: consume a cheap turn, refund it, then 2 working turns fit.
         b = IterationBudget(max_total=2)
-        assert b.consume() is True   # cheap turn
-        b.refund()                   # refunded
-        assert b.consume() is True   # work 1
-        assert b.consume() is True   # work 2
+        assert b.consume() is True  # cheap turn
+        b.refund()  # refunded
+        assert b.consume() is True  # work 1
+        assert b.consume() is True  # work 2
         assert b.consume() is False  # now exhausted
         assert b.used == 2
 
@@ -90,13 +90,13 @@ class TestIterationBudgetRefund:
 class TestIterationBudgetGrace:
     def test_grace_fires_once_then_never_again(self):
         b = IterationBudget(max_total=1)
-        b.consume()                 # cap reached
+        b.consume()  # cap reached
         assert b.consume() is False
         assert b.grace_used is False
-        assert b.grace() is True    # first grace allowed
+        assert b.grace() is True  # first grace allowed
         assert b.grace_used is True
-        assert b.grace() is False   # second grace denied
-        assert b.grace() is False   # still denied
+        assert b.grace() is False  # second grace denied
+        assert b.grace() is False  # still denied
 
     def test_grace_available_even_before_exhaustion(self):
         # grace() is a one-shot flag independent of used count; the LOOP is
@@ -130,7 +130,7 @@ class TestIterationBudgetAbsoluteTurnLimit:
     def test_record_turn_returns_false_at_ceiling(self):
         # Ceiling is 2 * max_total, e.g. 2 * 6 = 12
         b = IterationBudget(max_total=6)
-        for i in range(12):
+        for _i in range(12):
             assert b.record_turn() is True
         # 13th turn exceeds the ceiling
         assert b.record_turn() is False
@@ -181,7 +181,7 @@ class TestRefundableTools:
         assert CHEAP_TOOLS <= REFUNDABLE_TOOLS
 
     def test_refundable_adds_verification_and_inspection(self):
-        for name in ("run_tests", "run_bash", "code_semantic_search", "memory_search"):
+        for name in ("run_tests", "run_bash", "code_semantic_search", "session_search"):
             assert name in REFUNDABLE_TOOLS
 
     def test_refundable_excludes_mutating_and_finish(self):

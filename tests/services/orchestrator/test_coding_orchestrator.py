@@ -2288,7 +2288,6 @@ async def test_gating_run_bash_and_code_semantic_search_not_advertised_when_clie
         manifest,
         skill_router=None,
         codegraph_enabled=False,
-        memory_enabled=False,
         static_tail=_static_tail_schemas(),
     )
 

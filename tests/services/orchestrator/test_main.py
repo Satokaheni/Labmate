@@ -1,28 +1,27 @@
 """Tests for services/orchestrator/main.py"""
+
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import socket
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-
 import redis.asyncio as aioredis
 
 from services.orchestrator.main import (
-    OrchestratorProcess,
-    GOALS_STREAM,
     GOALS_GROUP,
+    GOALS_STREAM,
     RESULT_PREFIX,
     RESULT_TTL,
-    _worker_id,
+    OrchestratorProcess,
     _build_mcp_params,
+    _worker_id,
 )
 
-
 # ── _worker_id ─────────────────────────────────────────────────────────────────
+
 
 def test_worker_id_contains_hostname_and_pid():
     wid = _worker_id()
@@ -31,6 +30,7 @@ def test_worker_id_contains_hostname_and_pid():
 
 
 # ── _build_mcp_params ──────────────────────────────────────────────────────────
+
 
 def test_build_mcp_params_default_command():
     params = _build_mcp_params()
@@ -53,6 +53,7 @@ def test_build_mcp_params_default_args_point_to_dist():
 
 # ── _write_result ──────────────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_write_result_sets_key_with_ttl():
     proc = OrchestratorProcess()
@@ -70,12 +71,11 @@ async def test_write_result_publishes_ready():
     proc = OrchestratorProcess()
     proc._redis = AsyncMock()
     await proc._write_result("task-abc", {"ok": True})
-    proc._redis.publish.assert_awaited_once_with(
-        f"{RESULT_PREFIX}task-abc", "ready"
-    )
+    proc._redis.publish.assert_awaited_once_with(f"{RESULT_PREFIX}task-abc", "ready")
 
 
 # ── _ensure_group ─────────────────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_ensure_group_creates_stream():
@@ -83,7 +83,10 @@ async def test_ensure_group_creates_stream():
     proc._redis = AsyncMock()
     await proc._ensure_group()
     proc._redis.xgroup_create.assert_awaited_once_with(
-        GOALS_STREAM, GOALS_GROUP, id="0", mkstream=True,
+        GOALS_STREAM,
+        GOALS_GROUP,
+        id="0",
+        mkstream=True,
     )
 
 
@@ -108,6 +111,7 @@ async def test_ensure_group_re_raises_other_errors():
 
 # ── _handle ────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_handle_calls_run_task_and_acks():
     proc = OrchestratorProcess()
@@ -121,10 +125,6 @@ async def test_handle_calls_run_task_and_acks():
     storage.workspaces.record_session = AsyncMock()
     storage.workspaces.complete_session = AsyncMock()
     storage.workspaces.load_agent_instructions = AsyncMock(return_value="")
-    storage.consolidator = AsyncMock()
-    storage.consolidator.on_task_complete = AsyncMock()
-    storage.consolidator.write_reflections = AsyncMock()
-
     payload = json.dumps({"task_id": "t1", "task": "do something", "session_id": "s1"})
     await proc._handle("100-0", {"payload": payload}, orch, storage)
 
@@ -146,10 +146,6 @@ async def test_handle_acks_on_failure():
     storage.workspaces = AsyncMock()
     storage.workspaces.record_session = AsyncMock()
     storage.workspaces.complete_session = AsyncMock()
-    storage.consolidator = AsyncMock()
-    storage.consolidator.on_task_complete = AsyncMock()
-    storage.consolidator.write_reflections = AsyncMock()
-
     payload = json.dumps({"task_id": "t2", "task": "fail", "session_id": "s2"})
     await proc._handle("200-0", {"payload": payload}, orch, storage)
 
@@ -169,10 +165,6 @@ async def test_handle_writes_error_result_on_failure():
     storage.workspaces = AsyncMock()
     storage.workspaces.record_session = AsyncMock()
     storage.workspaces.complete_session = AsyncMock()
-    storage.consolidator = AsyncMock()
-    storage.consolidator.on_task_complete = AsyncMock()
-    storage.consolidator.write_reflections = AsyncMock()
-
     payload = json.dumps({"task_id": "err-task", "task": "fail"})
     await proc._handle("300-0", {"payload": payload}, orch, storage)
 
@@ -206,25 +198,32 @@ async def test_handle_uses_task_id_as_session_id_when_absent():
 
 # ── mcp_client_manager shim ───────────────────────────────────────────────────
 
+
 def test_mcp_client_manager_importable_from_orchestrator():
-    from services.orchestrator.mcp_client_manager import MCPClientManager, CircuitOpenError
+    from services.orchestrator.mcp_client_manager import CircuitOpenError, MCPClientManager
+
     assert MCPClientManager is not None
     assert CircuitOpenError is not None
 
 
 # ── safety ────────────────────────────────────────────────────────────────────
 
+
 def test_no_tiktoken_import():
     """main.py must not directly import tiktoken (litellm does as a side-effect)."""
     import re
     from pathlib import Path
-    text = (Path(__file__).parent.parent.parent.parent /
-            "services/orchestrator/main.py").read_text()
+
+    text = (
+        Path(__file__).parent.parent.parent.parent / "services/orchestrator/main.py"
+    ).read_text()
     assert re.search(r"^import tiktoken|^from tiktoken", text, re.MULTILINE) is None
 
 
 def test_logging_goes_to_stderr_not_stdout():
-    import logging, sys
+    import logging
+    import sys
+
     logger = logging.getLogger("orchestrator")
     for handler in logging.root.handlers + logger.handlers:
         if isinstance(handler, logging.StreamHandler):
@@ -232,6 +231,7 @@ def test_logging_goes_to_stderr_not_stdout():
 
 
 # ── _handle with user_id and workspace_id ─────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_handle_parses_user_and_workspace():
@@ -250,13 +250,15 @@ async def test_handle_parses_user_and_workspace():
     storage.workspaces._db = AsyncMock()
     storage.workspaces._db.__getitem__ = MagicMock(return_value=AsyncMock())
 
-    payload = json.dumps({
-        "task_id": "t-1",
-        "task": "do something",
-        "session_id": "s-1",
-        "user_id": "u-abc",
-        "workspace_id": "ws-xyz",
-    })
+    payload = json.dumps(
+        {
+            "task_id": "t-1",
+            "task": "do something",
+            "session_id": "s-1",
+            "user_id": "u-abc",
+            "workspace_id": "ws-xyz",
+        }
+    )
     await proc._handle("msg-1", {"payload": payload}, orch, storage)
 
     call_kwargs = orch.run_task.call_args.kwargs
@@ -324,13 +326,15 @@ async def test_complete_session_called_with_ok_true_on_success():
     storage.workspaces._db = AsyncMock()
     storage.workspaces._db.__getitem__ = MagicMock(return_value=AsyncMock())
 
-    payload = json.dumps({
-        "task_id": "t-ok",
-        "task": "succeed",
-        "session_id": "s-ok",
-        "user_id": "u-1",
-        "workspace_id": "ws-1",
-    })
+    payload = json.dumps(
+        {
+            "task_id": "t-ok",
+            "task": "succeed",
+            "session_id": "s-ok",
+            "user_id": "u-1",
+            "workspace_id": "ws-1",
+        }
+    )
     await proc._handle("msg-ok", fields={"payload": payload}, orch=orch, storage=storage)
 
     # complete_session must be called with ok=True (because error is None)
@@ -361,13 +365,15 @@ async def test_complete_session_called_with_ok_false_on_run_task_exception():
     storage.workspaces._db = AsyncMock()
     storage.workspaces._db.__getitem__ = MagicMock(return_value=AsyncMock())
 
-    payload = json.dumps({
-        "task_id": "t-fail",
-        "task": "fail",
-        "session_id": "s-fail",
-        "user_id": "u-2",
-        "workspace_id": "ws-2",
-    })
+    payload = json.dumps(
+        {
+            "task_id": "t-fail",
+            "task": "fail",
+            "session_id": "s-fail",
+            "user_id": "u-2",
+            "workspace_id": "ws-2",
+        }
+    )
     await proc._handle("msg-fail", fields={"payload": payload}, orch=orch, storage=storage)
 
     # complete_session must be called with ok=False (because run_task raised)
@@ -402,13 +408,15 @@ async def test_write_result_ok_false_when_final_state_has_error():
     storage.workspaces._db = AsyncMock()
     storage.workspaces._db.__getitem__ = MagicMock(return_value=AsyncMock())
 
-    payload = json.dumps({
-        "task_id": "t-graph-failed",
-        "task": "subtask fails",
-        "session_id": "s-graph-failed",
-        "user_id": "u-3",
-        "workspace_id": "ws-3",
-    })
+    payload = json.dumps(
+        {
+            "task_id": "t-graph-failed",
+            "task": "subtask fails",
+            "session_id": "s-graph-failed",
+            "user_id": "u-3",
+            "workspace_id": "ws-3",
+        }
+    )
     await proc._handle("msg-graph-fail", fields={"payload": payload}, orch=orch, storage=storage)
 
     # _write_result must be called with ok=False (derived from error != None)
@@ -427,6 +435,7 @@ async def test_write_result_ok_false_when_final_state_has_error():
 
 # ── skill router wiring ────────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_handle_emits_turn_start_and_done():
     proc = OrchestratorProcess()
@@ -444,9 +453,6 @@ async def test_handle_emits_turn_start_and_done():
     storage.workspaces.record_session = AsyncMock()
     storage.workspaces.complete_session = AsyncMock()
     storage.workspaces.upsert_workspace = AsyncMock()
-    storage.consolidator = MagicMock()
-    storage.consolidator.on_task_complete = AsyncMock()
-    storage.consolidator.write_reflections = AsyncMock()
 
     fields = {"payload": json.dumps({"task_id": "t-1", "task": "do it", "session_id": "t-1"})}
     await proc._handle("1-0", fields, orch, storage)
@@ -472,17 +478,19 @@ def test_skill_router_wiring_order():
 
     # Path from test file: tests/services/orchestrator/test_main.py
     # -> services/orchestrator/main.py
-    main_py = (Path(__file__).parent.parent.parent.parent / "services" / "orchestrator" / "main.py").read_text()
-    lines = main_py.split('\n')
+    main_py = (
+        Path(__file__).parent.parent.parent.parent / "services" / "orchestrator" / "main.py"
+    ).read_text()
+    lines = main_py.split("\n")
 
     # Find line numbers of key sections (1-indexed for clarity in error messages)
     redis_pool_line = None
     skill_router_comment_line = None
 
     for i, line in enumerate(lines, 1):
-        if 'pool = aioredis.ConnectionPool.from_url' in line:
+        if "pool = aioredis.ConnectionPool.from_url" in line:
             redis_pool_line = i
-        if '# Build skill router' in line:
+        if "# Build skill router" in line:
             skill_router_comment_line = i
 
     # Both sections must exist

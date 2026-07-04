@@ -213,29 +213,6 @@ def test_build_tool_list_no_manifest_fallback_with_codegraph():
 
 
 @pytest.mark.mocked
-def test_build_tool_list_no_manifest_fallback_with_memory():
-    """build_tool_list(manifest=None, memory_enabled=True) includes memory_search."""
-    static_tail = _static_tail_schemas()
-    tools = build_tool_list(
-        None,
-        skill_router=None,
-        codegraph_enabled=False,
-        memory_enabled=True,
-        static_tail=static_tail,
-    )
-    names = [t["function"]["name"] for t in tools]
-    assert names == [
-        "memory_search",
-        "read_file",
-        "write_file",
-        "list_dir",
-        "run_bash",
-        "run_tests",
-        "finish",
-    ]
-
-
-@pytest.mark.mocked
 def test_build_tool_list_client_attached_no_run_bash():
     """build_tool_list with client manifest never advertises run_bash."""
     manifest: ClientManifest = {
@@ -638,7 +615,7 @@ def test_manifest_local_tool_names_matches_advertised_names():
 
     This sync guard ensures dispatch routing cannot drift from advertisement.
     The set should equal all advertised tool names EXCEPT control/server tools
-    (finish, load_skill, call_skill_tool, code_semantic_search, memory_search).
+    (finish, load_skill, call_skill_tool, code_semantic_search).
 
     Strengthened: now includes a skill_router so load_skill and call_skill_tool are
     advertised, making the control_tools subtraction load-bearing and catching regressions
@@ -706,7 +683,6 @@ def test_manifest_local_tool_names_matches_advertised_names():
         "load_skill",
         "call_skill_tool",
         "code_semantic_search",
-        "memory_search",
     }
 
     # Compute expected: advertised minus control tools.

@@ -27,7 +27,6 @@ from .local_tools import (
 )
 from .loop_checkpoint import LoopCheckpoint
 from .loop_detection import LoopDetector, call_signature, repeat_limit_for
-from .memory_search import MemorySearch
 from .message_repair import message_repair_enabled, sanitize_messages
 from .model_client import acompletion_with_failover, resolve_bases
 from .progress_breaker import ProgressBreaker, ProgressStep
@@ -310,9 +309,6 @@ class AsyncOrchestrator:
         self.codegraph_mcp = None  # set after construction if codegraph-embedder is running
         self.context_manager = None  # set after construction for conversation continuity
         self._active_session_id = ""  # set in execute node to track the current session
-        self.memory_search: MemorySearch | None = (
-            None  # set after construction when a memory store is wired
-        )
         self.session_search: SessionSearch | None = (
             None  # set after construction when a memory store is wired
         )
@@ -533,7 +529,6 @@ class AsyncOrchestrator:
         assembler = PromptAssembler(
             skill_router=self.skill_router,
             codegraph_enabled=self.codegraph_mcp is not None,
-            memory_enabled=self.memory_search is not None,
             session_search_enabled=self.session_search is not None,
             client_manifest=client_context.get_manifest(),
             workspace_root=client_context.get_workspace_root(),
@@ -1377,18 +1372,6 @@ class AsyncOrchestrator:
                                 {"error": "codegraph semantic search not available"}
                             )
 
-                    elif name == "memory_search":
-                        if self.memory_search is not None:
-                            try:
-                                content = await self.memory_search.search(
-                                    args.get("query", ""),
-                                    args.get("k"),
-                                )
-                            except Exception as exc:
-                                content = json.dumps({"error": str(exc)})
-                        else:
-                            content = json.dumps({"error": "memory search not available"})
-
                     elif name == "session_search":
                         if self.session_search is not None:
                             try:
@@ -1434,7 +1417,7 @@ class AsyncOrchestrator:
 
                 # Refund this turn if EVERY tool call it made was a refundable read/verify/inspect (REFUNDABLE_TOOLS).
                 # Pure inspection (read_file / list_dir / code_semantic_search) and
-                # verification (run_tests / run_bash / memory_search) must not starve genuine work.
+                # verification (run_tests / run_bash) must not starve genuine work.
                 # A turn with no tool calls already returned above, so _turn_tools is non-empty here.
                 if _turn_tools and all(t in REFUNDABLE_TOOLS for t in _turn_tools):
                     budget.refund()

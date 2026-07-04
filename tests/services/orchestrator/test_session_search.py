@@ -1,7 +1,4 @@
-"""Tests for SessionSearch wrapper and StorageManager.search_turns.
-
-Mirrors test_memory_search.py patterns.
-"""
+"""Tests for SessionSearch wrapper and StorageManager.search_turns."""
 
 from __future__ import annotations
 
@@ -211,19 +208,6 @@ def test_session_search_schema_absent_when_disabled():
     assembler = PromptAssembler(session_search_enabled=False)
     names = {t["function"]["name"] for t in assembler.tools() if t.get("type") == "function"}
     assert "session_search" not in names
-
-
-def test_memory_enabled_unaffected_by_session_search():
-    """session_search_enabled=True must not add memory_search and vice versa."""
-    assembler = PromptAssembler(memory_enabled=False, session_search_enabled=True)
-    names = {t["function"]["name"] for t in assembler.tools() if t.get("type") == "function"}
-    assert "session_search" in names
-    assert "memory_search" not in names
-
-    assembler2 = PromptAssembler(memory_enabled=True, session_search_enabled=False)
-    names2 = {t["function"]["name"] for t in assembler2.tools() if t.get("type") == "function"}
-    assert "memory_search" in names2
-    assert "session_search" not in names2
 
 
 def test_session_search_schema_has_required_query():

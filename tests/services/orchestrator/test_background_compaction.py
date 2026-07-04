@@ -8,8 +8,7 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_background_compactor_compacts_idle_session(monkeypatch):
-    """A session idle past the threshold with high fill triggers a background compact
-    and its reflections are written to memory."""
+    """A session idle past the threshold with high fill triggers a background compact."""
     import services.orchestrator.main as main
 
     # Wake the sweeper almost immediately and inspect a small batch.
@@ -22,22 +21,18 @@ async def test_background_compactor_compacts_idle_session(monkeypatch):
     orch = MagicMock()
     orch._gemma_base = "http://localhost:8000/v1"
 
-    # context_manager.maybe_background_compact returns a compact result with reflections.
+    # context_manager.maybe_background_compact returns a compact result.
     context_manager = MagicMock()
     context_manager.maybe_background_compact = AsyncMock(
         return_value={
             "summary_tokens": 40,
             "pruned_messages": 6,
-            "reflections": ["use Redis streams"],
+            "reflections": [],
         }
     )
 
-    consolidator = MagicMock()
-    consolidator.write_reflections = AsyncMock()
-
     storage = MagicMock()
     storage.context_manager = context_manager
-    storage.consolidator = consolidator
     # storage._db["chat_turns"].distinct("sessionId") → one candidate session.
     chat_turns_col = MagicMock()
     chat_turns_col.distinct = AsyncMock(return_value=["sess-1"])
@@ -55,9 +50,6 @@ async def test_background_compactor_compacts_idle_session(monkeypatch):
 
     context_manager.maybe_background_compact.assert_awaited()
     assert context_manager.maybe_background_compact.await_args[0][0] == "sess-1"
-    # Reflections written fire-and-forget; let the created task run.
-    await asyncio.sleep(0)
-    consolidator.write_reflections.assert_awaited_with("sess-1", ["use Redis streams"])
 
 
 @pytest.mark.asyncio
@@ -76,12 +68,8 @@ async def test_background_compactor_skips_when_maybe_returns_none(monkeypatch):
     context_manager = MagicMock()
     context_manager.maybe_background_compact = AsyncMock(return_value=None)
 
-    consolidator = MagicMock()
-    consolidator.write_reflections = AsyncMock()
-
     storage = MagicMock()
     storage.context_manager = context_manager
-    storage.consolidator = consolidator
     chat_turns_col = MagicMock()
     chat_turns_col.distinct = AsyncMock(return_value=["sess-1"])
     storage._db = {"chat_turns": chat_turns_col}
@@ -95,4 +83,3 @@ async def test_background_compactor_skips_when_maybe_returns_none(monkeypatch):
     await asyncio.wait_for(task, timeout=2.0)
 
     context_manager.maybe_background_compact.assert_awaited()
-    consolidator.write_reflections.assert_not_awaited()
