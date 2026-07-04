@@ -124,41 +124,42 @@ async def test_fake_store_save_overwrites_latest():
 
 
 @pytest.mark.asyncio
-async def test_mongo_store_save_upserts_by_task_id():
-    col = MagicMock()
-    col.update_one = AsyncMock()
-    store = CheckpointStore(col)
+async def test_store_save_calls_checkpoint_put():
+    store_mock = MagicMock()
+    store_mock.checkpoint_put = AsyncMock()
+    store = CheckpointStore(store_mock)
     await store.save(_sample())
-    args, kwargs = col.update_one.call_args
-    assert args[0] == {"task_id": "task-123"}  # filter
-    assert kwargs.get("upsert") is True
+    store_mock.checkpoint_put.assert_awaited_once()
+    args, kwargs = store_mock.checkpoint_put.call_args
+    assert args[0] == "task-123"  # task_id
+    assert isinstance(args[1], dict)  # to_dict payload
 
 
 @pytest.mark.asyncio
-async def test_mongo_store_load_returns_checkpoint():
-    col = MagicMock()
-    col.find_one = AsyncMock(return_value=to_dict(_sample()))
-    store = CheckpointStore(col)
+async def test_store_load_returns_checkpoint():
+    store_mock = MagicMock()
+    store_mock.checkpoint_get = AsyncMock(return_value=to_dict(_sample()))
+    store = CheckpointStore(store_mock)
     assert await store.load("task-123") == _sample()
 
 
 @pytest.mark.asyncio
-async def test_mongo_store_load_missing_returns_none():
-    col = MagicMock()
-    col.find_one = AsyncMock(return_value=None)
-    store = CheckpointStore(col)
+async def test_store_load_missing_returns_none():
+    store_mock = MagicMock()
+    store_mock.checkpoint_get = AsyncMock(return_value=None)
+    store = CheckpointStore(store_mock)
     assert await store.load("nope") is None
 
 
 @pytest.mark.asyncio
 async def test_store_errors_are_swallowed_never_raised():
-    # save/load/clear must be best-effort: a raising collection must NOT
+    # save/load/clear must be best-effort: a raising store must NOT
     # propagate (the ReAct loop must never break on a checkpoint failure).
-    col = MagicMock()
-    col.update_one = AsyncMock(side_effect=RuntimeError("mongo down"))
-    col.find_one = AsyncMock(side_effect=RuntimeError("mongo down"))
-    col.delete_one = AsyncMock(side_effect=RuntimeError("mongo down"))
-    store = CheckpointStore(col)
+    store_mock = MagicMock()
+    store_mock.checkpoint_put = AsyncMock(side_effect=RuntimeError("sqlite error"))
+    store_mock.checkpoint_get = AsyncMock(side_effect=RuntimeError("sqlite error"))
+    store_mock.checkpoint_delete = AsyncMock(side_effect=RuntimeError("sqlite error"))
+    store = CheckpointStore(store_mock)
     await store.save(_sample())  # must not raise
     assert await store.load("task-123") is None  # error -> None
     await store.clear("task-123")  # must not raise
@@ -168,21 +169,13 @@ async def test_store_errors_are_swallowed_never_raised():
 # Storage manager accessor test
 # ─────────────────────────────────────────────────────────────────────────
 
-from services.orchestrator.loop_checkpoint import CHECKPOINT_COLLECTION  # noqa: E402
 
-
-def test_storage_manager_exposes_loop_checkpoint_collection():
+def test_storage_manager_has_no_loop_checkpoint_collection():
+    """StorageManager is Mongo-free (T9) — CheckpointStore is already off Mongo (T8)."""
     from services.orchestrator.storage_manager import StorageManager
 
-    db = MagicMock()
-    sentinel = MagicMock()
-    db.__getitem__ = MagicMock(return_value=sentinel)
-    mongo = MagicMock()
-    mongo.__getitem__ = MagicMock(return_value=db)
-    sm = StorageManager.from_clients(mongo=mongo)
-    col = sm.loop_checkpoint_collection
-    db.__getitem__.assert_called_with(CHECKPOINT_COLLECTION)
-    assert col is sentinel
+    sm = StorageManager()
+    assert not hasattr(sm, "loop_checkpoint_collection")
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -384,3 +377,19 @@ async def test_resumed_loop_restores_loaded_skills_and_does_not_recharge_budget(
     restored = await store.load("task-skills-2")
     assert restored is not None
     assert restored.loaded_skills == ["read_file", "write_file"]
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_store_over_localstore(tmp_path):
+    from services.orchestrator.local_store import LocalStore
+    from services.orchestrator.loop_checkpoint import CheckpointStore, LoopCheckpoint
+
+    store = LocalStore(tmp_path / "state.db")
+    cs = CheckpointStore(store)
+    cp = LoopCheckpoint(task_id="t1", goal="g", messages=[{"role": "user", "content": "x"}])
+    await cs.save(cp)
+    loaded = await cs.load("t1")
+    assert loaded is not None and loaded.task_id == "t1" and loaded.goal == "g"
+    await cs.clear("t1")
+    assert await cs.load("t1") is None
+    await store.close()

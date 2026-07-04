@@ -290,13 +290,13 @@ class OrchestratorProcess:
                 gemma_api_base=GEMMA_BASE,
             )
 
-            # Wire the durable inner-loop checkpoint store when a Mongo-backed
-            # StorageManager is available. No-op when checkpointing is disabled
-            # (the flag is read inside _run_react_loop) or no storage exists.
+            # Wire the durable inner-loop checkpoint store backed by the local SQLite store.
+            # No-op when checkpointing is disabled (the flag is read inside _run_react_loop)
+            # or the store fails to open.
             try:
                 from .loop_checkpoint import CheckpointStore
 
-                async_orch.checkpoint_store = CheckpointStore(_sm.loop_checkpoint_collection)
+                async_orch.checkpoint_store = CheckpointStore(_sm.local_store)
             except Exception:  # best-effort wiring; never block startup
                 async_orch.checkpoint_store = None
 
@@ -462,7 +462,7 @@ class OrchestratorProcess:
                 if self._shutdown.is_set():
                     break
 
-                session_ids = await storage._db["chat_turns"].distinct("sessionId")
+                session_ids = await storage.local_store.distinct_session_ids()
                 for session_id in session_ids[:BG_COMPACT_MAX_SESSIONS]:
                     if self._shutdown.is_set():
                         break
@@ -900,6 +900,9 @@ class OrchestratorProcess:
         raises into the caller (a persistence failure must not fail the task)."""
         if not session_id:
             return
+        signals = getattr(self, "signals", None)
+        if signals is not None and signals.is_persistence_owned(session_id):
+            return  # a WS relay owns persistence for this session (rich writer)
         try:
             store = storage.local_store
             if user_text:

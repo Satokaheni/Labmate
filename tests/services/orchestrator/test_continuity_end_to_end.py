@@ -29,7 +29,6 @@ async def test_second_turn_sees_first_turn(tmp_path):
 
     # Turn 2 begins: the context manager assembles recent turns for the same session.
     cm = ContextManager(
-        mongo_db=None,
         chroma_cols={},
         embedder=_noop_embed,
         local_store=store,
@@ -52,6 +51,6 @@ async def test_other_session_is_isolated(tmp_path):
     proc = OrchestratorProcess.__new__(OrchestratorProcess)
     await proc._persist_turns(storage, "sess-A", "secret A", "reply A")
 
-    cm = ContextManager(mongo_db=None, chroma_cols={}, embedder=_noop_embed, local_store=store)
+    cm = ContextManager(chroma_cols={}, embedder=_noop_embed, local_store=store)
     # A different session sees none of sess-A's turns.
     assert await cm._recent_turns("sess-B", budget=1000) == ""

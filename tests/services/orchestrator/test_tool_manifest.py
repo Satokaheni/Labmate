@@ -704,7 +704,9 @@ def test_manifest_local_tool_names_dispatch_routing():
     """Test that manifest_local_tool_names correctly identifies tools that should route to the client.
 
     This is the core routing check used in coding_orchestrator._run_react_loop:
-    `elif name in local_tool_names:` dispatches to request_local_tool.
+    `elif name in local_tool_names:` dispatches to execute_local_tool, which runs
+    directly in-process against the client's workspace (no Redis round-trip — the
+    orchestrator and gateway share one asyncio loop and the SQLite LocalStore).
 
     When a client declares a builtin tool (e.g., search_files) in the manifest,
     it must be in the local_tool_names set so the dispatch branch catches it.

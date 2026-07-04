@@ -3,7 +3,7 @@
 #
 # Prerequisites (run in this order before this script):
 #   1. ./serve-model.sh          # llama-server on :8000
-#   2. ./start.sh                # MongoDB, Redis, Chroma, MCP bridge, orchestrator
+#   2. ./start.sh                # services.local.main (single process) + MCP bridge
 #
 # This script always starts a REPL session. Positional args (which would trigger
 # one-shot mode) are silently dropped. For one-shot use python -m services.cli directly.
@@ -25,23 +25,15 @@ info "Checking infrastructure..."
 
 PIDS="${REPO_ROOT}/.data/pids"
 
-# ws-gateway (the CLI connects here — replaces direct Redis access)
-if [[ -f "${PIDS}/ws-gateway.pid" ]]; then
-  kill -0 "$(cat "${PIDS}/ws-gateway.pid")" 2>/dev/null \
-    || fail "ws-gateway pidfile exists but process is dead. Run: ./start.sh"
+# local harness (single process: gateway + orchestrator; the CLI connects via WebSocket)
+if [[ -f "${PIDS}/local.pid" ]]; then
+  kill -0 "$(cat "${PIDS}/local.pid")" 2>/dev/null \
+    || fail "local harness pidfile exists but process is dead. Run: ./start.sh"
 else
-  fail "ws-gateway not started. Run: ./start.sh"
+  fail "local harness not started. Run: ./start.sh"
 fi
 curl -fsS "http://localhost:8787/healthz" >/dev/null 2>&1 \
-  || fail "ws-gateway /health not responding. Run: ./start.sh"
-
-# Orchestrator
-if [[ -f "${PIDS}/orchestrator.pid" ]]; then
-  kill -0 "$(cat "${PIDS}/orchestrator.pid")" 2>/dev/null \
-    || fail "Orchestrator pidfile exists but process is dead. Run: ./start.sh"
-else
-  fail "Orchestrator not started. Run: ./start.sh"
-fi
+  || fail "local harness /healthz not responding. Run: ./start.sh"
 
 info "Stack looks healthy. Starting CLI..."
 echo ""

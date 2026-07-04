@@ -67,14 +67,12 @@ class AssembledContext:
 class ContextManager:
     def __init__(
         self,
-        mongo_db,
         chroma_cols: dict,
         embedder,
         budget: ContextBudget | None = None,
         storage=None,
         local_store=None,
     ) -> None:
-        self.db = mongo_db
         self.chroma = chroma_cols
         self.embed = embedder
         self.budget = budget or ContextBudget()

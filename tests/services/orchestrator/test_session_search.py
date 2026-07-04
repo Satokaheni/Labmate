@@ -226,30 +226,6 @@ def test_session_search_schema_has_required_query():
 
 
 # ---------------------------------------------------------------------------
-# db_indexes: ensure_indexes creates chat_turns text index
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-@pytest.mark.mocked
-async def test_ensure_indexes_creates_chat_turns_text_index(mock_mongo):
-    """ensure_indexes must create a $text index on chat_turns."""
-    from services.orchestrator.db_indexes import ensure_indexes
-
-    db = mock_mongo[None]  # get the mock db
-
-    await ensure_indexes(db)
-
-    # chat_turns collection must have create_index called at least twice
-    ct = db["chat_turns"]
-    assert ct.create_index.await_count >= 2
-
-    # One of the calls must be the text index
-    calls = [str(c) for c in ct.create_index.call_args_list]
-    assert any("text" in c for c in calls), f"No text index call found in: {calls}"
-
-
-# ---------------------------------------------------------------------------
 # AsyncOrchestrator dispatch: session_search tool
 # ---------------------------------------------------------------------------
 

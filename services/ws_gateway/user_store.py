@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from typing import Literal, Optional, Protocol, TypedDict
+from typing import Literal, Protocol, TypedDict
 
 
 class UserDoc(TypedDict):
@@ -15,7 +15,7 @@ class UserDoc(TypedDict):
 
 
 class UserStore(Protocol):
-    async def find_by_email(self, email: str) -> Optional[UserDoc]: ...
+    async def find_by_email(self, email: str) -> UserDoc | None: ...
     async def create(
         self,
         *,
@@ -33,7 +33,7 @@ class InMemoryUserStore:
     def __init__(self) -> None:
         self._users: dict[str, UserDoc] = {}
 
-    async def find_by_email(self, email: str) -> Optional[UserDoc]:
+    async def find_by_email(self, email: str) -> UserDoc | None:
         return self._users.get(email.lower())
 
     async def create(
@@ -59,18 +59,14 @@ class InMemoryUserStore:
         return len(self._users)
 
 
-class MongoUserStore:
-    """Production Motor-backed store."""
+class SqliteUserStore:
+    """LocalStore(SQLite)-backed user store — the local-harness default."""
 
-    def __init__(self, mongo_url: str, db_name: str = "labmate") -> None:
-        import motor.motor_asyncio  # imported lazily so tests never need Motor
+    def __init__(self, store) -> None:
+        self._store = store  # services.orchestrator.local_store.LocalStore
 
-        client = motor.motor_asyncio.AsyncIOMotorClient(mongo_url)
-        self._col = client[db_name]["users"]
-
-    async def find_by_email(self, email: str) -> Optional[UserDoc]:
-        doc = await self._col.find_one({"email": email.lower()}, {"_id": 0})
-        return doc  # type: ignore[return-value]
+    async def find_by_email(self, email: str) -> UserDoc | None:
+        return await self._store.auth_user_find_by_email(email)  # type: ignore[return-value]
 
     async def create(
         self,
@@ -88,8 +84,15 @@ class MongoUserStore:
             "role": role,
             "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
-        await self._col.insert_one({**doc})
+        await self._store.auth_user_create(
+            id=doc["id"],
+            email=doc["email"],
+            display_name=display_name,
+            password_hash=password_hash,
+            role=role,
+            created_at=doc["createdAt"],
+        )
         return doc
 
     async def count(self) -> int:
-        return await self._col.count_documents({})
+        return await self._store.auth_user_count()

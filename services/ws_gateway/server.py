@@ -18,7 +18,6 @@ from services.ws_gateway.boot import CheckFn, run_boot_sequence
 from services.ws_gateway.config import Config
 from services.ws_gateway.event_translate import translate_event
 from services.ws_gateway.sessions import InMemorySessionStore, build_sessions_router
-from services.ws_gateway.user_store import MongoUserStore
 
 logger = logging.getLogger(__name__)
 
@@ -177,33 +176,11 @@ async def _relay_task(
 
 
 def _default_session_store(config: Config):
-    """Create a session store: MongoSessionStore if Mongo URL is available, else InMemorySessionStore.
+    """SQLite-backed session store over the shared LocalStore (local harness)."""
+    from services.orchestrator.local_store import get_local_store
+    from services.ws_gateway.sqlite_session_store import SqliteSessionStore
 
-    Falls back to InMemorySessionStore if mongo_url is missing or connection fails.
-    Uses a fast SYNC pymongo ping to probe reachability before returning MongoSessionStore.
-    """
-    if not config.mongo_url:
-        logger.warning("MONGO_URI not set; using in-memory session store (non-durable)")
-        return InMemorySessionStore()
-
-    # Fast synchronous reachability probe using pymongo (transitive dep of motor)
-    try:
-        import pymongo
-
-        probe = pymongo.MongoClient(config.mongo_url, serverSelectionTimeoutMS=800)
-        probe.admin.command("ping")
-        probe.close()
-    except Exception as e:
-        logger.warning("Mongo unreachable (%s); using in-memory session store (non-durable)", e)
-        return InMemorySessionStore()
-
-    try:
-        from services.ws_gateway.mongo_session_store import MongoSessionStore
-
-        return MongoSessionStore(config.mongo_url)
-    except Exception as e:
-        logger.warning("Failed to create MongoSessionStore: %s; falling back to in-memory store", e)
-        return InMemorySessionStore()
+    return SqliteSessionStore(get_local_store())
 
 
 def _title_from_message(text: str, max_len: int = 48) -> str:
@@ -282,6 +259,13 @@ async def _handle_send(
             "workspace_root": workspace_root,
         }
     )
+
+    # This relay is the rich turn-writer for this session; tell the
+    # orchestrator's fallback writer (_persist_turns) to skip (hermes skip_db).
+    sig = getattr(runtime, "signals", None)
+    if sig is not None and session_id:
+        sig.mark_persistence_owned(session_id)
+
     relay = asyncio.create_task(
         _relay_task(
             ws,
@@ -476,7 +460,10 @@ def build_app(
         allow_headers=["*"],
     )
 
-    user_store = user_store or MongoUserStore(config.mongo_url)
+    from services.orchestrator.local_store import get_local_store
+    from services.ws_gateway.user_store import SqliteUserStore
+
+    user_store = user_store or SqliteUserStore(get_local_store())
     auth = AuthService(config, user_store)
     store = session_store or _default_session_store(config)
 

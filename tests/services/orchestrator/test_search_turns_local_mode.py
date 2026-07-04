@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import pytest
 
 from services.orchestrator.storage_manager import StorageManager
 
 
 def _storage():
-    return StorageManager.from_clients(mongo=MagicMock())
+    return StorageManager()
 
 
 @pytest.fixture(autouse=True)

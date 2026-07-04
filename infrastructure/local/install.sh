@@ -6,10 +6,13 @@
 # Re-runnable: every step is guarded, so re-running skips work already done.
 #
 # What it installs:
-#   1. System packages   — Node.js 22 (NodeSource), MongoDB 8, Redis
+#   1. System packages   — Node.js 22 (NodeSource), ripgrep
 #   2. Node deps         — services/mcp-bridge (npm)
 #   3. Python deps       — services/memory + services/mcp-bridge requirements
 #   4. Inference engine  — llama.cpp (CUDA build) + Gemma 4 GGUF download
+#
+# Local state is SQLite (co-located with services.local.main) — there is no
+# MongoDB, Redis, or Chroma to install/provision here anymore.
 #
 # WHY llama.cpp AND NOT vLLM (read this before "fixing" it):
 #   This pod's driver is CUDA 12.8 (570.x). Every vLLM build that has the
@@ -92,21 +95,17 @@ if ! have node; then
 fi
 log "node $(node --version)"
 
-if ! have mongod; then
-  log "installing MongoDB 8.0 ..."
-  curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | gpg --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg 2>/dev/null
-  echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" \
-    > /etc/apt/sources.list.d/mongodb-org-8.0.list
-  apt-get update -qq
-  apt-get install -y mongodb-org-server mongodb-mongosh >/dev/null
+if ! have rg; then
+  log "installing ripgrep (used by search_files; Python fallback exists) ..."
+  if have apt-get; then
+    apt-get install -y ripgrep >/dev/null
+  elif have brew; then
+    brew install ripgrep >/dev/null
+  else
+    log "  WARN: no apt-get/brew found — install ripgrep manually (https://github.com/BurntSushi/ripgrep#installation)"
+  fi
 fi
-log "mongod $(mongod --version | head -1 | awk '{print $3}')"
-
-if ! have redis-server; then
-  log "installing Redis ..."
-  apt-get install -y redis-server >/dev/null
-fi
-log "redis $(redis-server --version | grep -oE 'v=[0-9.]+')"
+have rg && log "ripgrep $(rg --version | head -1)" || log "  WARN: rg still not on PATH — search_files will fall back to its Python implementation"
 
 # ─── 2. Node deps + build (mcp-bridge) ────────────────────────────────────────
 # dist/ is gitignored (build output), so a fresh clone has NO dist/index.js until
@@ -292,6 +291,6 @@ YAML
 fi
 
 log "DONE. Next:"
-log "  infrastructure/local/start.sh         # Mongo(rs0) + Redis + Chroma + SearXNG"
+log "  infrastructure/local/start.sh         # services.local.main (single process) + SearXNG"
 log "  infrastructure/local/serve-model.sh   # Gemma 4 via llama.cpp on :8000"
 log "  source infrastructure/local/local.env # export connection URLs (incl. SEARXNG_URL)"

@@ -94,6 +94,19 @@ CREATE TABLE IF NOT EXISTS session_kv (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (namespace, session_id)
 );
+CREATE TABLE IF NOT EXISTS auth_users (
+    id            TEXT PRIMARY KEY,
+    email         TEXT UNIQUE NOT NULL,
+    display_name  TEXT,
+    password_hash TEXT NOT NULL,
+    role          TEXT NOT NULL,
+    created_at    TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS loop_checkpoints (
+    task_id    TEXT PRIMARY KEY,
+    payload    TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -118,6 +131,12 @@ class LocalStore:
         await conn.execute("PRAGMA journal_mode=WAL")
         await conn.execute("PRAGMA busy_timeout=5000")
         await conn.executescript(_SCHEMA)
+        # chat_turns.payload was added after initial ship; CREATE TABLE IF NOT
+        # EXISTS won't alter an existing table, so add the column if missing.
+        cur = await conn.execute("PRAGMA table_info(chat_turns)")
+        cols = {row[1] for row in await cur.fetchall()}
+        if "payload" not in cols:
+            await conn.execute("ALTER TABLE chat_turns ADD COLUMN payload TEXT")
         await conn.commit()
         self._conn = conn
         _LIVE_STORES.add(self)
@@ -183,6 +202,49 @@ class LocalStore:
         )
         rows = await cur.fetchall()
         return [{"seq": r[0], "role": r[1], "text": r[2]} for r in rows]
+
+    async def append_turn_payload(
+        self,
+        session_id: str,
+        role: str,
+        text: str,
+        payload: dict,
+        *,
+        created_at: str | None = None,
+    ) -> int:
+        """Append a turn carrying the full rich turn dict as JSON (payload).
+        Returns the per-session seq (0-based)."""
+        conn = await self._connected()
+        cur = await conn.execute(
+            "SELECT COUNT(*) FROM chat_turns WHERE session_id = ?", (session_id,)
+        )
+        (count,) = await cur.fetchone()
+        seq = int(count)
+        ts = created_at or datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        await conn.execute(
+            "INSERT INTO chat_turns (session_id, seq, role, text, created_at, payload)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (session_id, seq, role, text, ts, json.dumps(payload)),
+        )
+        await conn.commit()
+        return seq
+
+    async def turns_with_payload(self, session_id: str) -> list[dict]:
+        conn = await self._connected()
+        cur = await conn.execute(
+            "SELECT seq, role, text, created_at, payload FROM chat_turns"
+            " WHERE session_id = ? ORDER BY seq ASC",
+            (session_id,),
+        )
+        rows = await cur.fetchall()
+        out = []
+        for r in rows:
+            try:
+                pl = json.loads(r[4]) if r[4] else None
+            except (TypeError, ValueError):
+                pl = None
+            out.append({"seq": r[0], "role": r[1], "text": r[2], "created_at": r[3], "payload": pl})
+        return out
 
     async def last_activity_iso(self, session_id: str) -> str | None:
         conn = await self._connected()
@@ -287,6 +349,14 @@ class LocalStore:
         )
         await conn.commit()
 
+    async def delete_session(self, session_id: str) -> None:
+        """Delete a session row + its chat_turns + its session_kv entries."""
+        conn = await self._connected()
+        await conn.execute("DELETE FROM chat_turns WHERE session_id = ?", (session_id,))
+        await conn.execute("DELETE FROM session_kv WHERE session_id = ?", (session_id,))
+        await conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        await conn.commit()
+
     async def list_sessions(
         self, user_id: str, *, workspace_id: str | None = None, limit: int = 20
     ) -> list[dict]:
@@ -318,6 +388,19 @@ class LocalStore:
             }
             for r in rows
         ]
+
+    async def distinct_session_ids(self) -> list[str]:
+        """Distinct non-empty session ids present in chat_turns, most-recently
+        active first. Replaces the Mongo `chat_turns.distinct("sessionId")` the
+        background compactor used (ordering is a bonus — the compactor takes a
+        bounded prefix, so recent-first is preferable to Mongo's unordered set)."""
+        conn = await self._connected()
+        cur = await conn.execute(
+            "SELECT session_id, MAX(created_at) AS last FROM chat_turns"
+            " WHERE session_id != '' GROUP BY session_id ORDER BY last DESC"
+        )
+        rows = await cur.fetchall()
+        return [r[0] for r in rows]
 
     # ── workspaces ───────────────────────────────────────────────────────
     async def upsert_workspace(self, workspace_id: str, user_id: str) -> None:
@@ -470,6 +553,78 @@ class LocalStore:
         await conn.execute(
             "UPDATE users SET last_active = ? WHERE user_id = ?", (_iso_now(), user_id)
         )
+        await conn.commit()
+
+    # ── auth users (ws_gateway account store) ────────────────────────────
+    async def auth_user_find_by_email(self, email: str) -> dict | None:
+        conn = await self._connected()
+        cur = await conn.execute(
+            "SELECT id, email, display_name, password_hash, role, created_at"
+            " FROM auth_users WHERE email = ?",
+            (email.lower(),),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row[0],
+            "email": row[1],
+            "displayName": row[2],
+            "passwordHash": row[3],
+            "role": row[4],
+            "createdAt": row[5],
+        }
+
+    async def auth_user_create(
+        self,
+        *,
+        id: str,
+        email: str,
+        display_name: str,
+        password_hash: str,
+        role: str,
+        created_at: str,
+    ) -> None:
+        conn = await self._connected()
+        await conn.execute(
+            "INSERT INTO auth_users (id, email, display_name, password_hash, role, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (id, email.lower(), display_name, password_hash, role, created_at),
+        )
+        await conn.commit()
+
+    async def auth_user_count(self) -> int:
+        conn = await self._connected()
+        cur = await conn.execute("SELECT COUNT(*) FROM auth_users")
+        (n,) = await cur.fetchone()
+        return int(n)
+
+    # ── inner-loop checkpoints (crash recovery) ──────────────────────────
+    async def checkpoint_put(self, task_id: str, payload: dict) -> None:
+        conn = await self._connected()
+        await conn.execute(
+            "INSERT OR REPLACE INTO loop_checkpoints (task_id, payload, updated_at)"
+            " VALUES (?, ?, ?)",
+            (task_id, json.dumps(payload), _iso_now()),
+        )
+        await conn.commit()
+
+    async def checkpoint_get(self, task_id: str) -> dict | None:
+        conn = await self._connected()
+        cur = await conn.execute(
+            "SELECT payload FROM loop_checkpoints WHERE task_id = ?", (task_id,)
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        try:
+            return json.loads(row[0])
+        except (TypeError, ValueError):
+            return None
+
+    async def checkpoint_delete(self, task_id: str) -> None:
+        conn = await self._connected()
+        await conn.execute("DELETE FROM loop_checkpoints WHERE task_id = ?", (task_id,))
         await conn.commit()
 
     # ── per-session KV (compaction state: core/summary/anchor/summarized_through) ──

@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# stop.sh — Stop the native Labmate support stack started by start.sh.
+# stop.sh — Stop the native Labmate local harness started by start.sh.
 #
 # Data under <repo>/.data is preserved. Re-run start.sh to bring it back.
 #
 # By DEFAULT the model server (llama-server) is left running — it takes ~10 min
-# to load Gemma 4 into VRAM, so killing it on every support-stack restart is
-# expensive and surprising (it also contradicted the docs, which said the model
-# is left up). Pass --all (or --model) to also stop llama-server.
+# to load Gemma 4 into VRAM, so killing it on every restart is expensive and
+# surprising (it also contradicted the docs, which said the model is left up).
+# Pass --all (or --model) to also stop llama-server.
 #
 # Usage:
-#   ./stop.sh           # stop support stack + orchestrator; LEAVE the model up
+#   ./stop.sh           # stop the local harness (services.local.main); LEAVE the model up
 #   ./stop.sh --all     # also stop the model server (llama-server)
 set -uo pipefail
 
@@ -39,10 +39,10 @@ _stop_pid() {
   fi
   rm -f "$pidfile"
   # ALWAYS sweep untracked strays (the leak fix): repeated restarts have left
-  # orchestrators the pidfile never tracked, and they share the Redis consumer
-  # group — silently splitting/contaminating later runs. Reap every match by
-  # module name, escalating to SIGKILL. (Safe: this script's own argv does not
-  # contain "$name", so pgrep -f cannot match the caller.)
+  # processes the pidfile never tracked, silently splitting/contaminating later
+  # runs (e.g. two local-harness processes both polling the same SQLite state).
+  # Reap every match by module name, escalating to SIGKILL. (Safe: this script's
+  # own argv does not contain "$name", so pgrep -f cannot match the caller.)
   local strays
   strays="$(pgrep -f "$name" 2>/dev/null || true)"
   if [[ -n "$strays" ]]; then
@@ -54,11 +54,8 @@ _stop_pid() {
   fi
 }
 
-# ─── Discord connector ────────────────────────────────────────────────────────
-_stop_pid "discord-connector" "$PIDS/discord-connector.pid"
-
-# ─── Orchestrator ─────────────────────────────────────────────────────────────
-_stop_pid "orchestrator.main" "$PIDS/orchestrator.pid"
+# ─── Local harness (single process: gateway + orchestrator) ───────────────────
+_stop_pid "services.local.main" "$PIDS/local.pid"
 
 # ─── SearXNG (native metasearch) ──────────────────────────────────────────────
 _stop_pid "searx.webapp" "$PIDS/searxng.pid"
@@ -74,33 +71,6 @@ if $STOP_MODEL; then
   fi
 else
   info "leaving llama-server running (pass --all to stop it; ~10 min to reload)"
-fi
-
-# ─── Chroma ───────────────────────────────────────────────────────────────────
-if [[ -f "$PIDS/chroma.pid" ]] && kill -0 "$(cat "$PIDS/chroma.pid")" 2>/dev/null; then
-  info "stopping chroma (pid $(cat "$PIDS/chroma.pid")) ..."
-  kill "$(cat "$PIDS/chroma.pid")" 2>/dev/null || true
-  rm -f "$PIDS/chroma.pid"
-else
-  pkill -f "chroma run" 2>/dev/null && info "stopped stray chroma" || info "chroma not running"
-fi
-
-# ─── Redis ────────────────────────────────────────────────────────────────────
-if redis-cli -p 6379 ping >/dev/null 2>&1; then
-  info "stopping redis (shutdown nosave-safe) ..."
-  redis-cli -p 6379 shutdown 2>/dev/null || true
-else
-  info "redis not running"
-fi
-
-# ─── MongoDB ──────────────────────────────────────────────────────────────────
-if pgrep -x mongod >/dev/null 2>&1; then
-  info "stopping mongod (clean shutdown) ..."
-  mongosh --quiet --host 127.0.0.1 --port 27017 --eval 'db.getSiblingDB("admin").shutdownServer()' >/dev/null 2>&1 || true
-  sleep 2
-  pgrep -x mongod >/dev/null 2>&1 && { info "forcing mongod stop"; pkill -x mongod; }
-else
-  info "mongod not running"
 fi
 
 info "local stack stopped (data preserved under .data/)."
