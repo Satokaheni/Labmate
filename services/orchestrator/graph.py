@@ -998,8 +998,6 @@ def build_graph(
 
     Call once at startup; MongoDBSaver.from_conn_string() creates MongoDB indexes (idempotent).
     """
-    from langgraph.checkpoint.mongodb import MongoDBSaver
-
     (
         plan_node,
         execute_node,
