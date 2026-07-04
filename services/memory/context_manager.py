@@ -104,7 +104,9 @@ class ContextManager:
         )
         remaining = b.effective_budget - pinned_tokens
 
-        # 2. RAG evidence — hybrid BM25 + dense → RRF → rerank
+        # 2. RAG evidence — INERT since Piece 3 dropped Chroma (hybrid_retrieve
+        #    returns []); the slot resolves to empty text. Kept as a no-op seam
+        #    for a future local recall backend (SQLite-FTS).
         rag_budget = min(b.slot(b.rag_share), max(0, remaining))
         rag_chunks = await self.hybrid_retrieve(current_task, token_budget=rag_budget)
         await self._boost_retrieved(rag_chunks)

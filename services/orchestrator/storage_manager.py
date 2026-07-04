@@ -54,11 +54,11 @@ class StorageManager:
 
     @property
     def context_manager(self):
-        """Lazy ContextManager wired to this StorageManager's MongoDB and Redis.
+        """Lazy ContextManager wired to this StorageManager's Redis + LocalStore.
 
-        chroma_cols is empty — RAG retrieval is skipped (hybrid_retrieve returns
-        nothing when no collections are present), which is fine for compaction
-        operations. If full RAG is needed, populate chroma_cols after setup.
+        chroma_cols is empty and Chroma was removed in Piece 3, so RAG retrieval
+        is inert (hybrid_retrieve returns []). Continuity (recent turns from the
+        LocalStore + Redis summary/anchor/watermark) is what this provides.
         """
         if not hasattr(self, "_context_manager"):
             from services.memory.context_manager import ContextManager
