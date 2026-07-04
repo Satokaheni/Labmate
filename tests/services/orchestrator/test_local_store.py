@@ -48,3 +48,99 @@ def test_get_local_store_uses_state_db_path(monkeypatch, tmp_path):
     s2 = get_local_store()
     assert s1 is s2  # process-cached singleton
     assert str(s1.db_path) == str(db)
+
+
+@pytest.mark.asyncio
+async def test_append_turn_assigns_monotonic_seq_per_session(tmp_path):
+    store = LocalStore(tmp_path / "s.sqlite")
+    await store.connect()
+    try:
+        assert await store.append_turn("sess-A", "user", "hello") == 0
+        assert await store.append_turn("sess-A", "assistant", "hi") == 1
+        # A different session has its own seq counter.
+        assert await store.append_turn("sess-B", "user", "yo") == 0
+        assert await store.append_turn("sess-A", "user", "again") == 2
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_recent_turns_respects_watermark_and_returns_ascending(tmp_path):
+    store = LocalStore(tmp_path / "s.sqlite")
+    await store.connect()
+    try:
+        for _i, txt in enumerate(["a", "b", "c", "d"]):
+            await store.append_turn("s", "user", txt)
+        # watermark=1 → only seq 2,3 ; ascending
+        turns = await store.recent_turns("s", watermark=1)
+        assert [t["seq"] for t in turns] == [2, 3]
+        assert [t["text"] for t in turns] == ["c", "d"]
+        assert turns[0]["role"] == "user"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_recent_turns_limit_keeps_newest_tail_ascending(tmp_path):
+    store = LocalStore(tmp_path / "s.sqlite")
+    await store.connect()
+    try:
+        for i in range(5):
+            await store.append_turn("s", "user", f"m{i}")
+        turns = await store.recent_turns("s", watermark=-1, limit=2)
+        assert [t["text"] for t in turns] == ["m3", "m4"]  # newest 2, ascending
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_all_turns_ascending(tmp_path):
+    store = LocalStore(tmp_path / "s.sqlite")
+    await store.connect()
+    try:
+        await store.append_turn("s", "user", "one")
+        await store.append_turn("s", "assistant", "two")
+        rows = await store.all_turns("s")
+        assert [(r["seq"], r["role"], r["text"]) for r in rows] == [
+            (0, "user", "one"),
+            (1, "assistant", "two"),
+        ]
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_last_activity_iso(tmp_path):
+    store = LocalStore(tmp_path / "s.sqlite")
+    await store.connect()
+    try:
+        assert await store.last_activity_iso("s") is None
+        await store.append_turn("s", "user", "x", created_at="2026-07-03T00:00:00Z")
+        await store.append_turn("s", "user", "y", created_at="2026-07-03T01:00:00Z")
+        assert await store.last_activity_iso("s") == "2026-07-03T01:00:00Z"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_search_turns_text_and_regex(tmp_path):
+    store = LocalStore(tmp_path / "s.sqlite")
+    await store.connect()
+    try:
+        await store.append_turn("s", "user", "the quick brown fox")
+        await store.append_turn("s", "assistant", "a lazy dog sleeps")
+        await store.append_turn("other", "user", "quick unrelated")
+        # text mode: case-insensitive substring, scoped to session
+        hits = await store.search_turns("QUICK", mode="text", session_id="s")
+        assert [h["text"] for h in hits] == ["the quick brown fox"]
+        assert hits[0]["sessionId"] == "s"
+        # regex mode
+        rhits = await store.search_turns(r"la.y", mode="regex", session_id="s")
+        assert [h["text"] for h in rhits] == ["a lazy dog sleeps"]
+        # empty query → []
+        assert await store.search_turns("  ", session_id="s") == []
+        # no session scope → searches all
+        allhits = await store.search_turns("quick", mode="text")
+        assert len(allhits) == 2
+    finally:
+        await store.close()
