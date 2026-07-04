@@ -900,6 +900,9 @@ class OrchestratorProcess:
         raises into the caller (a persistence failure must not fail the task)."""
         if not session_id:
             return
+        signals = getattr(self, "signals", None)
+        if signals is not None and signals.is_persistence_owned(session_id):
+            return  # a WS relay owns persistence for this session (rich writer)
         try:
             store = storage.local_store
             if user_text:

@@ -282,6 +282,13 @@ async def _handle_send(
             "workspace_root": workspace_root,
         }
     )
+
+    # This relay is the rich turn-writer for this session; tell the
+    # orchestrator's fallback writer (_persist_turns) to skip (hermes skip_db).
+    sig = getattr(runtime, "signals", None)
+    if sig is not None and session_id:
+        sig.mark_persistence_owned(session_id)
+
     relay = asyncio.create_task(
         _relay_task(
             ws,
