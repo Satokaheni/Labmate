@@ -175,12 +175,14 @@ def _run_goal(ctx, goal):
         if event_type == "tool.done" and "result" in kw:
             captured.append(kw["result"])
 
-    # Program the local tool client for write_file scenarios:
-    #   first call  (write_file) -> success result
-    #   second call (read_file)  -> the programmed read-back
-    async def _local(name, args, **kw):
+    # Program the local tool client for write_file scenarios. write_file/read_file
+    # now execute directly via execute_local_tool (no bus round-trip); mock that
+    # seam so the read-back can be programmed independently of the write (the
+    # BDD scenarios specifically simulate a write that silently did NOT apply,
+    # which a real filesystem write+read can never reproduce).
+    def _local(name, args, *, workspace=None):
         if name == "read_file":
-            return ctx.get("readback")
+            return {"content": ctx.get("readback")}
         return {"ok": True}
 
     with (
@@ -190,7 +192,7 @@ def _run_goal(ctx, goal):
             side_effect=ctx["responses"],
         ),
         patch("services.orchestrator.coding_orchestrator.events.emit", new=_emit),
-        patch("services.orchestrator.coding_orchestrator.request_local_tool", new=_local),
+        patch("services.orchestrator.coding_orchestrator.execute_local_tool", new=_local),
     ):
         ctx["result"] = run_async(orch.react_execute(goal))
 

@@ -44,7 +44,7 @@ def ctx():
 
 
 @given("a verification-stop AsyncOrchestrator with no skill router and no mcp")
-def _orch(ctx):
+def _orch(ctx, tmp_path):
     # Set up skill_router to return a code-sandbox run_tests envelope (PASSING).
     skill_router = AsyncMock()
     test_result = {
@@ -63,8 +63,11 @@ def _orch(ctx):
     }
     skill_router.execute.return_value = envelope
 
-    orch = AsyncOrchestrator(skill_router=skill_router, mcp=None, workspace="/tmp")
-    # write_file flows through request_local_tool -> stub local_client truthy.
+    orch = AsyncOrchestrator(skill_router=skill_router, mcp=None, workspace=str(tmp_path))
+    # write_file/read_file now execute directly (execute_local_tool) against a
+    # real tmp_path workspace; the read-back verify reads the real file it
+    # just wrote, so no local-tool mock is needed. local_client stays truthy
+    # so the LOCAL_TOOL_NAMES dispatch branch is taken.
     orch.local_client = MagicMock()
     ctx["orch"] = orch
 
@@ -115,14 +118,9 @@ def _run(ctx, goal):
         async def emit(self, type, **f):
             captured.append(type)
 
-    # Mock request_local_tool to return file content for verification
-    async def mock_local_tool(name, args, timeout=None):
-        if name == "read_file":
-            # Return the same content that was written
-            return "x = 1"
-        return {}
-
-    # Create a real EventEmitter that captures events instead of writing to Redis
+    # write_file/read_file now execute directly against the real tmp_path
+    # workspace (execute_local_tool), so the write-then-read-back verify uses
+    # the actual file content on disk — no local-tool mock needed.
     async def run_with_capture():
         token = _events.current_emitter.set(_Emitter())
         try:
@@ -131,14 +129,9 @@ def _run(ctx, goal):
                 new_callable=AsyncMock,
                 side_effect=ctx["responses"],
             ) as mock_compl:
-                with patch(
-                    "services.orchestrator.coding_orchestrator.request_local_tool",
-                    new_callable=AsyncMock,
-                    side_effect=mock_local_tool,
-                ):
-                    result = await ctx["orch"].react_execute(goal)
-                    ctx["mock"] = mock_compl
-                    return result
+                result = await ctx["orch"].react_execute(goal)
+                ctx["mock"] = mock_compl
+                return result
         finally:
             _events.current_emitter.reset(token)
 
