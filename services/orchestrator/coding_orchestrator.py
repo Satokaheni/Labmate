@@ -13,9 +13,11 @@ from dataclasses import dataclass, field
 import litellm
 from aiolimiter import AsyncLimiter
 
+from services.cli.local_tool_executor import execute_local_tool
+
 from . import client_context, events
 from .completion_guard import is_assertion_verification, reconcile_cutoff, reconcile_ok
-from .edit_intent import exposes_bug_intent, requires_editing
+from .edit_intent import exposes_bug_intent, requires_editing, requires_local_tools
 from .iteration_budget import REFUNDABLE_TOOLS, IterationBudget
 from .load_skill_guard import already_loaded_message, is_repeat_load
 from .local_tools import (
@@ -316,9 +318,11 @@ class AsyncOrchestrator:
         self.workspace = workspace
         self.max_steps = max_steps
         # Truthy sentinel: "a local-tool client is attached to this process".
-        # Gates the local-tool dispatch branches below (request_local_tool
-        # requires a real client on the other end of the event bus). None in
-        # unit tests that don't attach a client.
+        # Gates the local-tool dispatch branches below (read_file/write_file/
+        # list_dir execute directly via execute_local_tool now that the
+        # orchestrator is co-located; run_tests still uses request_local_tool,
+        # which requires a real client on the other end of the event bus).
+        # None in unit tests that don't attach a client.
         self.local_client = local_client
         # In-process steer/cancel signal registry (Piece 4). None in unit tests
         # / when unwired, in which case the ReAct loop's steer/cancel checks
@@ -408,7 +412,7 @@ class AsyncOrchestrator:
         # (skills stay callable inside the loop via call_skill_tool). Gated by
         # ROUTE_EDIT_TO_REACT (default ON); when off, behavior is identical to
         # before. No effect in 'react' mode (already runs the loop).
-        if SEQUENCING_MODE != "react" and requires_editing(goal):
+        if SEQUENCING_MODE != "react" and requires_local_tools(goal):
             return await self._run_react_loop(goal, self.max_steps)
 
         if SEQUENCING_MODE != "react":
@@ -524,6 +528,12 @@ class AsyncOrchestrator:
         return bool(
             ENABLE_LOOP_CHECKPOINT and self.checkpoint_store is not None and task_id is not None
         )
+
+    def _tool_workspace(self) -> str:
+        """Authoritative FS root for direct local-tool execution: the per-task
+        client_context workspace_root if set, else self.workspace (same root
+        run_bash/run_tests use)."""
+        return client_context.get_workspace_root() or self.workspace
 
     async def _run_react_loop(self, goal: str, max_steps: int) -> dict:
         """Multi-tool ReAct loop bounded by ``max_steps``.
@@ -1282,7 +1292,19 @@ class AsyncOrchestrator:
                     elif name in local_tool_names:
                         if self.local_client is not None:
                             try:
-                                result = await request_local_tool(name, args)
+                                # read_file/write_file/list_dir execute directly
+                                # (execute_local_tool, sync, no bus round-trip) now
+                                # that the orchestrator is co-located. Any other
+                                # manifest-declared local tool (e.g. search_files)
+                                # still goes through the request_local_tool bus
+                                # round-trip — execute_local_tool does not implement
+                                # it and would raise "unknown local tool".
+                                if name in LOCAL_TOOL_NAMES:
+                                    result = execute_local_tool(
+                                        name, args, workspace=self._tool_workspace()
+                                    )
+                                else:
+                                    result = await request_local_tool(name, args)
                                 # Reliable write: after a write_file the client may
                                 # report success without the bytes landing. Read the
                                 # file back and confirm it matches what we asked to
@@ -1291,9 +1313,10 @@ class AsyncOrchestrator:
                                 if name == "write_file":
                                     requested = str(args.get("content", ""))
                                     try:
-                                        readback = await request_local_tool(
+                                        readback = execute_local_tool(
                                             "read_file",
                                             {"path": args.get("path", "")},
+                                            workspace=self._tool_workspace(),
                                         )
                                     except Exception as exc:
                                         readback = f"<read-back failed: {exc}>"

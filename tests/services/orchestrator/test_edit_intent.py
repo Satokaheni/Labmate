@@ -11,25 +11,32 @@ Tests verify:
   - feature can be disabled (returns False)
   - pure + deterministic + case-insensitive
 """
+
 from __future__ import annotations
 
 import os
+from dataclasses import FrozenInstanceError
+
 import pytest
 
 from services.orchestrator.edit_intent import (
     EditIntent,
-    route_edit_to_react_enabled,
-    requires_editing,
     classify_edit_intent,
     exposes_bug_intent,
+    requires_editing,
+    requires_local_tools,
+    route_edit_to_react_enabled,
 )
 
 
 class TestExposesBugIntent:
     def test_c3_write_test_that_exposes_it(self):
-        assert exposes_bug_intent(
-            "Find the bug in /workspace/ab_off.py and write a unit test that exposes it."
-        ) is True
+        assert (
+            exposes_bug_intent(
+                "Find the bug in /workspace/ab_off.py and write a unit test that exposes it."
+            )
+            is True
+        )
 
     def test_reproduce_phrasing(self):
         assert exposes_bug_intent("Write a test that reproduces the crash.") is True
@@ -42,14 +49,18 @@ class TestExposesBugIntent:
 
     def test_c1_fix_until_pass_is_not_expose(self):
         # A fix goal whose end-state is a PASSING suite must NOT invert.
-        assert exposes_bug_intent(
-            "Generate unit tests, run them, find and fix the bug, and re-run until they pass."
-        ) is False
+        assert (
+            exposes_bug_intent(
+                "Generate unit tests, run them, find and fix the bug, and re-run until they pass."
+            )
+            is False
+        )
 
     def test_make_tests_pass_disqualifies(self):
-        assert exposes_bug_intent(
-            "Write a test that exposes the bug, then fix it so the tests pass."
-        ) is False
+        assert (
+            exposes_bug_intent("Write a test that exposes the bug, then fix it so the tests pass.")
+            is False
+        )
 
     def test_plain_test_authoring_is_not_expose(self):
         assert exposes_bug_intent("Write unit tests for the parser.") is False
@@ -66,7 +77,7 @@ class TestEditIntentDataclass:
 
     def test_is_frozen(self):
         e = EditIntent(requires_edit=True, reason="x")
-        with pytest.raises(Exception):
+        with pytest.raises(FrozenInstanceError):
             e.requires_edit = False
 
 
@@ -147,21 +158,25 @@ class TestRequiresEditing:
         assert requires_editing(goal, enabled=True) is False, goal
 
     def test_ab_case_c1_true(self):
-        assert requires_editing(
-            "Generate unit tests for the factorial function, then find and fix the bug",
-            enabled=True,
-        ) is True
+        assert (
+            requires_editing(
+                "Generate unit tests for the factorial function, then find and fix the bug",
+                enabled=True,
+            )
+            is True
+        )
 
     def test_ab_case_c2_true(self):
-        assert requires_editing(
-            "Review /workspace/ab_buggy.py for bugs, then fix the code",
-            enabled=True,
-        ) is True
+        assert (
+            requires_editing(
+                "Review /workspace/ab_buggy.py for bugs, then fix the code",
+                enabled=True,
+            )
+            is True
+        )
 
     def test_ab_case_c4_false(self):
-        assert requires_editing(
-            "Find bugs in /workspace/ab_review.py", enabled=True
-        ) is False
+        assert requires_editing("Find bugs in /workspace/ab_review.py", enabled=True) is False
 
     def test_disabled_returns_false(self):
         # Even an obvious edit goal is False when the feature is off.
@@ -195,10 +210,13 @@ class TestTestAuthoringIntent:
     """Test-authoring goals (write/add/create a test) must route to ReAct loop."""
 
     def test_write_a_unit_test_is_edit_intent(self):
-        assert requires_editing(
-            "Find the bug in /workspace/ab_off.py and write a unit test that exposes it.",
-            enabled=True,
-        ) is True
+        assert (
+            requires_editing(
+                "Find the bug in /workspace/ab_off.py and write a unit test that exposes it.",
+                enabled=True,
+            )
+            is True
+        )
 
     def test_add_tests_is_edit_intent(self):
         assert requires_editing("Add tests for the parser module.", enabled=True) is True
@@ -229,3 +247,56 @@ class TestClassifyEditIntent:
         v = classify_edit_intent("Fix the bug", enabled=False)
         assert v.requires_edit is False
         assert "disabled" in v.reason.lower()
+
+
+# ── requires_local_tools (Piece 5 / fix-B: file-access routing) ──────────────
+# True = the goal needs the local file/edit tools -> must enter the ReAct loop.
+# = requires_editing(...) OR an explicit file-ACCESS intent (read/show/list/cat/
+# ... a file/dir/path). False = stays on the single read-only skill fast-path.
+
+LOCAL_TOOLS_TRUE_GOALS = [
+    # explicit file-access intent (Rule 5)
+    "read x.py and summarize",
+    "show me the contents of config.py",
+    "list the files in src/",
+    "cat the file bot.py",
+    "open services/app.py",
+    "print the contents of /tmp/data.json",
+    "inspect the file",
+    "read the directory listing",
+    # existing edit-intent goals must still route True via requires_editing
+    "fix the bug",
+    "make the tests pass",
+    "write a test",
+]
+
+LOCAL_TOOLS_FALSE_GOALS = [
+    "review the design of the module",
+    "find bugs in the approach",
+    "summarize the architecture",
+    "explain how routing works",
+    "what is 2 + 2?",
+    "list the tradeoffs of microservices",  # no file/path target
+    "review the file format design",  # has "file" but no read-verb targeting it
+]
+
+
+class TestRequiresLocalTools:
+    @pytest.mark.parametrize("goal", LOCAL_TOOLS_TRUE_GOALS)
+    def test_true_goals(self, goal):
+        assert requires_local_tools(goal, enabled=True) is True, goal
+
+    @pytest.mark.parametrize("goal", LOCAL_TOOLS_FALSE_GOALS)
+    def test_false_goals(self, goal):
+        assert requires_local_tools(goal, enabled=True) is False, goal
+
+    def test_disabled_returns_false(self):
+        assert requires_local_tools("read x.py", enabled=False) is False
+
+    def test_none_enabled_consults_env_default_on(self):
+        original = os.environ.pop("ROUTE_EDIT_TO_REACT", None)
+        try:
+            assert requires_local_tools("read x.py", enabled=None) is True
+        finally:
+            if original is not None:
+                os.environ["ROUTE_EDIT_TO_REACT"] = original

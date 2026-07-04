@@ -1516,7 +1516,7 @@ class TestReactExecuteBudget:
 
     @pytest.mark.mocked
     @pytest.mark.asyncio
-    async def test_edit_goal_gets_higher_iteration_ceiling(self, monkeypatch):
+    async def test_edit_goal_gets_higher_iteration_ceiling(self, monkeypatch, tmp_path):
         """An edit-intent goal builds the budget with LABMATE_MAX_ITERATIONS_EDIT
         (default 12), giving more than max_steps (6) turns of headroom."""
         monkeypatch.setattr(
@@ -1528,13 +1528,9 @@ class TestReactExecuteBudget:
         from services.orchestrator import events
 
         orch = AsyncOrchestrator(skill_router=None, mcp=MagicMock(), max_steps=6)
-
-        async def _local(name, args):
-            if name == "read_file":
-                return args.get("content", "")  # echo so write verifies
-            return {"ok": True}
-
-        monkeypatch.setattr("services.orchestrator.coding_orchestrator.request_local_tool", _local)
+        # Direct execution (execute_local_tool) now writes/reads real files under
+        # a real workspace root — each write_file's distinct content read-verifies.
+        orch.workspace = str(tmp_path)
         orch.local_client = MagicMock()
 
         calls = [0]
@@ -1574,29 +1570,26 @@ class TestReactExecuteBudget:
 
 
 @pytest.mark.asyncio
-async def test_react_routes_read_file_to_local_tool():
-    """ReAct loop routes read_file through request_local_tool and returns the result."""
+async def test_react_routes_read_file_to_local_tool(tmp_path):
+    """ReAct loop executes read_file DIRECTLY via execute_local_tool (no bus
+    round-trip): the real file content from disk reaches the turn-2 model call.
+    """
     from services.orchestrator import events
-    from services.orchestrator.inproc_bus import EventBus
-    from services.orchestrator.local_tools import write_tool_result
 
-    bus = EventBus()
-    task_id = "task-react-file"
-    sub = bus.subscribe(f"{events.EVENTS_TOPIC_PREFIX}{task_id}")
-    emitter = events.EventEmitter(bus, task_id)
-    token = events.current_emitter.set(emitter)
+    # Seed a real file in the workspace so direct execution has real content
+    # to return — proves this is execute_local_tool reading the real disk,
+    # not a mocked/round-tripped result.
+    (tmp_path / "a.txt").write_text("FILE BODY", encoding="utf-8")
+
+    class FakeEmitter:
+        async def emit(self, type, **f):
+            pass
+
+    token = events.current_emitter.set(FakeEmitter())
 
     orch = AsyncOrchestrator(skill_router=None, max_steps=3)
+    orch.workspace = str(tmp_path)
     orch.local_client = MagicMock()  # truthy so the local-tool branch is taken
-
-    # Responder: posts a tool.result as soon as tool.request lands on the event bus.
-    async def responder():
-        async for ev in sub:
-            if ev.get("type") == "tool.request":
-                await write_tool_result(
-                    bus, task_id, ev["tool_request_id"], {"content": "FILE BODY"}
-                )
-                return
 
     # Turn 1: LLM calls read_file. Turn 2: LLM calls finish.
     read_file_msg = _msg_with_tool_call("read_file", '{"path": "a.txt"}')
@@ -1605,21 +1598,88 @@ async def test_react_routes_read_file_to_local_tool():
     resp1 = MagicMock(choices=[MagicMock(message=read_file_msg)])
     resp2 = MagicMock(choices=[MagicMock(message=finish_msg_obj)])
 
-    responder_task = asyncio.create_task(responder())
     try:
         with patch(
-            "services.orchestrator.coding_orchestrator.litellm.acompletion",
+            "services.orchestrator.coding_orchestrator.acompletion_with_failover",
             new_callable=AsyncMock,
             side_effect=[resp1, resp2],
-        ):
+        ) as mock_acompletion:
             out = await orch.react_execute("read a.txt")
-        await responder_task
     finally:
         events.current_emitter.reset(token)
-        sub.close()
 
     assert out["ok"] is True
     assert out["summary"] == "read complete"
+
+    # Positive proof: the REAL file content ("FILE BODY", read straight off disk
+    # via execute_local_tool) was fed back into the turn-2 model call — not a
+    # round-trip mock and not "no local tool client connected".
+    assert mock_acompletion.call_count == 2
+    turn2_messages = mock_acompletion.call_args_list[1].kwargs["messages"]
+    tool_msgs = [m for m in turn2_messages if m.get("role") == "tool"]
+    assert tool_msgs, "expected a tool-result message fed back into turn 2"
+    tool_result_blob = " ".join(str(m.get("content", "")) for m in tool_msgs)
+    assert (
+        "FILE BODY" in tool_result_blob
+    ), f"expected the real file content in the turn-2 tool result, got: {tool_result_blob}"
+    assert "no local tool client connected" not in tool_result_blob
+
+
+@pytest.mark.asyncio
+async def test_react_routes_write_file_to_local_tool(monkeypatch, tmp_path):
+    """ReAct loop executes write_file DIRECTLY via execute_local_tool: the file
+    really lands on disk under tmp_path, the read-back verify passes, and the
+    path is recorded in edited_files (verification-stop bookkeeping)."""
+    from services.orchestrator import events
+
+    # Disable the verification-stop nudge so a bare write+finish completes in
+    # 2 turns — this test targets the direct-execution write mechanics, not
+    # the verify-nudge flow (covered separately by the verification_stop tests).
+    monkeypatch.setenv("MAX_VERIFY_NUDGES", "0")
+
+    class FakeEmitter:
+        async def emit(self, type, **f):
+            pass
+
+    token = events.current_emitter.set(FakeEmitter())
+
+    orch = AsyncOrchestrator(skill_router=None, max_steps=3)
+    orch.workspace = str(tmp_path)
+    orch.local_client = MagicMock()  # truthy so the local-tool branch is taken
+
+    write_msg = _msg_with_tool_call(
+        "write_file", json.dumps({"path": "out.txt", "content": "NEW CONTENT"})
+    )
+    finish_msg_obj = _msg_with_tool_call("finish", '{"summary": "write complete"}')
+
+    resp1 = MagicMock(choices=[MagicMock(message=write_msg)])
+    resp2 = MagicMock(choices=[MagicMock(message=finish_msg_obj)])
+
+    try:
+        with patch(
+            "services.orchestrator.coding_orchestrator.acompletion_with_failover",
+            new_callable=AsyncMock,
+            side_effect=[resp1, resp2],
+        ) as mock_acompletion:
+            out = await orch.react_execute("write out.txt")
+    finally:
+        events.current_emitter.reset(token)
+
+    assert out["ok"] is True
+    assert "write complete" in out["summary"]
+
+    # The write really landed on disk (not a mock, not a round-trip).
+    written = tmp_path / "out.txt"
+    assert written.exists()
+    assert written.read_text(encoding="utf-8") == "NEW CONTENT"
+
+    # The read-back verify passed, and the tool result reflects that.
+    assert mock_acompletion.call_count == 2
+    turn2_messages = mock_acompletion.call_args_list[1].kwargs["messages"]
+    tool_msgs = [m for m in turn2_messages if m.get("role") == "tool"]
+    assert tool_msgs, "expected a tool-result message fed back into turn 2"
+    tool_result_blob = " ".join(str(m.get("content", "")) for m in tool_msgs)
+    assert '"verified": true' in tool_result_blob.lower()
 
 
 @pytest.mark.asyncio
@@ -1939,6 +1999,27 @@ class TestEditIntentRouting:
         assert not loop_spy.called, "flag off must preserve today's skill_first path"
         assert "read-only review output" in result["summary"]
 
+    @pytest.mark.asyncio
+    async def test_file_read_goal_enters_react_loop_not_skill_first(self):
+        """Piece 5 fix-B: a read-only file-access goal ('read x.py and summarize')
+        must ALSO bypass _run_skill_first and reach _run_react_loop, since the
+        single-skill fast-path has no file-tool access. requires_local_tools
+        broadens the loop-entry gate beyond requires_editing for this case."""
+        orch = self._make_orch()
+
+        with (
+            patch.object(orch, "_run_skill_first", new_callable=AsyncMock) as skill_first_spy,
+            patch.object(orch, "_run_react_loop", new_callable=AsyncMock) as loop_spy,
+        ):
+            loop_spy.return_value = {"ok": True, "summary": "read x.py and summarized it"}
+            result = await orch.react_execute("read x.py and summarize it")
+
+        assert (
+            not skill_first_spy.called
+        ), "skill-first fast-path must be skipped for file-access goals"
+        assert loop_spy.called, "the multi-tool ReAct loop must run for file-access goals"
+        assert result["ok"] is True
+
 
 def _vt_tool_msg(name, arguments):
     """A litellm-style assistant message that calls a single tool (verify-stop tests)."""
@@ -1956,27 +2037,18 @@ def _vt_tool_msg(name, arguments):
 
 
 @pytest.mark.asyncio
-async def test_verification_stop_nudges_then_accepts_after_tests_pass(monkeypatch):
+async def test_verification_stop_nudges_then_accepts_after_tests_pass(monkeypatch, tmp_path):
     """Edit then finish without tests must be nudged, not accepted."""
     from services.orchestrator import events
 
     monkeypatch.setenv("MAX_VERIFY_NUDGES", "2")
     # Ensure we're exercising the ReAct loop, not skill-first
     monkeypatch.setattr("services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "react")
-    orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
+    orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace=str(tmp_path))
 
-    # Stub local_client so write_file succeeds through request_local_tool.
-    # For write_file calls, return success. For read_file (verification), return the content.
-    async def _fake_local_tool(name, args):
-        if name == "read_file":
-            # Return the content for verification
-            return "x = 1"
-        return {"path": args.get("path"), "written": True}
-
-    monkeypatch.setattr(
-        "services.orchestrator.coding_orchestrator.request_local_tool",
-        AsyncMock(side_effect=_fake_local_tool),
-    )
+    # write_file now executes directly (execute_local_tool) against tmp_path; the
+    # read-back verify reads the real file it just wrote, so no local-tool mock
+    # is needed for read/write.
     orch.local_client = MagicMock()  # truthy so the write_file branch is taken
 
     # Stub mcp so run_tests returns a passing result.
@@ -2318,23 +2390,15 @@ async def test_verification_stop_no_edits_finishes_immediately(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_verification_stop_cap_accepts_finish_honestly(monkeypatch):
+async def test_verification_stop_cap_accepts_finish_honestly(monkeypatch, tmp_path):
     """After MAX_VERIFY_NUDGES the finish is accepted but annotated honestly."""
     from services.orchestrator import events
 
     monkeypatch.setenv("MAX_VERIFY_NUDGES", "1")
     monkeypatch.setattr("services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "react")
-    orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
-
-    async def _fake_local_tool(name, args):
-        if name == "read_file":
-            return "x = 1"
-        return {"path": args.get("path"), "written": True}
-
-    monkeypatch.setattr(
-        "services.orchestrator.coding_orchestrator.request_local_tool",
-        AsyncMock(side_effect=_fake_local_tool),
-    )
+    orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace=str(tmp_path))
+    # write_file executes directly against tmp_path; the read-back verify reads
+    # the real file it just wrote, so no local-tool mock is needed.
     orch.local_client = MagicMock()
 
     responses = [
@@ -2365,22 +2429,16 @@ async def test_verification_stop_cap_accepts_finish_honestly(monkeypatch):
 
 @pytest.mark.mocked
 @pytest.mark.asyncio
-async def test_react_loop_tolerates_two_identical_write_file_calls(monkeypatch):
+async def test_react_loop_tolerates_two_identical_write_file_calls(monkeypatch, tmp_path):
     """A legit 'edit, test failed, edit again' retry: two identical write_file
     calls must NOT trip the loop detector (mutating tolerance >= 4)."""
     monkeypatch.setattr("services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "skill_first")
     from services.orchestrator import events
 
     orch = AsyncOrchestrator(skill_router=None, mcp=MagicMock(), max_steps=6)
-
-    # write_file goes through the local-tool seam; make read-back match so the
-    # write is reported as verified (content "x").
-    async def _local(name, args):
-        if name == "read_file":
-            return "x"
-        return {"ok": True}
-
-    monkeypatch.setattr("services.orchestrator.coding_orchestrator.request_local_tool", _local)
+    # write_file executes directly (execute_local_tool) against tmp_path; the
+    # read-back verify reads the real file it just wrote (content "x").
+    orch.workspace = str(tmp_path)
     orch.local_client = MagicMock()
 
     def write_msg():

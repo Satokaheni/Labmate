@@ -108,19 +108,16 @@ def _write_then_finish_responses():
 
 
 @given("a ReAct orchestrator wired to a fake model that writes a file then finishes")
-def _orch_write_finish(ctx, monkeypatch):
+def _orch_write_finish(ctx, monkeypatch, tmp_path):
     from services.orchestrator.coding_orchestrator import AsyncOrchestrator
 
     monkeypatch.setattr("services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "skill_first")
 
-    async def _local(redis, name, args):
-        if name == "read_file":
-            return "patched"  # match write content -> verified
-        return {"ok": True}
-
-    monkeypatch.setattr("services.orchestrator.coding_orchestrator.request_local_tool", _local)
-
     orch = AsyncOrchestrator(skill_router=None, mcp=MagicMock(), max_steps=6)
+    # write_file/read_file now execute directly (execute_local_tool) against a
+    # real tmp_path workspace; the read-back verify reads the real file it
+    # just wrote ("patched"), so no local-tool mock is needed.
+    orch.workspace = str(tmp_path)
     orch.local_client = MagicMock()
     ctx["orch"] = orch
 
