@@ -12,6 +12,7 @@ from . import client_context, events
 from .coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
 from .error_classifier import ErrorClass, classify_error, is_terminal
 from .finalize_revision import build_revision_prompt, should_revise
+from .local_mode import local_mode_enabled, local_state_db_path
 from .task_complexity import classify_complexity
 from .tool_manifest import client_doc_skills
 from .types import State, Status, create_goal, get_ready_goals, update_status
@@ -966,6 +967,24 @@ def clarification_router(state: State) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _make_sqlite_checkpointer():
+    """Construct a local SqliteSaver at the per-user state DB path.
+
+    Persistent connection (check_same_thread=False) because LangGraph drives
+    the sync saver from a threadpool under async graph execution. Parent dir
+    is created if missing. Imports are lazy so pod deploys don't require
+    langgraph-checkpoint-sqlite. Held for the graph's lifetime by the caller.
+    """
+    import sqlite3
+
+    from langgraph.checkpoint.sqlite import SqliteSaver
+
+    db_path = local_state_db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path), check_same_thread=False)
+    return SqliteSaver(conn)
+
+
 def build_graph(
     orch: CodingOrchestrator,
     async_orch: AsyncOrchestrator,
@@ -973,14 +992,15 @@ def build_graph(
     db_name: str = "labmate",
 ):
     """
-    Compile the StateGraph with a MongoDBSaver checkpointer.
+    Compile the StateGraph with a checkpointer selected by LABMATE_LOCAL_MODE:
+    local mode -> a local SqliteSaver (see _make_sqlite_checkpointer); pod mode
+    (default) -> a networked MongoDBSaver over `mongo_uri`/`db_name`.
     Returns (compiled_graph, checkpointer). The caller MUST keep checkpointer
     alive for the graph's lifetime.
 
-    Call once at startup; MongoDBSaver.from_conn_string() creates MongoDB indexes (idempotent).
+    Call once at startup. The pod MongoDBSaver constructor creates its MongoDB
+    indexes (idempotent); the local SqliteSaver creates its tables lazily.
     """
-    from langgraph.checkpoint.mongodb import MongoDBSaver
-
     (
         plan_node,
         execute_node,
@@ -1012,9 +1032,13 @@ def build_graph(
     b.add_edge("reflect", "execute")
     b.add_edge("approval", "execute")
 
-    from pymongo import MongoClient
+    if local_mode_enabled():
+        cp = _make_sqlite_checkpointer()
+    else:
+        from langgraph.checkpoint.mongodb import MongoDBSaver
+        from pymongo import MongoClient
 
-    client = MongoClient(mongo_uri)
-    cp = MongoDBSaver(client, db_name=db_name)
+        client = MongoClient(mongo_uri)
+        cp = MongoDBSaver(client, db_name=db_name)
     graph = b.compile(checkpointer=cp)
     return graph, cp
