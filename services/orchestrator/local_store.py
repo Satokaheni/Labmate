@@ -126,6 +126,12 @@ class LocalStore:
         await conn.execute("PRAGMA journal_mode=WAL")
         await conn.execute("PRAGMA busy_timeout=5000")
         await conn.executescript(_SCHEMA)
+        # chat_turns.payload was added after initial ship; CREATE TABLE IF NOT
+        # EXISTS won't alter an existing table, so add the column if missing.
+        cur = await conn.execute("PRAGMA table_info(chat_turns)")
+        cols = {row[1] for row in await cur.fetchall()}
+        if "payload" not in cols:
+            await conn.execute("ALTER TABLE chat_turns ADD COLUMN payload TEXT")
         await conn.commit()
         self._conn = conn
         _LIVE_STORES.add(self)
@@ -191,6 +197,49 @@ class LocalStore:
         )
         rows = await cur.fetchall()
         return [{"seq": r[0], "role": r[1], "text": r[2]} for r in rows]
+
+    async def append_turn_payload(
+        self,
+        session_id: str,
+        role: str,
+        text: str,
+        payload: dict,
+        *,
+        created_at: str | None = None,
+    ) -> int:
+        """Append a turn carrying the full rich turn dict as JSON (payload).
+        Returns the per-session seq (0-based)."""
+        conn = await self._connected()
+        cur = await conn.execute(
+            "SELECT COUNT(*) FROM chat_turns WHERE session_id = ?", (session_id,)
+        )
+        (count,) = await cur.fetchone()
+        seq = int(count)
+        ts = created_at or datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        await conn.execute(
+            "INSERT INTO chat_turns (session_id, seq, role, text, created_at, payload)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (session_id, seq, role, text, ts, json.dumps(payload)),
+        )
+        await conn.commit()
+        return seq
+
+    async def turns_with_payload(self, session_id: str) -> list[dict]:
+        conn = await self._connected()
+        cur = await conn.execute(
+            "SELECT seq, role, text, created_at, payload FROM chat_turns"
+            " WHERE session_id = ? ORDER BY seq ASC",
+            (session_id,),
+        )
+        rows = await cur.fetchall()
+        out = []
+        for r in rows:
+            try:
+                pl = json.loads(r[4]) if r[4] else None
+            except (TypeError, ValueError):
+                pl = None
+            out.append({"seq": r[0], "role": r[1], "text": r[2], "created_at": r[3], "payload": pl})
+        return out
 
     async def last_activity_iso(self, session_id: str) -> str | None:
         conn = await self._connected()
@@ -293,6 +342,14 @@ class LocalStore:
             "UPDATE sessions SET completed_at = ?, ok = ? WHERE session_id = ?",
             (_iso_now(), 1 if ok else 0, session_id),
         )
+        await conn.commit()
+
+    async def delete_session(self, session_id: str) -> None:
+        """Delete a session row + its chat_turns + its session_kv entries."""
+        conn = await self._connected()
+        await conn.execute("DELETE FROM chat_turns WHERE session_id = ?", (session_id,))
+        await conn.execute("DELETE FROM session_kv WHERE session_id = ?", (session_id,))
+        await conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
         await conn.commit()
 
     async def list_sessions(
