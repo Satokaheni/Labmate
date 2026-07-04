@@ -1577,40 +1577,36 @@ async def test_react_routes_read_file_to_local_tool():
     import fakeredis.aioredis
 
     from services.orchestrator import events
+    from services.orchestrator.inproc_bus import EventBus
     from services.orchestrator.local_tools import TOOL_RESULTS_PREFIX
 
     redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    bus = EventBus()
     task_id = "task-react-file"
-    emitter = events.EventEmitter(redis, task_id)
+    sub = bus.subscribe(f"{events.EVENTS_TOPIC_PREFIX}{task_id}")
+    emitter = events.EventEmitter(bus, task_id)
     token = events.current_emitter.set(emitter)
 
     orch = AsyncOrchestrator(skill_router=None, max_steps=3)
     orch.redis = redis
 
-    # Responder: posts a tool.result as soon as tool.request lands on event stream
+    # Responder: posts a tool.result as soon as tool.request lands on the event bus.
     async def responder():
-        ev_stream = f"{events.EVENTS_STREAM_PREFIX}{task_id}"
-        for _ in range(100):
-            resp = await redis.xread({ev_stream: "0"}, count=20, block=100)
-            if not resp:
-                continue
-            for _s, entries in resp:
-                for _id, f in entries:
-                    ev = json.loads(f["event"])
-                    if ev.get("type") == "tool.request":
-                        await redis.xadd(
-                            f"{TOOL_RESULTS_PREFIX}{task_id}",
+        async for ev in sub:
+            if ev.get("type") == "tool.request":
+                await redis.xadd(
+                    f"{TOOL_RESULTS_PREFIX}{task_id}",
+                    {
+                        "result": json.dumps(
                             {
-                                "result": json.dumps(
-                                    {
-                                        "tool_request_id": ev["tool_request_id"],
-                                        "result": {"content": "FILE BODY"},
-                                        "error": None,
-                                    }
-                                )
-                            },
+                                "tool_request_id": ev["tool_request_id"],
+                                "result": {"content": "FILE BODY"},
+                                "error": None,
+                            }
                         )
-                        return
+                    },
+                )
+                return
 
     # Turn 1: LLM calls read_file. Turn 2: LLM calls finish.
     read_file_msg = _msg_with_tool_call("read_file", '{"path": "a.txt"}')
@@ -1630,6 +1626,7 @@ async def test_react_routes_read_file_to_local_tool():
         await responder_task
     finally:
         events.current_emitter.reset(token)
+        sub.close()
         await redis.aclose()
 
     assert out["ok"] is True
@@ -1651,12 +1648,15 @@ async def test_react_routes_search_files_to_local_tool():
     import fakeredis.aioredis
 
     from services.orchestrator import client_context, events
+    from services.orchestrator.inproc_bus import EventBus
     from services.orchestrator.local_tools import TOOL_RESULTS_PREFIX
     from services.orchestrator.tool_manifest import parse_manifest
 
     redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    bus = EventBus()
     task_id = "task-react-search"
-    emitter = events.EventEmitter(redis, task_id)
+    sub = bus.subscribe(f"{events.EVENTS_TOPIC_PREFIX}{task_id}")
+    emitter = events.EventEmitter(bus, task_id)
     token = events.current_emitter.set(emitter)
 
     # Install a manifest declaring search_files so the dispatcher routes it to the client.
@@ -1670,35 +1670,28 @@ async def test_react_routes_search_files_to_local_tool():
     seen: list[str] = []
 
     async def responder():
-        ev_stream = f"{events.EVENTS_STREAM_PREFIX}{task_id}"
-        for _ in range(100):
-            resp = await redis.xread({ev_stream: "0"}, count=20, block=100)
-            if not resp:
-                continue
-            for _s, entries in resp:
-                for _id, f in entries:
-                    ev = json.loads(f["event"])
-                    if ev.get("type") == "tool.request":
-                        seen.append(ev.get("name", ""))
-                        await redis.xadd(
-                            f"{TOOL_RESULTS_PREFIX}{task_id}",
+        async for ev in sub:
+            if ev.get("type") == "tool.request":
+                seen.append(ev.get("name", ""))
+                await redis.xadd(
+                    f"{TOOL_RESULTS_PREFIX}{task_id}",
+                    {
+                        "result": json.dumps(
                             {
-                                "result": json.dumps(
-                                    {
-                                        "tool_request_id": ev["tool_request_id"],
-                                        "result": {
-                                            "hits": [
-                                                {"file": "a.py", "line": 1, "text": "def foo():"},
-                                                {"file": "b.py", "line": 42, "text": "def bar():"},
-                                            ],
-                                            "truncated": False,
-                                        },
-                                        "error": None,
-                                    }
-                                )
-                            },
+                                "tool_request_id": ev["tool_request_id"],
+                                "result": {
+                                    "hits": [
+                                        {"file": "a.py", "line": 1, "text": "def foo():"},
+                                        {"file": "b.py", "line": 42, "text": "def bar():"},
+                                    ],
+                                    "truncated": False,
+                                },
+                                "error": None,
+                            }
                         )
-                        return
+                    },
+                )
+                return
 
     # Turn 1: LLM calls search_files. Turn 2: LLM calls finish.
     search_msg = _msg_with_tool_call("search_files", '{"query": "def foo"}')
@@ -1719,6 +1712,7 @@ async def test_react_routes_search_files_to_local_tool():
     finally:
         client_context.reset_manifest(ctx_token)
         events.current_emitter.reset(token)
+        sub.close()
         await redis.aclose()
 
     assert out["ok"] is True

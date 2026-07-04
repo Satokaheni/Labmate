@@ -1,38 +1,37 @@
+from unittest.mock import MagicMock
+
 import pytest
-import fakeredis.aioredis
-from unittest.mock import AsyncMock, MagicMock
 
 from services.orchestrator import events
 from services.orchestrator.events import (
-    STEER_PREFIX,
-    write_steer,
-    read_and_clear_steer,
     current_task_id,
+    read_and_clear_steer,
+    write_steer,
 )
+from services.orchestrator.inproc_bus import SignalRegistry
 
 
 @pytest.mark.asyncio
 async def test_write_then_read_returns_text_and_clears():
-    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-    await write_steer(r, "t-1", "work on db.py instead")
-    first = await read_and_clear_steer(r, "t-1")
+    signals = SignalRegistry()
+    await write_steer(signals, "t-1", "work on db.py instead")
+    first = await read_and_clear_steer(signals, "t-1")
     assert first == "work on db.py instead"
-    # GETDEL semantics: a second read sees nothing.
-    assert await read_and_clear_steer(r, "t-1") is None
-    assert await r.exists(f"{STEER_PREFIX}t-1") == 0
+    # Consume-once semantics: a second read sees nothing.
+    assert await read_and_clear_steer(signals, "t-1") is None
 
 
 @pytest.mark.asyncio
 async def test_read_absent_is_none():
-    r = fakeredis.aioredis.FakeRedis(decode_responses=True)
-    assert await read_and_clear_steer(r, "missing") is None
+    signals = SignalRegistry()
+    assert await read_and_clear_steer(signals, "missing") is None
 
 
 @pytest.mark.asyncio
-async def test_read_swallows_redis_error():
-    r = MagicMock()
-    r.getdel = AsyncMock(side_effect=RuntimeError("redis down"))
-    assert await read_and_clear_steer(r, "t-err") is None
+async def test_read_swallows_registry_error():
+    signals = MagicMock()
+    signals.read_and_clear_steer.side_effect = RuntimeError("registry broken")
+    assert await read_and_clear_steer(signals, "t-err") is None
 
 
 @pytest.mark.asyncio

@@ -51,6 +51,7 @@ from services.orchestrator import call_counter, client_context, ctx_window, even
 from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
 from services.orchestrator.completion_guard import reconcile_final_answer
 from services.orchestrator.graph import GEMMA_BASE, QWEN_BASE, build_graph
+from services.orchestrator.inproc_bus import EventBus, ResultRegistry, SignalRegistry
 from services.orchestrator.mcp_client_manager import MCPClientManager
 from services.orchestrator.session_search import SessionSearch
 from services.orchestrator.skill_curator import (
@@ -224,6 +225,13 @@ class OrchestratorProcess:
         self._worker_id = _worker_id()
         self._shutdown = asyncio.Event()
         self._redis: aioredis.Redis | None = None
+        # In-process event/signal/result primitives (Piece 4): the agent event
+        # stream and steer/cancel signals route through these instead of Redis.
+        # Goals/results transport and skill/tool dispatch still use self._redis
+        # until later tasks (T5/T6) remove it.
+        self.bus = EventBus()
+        self.signals = SignalRegistry()
+        self.results = ResultRegistry()
         self._mcp: MCPClientManager | None = None
         self._codegraph_mcp: MCPClientManager | None = None
         self._recent_sequences = RecentSequences()
@@ -325,6 +333,11 @@ class OrchestratorProcess:
 
             # Wire redis and codegraph_mcp outside the try/except (always available)
             async_orch.redis = self._redis
+            # Piece 4: steer/cancel now read from the in-process SignalRegistry
+            # instead of Redis; wired alongside redis so the ReAct loop's
+            # `self.signals is not None` guard degrades cleanly in tests that
+            # never set it.
+            async_orch.signals = self.signals
             async_orch.codegraph_mcp = self._codegraph_mcp
             async_orch.session_search = SessionSearch(_sm)
             # Wire context_manager for conversation continuity (best-effort)
@@ -571,7 +584,7 @@ class OrchestratorProcess:
                 await self._write_result(task_id, {"ok": True, **result})
                 return
 
-            _emitter = events.EventEmitter(self._redis, task_id)
+            _emitter = events.EventEmitter(self.bus, task_id)
             _token = events.current_emitter.set(_emitter)
             # Per-task LLM call counter (A/B instrumentation): set a fresh counter for
             # this task's context; the litellm success callback increments it.

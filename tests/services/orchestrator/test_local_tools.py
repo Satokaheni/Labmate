@@ -8,6 +8,7 @@ import fakeredis.aioredis
 import pytest
 
 from services.orchestrator import events
+from services.orchestrator.inproc_bus import EventBus
 from services.orchestrator.local_tools import (
     LOCAL_TOOL_NAMES,
     TOOL_RESULTS_PREFIX,
@@ -28,51 +29,40 @@ def test_local_tool_names_are_the_three_file_tools():
 
 async def test_request_local_tool_emits_event_and_returns_result(redis):
     task_id = "task-abc"
-    emitter = events.EventEmitter(redis, task_id)
+    bus = EventBus()
+    sub = bus.subscribe(f"{events.EVENTS_TOPIC_PREFIX}{task_id}")
+    emitter = events.EventEmitter(bus, task_id)
     token = events.current_emitter.set(emitter)
+    seen_reqs: list[dict] = []
     try:
-        # Simulate the local client: once a tool.request is on the event stream,
-        # write a matching tool.result onto the results stream.
+        # Simulate the local client: once a tool.request is published on the
+        # event bus, write a matching tool.result onto the (still-Redis)
+        # results stream.
         async def fake_client() -> None:
-            ev_stream = f"{events.EVENTS_STREAM_PREFIX}{task_id}"
-            cur = "0"
-            for _ in range(50):
-                resp = await redis.xread({ev_stream: cur}, count=10, block=100)
-                if not resp:
-                    continue
-                for _s, entries in resp:
-                    for eid, fields in entries:
-                        cur = eid
-                        ev = json.loads(fields["event"])
-                        if ev.get("type") == "tool.request":
-                            await redis.xadd(
-                                f"{TOOL_RESULTS_PREFIX}{task_id}",
+            async for ev in sub:
+                seen_reqs.append(ev)
+                if ev.get("type") == "tool.request":
+                    await redis.xadd(
+                        f"{TOOL_RESULTS_PREFIX}{task_id}",
+                        {
+                            "result": json.dumps(
                                 {
-                                    "result": json.dumps(
-                                        {
-                                            "tool_request_id": ev["tool_request_id"],
-                                            "result": {"content": "hello"},
-                                            "error": None,
-                                        }
-                                    )
-                                },
+                                    "tool_request_id": ev["tool_request_id"],
+                                    "result": {"content": "hello"},
+                                    "error": None,
+                                }
                             )
-                            return
+                        },
+                    )
+                    return
 
         client_task = asyncio.create_task(fake_client())
-        out = await request_local_tool(
-            redis, "read_file", {"path": "notes.txt"}, timeout=5.0
-        )
+        out = await request_local_tool(redis, "read_file", {"path": "notes.txt"}, timeout=5.0)
         await client_task
         assert out == {"content": "hello"}
 
-        # The tool.request event was emitted with the expected shape.
-        entries = await redis.xrange(f"{events.EVENTS_STREAM_PREFIX}{task_id}")
-        reqs = [
-            json.loads(f["event"])
-            for _id, f in entries
-            if json.loads(f["event"]).get("type") == "tool.request"
-        ]
+        # The tool.request event was published with the expected shape.
+        reqs = [ev for ev in seen_reqs if ev.get("type") == "tool.request"]
         assert len(reqs) == 1
         assert reqs[0]["name"] == "read_file"
         assert reqs[0]["args"] == {"path": "notes.txt"}
@@ -80,24 +70,26 @@ async def test_request_local_tool_emits_event_and_returns_result(redis):
         assert "tool_request_id" in reqs[0]
     finally:
         events.current_emitter.reset(token)
+        sub.close()
 
 
 async def test_request_local_tool_times_out_when_no_result(redis):
     task_id = "task-timeout"
-    emitter = events.EventEmitter(redis, task_id)
+    bus = EventBus()
+    emitter = events.EventEmitter(bus, task_id)
     token = events.current_emitter.set(emitter)
     try:
         with pytest.raises(TimeoutError):
-            await request_local_tool(
-                redis, "read_file", {"path": "x"}, timeout=0.3
-            )
+            await request_local_tool(redis, "read_file", {"path": "x"}, timeout=0.3)
     finally:
         events.current_emitter.reset(token)
 
 
 async def test_request_local_tool_matches_only_its_own_request_id(redis):
     task_id = "task-mux"
-    emitter = events.EventEmitter(redis, task_id)
+    bus = EventBus()
+    sub = bus.subscribe(f"{events.EVENTS_TOPIC_PREFIX}{task_id}")
+    emitter = events.EventEmitter(bus, task_id)
     token = events.current_emitter.set(emitter)
     try:
         # Pre-seed a stale result for a DIFFERENT request id; it must be skipped.
@@ -107,21 +99,21 @@ async def test_request_local_tool_matches_only_its_own_request_id(redis):
         )
 
         async def fake_client() -> None:
-            ev_stream = f"{events.EVENTS_STREAM_PREFIX}{task_id}"
-            resp = await redis.xread({ev_stream: "0"}, count=10, block=500)
-            for _s, entries in resp:
-                for _eid, fields in entries:
-                    ev = json.loads(fields["event"])
-                    if ev.get("type") == "tool.request":
-                        await redis.xadd(
-                            f"{TOOL_RESULTS_PREFIX}{task_id}",
-                            {
-                                "result": json.dumps(
-                                    {"tool_request_id": ev["tool_request_id"], "result": 2, "error": None}
-                                )
-                            },
-                        )
-                        return
+            async for ev in sub:
+                if ev.get("type") == "tool.request":
+                    await redis.xadd(
+                        f"{TOOL_RESULTS_PREFIX}{task_id}",
+                        {
+                            "result": json.dumps(
+                                {
+                                    "tool_request_id": ev["tool_request_id"],
+                                    "result": 2,
+                                    "error": None,
+                                }
+                            )
+                        },
+                    )
+                    return
 
         client_task = asyncio.create_task(fake_client())
         out = await request_local_tool(redis, "list_dir", {"path": "."}, timeout=5.0)
@@ -129,36 +121,33 @@ async def test_request_local_tool_matches_only_its_own_request_id(redis):
         assert out == 2
     finally:
         events.current_emitter.reset(token)
+        sub.close()
 
 
 async def test_request_local_tool_raises_on_error_frame(redis):
     task_id = "task-err"
-    emitter = events.EventEmitter(redis, task_id)
+    bus = EventBus()
+    sub = bus.subscribe(f"{events.EVENTS_TOPIC_PREFIX}{task_id}")
+    emitter = events.EventEmitter(bus, task_id)
     token = events.current_emitter.set(emitter)
     try:
+
         async def fake_client_with_error() -> None:
-            ev_stream = f"{events.EVENTS_STREAM_PREFIX}{task_id}"
-            for _ in range(50):
-                resp = await redis.xread({ev_stream: "0"}, count=10, block=100)
-                if not resp:
-                    continue
-                for _s, entries in resp:
-                    for _eid, fields in entries:
-                        ev = json.loads(fields["event"])
-                        if ev.get("type") == "tool.request":
-                            await redis.xadd(
-                                f"{TOOL_RESULTS_PREFIX}{task_id}",
+            async for ev in sub:
+                if ev.get("type") == "tool.request":
+                    await redis.xadd(
+                        f"{TOOL_RESULTS_PREFIX}{task_id}",
+                        {
+                            "result": json.dumps(
                                 {
-                                    "result": json.dumps(
-                                        {
-                                            "tool_request_id": ev["tool_request_id"],
-                                            "result": None,
-                                            "error": "permission denied",
-                                        }
-                                    )
-                                },
+                                    "tool_request_id": ev["tool_request_id"],
+                                    "result": None,
+                                    "error": "permission denied",
+                                }
                             )
-                            return
+                        },
+                    )
+                    return
 
         client_task = asyncio.create_task(fake_client_with_error())
         with pytest.raises(RuntimeError, match="permission denied"):
@@ -166,10 +155,12 @@ async def test_request_local_tool_raises_on_error_frame(redis):
         await client_task
     finally:
         events.current_emitter.reset(token)
+        sub.close()
 
 
 async def test_write_tool_result_xadds_frame_to_results_stream(redis):
     from services.orchestrator.local_tools import write_tool_result
+
     await write_tool_result(redis, "task-w1", "req-42", {"ok": True})
     entries = await redis.xrange(f"{TOOL_RESULTS_PREFIX}task-w1")
     assert len(entries) == 1
@@ -180,6 +171,7 @@ async def test_write_tool_result_xadds_frame_to_results_stream(redis):
 
 async def test_write_tool_result_with_error(redis):
     from services.orchestrator.local_tools import write_tool_result
+
     await write_tool_result(redis, "task-w2", "req-99", None, error="path escape")
     entries = await redis.xrange(f"{TOOL_RESULTS_PREFIX}task-w2")
     _id, fields = entries[0]
@@ -234,9 +226,9 @@ def test_verify_written_content_treats_none_readback_as_mismatch():
 
 
 # ── run_tests timeout clamping ──────────────────────────────────────────────
-from services.orchestrator.local_tools import (
-    build_run_tests_command,
+from services.orchestrator.local_tools import (  # noqa: E402
     RUN_TESTS_TIMEOUT_MS_MAX,
+    build_run_tests_command,
 )
 
 
@@ -257,10 +249,10 @@ def test_build_run_tests_command_small_timeout_unchanged():
 
 
 # ── sandbox test helpers (Task 3 helpers) ──────────────────────────────────────
-from services.orchestrator.local_tools import (
+from services.orchestrator.local_tools import (  # noqa: E402
+    SANDBOX_TEST_TIMEOUT_S_MAX,
     build_sandbox_test_args,
     shape_sandbox_test_result,
-    SANDBOX_TEST_TIMEOUT_S_MAX,
 )
 
 
@@ -298,8 +290,12 @@ def test_shape_sandbox_test_result_passing():
     envelope = {
         "ok": True,
         "result": {
-            "content": [{"type": "text", "text":
-                '{"passed": 3, "failed": 0, "errors": 0, "output": "3 passed", "timed_out": false}'}],
+            "content": [
+                {
+                    "type": "text",
+                    "text": '{"passed": 3, "failed": 0, "errors": 0, "output": "3 passed", "timed_out": false}',
+                }
+            ],
             "isError": False,
         },
     }
@@ -311,8 +307,12 @@ def test_shape_sandbox_test_result_failing():
     envelope = {
         "ok": True,
         "result": {
-            "content": [{"type": "text", "text":
-                '{"passed": 1, "failed": 2, "errors": 0, "output": "FAILED test_x", "timed_out": false}'}],
+            "content": [
+                {
+                    "type": "text",
+                    "text": '{"passed": 1, "failed": 2, "errors": 0, "output": "FAILED test_x", "timed_out": false}',
+                }
+            ],
             "isError": True,
         },
     }
@@ -323,7 +323,9 @@ def test_shape_sandbox_test_result_failing():
 
 
 def test_shape_sandbox_test_result_infra_error():
-    out = shape_sandbox_test_result({"ok": False, "error": "skill_unavailable", "detail": "no tool"})
+    out = shape_sandbox_test_result(
+        {"ok": False, "error": "skill_unavailable", "detail": "no tool"}
+    )
     assert out["ok"] is False
     assert out["exit_code"] == 1
     assert "skill_unavailable" in out["raw_output"]
@@ -332,8 +334,14 @@ def test_shape_sandbox_test_result_infra_error():
 def test_shape_sandbox_test_result_timed_out():
     envelope = {
         "ok": True,
-        "result": {"content": [{"type": "text", "text":
-            '{"passed": 0, "failed": 0, "errors": 0, "output": "", "timed_out": true}'}]},
+        "result": {
+            "content": [
+                {
+                    "type": "text",
+                    "text": '{"passed": 0, "failed": 0, "errors": 0, "output": "", "timed_out": true}',
+                }
+            ]
+        },
     }
     out = shape_sandbox_test_result(envelope)
     assert out["ok"] is False

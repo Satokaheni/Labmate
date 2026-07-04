@@ -438,6 +438,8 @@ async def test_write_result_ok_false_when_final_state_has_error():
 
 @pytest.mark.asyncio
 async def test_handle_emits_turn_start_and_done():
+    import asyncio
+
     proc = OrchestratorProcess()
     proc._redis = MagicMock()
     proc._redis.xadd = AsyncMock()
@@ -454,12 +456,20 @@ async def test_handle_emits_turn_start_and_done():
     storage.workspaces.complete_session = AsyncMock()
     storage.workspaces.upsert_workspace = AsyncMock()
 
+    # Events now travel over the in-process bus instead of Redis xadd.
+    sub = proc.bus.subscribe("events:t-1")
     fields = {"payload": json.dumps({"task_id": "t-1", "task": "do it", "session_id": "t-1"})}
     await proc._handle("1-0", fields, orch, storage)
 
-    streams = [c.args[0] for c in proc._redis.xadd.await_args_list]
-    assert "labmate:events:t-1" in streams
-    types = [json.loads(c.args[1]["event"])["type"] for c in proc._redis.xadd.await_args_list]
+    types = []
+    while True:
+        try:
+            evt = await asyncio.wait_for(sub.__anext__(), timeout=0.2)
+        except TimeoutError:
+            break
+        types.append(evt["type"])
+    sub.close()
+
     # agent_status (active) is emitted first, then turn.start
     assert types[0] == "agent_status"
     assert "turn.start" in types

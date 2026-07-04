@@ -288,6 +288,7 @@ class AsyncOrchestrator:
         workspace: str = ".",
         max_steps: int = 6,
         redis=None,
+        signals=None,
         now: Callable[[], float] | None = None,
     ) -> None:
         self.sem = asyncio.Semaphore(max_inflight)
@@ -315,6 +316,10 @@ class AsyncOrchestrator:
         self.workspace = workspace
         self.max_steps = max_steps
         self.redis = redis
+        # In-process steer/cancel signal registry (Piece 4). None in unit tests
+        # / when unwired, in which case the ReAct loop's steer/cancel checks
+        # are skipped (mirrors the old `self.redis is not None` guard).
+        self.signals = signals
         # Injected post-construction by the orchestrator bootstrap when a Mongo
         # handle is available (CheckpointStore over the loop_checkpoints
         # collection). None in unit tests / when checkpointing is unwired.
@@ -641,8 +646,8 @@ class AsyncOrchestrator:
             _task_id = None
 
         _prewritten_steer: str | None = None
-        if _task_id is not None and self.redis is not None:
-            _prewritten_steer = await events.read_and_clear_steer(self.redis, _task_id)
+        if _task_id is not None and self.signals is not None:
+            _prewritten_steer = await events.read_and_clear_steer(self.signals, _task_id)
 
         _pending_steer: str | None = None
 
@@ -693,10 +698,10 @@ class AsyncOrchestrator:
                 _new_midloop_steer = None
                 _to_inject = None  # steer to inject into THIS turn's model call
 
-                if _task_id is not None and self.redis is not None:
+                if _task_id is not None and self.signals is not None:
                     # (1) Cancel — honest partial halt (this is the in-loop cancel
                     #     check that was previously MISSING entirely).
-                    if await events.is_cancelled(self.redis, _task_id):
+                    if await events.is_cancelled(self.signals, _task_id):
                         await events.emit("turn.cancelled", task_id=_task_id, steps=budget.used)
                         return {
                             "ok": False,
@@ -710,7 +715,7 @@ class AsyncOrchestrator:
                     #     Pre-written (read before loop): defer to turn 2 (unit test).
                     #     Mid-loop (written during loop): inject immediately on next turn.
                     # Read any newly available steer from mid-loop writes.
-                    _new_midloop_steer = await events.read_and_clear_steer(self.redis, _task_id)
+                    _new_midloop_steer = await events.read_and_clear_steer(self.signals, _task_id)
 
                     # Deferral logic for pre-written steers:
                     # On turn 1, set _pending_steer to _prewritten_steer for use on turn 2.
@@ -785,7 +790,7 @@ class AsyncOrchestrator:
                     _steer_this_turn = _to_inject
                 if _steer_this_turn:
                     _messages_for_model = inject_steer(messages, _steer_this_turn)
-                    if _task_id is not None and self.redis is not None:
+                    if _task_id is not None and self.signals is not None:
                         await events.emit("steer.injected", task_id=_task_id, text=_steer_this_turn)
                     # Clear the pending steer so it is not re-injected on subsequent turns.
                     # Mid-loop steers (_to_inject) are already cleared at line 517 each turn.
