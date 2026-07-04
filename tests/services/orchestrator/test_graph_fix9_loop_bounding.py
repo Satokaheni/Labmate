@@ -10,27 +10,29 @@ These tests prove the Fix 9 invariants WITHOUT a GPU or live services:
   5. verify_router is a pure function of the committed _verify_reflect flag and
      keeps the backward-compat threshold fallback.
 """
-import pytest
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from services.orchestrator.graph import (
-    make_nodes,
-    build_graph,
-    verify_router,
-    router,
-    MAX_VERIFY_RETRIES,
-    MAX_GOAL_ATTEMPTS,
-    CRITIQUE_THRESHOLD,
-)
-from services.orchestrator.error_classifier import classify_error, is_terminal
+import pytest
+from langgraph.checkpoint.memory import MemorySaver
+
+import services.orchestrator.graph as _graph_mod
 from services.orchestrator.coding_orchestrator import (
-    CodingOrchestrator,
     AsyncOrchestrator,
+    CodingOrchestrator,
     Result,
 )
+from services.orchestrator.error_classifier import classify_error, is_terminal
+from services.orchestrator.graph import (
+    CRITIQUE_THRESHOLD,
+    MAX_GOAL_ATTEMPTS,
+    MAX_VERIFY_RETRIES,
+    build_graph,
+    make_nodes,
+    router,
+    verify_router,
+)
 from services.orchestrator.types import Status, create_goal
-from langgraph.checkpoint.memory import MemorySaver
-import services.orchestrator.graph as _graph_mod
 
 
 @pytest.fixture(autouse=True)
@@ -45,47 +47,62 @@ def _enable_verify_gate(monkeypatch):
 # 4. classify_error + is_terminal (replaces _is_nonretryable_error)
 # --------------------------------------------------------------------------- #
 class TestClassifyError:
-    @pytest.mark.parametrize("err", [
-        "SkillUnavailable: code-sandbox",
-        "docker daemon not running",
-        "Connection refused",
-        "network unreachable",
-        "missing API key",
-        "ENOENT: no such file",
-        "permission denied (EPERM)",
-    ])
+    @pytest.mark.parametrize(
+        "err",
+        [
+            "SkillUnavailable: code-sandbox",
+            "docker daemon not running",
+            "Connection refused",
+            "network unreachable",
+            "missing API key",
+            "ENOENT: no such file",
+            "permission denied (EPERM)",
+        ],
+    )
     def test_marks_environmental_failures_as_terminal(self, err):
         cls = classify_error(err)
         assert is_terminal(cls) is True
 
-    @pytest.mark.parametrize("err", [
-        "request timed out",
-        "Request timed out after 60s",
-    ])
+    @pytest.mark.parametrize(
+        "err",
+        [
+            "request timed out",
+            "Request timed out after 60s",
+        ],
+    )
     def test_marks_timeout_as_transient(self, err):
         from services.orchestrator.error_classifier import ErrorClass
+
         cls = classify_error(err)
         assert cls == ErrorClass.TRANSIENT
         assert is_terminal(cls) is False
 
-    @pytest.mark.parametrize("err", [
-        "rate limit exceeded (429)",
-        "HTTP 429 Too Many Requests",
-    ])
+    @pytest.mark.parametrize(
+        "err",
+        [
+            "rate limit exceeded (429)",
+            "HTTP 429 Too Many Requests",
+        ],
+    )
     def test_marks_rate_limit_as_rate_limited(self, err):
         from services.orchestrator.error_classifier import ErrorClass
+
         cls = classify_error(err)
         assert cls == ErrorClass.RATE_LIMITED
 
-    @pytest.mark.parametrize("err", [
-        "AssertionError: expected 4 got 5",
-        "ZeroDivisionError",
-        "the function returned the wrong value",
-        "syntax error on line 3",
-        "",
-    ])
+    @pytest.mark.parametrize(
+        "err",
+        [
+            "AssertionError: expected 4 got 5",
+            "ZeroDivisionError",
+            "the function returned the wrong value",
+            "syntax error on line 3",
+            "",
+        ],
+    )
     def test_marks_ordinary_logic_failures_as_retryable(self, err):
         from services.orchestrator.error_classifier import ErrorClass
+
         # These are exactly the failures a reflect-retry CAN fix; must stay retryable.
         cls = classify_error(err)
         assert cls == ErrorClass.RETRYABLE
@@ -156,20 +173,22 @@ class TestVerifyLoopBounding:
         else:
             pytest.fail("verify<->reflect loop did not terminate within bound")
 
-        assert reflect_count == MAX_VERIFY_RETRIES, (
-            f"expected exactly {MAX_VERIFY_RETRIES} reflect pass(es), got {reflect_count}"
-        )
+        assert (
+            reflect_count == MAX_VERIFY_RETRIES
+        ), f"expected exactly {MAX_VERIFY_RETRIES} reflect pass(es), got {reflect_count}"
         assert decision == "check"
         assert state.get("verify_retries") == MAX_VERIFY_RETRIES
 
     @pytest.mark.asyncio
     async def test_passing_score_never_reflects(self):
         verify = self._make_verify_node(score=0.99)
-        out = await verify({
-            "last_artifact": {"type": "code", "payload": "def f(): pass"},
-            "root_goal": "x",
-            "verify_retries": 0,
-        })
+        out = await verify(
+            {
+                "last_artifact": {"type": "code", "payload": "def f(): pass"},
+                "root_goal": "x",
+                "verify_retries": 0,
+            }
+        )
         assert out["_verify_reflect"] is False
         assert verify_router(out) == "check"
         assert "verify_retries" not in out  # not bumped when not reflecting
@@ -177,11 +196,13 @@ class TestVerifyLoopBounding:
     @pytest.mark.asyncio
     async def test_non_code_artifact_never_reflects(self):
         verify = self._make_verify_node(score=0.10)
-        out = await verify({
-            "last_artifact": {"type": "other", "payload": "hi"},
-            "root_goal": "x",
-            "verify_retries": 0,
-        })
+        out = await verify(
+            {
+                "last_artifact": {"type": "other", "payload": "hi"},
+                "root_goal": "x",
+                "verify_retries": 0,
+            }
+        )
         assert out["_verify_reflect"] is False
         assert verify_router(out) == "check"
 
@@ -204,9 +225,15 @@ class TestExecuteAttemptsBail:
 
     def _root_state(self):
         st = {
-            "session_id": "s", "goal_tree": {}, "current_goal_id": "root",
-            "step_markers": {}, "messages": [], "error": None, "final_answer": "",
-            "workspace_id": "w", "user_id": "u",
+            "session_id": "s",
+            "goal_tree": {},
+            "current_goal_id": "root",
+            "step_markers": {},
+            "messages": [],
+            "error": None,
+            "final_answer": "",
+            "workspace_id": "w",
+            "user_id": "u",
         }
         create_goal(st["goal_tree"], "root", None, "do a thing")
         return st
@@ -258,21 +285,25 @@ class TestFullGraphNonretryableTermination:
         mock_orch.skill_router = None
         mock_async = MagicMock(spec=AsyncOrchestrator)
         mock_async.plan_and_dispatch = AsyncMock(
-            return_value=[Result(id="root_sub0",
-                                 summary="ENOENT: docker socket missing", ok=False)]
+            return_value=[Result(id="root_sub0", summary="ENOENT: docker socket missing", ok=False)]
         )
         real_cp = MemorySaver()
-        with patch("pymongo.MongoClient"):
-            with patch("langgraph.checkpoint.mongodb.MongoDBSaver", return_value=real_cp):
-                graph, _ = build_graph(mock_orch, mock_async)
-                st = {
-                    "session_id": "nr", "goal_tree": {}, "current_goal_id": "root",
-                    "step_markers": {}, "messages": [], "error": None,
-                    "final_answer": "", "workspace_id": "w", "user_id": "u",
-                    "verify_retries": 0,
-                }
-                create_goal(st["goal_tree"], "root", None, "Impossible env task")
-                final = await graph.ainvoke(st, {"configurable": {"thread_id": "nr"}})
+        with patch("services.orchestrator.graph._make_sqlite_checkpointer", return_value=real_cp):
+            graph, _ = build_graph(mock_orch, mock_async)
+            st = {
+                "session_id": "nr",
+                "goal_tree": {},
+                "current_goal_id": "root",
+                "step_markers": {},
+                "messages": [],
+                "error": None,
+                "final_answer": "",
+                "workspace_id": "w",
+                "user_id": "u",
+                "verify_retries": 0,
+            }
+            create_goal(st["goal_tree"], "root", None, "Impossible env task")
+            final = await graph.ainvoke(st, {"configurable": {"thread_id": "nr"}})
 
         assert final["goal_tree"]["root"]["status"] == Status.FAILED.value
         assert final.get("final_answer")
@@ -281,6 +312,6 @@ class TestFullGraphNonretryableTermination:
         # cannot assert on architect.await_count because architect is ALSO called by
         # assess_ambiguity (triage) and plan (decompose) — only plan_and_dispatch
         # is a clean per-execute signal.
-        assert mock_async.plan_and_dispatch.await_count == 1, (
-            "non-retryable failure was re-dispatched — bail did not prevent retry"
-        )
+        assert (
+            mock_async.plan_and_dispatch.await_count == 1
+        ), "non-retryable failure was re-dispatched — bail did not prevent retry"

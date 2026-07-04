@@ -4,22 +4,24 @@ When the plan node sets state["awaiting_clarification"] = True, the graph must
 NOT proceed to execute_node — it must halt at END so the agent asks a clarifying
 question WITHOUT also guessing an answer to the ambiguous task.
 """
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Unit tests for clarification_router
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.mocked
 class TestClarificationRouter:
     def test_returns_end_when_awaiting_clarification(self):
-        from services.orchestrator.graph import clarification_router
         from langgraph.graph import END
+
+        from services.orchestrator.graph import clarification_router
 
         state = {"awaiting_clarification": True}
         assert clarification_router(state) == END
@@ -45,6 +47,7 @@ class TestClarificationRouter:
 # reaching execute_node (no skill execution / no guessed final_answer).
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.mocked
 class TestGraphHaltsOnClarification:
     @pytest.mark.asyncio
@@ -54,12 +57,13 @@ class TestGraphHaltsOnClarification:
         # task so assess_ambiguity sets awaiting_clarification; ambiguity_router then
         # halts at END BEFORE plan/execute. The graph must ask the question without
         # guessing an answer or running any skill.
+        from langgraph.checkpoint.memory import MemorySaver
+
         from services.orchestrator import graph as graph_mod
         from services.orchestrator.coding_orchestrator import (
-            CodingOrchestrator,
             AsyncOrchestrator,
+            CodingOrchestrator,
         )
-        from langgraph.checkpoint.memory import MemorySaver
 
         # Silence event emission.
         async def fake_emit(type, **fields):
@@ -84,14 +88,10 @@ class TestGraphHaltsOnClarification:
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
         mock_async_orch.plan_and_dispatch = AsyncMock(return_value=[])
 
-        mock_client = MagicMock()
         real_cp = MemorySaver()
 
-        with patch("pymongo.MongoClient", return_value=mock_client):
-            with patch(
-                "langgraph.checkpoint.mongodb.MongoDBSaver", return_value=real_cp
-            ):
-                graph, _ = graph_mod.build_graph(mock_orch, mock_async_orch)
+        with patch("services.orchestrator.graph._make_sqlite_checkpointer", return_value=real_cp):
+            graph, _ = graph_mod.build_graph(mock_orch, mock_async_orch)
 
         initial_state = {
             "session_id": "s1",
@@ -119,10 +119,7 @@ class TestGraphHaltsOnClarification:
 
         # The graph must have halted on clarification:
         assert final_state.get("awaiting_clarification") is True
-        assert (
-            final_state.get("clarification_question")
-            == "Did you want to search or generate?"
-        )
+        assert final_state.get("clarification_question") == "Did you want to search or generate?"
 
         # It must NOT have reached plan (route) or execute_node.
         fake_router.route.assert_not_called()
@@ -138,13 +135,14 @@ class TestGraphHaltsOnClarification:
     async def test_graph_reaches_execute_when_no_clarification(self, monkeypatch):
         """Regression guard: when route() returns skills (no clarification), the
         graph proceeds through plan -> execute (plan_and_dispatch IS called)."""
-        from services.orchestrator import graph as graph_mod
-        from services.orchestrator.skill_router import RouteResult
-        from services.orchestrator.coding_orchestrator import (
-            CodingOrchestrator,
-            AsyncOrchestrator,
-        )
         from langgraph.checkpoint.memory import MemorySaver
+
+        from services.orchestrator import graph as graph_mod
+        from services.orchestrator.coding_orchestrator import (
+            AsyncOrchestrator,
+            CodingOrchestrator,
+        )
+        from services.orchestrator.skill_router import RouteResult
 
         async def fake_emit(type, **fields):
             pass
@@ -181,14 +179,10 @@ class TestGraphHaltsOnClarification:
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
         mock_async_orch.plan_and_dispatch = AsyncMock(side_effect=fake_dispatch)
 
-        mock_client = MagicMock()
         real_cp = MemorySaver()
 
-        with patch("pymongo.MongoClient", return_value=mock_client):
-            with patch(
-                "langgraph.checkpoint.mongodb.MongoDBSaver", return_value=real_cp
-            ):
-                graph, _ = graph_mod.build_graph(mock_orch, mock_async_orch)
+        with patch("services.orchestrator.graph._make_sqlite_checkpointer", return_value=real_cp):
+            graph, _ = graph_mod.build_graph(mock_orch, mock_async_orch)
 
         initial_state = {
             "session_id": "s1",

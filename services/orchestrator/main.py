@@ -5,7 +5,7 @@ Bootstraps in order:
   1. Logging (stderr only)
   2. StorageManager  (MongoDB + Chroma + Redis — reads MONGO_URI / CHROMA_URL / REDIS_URL)
   3. MCPClientManager (spawns MCP bridge subprocess, waits for ready)
-  4. LangGraph       (build_graph with MongoDBSaver checkpointer)
+  4. LangGraph       (build_graph with local SqliteSaver checkpointer)
   5. Goal loop       (XREADGROUP labmate:goals → run_task → write result)
 
 Env vars:
@@ -52,7 +52,6 @@ from services.orchestrator import call_counter, client_context, ctx_window, even
 from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
 from services.orchestrator.completion_guard import reconcile_final_answer
 from services.orchestrator.graph import GEMMA_BASE, QWEN_BASE, build_graph
-from services.orchestrator.local_mode import local_mode_enabled
 from services.orchestrator.mcp_client_manager import MCPClientManager
 from services.orchestrator.memory_search import MemorySearch
 from services.orchestrator.session_search import SessionSearch
@@ -243,7 +242,6 @@ class OrchestratorProcess:
 
         async with StorageManager() as _sm:
             _log.info("storage ready")
-            _log.info("orchestrator mode: %s", "local" if local_mode_enabled() else "pod")
 
             # Single source of truth for the context gauge: ask llama-server what
             # context window it actually loaded (best-effort; falls back to the
@@ -351,11 +349,7 @@ class OrchestratorProcess:
                 mcp=self._mcp,
                 skill_router=skill_router,
             )
-            graph, _cp = build_graph(
-                orch=orch,
-                async_orch=async_orch,
-                mongo_uri=os.getenv("MONGO_URI", "mongodb://localhost:27017/labmate"),
-            )
+            graph, _cp = build_graph(orch=orch, async_orch=async_orch)
             orch.graph = graph
             # Wire context_manager to CodingOrchestrator (best-effort)
             try:
