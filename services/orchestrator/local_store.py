@@ -102,6 +102,11 @@ CREATE TABLE IF NOT EXISTS auth_users (
     role          TEXT NOT NULL,
     created_at    TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS loop_checkpoints (
+    task_id    TEXT PRIMARY KEY,
+    payload    TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -580,6 +585,34 @@ class LocalStore:
         cur = await conn.execute("SELECT COUNT(*) FROM auth_users")
         (n,) = await cur.fetchone()
         return int(n)
+
+    # ── inner-loop checkpoints (crash recovery) ──────────────────────────
+    async def checkpoint_put(self, task_id: str, payload: dict) -> None:
+        conn = await self._connected()
+        await conn.execute(
+            "INSERT OR REPLACE INTO loop_checkpoints (task_id, payload, updated_at)"
+            " VALUES (?, ?, ?)",
+            (task_id, json.dumps(payload), _iso_now()),
+        )
+        await conn.commit()
+
+    async def checkpoint_get(self, task_id: str) -> dict | None:
+        conn = await self._connected()
+        cur = await conn.execute(
+            "SELECT payload FROM loop_checkpoints WHERE task_id = ?", (task_id,)
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        try:
+            return json.loads(row[0])
+        except (TypeError, ValueError):
+            return None
+
+    async def checkpoint_delete(self, task_id: str) -> None:
+        conn = await self._connected()
+        await conn.execute("DELETE FROM loop_checkpoints WHERE task_id = ?", (task_id,))
+        await conn.commit()
 
     # ── per-session KV (compaction state: core/summary/anchor/summarized_through) ──
     async def session_kv_get(self, namespace: str, session_id: str) -> str | None:
