@@ -128,6 +128,7 @@ class StorageManager:
                 mongo_db=self._db,
                 chroma_cols={},
                 embedder=_embedder,
+                local_store=self.local_store,
             )
         return self._context_manager
 
