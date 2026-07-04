@@ -49,7 +49,7 @@ def _build_orch_and_router():
         return_value={"ok": True, "result": {"findings": "looks fine"}}
     )
     orch = AsyncOrchestrator(skill_router=skill_router, mcp=None, workspace="/tmp")
-    orch.redis = None
+    orch.local_client = None
 
     class FakeContext:
         def get_manifest(self):

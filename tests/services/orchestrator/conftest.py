@@ -54,18 +54,8 @@ def mock_mongo():
 
 
 @pytest.fixture
-def mock_redis():
-    """redis.asyncio client mock."""
-    r = AsyncMock(name="redis")
-    r.xadd.return_value = b"1-0"
-    r.get.return_value = None
-    r.set.return_value = True
-    return r
-
-
-@pytest.fixture
-def storage(mock_mongo, mock_redis):
-    """A StorageManager with both backends injected as mocks."""
+def storage(mock_mongo):
+    """A StorageManager with Mongo injected as a mock."""
     from services.orchestrator.storage_manager import StorageManager
 
-    return StorageManager.from_clients(mongo=mock_mongo, redis=mock_redis)
+    return StorageManager.from_clients(mongo=mock_mongo)

@@ -1,20 +1,14 @@
 """Event stream helpers for the CLI.
 
-The active code path uses WSEventStream (ws_client.py). EventStream and
-tail_events are re-exported here for backward compatibility with redis_client.py
-and existing tests.
+The active code path uses WSEventStream (ws_client.py) as the concrete event
+stream implementation. _ToolInterceptingStream/run_task_with_streaming here
+are transport-agnostic — they wrap whatever stream object the client hands
+back (duck-typed: .events()/.first()/.aclose()).
 """
+
 from __future__ import annotations
 
-import asyncio
-from typing import AsyncIterator, Optional
-
-from .redis_event_stream import (  # noqa: F401 – re-exported
-    EventStream, tail_events, EVENTS_PREFIX, event_channel
-)
-
-__all__ = ["EventStream", "tail_events", "EVENTS_PREFIX", "event_channel",
-           "_ToolInterceptingStream", "run_task_with_streaming", "FIRST_EVENT_TIMEOUT"]
+__all__ = ["_ToolInterceptingStream", "run_task_with_streaming", "FIRST_EVENT_TIMEOUT"]
 
 
 class _ToolInterceptingStream:
@@ -31,6 +25,7 @@ class _ToolInterceptingStream:
 
     async def events(self):
         from services.cli.local_tool_executor import execute_local_tool
+
         async for ev in self._stream.events():
             if ev.get("type") == "tool.request":
                 tool_request_id = ev.get("tool_request_id", "")
@@ -76,9 +71,7 @@ async def run_task_with_streaming(
         first = await stream.first(timeout=FIRST_EVENT_TIMEOUT)
         if first is not None:
             if workspace is not None and hasattr(client, "send_tool_result"):
-                active_stream = _ToolInterceptingStream(
-                    stream, client.send_tool_result, workspace
-                )
+                active_stream = _ToolInterceptingStream(stream, client.send_tool_result, workspace)
             else:
                 active_stream = stream
             await renderer.stream_live(active_stream)

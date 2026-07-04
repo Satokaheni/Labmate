@@ -1,14 +1,14 @@
 """In-process async primitives for the Redis-free local harness (Piece 4).
 
-Three classes replace the Redis-backed mechanisms used by the current
-harness, for a single-process, single-event-loop deployment:
+Three classes provide, entirely in-process, the mechanisms a prior
+Redis-backed harness used a message broker for — for a single-process,
+single-event-loop deployment:
 
-- ``EventBus``       replaces ``XADD``/``XREAD`` on ``labmate:events:*`` and
-                      ``labmate:tool-results:*`` streams.
-- ``SignalRegistry`` replaces ``labmate:cancel:*`` (EXISTS/SET) and
-                      ``labmate:steer:*`` (SET/GETDEL).
-- ``ResultRegistry``  replaces ``SET``/``PUBLISH`` on ``labmate:result:*``
-                      plus the pubsub/poll wait for it.
+- ``EventBus``       the per-task agent-event stream and the local-tool
+                      result-relay topic.
+- ``SignalRegistry`` the cancel flag and out-of-band steer-message queue for
+                      a running task.
+- ``ResultRegistry``  the goal-result publish + the async wait for it.
 
 All three are pure asyncio (no threads, no external deps) and are safe to
 use only from within a single running event loop.

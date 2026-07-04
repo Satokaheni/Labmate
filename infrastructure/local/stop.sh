@@ -60,9 +60,6 @@ _stop_pid "discord-connector" "$PIDS/discord-connector.pid"
 # ─── Orchestrator ─────────────────────────────────────────────────────────────
 _stop_pid "orchestrator.main" "$PIDS/orchestrator.pid"
 
-# ─── Skill worker ─────────────────────────────────────────────────────────────
-_stop_pid "skill_worker.worker" "$PIDS/skill-worker.pid"
-
 # ─── SearXNG (native metasearch) ──────────────────────────────────────────────
 _stop_pid "searx.webapp" "$PIDS/searxng.pid"
 

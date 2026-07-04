@@ -3,14 +3,13 @@ Orchestrator process entrypoint.
 
 Bootstraps in order:
   1. Logging (stderr only)
-  2. StorageManager  (MongoDB + Redis — reads MONGO_URI / REDIS_URL)
+  2. StorageManager  (MongoDB — reads MONGO_URI)
   3. MCPClientManager (spawns MCP bridge subprocess, waits for ready)
   4. LangGraph       (build_graph with local SqliteSaver checkpointer)
   5. Goal loop       (in-process asyncio.Queue → run_task → ResultRegistry)
 
 Env vars:
   MONGO_URI          mongodb://localhost:27017/labmate
-  REDIS_URL          redis://localhost:6379/0
   GEMMA_BASE         http://localhost:8000/v1
   QWEN_BASE          (defaults to GEMMA_BASE on single-GPU)
   MCP_BRIDGE_CMD     node
@@ -19,21 +18,19 @@ Env vars:
   SANDBOX_CONTAINER  labmate-sandbox   (Docker container name for code execution)
   LOG_LEVEL          info
 
-Goal ingress (Piece 4 — in-process, Redis-free):
+Goal ingress, events, and skill dispatch (Piece 4 — the whole harness is one
+Redis-free process; only GEMMA_BASE/QWEN_BASE, the model server, is remote):
   Submit:  task_id = await proc.submit_goal(payload)   # enqueues onto asyncio.Queue
   Result:  result = await proc.results.wait_result(task_id)   # ResultRegistry
+  Events:  the agent event stream is published on the in-process EventBus
+           (services/orchestrator/inproc_bus.py); steer/cancel signals route
+           through the in-process SignalRegistry.
+  Skills:  a shared SkillRegistry is built at boot with all runnable skills
+           registered, and SkillRouter dispatches to it directly
+           (services/skill_runner/skill_dispatch.py) — fully in-process.
 
 Goal payload (dict passed to submit_goal):
   { "task_id": "<str>", "task": "<str>", "session_id": "<str|null>", "user_id": "<str|null>", "workspace_id": "<str|null>" }
-
-Redis is still constructed (self._redis) for local_tools and storage
-(StorageManager) — later tasks (T7b/c, T8) remove it. Skill dispatch itself
-(skill_router.execute) is now in-process: a shared SkillRegistry is built at
-boot with all runnable skills registered, and SkillRouter calls it directly
-(services/skill_runner/skill_dispatch.py) — no Redis skill-tasks stream.
-
-Note: the standalone skill-worker process (services/skill_worker/worker.py)
-still runs its own Redis Streams consumer loop; it is retired in T8.
 """
 
 from __future__ import annotations
@@ -48,7 +45,6 @@ import sys
 import uuid
 from pathlib import Path
 
-import redis.asyncio as aioredis
 from mcp import StdioServerParameters
 
 from services.orchestrator import call_counter, client_context, ctx_window, events, skill_curator
@@ -224,11 +220,9 @@ class OrchestratorProcess:
     def __init__(self) -> None:
         self._worker_id = _worker_id()
         self._shutdown = asyncio.Event()
-        self._redis: aioredis.Redis | None = None
         # In-process event/signal/result primitives (Piece 4): the agent event
-        # stream and steer/cancel signals route through these instead of Redis.
-        # Goals/results transport and skill/tool dispatch still use self._redis
-        # until later tasks (T5/T6) remove it.
+        # stream and steer/cancel signals route through these; goals/results
+        # transport and skill/tool dispatch are all in-process too (below).
         self.bus = EventBus()
         self.signals = SignalRegistry()
         self.results = ResultRegistry()
@@ -249,7 +243,6 @@ class OrchestratorProcess:
     # ── top-level run ──────────────────────────────────────────────────────
 
     async def run(self) -> None:
-        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
         workspace = os.getenv("WORKSPACE_PATH", "/workspace")
 
         async with StorageManager() as _sm:
@@ -307,17 +300,6 @@ class OrchestratorProcess:
             except Exception:  # best-effort wiring; never block startup
                 async_orch.checkpoint_store = None
 
-            # Initialize Redis BEFORE skill router (CLAUDE.md: "after self._redis is created").
-            # Piece 4: goals/results no longer transit Redis (in-process queue +
-            # ResultRegistry instead) — this pool is still used by skill_router,
-            # local_tools, and storage (removed in later tasks).
-            pool = aioredis.ConnectionPool.from_url(
-                redis_url,
-                max_connections=8,
-                decode_responses=True,
-            )
-            self._redis = aioredis.Redis(connection_pool=pool)
-
             # Build skill router (optional, wrapped in try/except so startup never fails)
             skill_router = None
             try:
@@ -326,9 +308,7 @@ class OrchestratorProcess:
                 runner.discover()
 
                 # Shared SkillRegistry: spawns/owns the runnable skills' MCP
-                # subprocesses (mirrors skill_worker.SkillWorker.start()'s
-                # registration exactly) so SkillRouter.execute can dispatch
-                # in-process — no Redis skill-tasks stream.
+                # subprocesses so SkillRouter.execute can dispatch in-process.
                 self._skill_registry = SkillRegistry(
                     call_timeout=float(os.getenv("SKILL_CALL_TIMEOUT", "135"))
                 )
@@ -358,12 +338,16 @@ class OrchestratorProcess:
                     "failed to initialize skill router — continuing without skills", exc_info=True
                 )
 
-            # Wire redis and codegraph_mcp outside the try/except (always available)
-            async_orch.redis = self._redis
-            # Piece 4: steer/cancel now read from the in-process SignalRegistry
-            # instead of Redis; wired alongside redis so the ReAct loop's
-            # `self.signals is not None` guard degrades cleanly in tests that
-            # never set it.
+            # Wire local_client and codegraph_mcp outside the try/except (always available).
+            # local_client_attached is a truthy sentinel meaning "a local-tool client is
+            # attached to this process" — it gates the local-tool dispatch branches in
+            # the ReAct loop (services/orchestrator/coding_orchestrator.py). Always True
+            # here since the orchestrator process always has local_tools wired; unit tests
+            # set async_orch.local_client = None to simulate no client attached.
+            async_orch.local_client = True
+            # Piece 4: steer/cancel read from the in-process SignalRegistry; wired
+            # alongside local_client so the ReAct loop's `self.signals is not None`
+            # guard degrades cleanly in tests that never set it.
             async_orch.signals = self.signals
             async_orch.codegraph_mcp = self._codegraph_mcp
             async_orch.session_search = SessionSearch(_sm)

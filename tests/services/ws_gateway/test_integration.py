@@ -8,7 +8,6 @@ from services.ws_gateway.server import build_app
 @pytest.fixture
 async def client(runtime, seeded_store):
     cfg = Config(
-        redis_url="redis://localhost:6379/0",
         jwt_secret="s",
         admin_email="admin@labmate.local",
         admin_password="pw",

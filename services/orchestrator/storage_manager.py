@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
 from datetime import UTC, datetime
 
-import redis.asyncio as aioredis
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from .db_indexes import ensure_indexes
@@ -16,7 +14,6 @@ logger = logging.getLogger(__name__)
 
 DB_NAME = "labmate"
 META = "meta"
-TASKS_STREAM = "tasks"
 
 
 def _utcnow() -> datetime:
@@ -24,22 +21,19 @@ def _utcnow() -> datetime:
 
 
 class StorageManager:
-    """MongoDB (source of truth) + Redis (cache/queue)."""
+    """MongoDB (source of truth)."""
 
     def __init__(self) -> None:
         mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/labmate")
-        redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
 
         self._mongo = AsyncIOMotorClient(mongo_uri)
-        self._redis = aioredis.from_url(redis_url)
         self._db = self._mongo[DB_NAME]
 
     @classmethod
-    def from_clients(cls, *, mongo, redis) -> StorageManager:
+    def from_clients(cls, *, mongo) -> StorageManager:
         """Build with injected clients (tests). Bypasses env/network setup."""
         self = cls.__new__(cls)
         self._mongo = mongo
-        self._redis = redis
         self._db = mongo[DB_NAME]
         return self
 
@@ -48,8 +42,7 @@ class StorageManager:
         return self
 
     async def __aexit__(self, *exc) -> None:
-        """Close Redis/Mongo connections on exit."""
-        await self._redis.aclose()
+        """Close the Mongo connection on exit."""
         self._mongo.close()
 
     @property
@@ -65,10 +58,8 @@ class StorageManager:
             from services.memory.context_manager import ContextManager
             from services.memory.embedder import embed as _embed_fn
 
-            _redis = self._redis
-
             async def _embedder(texts: list[str]) -> list[list[float]]:
-                return await _embed_fn(texts, redis=_redis)
+                return await _embed_fn(texts)
 
             self._context_manager = ContextManager(
                 mongo_db=self._db,
@@ -130,8 +121,3 @@ class StorageManager:
         return await self.local_store.search_turns(
             query, mode=mode, session_id=session_id, limit=top_k
         )
-
-    # --- task queue (Redis Streams, rule #5) ----------------------------
-    async def enqueue_task(self, stream: str, payload: dict) -> None:
-        """XADD — never RPUSH. Values must be str/bytes for the stream."""
-        await self._redis.xadd(stream, {"payload": json.dumps(payload)})

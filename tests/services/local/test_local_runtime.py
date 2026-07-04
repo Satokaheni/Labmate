@@ -59,7 +59,6 @@ class FakeRuntime:
 
 def _cfg() -> Config:
     return Config(
-        redis_url="redis://localhost:6379/0",
         jwt_secret="s",
         admin_email="admin@labmate.local",
         admin_password="pw",

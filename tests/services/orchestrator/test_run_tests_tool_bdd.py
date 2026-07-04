@@ -63,7 +63,7 @@ def _orch_stub_bash(ctx):
 @given("an AsyncOrchestrator with no skill router and a local tool client")
 def _orch_local_client(ctx):
     orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
-    orch.redis = MagicMock()  # presence triggers the LOCAL_TOOL_NAMES branch
+    orch.local_client = MagicMock()  # presence triggers the LOCAL_TOOL_NAMES branch
     ctx["orch"] = orch
 
 

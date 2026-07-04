@@ -13,8 +13,8 @@ FLOOR for the strip AND seeds the per-session carry from it immediately — so t
 gauge shows the real fill at every turn start and the carry is non-zero even when the
 turn reports no usage.
 
-These tests drive OrchestratorProcess._handle end-to-end with mocked storage/orch/
-redis and assert (a) the emitted turn-start context is the measured floor (never 0)
+These tests drive OrchestratorProcess._handle end-to-end with mocked storage/orch
+and assert (a) the emitted turn-start context is the measured floor (never 0)
 and (b) the per-session carry is seeded from that floor with a zero peak counter.
 """
 
@@ -41,9 +41,6 @@ def _make_storage(total_tokens: int):
     storage.workspaces.record_session = AsyncMock()
     storage.workspaces.upsert_workspace = AsyncMock()
     storage.workspaces.complete_session = AsyncMock()
-
-    storage.cache_get = AsyncMock(return_value="1")
-    storage.cache_set = AsyncMock()
     return storage
 
 

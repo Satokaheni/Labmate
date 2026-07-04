@@ -1,11 +1,12 @@
 """Pure unit tests for `translate_event` (orchestrator snake_case -> frontend StreamEvent).
 
-Relocated from the deleted `test_redis_bridge.py` (Piece 4 T7b): translate_event
-itself is Redis-free logic that STAYS as part of the gateway's transport-swap to
-the in-process runtime, so its dedicated correctness coverage stays too.
+Relocated from the deleted `test_redis_bridge.py` (Piece 4 T7b), then again from
+`redis_bridge.py` itself (Piece 4 T8): translate_event is Redis-free logic that
+now lives in its own module as part of the gateway's transport-swap to the
+in-process runtime, so its dedicated correctness coverage stays too.
 """
 
-from services.ws_gateway.redis_bridge import translate_event
+from services.ws_gateway.event_translate import translate_event
 
 
 def test_translate_tool_start_to_camel():

@@ -17,7 +17,7 @@ from services.orchestrator.inproc_bus import Subscription
 from services.ws_gateway.auth import AuthService, build_auth_router
 from services.ws_gateway.boot import CheckFn, run_boot_sequence
 from services.ws_gateway.config import Config
-from services.ws_gateway.redis_bridge import translate_event
+from services.ws_gateway.event_translate import translate_event
 from services.ws_gateway.sessions import InMemorySessionStore, build_sessions_router
 from services.ws_gateway.user_store import MongoUserStore
 

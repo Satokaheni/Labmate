@@ -245,7 +245,7 @@ class SkillRouter:
                 from services.orchestrator.routing_pregate import SkillPreGate
 
                 catalog = {name: meta.description for name, meta in self._runner.catalog.items()}
-                self._pregate = SkillPreGate(catalog, redis=None)
+                self._pregate = SkillPreGate(catalog)
             if self._pregate is not None and not await self._pregate.any_plausible_skill(task):
                 _log.info("route() pre-gate: no plausible skill -> skip vote, direct answer")
                 return RouteResult(skills=[], needs_clarification=False, sub_intents=[task])

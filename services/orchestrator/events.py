@@ -44,9 +44,6 @@ def clean_reasoning(text: str) -> str:
 
 
 EVENTS_TOPIC_PREFIX = "events:"
-# Legacy alias kept for any residual formatting call sites; no Redis stream
-# backs this anymore — it is purely a topic-name prefix on the in-process bus.
-EVENTS_STREAM_PREFIX = EVENTS_TOPIC_PREFIX
 
 current_emitter: ContextVar[EventEmitter | None] = ContextVar("current_emitter", default=None)
 

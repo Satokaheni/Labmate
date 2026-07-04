@@ -22,43 +22,32 @@ def _reset_local_store():
 
 
 # ---------------------------------------------------------------------------
-# Redis cache + task queue
-# ---------------------------------------------------------------------------
-
-
-async def test_enqueue_task_uses_xadd_not_rpush(storage, mock_redis):
-    await storage.enqueue_task("tasks", {"type": "consolidate", "session_id": "s1"})
-    mock_redis.xadd.assert_awaited_once()
-    assert not hasattr(mock_redis, "rpush") or mock_redis.rpush.await_count == 0
-
-
-# ---------------------------------------------------------------------------
 # StorageManager async context manager
 # ---------------------------------------------------------------------------
 
 
-async def test_context_manager_closes_connections_on_exit(mock_mongo, mock_redis):
-    """__aexit__ must close Redis and Mongo connections."""
+async def test_context_manager_closes_connections_on_exit(mock_mongo):
+    """__aexit__ must close the Mongo connection."""
+    from unittest.mock import MagicMock
+
     from services.orchestrator.storage_manager import StorageManager
 
-    mock_mongo_with_close = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
-    mock_mongo_with_close.close = __import__("unittest.mock", fromlist=["MagicMock"]).MagicMock()
+    mock_mongo_with_close = MagicMock()
+    mock_mongo_with_close.close = MagicMock()
 
-    storage = StorageManager.from_clients(mongo=mock_mongo_with_close, redis=mock_redis)
+    storage = StorageManager.from_clients(mongo=mock_mongo_with_close)
 
     await storage.__aexit__(None, None, None)
 
-    # Redis should be closed
-    mock_redis.aclose.assert_awaited_once()
     # Mongo should be closed
     mock_mongo_with_close.close.assert_called_once()
 
 
-async def test_full_context_manager_usage_works(mock_mongo, mock_redis):
+async def test_full_context_manager_usage_works(mock_mongo):
     """async with StorageManager() should work without crashing."""
     from services.orchestrator.storage_manager import StorageManager
 
-    storage = StorageManager.from_clients(mongo=mock_mongo, redis=mock_redis)
+    storage = StorageManager.from_clients(mongo=mock_mongo)
 
     async with storage as sm:
         assert sm is storage
@@ -66,15 +55,14 @@ async def test_full_context_manager_usage_works(mock_mongo, mock_redis):
 
 async def test_from_clients_works_without_context_manager():
     """from_clients path should not require async context manager entry."""
-    from unittest.mock import AsyncMock, MagicMock
+    from unittest.mock import MagicMock
 
     from services.orchestrator.storage_manager import StorageManager
 
     mock_mongo = MagicMock()
-    mock_redis = AsyncMock()
 
     # This should work without entering the context manager
-    storage = StorageManager.from_clients(mongo=mock_mongo, redis=mock_redis)
+    storage = StorageManager.from_clients(mongo=mock_mongo)
 
     # Should be able to call methods directly
     assert storage is not None

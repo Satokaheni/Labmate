@@ -52,8 +52,8 @@ def _orch_broken_toolchain(ctx):
     skill_router.execute.return_value = error_envelope
 
     orch = AsyncOrchestrator(skill_router=skill_router, mcp=None, workspace="/tmp")
-    # write_file flows through request_local_tool -> stub redis truthy.
-    orch.redis = MagicMock()
+    # write_file flows through request_local_tool -> stub local_client truthy.
+    orch.local_client = MagicMock()
     ctx["orch"] = orch
 
 

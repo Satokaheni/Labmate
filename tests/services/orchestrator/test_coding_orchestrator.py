@@ -1176,7 +1176,9 @@ class TestReactExecute:
     async def test_react_execute_distinct_calls_do_not_trip_loop(self):
         """Distinct read_file paths must NOT trip the detector; finish ends cleanly."""
         orch = self._make_orch(max_steps=6, mcp=None)
-        orch.redis = None  # read_file without redis returns a structured error, not a crash
+        orch.local_client = (
+            None  # read_file with no client attached returns a structured error, not a crash
+        )
 
         # Three distinct reads, then finish — no two consecutive identical sigs.
         r1 = self._make_tool_call_response("read_file", {"path": "a.txt"})
@@ -1470,7 +1472,7 @@ class TestReactExecuteBudget:
         r3 = MagicMock(choices=[MagicMock(message=self._bash_resp("echo b"))])
         r4 = MagicMock(choices=[MagicMock(message=self._finish_resp("done after refund"))])
 
-        # list_dir routes through local tools; with redis=None it returns a
+        # list_dir routes through local tools; with local_client=None it returns a
         # structured error but still counts as a cheap (refunded) read turn.
         with patch(
             "services.orchestrator.coding_orchestrator.litellm.acompletion",
@@ -1533,7 +1535,7 @@ class TestReactExecuteBudget:
             return {"ok": True}
 
         monkeypatch.setattr("services.orchestrator.coding_orchestrator.request_local_tool", _local)
-        orch.redis = MagicMock()
+        orch.local_client = MagicMock()
 
         calls = [0]
 
@@ -1585,7 +1587,7 @@ async def test_react_routes_read_file_to_local_tool():
     token = events.current_emitter.set(emitter)
 
     orch = AsyncOrchestrator(skill_router=None, max_steps=3)
-    orch.redis = MagicMock()  # truthy so the local-tool branch is taken
+    orch.local_client = MagicMock()  # truthy so the local-tool branch is taken
 
     # Responder: posts a tool.result as soon as tool.request lands on the event bus.
     async def responder():
@@ -1648,7 +1650,7 @@ async def test_react_routes_search_files_to_local_tool():
     ctx_token = client_context.set_manifest(manifest)
 
     orch = AsyncOrchestrator(skill_router=None, max_steps=3)
-    orch.redis = MagicMock()  # truthy so the local-tool branch is taken
+    orch.local_client = MagicMock()  # truthy so the local-tool branch is taken
 
     # Responder: records which tool.request names it saw and posts a tool.result for them.
     seen: list[str] = []
@@ -1713,10 +1715,10 @@ async def test_react_routes_search_files_to_local_tool():
 
 
 @pytest.mark.asyncio
-async def test_react_file_tool_with_no_redis_returns_error():
-    """When redis is None, file tools return a structured error rather than raising."""
+async def test_react_file_tool_with_no_local_client_returns_error():
+    """When local_client is None, file tools return a structured error rather than raising."""
     orch = AsyncOrchestrator(skill_router=None, max_steps=2)
-    assert orch.redis is None  # default
+    assert orch.local_client is None  # default
 
     read_file_msg = _msg_with_tool_call("read_file", '{"path": "x.txt"}')
     finish_msg_obj = _msg_with_tool_call("finish", '{"summary": "done"}')
@@ -1963,7 +1965,7 @@ async def test_verification_stop_nudges_then_accepts_after_tests_pass(monkeypatc
     monkeypatch.setattr("services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "react")
     orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
 
-    # Stub redis so write_file succeeds through request_local_tool.
+    # Stub local_client so write_file succeeds through request_local_tool.
     # For write_file calls, return success. For read_file (verification), return the content.
     async def _fake_local_tool(name, args):
         if name == "read_file":
@@ -1975,7 +1977,7 @@ async def test_verification_stop_nudges_then_accepts_after_tests_pass(monkeypatc
         "services.orchestrator.coding_orchestrator.request_local_tool",
         AsyncMock(side_effect=_fake_local_tool),
     )
-    orch.redis = MagicMock()  # truthy so the write_file branch is taken
+    orch.local_client = MagicMock()  # truthy so the write_file branch is taken
 
     # Stub mcp so run_tests returns a passing result.
     mcp = AsyncMock()
@@ -2027,7 +2029,7 @@ async def test_run_tests_client_routed_pass(monkeypatch):
 
     monkeypatch.setattr("services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "react")
     orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
-    orch.redis = MagicMock()
+    orch.local_client = MagicMock()
 
     # Set up client context with a manifest that declares run_tests.
     manifest = parse_manifest(
@@ -2095,7 +2097,7 @@ async def test_run_tests_client_routed_fail(monkeypatch):
 
     monkeypatch.setattr("services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "react")
     orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
-    orch.redis = MagicMock()
+    orch.local_client = MagicMock()
 
     manifest = parse_manifest(
         {
@@ -2180,10 +2182,10 @@ async def test_run_tests_no_client_uses_pod_path(monkeypatch):
 
     monkeypatch.setattr("services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "react")
 
-    # Create orchestrator with a mock skill_router but no redis (simulating no client)
+    # Create orchestrator with a mock skill_router but no local_client (simulating no client)
     skill_router = MagicMock()
     orch = AsyncOrchestrator(skill_router=skill_router, mcp=None, workspace="/tmp")
-    orch.redis = None  # No client attached
+    orch.local_client = None  # No client attached
 
     # Mock client_context to return None (no manifest)
     class FakeContext:
@@ -2333,7 +2335,7 @@ async def test_verification_stop_cap_accepts_finish_honestly(monkeypatch):
         "services.orchestrator.coding_orchestrator.request_local_tool",
         AsyncMock(side_effect=_fake_local_tool),
     )
-    orch.redis = MagicMock()
+    orch.local_client = MagicMock()
 
     responses = [
         _vt_tool_msg("write_file", {"path": "src/app.py", "content": "x = 1"}),
@@ -2379,7 +2381,7 @@ async def test_react_loop_tolerates_two_identical_write_file_calls(monkeypatch):
         return {"ok": True}
 
     monkeypatch.setattr("services.orchestrator.coding_orchestrator.request_local_tool", _local)
-    orch.redis = MagicMock()
+    orch.local_client = MagicMock()
 
     def write_msg():
         return MagicMock(

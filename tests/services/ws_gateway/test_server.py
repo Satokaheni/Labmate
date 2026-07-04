@@ -9,7 +9,6 @@ from services.ws_gateway.sessions import InMemorySessionStore
 @pytest.fixture
 def cfg():
     return Config(
-        redis_url="redis://localhost:6379/0",
         jwt_secret="test-secret",
         admin_email="admin@labmate.local",
         admin_password="correct-horse",
