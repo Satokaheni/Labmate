@@ -560,10 +560,12 @@ def build_app(
 
 
 def create_app() -> FastAPI:
-    """uvicorn entrypoint: `uvicorn services.ws_gateway.server:create_app --factory`."""
+    """Not a standalone entrypoint. The gateway is co-located with the orchestrator
+    and needs the shared in-process runtime; run the single-process local harness:
+    ``python -m services.local.main`` (which calls ``build_app(config, runtime=proc)``)."""
     raise NotImplementedError(
-        "create_app() requires a runtime instance; the real LocalRuntime bootstrap "
-        "lands in Piece 4 T7c. Use build_app(config, runtime=...) directly until then."
+        "The gateway is co-located: run `python -m services.local.main` (it builds the "
+        "app via build_app(config, runtime=OrchestratorProcess())). build_app needs a runtime."
     )
 
 
