@@ -113,6 +113,11 @@ def _search_files(query: str, root: Path, glob: str | None, max_results: int) ->
                     lineno = int(ln)
                 except ValueError:
                     continue
+                # rg searches "." so it prefixes hits with "./"; strip it so the
+                # `file` value is backend-invariant (matches the Python fallback,
+                # which emits bare root-relative paths).
+                if fp.startswith("./"):
+                    fp = fp[2:]
                 hits.append({"file": fp, "line": lineno, "text": txt[:400]})
                 if len(hits) >= max_results:
                     break
