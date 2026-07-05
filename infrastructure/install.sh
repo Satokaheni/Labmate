@@ -27,6 +27,7 @@
 #   infrastructure/install.sh --no-model      # skip the 18GB GGUF download
 #   infrastructure/install.sh --no-skills     # skip per-skill deps (core only)
 #   infrastructure/install.sh --server-only   # RunPod/GPU box: ONLY the model server
+#   infrastructure/install.sh --client-only   # harness/client box: everything EXCEPT the engine
 #   infrastructure/install.sh --searxng-docker  # force the official searxng/searxng image
 #   infrastructure/install.sh --searxng-native  # force the native (Linux/apt) build
 #
@@ -86,12 +87,14 @@ SKIP_MODEL=false
 SKIP_SKILLS=false
 SKIP_SEARXNG=false
 SERVER_ONLY=false
+CLIENT_ONLY=false
 for arg in "$@"; do
   case "$arg" in
     --no-model)       SKIP_MODEL=true ;;
     --no-skills)      SKIP_SKILLS=true ;;
     --no-searxng)     SKIP_SEARXNG=true ;;
     --server-only)    SERVER_ONLY=true ;;
+    --client-only)    CLIENT_ONLY=true ;;
     --searxng-docker) SEARXNG_MODE=docker ;;
     --searxng-native) SEARXNG_MODE=native ;;
   esac
@@ -120,6 +123,16 @@ fi
 if $SERVER_ONLY; then
   SKIP_SKILLS=true
   SKIP_SEARXNG=true
+fi
+
+# --client-only ⇒ the harness/client side, no inference engine (the model is a
+# REMOTE box reached via GEMMA_BASE). Installs node/mcp-bridge, core+skill Python
+# deps, tokenizer, SearXNG, frontend — and SKIPS the llama.cpp build + GGUF
+# download (§4). It is the inverse of --server-only; the two are mutually
+# exclusive. §4 is guarded on $CLIENT_ONLY inline below.
+if $SERVER_ONLY && $CLIENT_ONLY; then
+  log "ERROR: --server-only and --client-only are mutually exclusive."
+  exit 2
 fi
 
 log()  { echo "[install] $*"; }
@@ -274,8 +287,12 @@ else
 fi
 
 # ─── 4. Inference engine: llama.cpp + GGUF ────────────────────────────────────
+# CLIENT-ONLY: skipped entirely — the model runs on a REMOTE box (GEMMA_BASE), so
+# the client needs neither the llama.cpp build nor the GGUF weights.
 LLAMA_SERVER="${LLAMA_DIR}/build/bin/llama-server"
-if [[ -x "$LLAMA_SERVER" ]]; then
+if $CLIENT_ONLY; then
+  log "client-only: skipping llama.cpp build + GGUF (model is remote via GEMMA_BASE)."
+elif [[ -x "$LLAMA_SERVER" ]]; then
   log "llama.cpp already built: $LLAMA_SERVER"
 else
   have cmake || { apt-get install -y cmake build-essential >/dev/null; }
@@ -290,8 +307,8 @@ else
   log "llama-server built."
 fi
 
-if $SKIP_MODEL; then
-  log "skipping model download (--no-model)."
+if $CLIENT_ONLY || $SKIP_MODEL; then
+  $CLIENT_ONLY || log "skipping model download (--no-model)."
 else
   if [[ -f "${MODEL_DIR}/${GGUF_FILE}" ]]; then
     log "GGUF already present: ${MODEL_DIR}/${GGUF_FILE}"
@@ -442,6 +459,18 @@ if $SERVER_ONLY; then
   log "Then, on your CLIENT (Mac) harness, point GEMMA_BASE at THIS box:"
   log "  GEMMA_BASE=http://<this-host>:8000/v1  (the harness's sole remote dependency)."
   log "  (Expose port 8000 / use the RunPod TCP proxy so the Mac can reach it.)"
+elif $CLIENT_ONLY; then
+  log "DONE (client-only). This box runs the harness; the model is REMOTE. Next:"
+  log "  export GEMMA_BASE=\"https://<pod-id>-8000.proxy.runpod.net/v1\"  # your model box"
+  log "  #   (or edit infrastructure/local.env — it respects a pre-set GEMMA_BASE)"
+  log "  infrastructure/start.sh         # services.local.main (single process) + SearXNG"
+  log "  infrastructure/status.sh        # gateway + SearXNG green"
+  log ""
+  log "  If :8787 is taken on this host, run with LOCAL_PORT=<free> and connect the"
+  log "  CLI/frontend at ws://localhost:<free>/ws."
+  log ""
+  log "Admin: ADMIN_EMAIL/ADMIN_PASSWORD (dev defaults in local.env) auto-seed on"
+  log "  first boot. Single-user mode (default) auto-auths the CLI/frontend — no login."
 else
   log "DONE. Next:"
   log "  infrastructure/start.sh         # services.local.main (single process) + SearXNG"
