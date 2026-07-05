@@ -929,11 +929,67 @@ class AsyncOrchestrator:
 
                 # Check for tool calls (already extracted above)
                 if not tool_calls:
-                    # No tool calls — return the content directly
+                    # G4 continuation guard: a text-only turn (no tool_calls, no
+                    # finish) would otherwise accept ok=True here and BYPASS the
+                    # verification-stop check that only runs in the finish branch.
+                    # So a model that edited files but never called finish/run_tests
+                    # (just answered "done" in prose) would escape verification. If
+                    # it edited without a passing run and nudge budget remains, push
+                    # it back into the loop instead of accepting an unverified stop.
+                    # The assistant turn (msg_dict) was appended above and has NO
+                    # tool_calls, so assistant(text) -> user(nudge) is valid ordering.
+                    if needs_verification(
+                        edited_files,
+                        tests_passed,
+                        verify_nudges_used,
+                        max_verify_nudges,
+                        infra_error_streak=infra_error_streak,
+                    ):
+                        verify_nudges_used += 1
+                        await events.emit(
+                            "verify.nudge",
+                            files=sorted(edited_files),
+                            nudge=verify_nudges_used,
+                            max_nudges=max_verify_nudges,
+                            source="text_only_return",
+                        )
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    build_expose_test_nudge(edited_files)
+                                    if _expose_bug
+                                    else build_verify_nudge(edited_files)
+                                ),
+                            }
+                        )
+                        continue
+                    # No outstanding verification nudge to issue (pure-answer goal,
+                    # already verified, or nudge budget spent). Mirror the finish
+                    # branch's honesty handling so this path has PARITY: annotate an
+                    # edited-but-unverified stop and reconcile the ok, so an unbacked
+                    # "I fixed it / tests pass" claim can't be reported as success
+                    # even when the nudge budget is spent (a pure-answer goal with no
+                    # edits is unaffected — reconcile_ok leaves ok=True).
+                    summary = (msg.content or "")[:2000]
+                    if _expose_bug and edited_files and not tests_passed:
+                        summary = (
+                            summary + " [verification-stop: the test was NOT run "
+                            "to confirm it exposes the bug]"
+                        )[:2000]
+                    elif edited_files and not tests_passed:
+                        summary = (
+                            summary + " [verification-stop: tests were NOT "
+                            "verified to pass within the nudge budget]"
+                        )[:2000]
+                    recon_ok, note = reconcile_ok(True, summary, tests_passed=tests_passed)
+                    if note:
+                        summary = (summary + " " + note)[:2000]
                     return {
-                        "ok": True,
-                        "summary": (msg.content or "")[:2000],
+                        "ok": recon_ok,
+                        "summary": summary,
                         "tools_used": _tools_used,
+                        "tests_passed": tests_passed,
                     }
 
                 # Process each tool call
