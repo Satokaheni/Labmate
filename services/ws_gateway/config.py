@@ -11,7 +11,6 @@ class Config:
     admin_password: str
     jwt_expiry_seconds: int
     cors_origins: tuple[str, ...]
-    mongo_url: str
 
     @classmethod
     def from_env(cls) -> Config:
@@ -22,5 +21,4 @@ class Config:
             admin_password=os.getenv("ADMIN_PASSWORD", ""),
             jwt_expiry_seconds=int(os.getenv("JWT_EXPIRY_SECONDS", "86400")),
             cors_origins=tuple(o.strip() for o in origins.split(",") if o.strip()),
-            mongo_url=os.getenv("MONGO_URL", "mongodb://localhost:27017"),
         )

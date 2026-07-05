@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# ⚠ STALE: assumes the pre-single-process split topology + Redis (separate
+# services.orchestrator.main process, orchestrator.pid, a Redis consumer-group
+# invariant). The local harness now runs as one process (services.local.main)
+# backed by SQLite — this script will BREAK against that runtime. Needs a
+# rewrite before use; left as-is (RunPod-only eval tooling, model currently
+# off) rather than sunk-cost-fixed here. See Piece 7a brief item 6.
+#
 # Restart the orchestrator under a given SEQUENCING_MODE, then run the A/B harness.
 # Usage: run_mode.sh <skill_first|react>
 # Multi-trial: set TRIALS in the environment to run each case N times and score on

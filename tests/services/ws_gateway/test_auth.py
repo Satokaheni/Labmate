@@ -16,7 +16,6 @@ async def auth_service(seeded_store):
         admin_password="correct-horse",
         jwt_expiry_seconds=3600,
         cors_origins=(),
-        mongo_url="mongodb://localhost:27017",
     )
     return AuthService(cfg, seeded_store)
 

@@ -1,14 +1,14 @@
 """Local, async SQLite persistence for the local-harness (LABMATE_LOCAL_MODE).
 
 Piece 2 of the local-harness re-architecture. Stores chat turns (Piece 2a) and,
-in Piece 2b, session/workspace metadata — the local replacement for the
-Mongo-backed session/turn store. Uses aiosqlite so store I/O never blocks the
-event loop, and the SAME per-user DB file as the Piece 1 LangGraph checkpointer
-(local_state_db_path(); the checkpointer's tables coexist in the file).
+in Piece 2b, session/workspace metadata — the SQLite-backed session/turn store.
+Uses aiosqlite so store I/O never blocks the event loop, and the SAME per-user
+DB file as the Piece 1 LangGraph checkpointer (local_state_db_path(); the
+checkpointer's tables coexist in the file).
 
-Read/write contracts mirror the Mongo paths the continuity code depends on:
-turns are keyed by (session_id, seq) with seq a per-session 0-based monotonic
-counter; recent_turns returns seq>watermark newest-capped, ascending.
+Read/write contracts formerly mirrored the Mongo paths; now the single source
+of truth: turns are keyed by (session_id, seq) with seq a per-session 0-based
+monotonic counter; recent_turns returns seq>watermark newest-capped, ascending.
 """
 
 from __future__ import annotations
@@ -307,7 +307,7 @@ class LocalStore:
                     )
                 hits = await cur.fetchall()
             return [{"sessionId": r[0], "seq": r[1], "text": r[2]} for r in hits]
-        except Exception as exc:  # best-effort — mirror the Mongo search_turns contract
+        except Exception as exc:  # best-effort — keep the search_turns contract intact
             logger.error("LocalStore.search_turns failed (mode=%s): %s", mode, exc)
             return []
 
