@@ -28,7 +28,11 @@ from .local_tools import (
 )
 from .loop_checkpoint import LoopCheckpoint
 from .loop_detection import LoopDetector, call_signature, repeat_limit_for
-from .message_repair import message_repair_enabled, sanitize_messages
+from .message_repair import (
+    message_repair_enabled,
+    patch_dangling_tool_calls,
+    sanitize_messages,
+)
 from .model_client import acompletion_with_failover, resolve_bases
 from .progress_breaker import ProgressBreaker, ProgressStep
 from .prompt_assembler import PromptAssembler, measure_prompt_segments
@@ -512,15 +516,20 @@ class AsyncOrchestrator:
         return {"ok": recon_ok, "summary": summary, "tools_used": tools_list, "tests_passed": False}
 
     def _maybe_repair(self, messages: list[dict]) -> list[dict]:
-        """Repair the messages list right before a model call, when enabled.
+        """Repair the messages list right before a model call.
 
-        Drops orphaned tool results and merges illegal adjacent same-role runs
-        so malformed sequences (from injected synthetic turns) never reach the
-        OpenAI-compatible endpoint. No-op pass-through when the flag is off.
+        ALWAYS patches dangling tool_calls (an assistant tool_call with no
+        answering tool result) — a single dangler 400s EVERY subsequent request,
+        so this safety net runs regardless of ENABLE_MESSAGE_REPAIR (it only ADDS
+        missing stub results; never drops/reorders real content). The broader
+        sanitize (drop orphaned tool results + merge illegal adjacent same-role
+        runs) remains opt-in behind ENABLE_MESSAGE_REPAIR.
         """
         if message_repair_enabled():
-            return sanitize_messages(messages)
-        return messages
+            # sanitize first (drop orphans / merge), then patch danglers on the
+            # cleaned list so every remaining assistant tool_call is answered.
+            return patch_dangling_tool_calls(sanitize_messages(messages))
+        return patch_dangling_tool_calls(messages)
 
     @staticmethod
     def _turn_made_progress(*, has_tool_calls: bool, content: str | None, is_finish: bool) -> bool:

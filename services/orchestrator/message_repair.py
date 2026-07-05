@@ -12,6 +12,7 @@ system+user prefix (the llama.cpp prompt-cache prefix must stay byte-stable).
 Everything here is pure: no I/O, no network, deterministic, input never
 mutated, a NEW list returned.
 """
+
 from __future__ import annotations
 
 import os
@@ -63,6 +64,74 @@ def _drop_orphan_tool_results(messages: list[dict]) -> list[dict]:
     return out
 
 
+def _tool_call_ids(m: dict) -> list[str]:
+    """The tool_call ids declared by a single assistant message, in order."""
+    ids: list[str] = []
+    for tc in m.get("tool_calls") or []:
+        tid = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+        if tid is not None:
+            ids.append(tid)
+    return ids
+
+
+def _answered_tool_call_ids(messages: list[dict]) -> set[str]:
+    """All tool_call ids that HAVE a matching tool-role result anywhere."""
+    return {
+        m.get("tool_call_id")
+        for m in messages
+        if m.get("role") == "tool" and m.get("tool_call_id") is not None
+    }
+
+
+# Content for a synthetic tool result standing in for a dropped/interrupted call.
+_DANGLING_STUB = (
+    "[tool result unavailable — the call was interrupted, cancelled, or dropped "
+    "before a result was recorded]"
+)
+
+
+def patch_dangling_tool_calls(messages: list[dict], *, stub: str = _DANGLING_STUB) -> list[dict]:
+    """Insert a synthetic tool result for any assistant ``tool_calls`` id that has
+    NO matching tool-role message anywhere in the list.
+
+    The OpenAI-compatible endpoint rejects (400) a request where an assistant
+    message declares a tool_call with no answering ``tool`` message — and a single
+    dangling call POISONS every subsequent request. Danglers arise when the loop
+    halts/returns/cancels before appending a tool result, or when a synthetic
+    user turn (verification-stop / steer) is injected between an assistant
+    tool_call and its result. This is the CONVERSE of
+    ``_drop_orphan_tool_results`` (which handles tool results with no preceding
+    call), and unlike ``sanitize_messages`` it is meant to run ALWAYS (it only
+    ADDS missing results — it never drops or reorders real content, so it is a
+    safe no-op when the history is already well-formed).
+
+    A stub for a missing id is inserted immediately AFTER the declaring assistant
+    message (ahead of any real results already present for that turn — still a
+    contiguous tool block, which the provider accepts). Pure: input never
+    mutated, a NEW list returned; the system message at index 0 is untouched.
+
+    Scope: ``answered`` means a matching tool result exists ANYWHERE. A real
+    result that exists but is DISPLACED (e.g. sits after an injected user turn,
+    breaking contiguity) is treated as answered and left as-is — repairing a
+    displaced-but-present result is sanitize's job, not this patch's. The live
+    loop appends all of a turn's tool results before any nudge/steer, so that
+    displaced-result ordering is not produced in practice.
+    """
+    if not messages:
+        return []
+    answered = _answered_tool_call_ids(messages)
+    out: list[dict] = []
+    for m in messages:
+        out.append(dict(m))
+        if m.get("role") != "assistant":
+            continue
+        for tid in _tool_call_ids(m):
+            if tid not in answered:
+                out.append({"role": "tool", "tool_call_id": tid, "content": stub})
+                answered.add(tid)  # guard against a repeated id yielding two stubs
+    return out
+
+
 def _content_str(m: dict) -> str:
     c = m.get("content")
     return c if isinstance(c, str) else ("" if c is None else str(c))
@@ -93,11 +162,7 @@ def _merge_adjacent_same_role(messages: list[dict]) -> list[dict]:
             merged["content"] = _content_str(prev) + "\n" + _content_str(m)
             out[-1] = merged
             continue
-        if (
-            role == "assistant"
-            and _is_mergeable_assistant(prev)
-            and _is_mergeable_assistant(m)
-        ):
+        if role == "assistant" and _is_mergeable_assistant(prev) and _is_mergeable_assistant(m):
             merged = dict(prev)
             merged["content"] = _content_str(prev) + "\n" + _content_str(m)
             out[-1] = merged
@@ -136,8 +201,10 @@ def validate_messages(messages: list[dict]) -> list[str]:
                 tid = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
                 if tid is not None:
                     declared_so_far.add(tid)
-            if prev_role == "assistant" and _is_mergeable_assistant(m) and not (
-                messages[idx - 1].get("tool_calls")
+            if (
+                prev_role == "assistant"
+                and _is_mergeable_assistant(m)
+                and not (messages[idx - 1].get("tool_calls"))
             ):
                 problems.append(f"adjacent assistant messages at index {idx}")
         elif role == "tool":
