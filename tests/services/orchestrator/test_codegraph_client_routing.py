@@ -1,5 +1,6 @@
 """
-P2-C / P2-D — client-side CodeGraph via the MCP-host path (Framing A).
+P2-C / P2-D — client-side CodeGraph via the MCP-host path (Framing A), plus the
+local orchestrator's own CodeGraph CLI daemon hosting (Framing B).
 
 CodeGraph v0.9.9 is itself an MCP server. A client hosts it (P2-B.3,
 `~/.labmate/mcp.json`) and declares its tools as `mcp__codegraph__*`. The model
@@ -10,15 +11,21 @@ These tests lock the two guarantees that make that work end to end:
   - P2-C: when a client hosts CodeGraph, the POD `code_semantic_search` is NOT
     advertised (build_tool_list only advertises it when the manifest declares it),
     and the `mcp__codegraph__*` tools ARE advertised AND route to the client.
-  - P2-D: the pod embedder spawn is gated by `ENABLE_POD_CODEGRAPH` so a
-    client-first deployment can skip it.
+  - P2-D: the orchestrator's own CodeGraph CLI daemon spawn is gated by
+    `codegraph_enabled()` (CLI resolvable AND `ENABLE_CODEGRAPH != 0`) so a
+    client-first deployment (or a host without the CLI, e.g. CI) can skip it.
+
+They also cover the no-client fallback path: the orchestrator hosts the
+CodeGraph CLI daemon itself (`codegraph serve --mcp --path $WORKSPACE_PATH`)
+and the agent's `code_semantic_search` tool dispatches to the daemon's
+`codegraph_explore` (NL question -> verbatim source).
 """
 
 from __future__ import annotations
 
 import pytest
 
-from services.orchestrator.main import pod_codegraph_enabled
+from services.orchestrator.main import _codegraph_bin, codegraph_enabled
 from services.orchestrator.prompt_assembler import _static_tail_schemas
 from services.orchestrator.tool_manifest import (
     build_tool_list,
@@ -113,7 +120,7 @@ def test_no_client_fallback_still_advertises_pod_semantic_search():
 @pytest.mark.parametrize(
     "value,expected",
     [
-        (None, True),  # unset → default on (unchanged behavior)
+        (None, True),  # unset → default on when the CLI is resolvable
         ("1", True),
         ("0", False),
         ("false", False),
@@ -122,10 +129,37 @@ def test_no_client_fallback_still_advertises_pod_semantic_search():
         ("true", True),
     ],
 )
-def test_pod_codegraph_enabled_flag(monkeypatch, value, expected):
-    """P2-D: ENABLE_POD_CODEGRAPH gates the pod embedder spawn."""
+def test_codegraph_enabled_flag(monkeypatch, value, expected):
+    """codegraph_enabled() honors ENABLE_CODEGRAPH, but only when the CLI resolves."""
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/local/bin/codegraph")
+    monkeypatch.delenv("LABMATE_CODEGRAPH_PATH", raising=False)
     if value is None:
-        monkeypatch.delenv("ENABLE_POD_CODEGRAPH", raising=False)
+        monkeypatch.delenv("ENABLE_CODEGRAPH", raising=False)
     else:
-        monkeypatch.setenv("ENABLE_POD_CODEGRAPH", value)
-    assert pod_codegraph_enabled() is expected
+        monkeypatch.setenv("ENABLE_CODEGRAPH", value)
+    assert codegraph_enabled() is expected
+
+
+def test_codegraph_enabled_false_when_binary_absent(monkeypatch):
+    """codegraph_enabled() is False when the CLI can't be resolved, even if the
+    flag is left at its default-on value (graceful OFF, e.g. in CI)."""
+    monkeypatch.delenv("ENABLE_CODEGRAPH", raising=False)
+    monkeypatch.delenv("LABMATE_CODEGRAPH_PATH", raising=False)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    assert codegraph_enabled() is False
+
+
+def test_codegraph_bin_absent_when_which_and_env_both_unset(monkeypatch):
+    """_codegraph_bin() returns None when neither LABMATE_CODEGRAPH_PATH nor
+    shutil.which("codegraph") resolve a binary."""
+    monkeypatch.delenv("LABMATE_CODEGRAPH_PATH", raising=False)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    assert _codegraph_bin() is None
+
+
+def test_codegraph_bin_present_via_env_override(monkeypatch):
+    """_codegraph_bin() prefers LABMATE_CODEGRAPH_PATH when set, even if
+    shutil.which would otherwise fail to resolve the binary."""
+    monkeypatch.setenv("LABMATE_CODEGRAPH_PATH", "/opt/codegraph/bin/codegraph")
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    assert _codegraph_bin() == "/opt/codegraph/bin/codegraph"

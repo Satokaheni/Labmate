@@ -868,6 +868,60 @@ class TestReactExecute:
             mcp.call_tool.assert_awaited()
 
     @pytest.mark.asyncio
+    async def test_code_semantic_search_dispatches_to_codegraph_explore(self):
+        """code_semantic_search routes to the CodeGraph CLI daemon's codegraph_explore
+        tool (NL question -> verbatim source), not the old Chroma-embedder tool name,
+        and drops the k arg (codegraph_explore is internally capped)."""
+        orch = self._make_orch()
+
+        r = self._make_tool_call_response(
+            "code_semantic_search", {"query": "where is auth handled?", "k": 8}
+        )
+
+        codegraph_mcp = AsyncMock()
+        mcp_result = MagicMock()
+        mcp_result.content = [MagicMock(text="def authenticate(): ...")]
+        codegraph_mcp.call_tool.return_value = mcp_result
+        orch.codegraph_mcp = codegraph_mcp
+
+        with patch(
+            "services.orchestrator.coding_orchestrator.litellm.acompletion",
+            new_callable=AsyncMock,
+            side_effect=[r],
+        ):
+            await orch.react_execute("where is auth handled?")
+
+        codegraph_mcp.call_tool.assert_awaited_once_with(
+            "codegraph_explore", {"question": "where is auth handled?"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_code_semantic_search_without_codegraph_mcp(self):
+        """code_semantic_search fails gracefully when no codegraph_mcp is attached
+        (e.g. the CodeGraph CLI wasn't found at startup)."""
+        orch = self._make_orch()
+        orch.codegraph_mcp = None
+
+        r = self._make_tool_call_response("code_semantic_search", {"query": "anything"})
+        r2 = MagicMock()
+        msg2 = MagicMock()
+        msg2.content = None
+        tc2 = MagicMock()
+        tc2.id = "call_2"
+        tc2.function.name = "finish"
+        tc2.function.arguments = json.dumps({"summary": "done"})
+        msg2.tool_calls = [tc2]
+        r2.choices = [MagicMock(message=msg2)]
+
+        with patch(
+            "services.orchestrator.coding_orchestrator.litellm.acompletion",
+            new_callable=AsyncMock,
+            side_effect=[r, r2],
+        ):
+            result = await orch.react_execute("search for something")
+            assert result["ok"] is True
+
+    @pytest.mark.asyncio
     async def test_react_execute_run_bash_without_mcp(self):
         """run_bash fails gracefully when no MCP."""
         orch = self._make_orch(mcp=None)

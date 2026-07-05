@@ -1326,8 +1326,8 @@ class AsyncOrchestrator:
                         if self.codegraph_mcp is not None:
                             try:
                                 obs = await self.codegraph_mcp.call_tool(
-                                    "code_semantic_search",
-                                    {"query": args.get("query", ""), "k": args.get("k", 8)},
+                                    "codegraph_explore",
+                                    {"question": args.get("query", "")},
                                 )
                                 content = ground_tool_result(
                                     "\n".join(c.text for c in obs.content if hasattr(c, "text")),
