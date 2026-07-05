@@ -274,6 +274,31 @@ A live A/B on RunPod (`eval/reports/ab_agentic_fix_loop_report.md`) drove a seco
 
 ---
 
+## ml-intern harness ports — G1–G9 (2026-07-05)
+
+Mined the `~/Work/ml-intern` harness for robustness patterns and ported the ones
+that fit Labmate (each TDD + opus-reviewed, one PR each). G2-style judgment
+applied: adapt to Labmate's seams, or flag already-covered / defer with a reason.
+
+| # | Pattern | Outcome | Where |
+|---|---|---|---|
+| G1 | Loop-detection **result-hash** — fold a hash of the tool result into the loop signature so legit polling (same name+args, changing result) isn't a false loop | **Ported** #71 | `loop_detection.py` (`result_hash`, `call_signature(...,result=)`); record/halt moved pre→post-exec in `_run_react_loop` |
+| G2 | Compaction hard-stop | **Adapted** #72 — ml-intern's compaction-loop stop is N/A (Labmate compaction is one-shot + tool results budgeted at ingest); built the residual gap: `ErrorClass.TERMINAL_CONTEXT` so a context-overflow 400 **finalizes** instead of retrying to exhaustion | `error_classifier.py` |
+| G3 | Truncated-output + malformed-args **recovery nudges** | **Ported** #73 — `finish_reason=="length"` drops the truncated tool_call + bounded `[RECOVERY]` nudge; malformed-JSON-args streak → nudge (no silent `{}`) | `coding_orchestrator.py` (`LABMATE_MAX_LENGTH_NUDGES=2`, `LABMATE_MALFORMED_ARGS_LIMIT=2`) |
+| G4 | No-tool **continuation guard** | **Ported** #74 — a text-only return (no tool_calls, no `finish`) now runs the same `needs_verification` gate as the finish branch, so editing-then-answering-in-prose can't bypass verification; spent-budget path reconciles the ok (parity) | `coding_orchestrator.py` |
+| G5 | Reasoning-effort probe-and-cache | **Adapted** #75 — Labmate has one param (`thinking_budget_tokens`) + one endpoint kind; on a 4xx naming the field unsupported, strip it, retry once, cache the base. Negative value-error guard so a value-rejection on a honoring build isn't stripped (rule #6 hang) | `model_client.py` (`LABMATE_THINKING_BUDGET_SELF_HEAL=1`) |
+| G6 | Parallel tool execution (`asyncio.gather` + cancel) | **Deferred** — `_run_react_loop` dispatches serially; the cancel-during-tool win is already covered (in-loop cancel check). For local Q4: model rarely emits parallel tool_calls, the dispatch block's per-tool accounting (loop-detect/grounding/`edited_files`/`tests_passed`) is serial, and parallel mutating tools are a write-ordering hazard. Read-only-subset parallelism is a future option **iff** live testing shows parallel tool calls |
+| G7 | Always-on **dangling-tool_call patch** | **Ported** #76 — `patch_dangling_tool_calls` stubs any assistant tool_call id with no answering result; wired always-on in `_maybe_repair` (independent of `ENABLE_MESSAGE_REPAIR`), so one dropped/cancelled tool can't 400 every later request | `message_repair.py` |
+| G8 | YAML+Jinja2 versioned system prompt | **Already-covered** — `PromptAssembler` already gives the static base prompt, LOCAL-EXECUTION block, workspace/cwd clause, tool-list assembly, and a byte-stable frozen prefix. The only deltas (Jinja2 file-versioning + a runtime date line) are things Labmate deliberately avoids — volatile content in the cached prefix busts the SWA prompt-cache (the `serve-model.sh` `--swa-full` fix, PR #31). Date-awareness, if ever needed, goes in the goal/user message, not the prefix |
+| G9 | REVIEW.md P0/P1/P2 judge spec | **Ported** — `docs/REVIEW.md` is the severity rubric for the review/judge step of the Implementation Workflow (Labmate honesty + prefix-cache + boundedness lenses added) |
+
+**Did NOT port** (deliberate, from the mining doc): the 300-iteration uncapped
+loop (Labmate's bounded iteration + wall-clock + no-progress breakers are
+stricter and correct for a local box) and ml-intern's remote HF-docs/GitHub-tree
+Whoosh search (HF-domain, not Labmate's local single-endpoint reality).
+
+---
+
 ## Live E2E Verification
 
 Run these after any change to confirm the stack still works. Start services in order:
