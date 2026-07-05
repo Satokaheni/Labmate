@@ -14,20 +14,20 @@ LocalSubprocessExecutor: fallback for hosts without Docker
   - runs in temp working directory
   - WARNING: unsandboxed mode, emitted to stderr on construction
 """
-import sys
-import time
+
 import logging
-import subprocess
-import tempfile
-import resource
 import os
+import resource
 import signal
+import subprocess
+import sys
+import tempfile
+import time
 
 import docker
+import sandbox_config as cfg
 from docker.errors import NotFound
 from pydantic import BaseModel
-
-import sandbox_config as cfg
 
 # Logger wired to stderr — stdout is reserved for JSON-RPC.
 logging.basicConfig(stream=sys.stderr, level=logging.INFO)
@@ -41,7 +41,7 @@ class ExecutionResult(BaseModel):
     duration_ms: int
     timed_out: bool = False
     backend: str = "docker"  # "docker" or "local"
-    sandboxed: bool = True   # True for docker, False for local
+    sandboxed: bool = True  # True for docker, False for local
 
 
 class TestResult(BaseModel):
@@ -52,7 +52,7 @@ class TestResult(BaseModel):
     output: str
     timed_out: bool = False
     backend: str = "docker"  # "docker" or "local"
-    sandboxed: bool = True   # True for docker, False for local
+    sandboxed: bool = True  # True for docker, False for local
 
 
 class DockerExecutor:
@@ -90,9 +90,7 @@ class DockerExecutor:
         container = None
         timed_out = False
         try:
-            container = self.client.containers.create(
-                **self._create_kwargs(cmd, network_disabled)
-            )
+            container = self.client.containers.create(**self._create_kwargs(cmd, network_disabled))
             container.start()
             try:
                 result = container.wait(timeout=timeout)
@@ -128,7 +126,7 @@ class DockerExecutor:
         )
 
     def run_python(
-        self, code: str, timeout: int = cfg.DEFAULT_TIMEOUT, packages: list[str] = []
+        self, code: str, timeout: int = cfg.DEFAULT_TIMEOUT, packages: list[str] | None = None
     ) -> ExecutionResult:
         # Pass code via -c to avoid writing files to the read-only rootfs.
         script = code
@@ -159,7 +157,9 @@ class DockerExecutor:
         if expr:
             cmd += ["-k", expr]
         exec_result = self._run_in_container(cmd, "", timeout)
-        passed, failed, errors, no_tests_ran = _parse_pytest(exec_result.stdout + exec_result.stderr)
+        passed, failed, errors, no_tests_ran = _parse_pytest(
+            exec_result.stdout + exec_result.stderr
+        )
         # If pytest found no tests or the path was invalid, count it as an error.
         if no_tests_ran and passed == 0 and failed == 0 and errors == 0:
             errors = 1
@@ -208,21 +208,11 @@ class LocalSubprocessExecutor:
 
     def __init__(self):
         """Initialize and emit loud warning to stderr that sandbox is disabled."""
-        logger.warning(
-            "=" * 80
-        )
-        logger.warning(
-            "CODE-SANDBOX: LOCAL, UNSANDBOXED MODE"
-        )
-        logger.warning(
-            "No isolation (filesystem/network/PID). Resource limits via RLIMIT only."
-        )
-        logger.warning(
-            "For TRUSTED code only. Use Docker backend in production."
-        )
-        logger.warning(
-            "=" * 80
-        )
+        logger.warning("=" * 80)
+        logger.warning("CODE-SANDBOX: LOCAL, UNSANDBOXED MODE")
+        logger.warning("No isolation (filesystem/network/PID). Resource limits via RLIMIT only.")
+        logger.warning("For TRUSTED code only. Use Docker backend in production.")
+        logger.warning("=" * 80)
 
     def _make_preexec_fn(self, timeout: int):
         """Create a preexec function that sets resource limits.
@@ -233,6 +223,7 @@ class LocalSubprocessExecutor:
         Args:
             timeout: wall-clock timeout in seconds; used to set RLIMIT_CPU.
         """
+
         def preexec_fn():
             # Parse MEM_LIMIT (e.g. "512m") to bytes. Be generous — RLIMIT_AS too low breaks imports.
             mem_str = cfg.MEM_LIMIT.lower().strip()
@@ -249,29 +240,38 @@ class LocalSubprocessExecutor:
             # This is a heuristic to avoid breaking imports while still capping runaway memory.
             mem_limit = int(mem_bytes * 1.5)
 
-            # RLIMIT_AS: virtual memory limit (stack + heap + shared). Too low breaks stdlib.
-            resource.setrlimit(resource.RLIMIT_AS, (mem_limit, mem_limit))
+            # Resource limits are BEST-EFFORT hardening, NOT the containment mechanism.
+            # The real, cross-platform containment is start_new_session (a fresh process
+            # group) + os.killpg() on the wall-clock timeout — see _run_process. Several
+            # RLIMITs are Linux-only or reject values on other OSes (notably RLIMIT_AS,
+            # which raises "current limit exceeds maximum limit" on macOS), so each is
+            # applied INDEPENDENTLY and any failure is swallowed. Aborting the whole
+            # preexec (the previous behavior) made the local executor unusable off Linux
+            # ("Exception occurred in preexec_fn"); the references (hermes) likewise
+            # platform-gate and rely on the process group + timeout, not on rlimits.
+            def _try_setrlimit(which, soft_hard):
+                if which is None:
+                    return  # this RLIMIT_* constant doesn't exist on this platform
+                try:
+                    resource.setrlimit(which, soft_hard)
+                except (ValueError, OSError, AttributeError, TypeError):
+                    pass  # unsupported on this OS / value rejected — degrade, don't abort
 
-            # RLIMIT_NPROC: per-UID process count. On busy hosts, the system-wide UID thread count
-            # can exceed naive static limits (e.g., 128), causing "Cannot fork" errors. We drop
-            # this limit entirely and rely on RLIMIT_CPU + timeout + killpg for containment.
-            # NOTE on containment scope: RLIMIT_CPU is PER-PROCESS, not per-tree — each child
-            # inherits its own CPU ceiling, so a forked child gets its own SIGXCPU/SIGKILL when it
-            # individually exceeds the limit (the limit is not summed across the tree). True
-            # whole-tree teardown comes from launching in a new session (start_new_session) and
-            # os.killpg() on the wall-clock timeout, which reap escaped children/grandchildren.
-            # Reference: RLIMIT_NPROC counts per real-UID threads system-wide, not per-process-tree.
-            # Omitting it here avoids spurious fork failures on multi-tenant or busy hosts.
+            # RLIMIT_AS: virtual memory (Linux enforces it; macOS rejects the value).
+            _try_setrlimit(getattr(resource, "RLIMIT_AS", None), (mem_limit, mem_limit))
 
-            # RLIMIT_FSIZE: file size (64 MB cap on output files).
+            # RLIMIT_NPROC: per-UID process count. Deliberately NOT set — on busy hosts the
+            # system-wide UID thread count can exceed a static cap, causing "Cannot fork".
+            # Containment comes from RLIMIT_CPU + timeout + killpg (new session) instead.
+
+            # RLIMIT_FSIZE: file size (64 MB cap on output files) — works cross-platform.
             fsize_limit = 64 * 1024 * 1024
-            resource.setrlimit(resource.RLIMIT_FSIZE, (fsize_limit, fsize_limit))
+            _try_setrlimit(getattr(resource, "RLIMIT_FSIZE", None), (fsize_limit, fsize_limit))
 
-            # RLIMIT_CPU: CPU time hard limit. Set to timeout + 1 second to give the process
-            # a chance to clean up before the kernel SIGKILL. Combined with process-group
-            # reaping on subprocess.TimeoutExpired, this prevents forked children from escaping.
+            # RLIMIT_CPU: CPU-time hard limit (timeout + 1s of grace). Combined with
+            # process-group reaping on TimeoutExpired, keeps forked children from escaping.
             cpu_limit = timeout + 1
-            resource.setrlimit(resource.RLIMIT_CPU, (cpu_limit, cpu_limit))
+            _try_setrlimit(getattr(resource, "RLIMIT_CPU", None), (cpu_limit, cpu_limit))
 
         return preexec_fn
 
@@ -356,7 +356,7 @@ class LocalSubprocessExecutor:
         )
 
     def run_python(
-        self, code: str, timeout: int = cfg.DEFAULT_TIMEOUT, packages: list[str] = []
+        self, code: str, timeout: int = cfg.DEFAULT_TIMEOUT, packages: list[str] | None = None
     ) -> ExecutionResult:
         """Execute Python code in a subprocess with resource limits.
 
@@ -386,8 +386,7 @@ class LocalSubprocessExecutor:
                     "import subprocess,sys,os\n"
                     f"target_dir = {target_dir!r}\n"
                     f"subprocess.run([sys.executable,'-m','pip','install','--target',target_dir,'--quiet',*{packages!r}],check=True)\n"
-                    f"sys.path.insert(0, target_dir)\n"
-                    + code
+                    f"sys.path.insert(0, target_dir)\n" + code
                 )
 
             return self._run_process(
