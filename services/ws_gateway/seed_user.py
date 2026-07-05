@@ -21,28 +21,35 @@ from services.ws_gateway.user_store import SqliteUserStore
 
 async def _run(args: argparse.Namespace) -> int:
     store = get_local_store()
-    us = SqliteUserStore(store)
-    ph = PasswordHasher()
-    pw_hash = ph.hash(args.password)
-    existing = await us.find_by_email(args.email)
-    if existing is not None:
-        if not args.reset_password:
-            print(
-                f"user {args.email!r} already exists — pass --reset-password to update the password",
-                file=sys.stderr,
-            )
-            return 1
-        await store.auth_user_set_password(args.email, pw_hash)
-        print(f"password reset for {args.email}")
+    # Always close the store before returning: aiosqlite keeps a background
+    # connection thread alive, so a headless one-shot CLI that never closes it
+    # hangs on process exit waiting for that thread. (Unit tests don't observe
+    # this because the pytest process keeps running.)
+    try:
+        us = SqliteUserStore(store)
+        ph = PasswordHasher()
+        pw_hash = ph.hash(args.password)
+        existing = await us.find_by_email(args.email)
+        if existing is not None:
+            if not args.reset_password:
+                print(
+                    f"user {args.email!r} already exists — pass --reset-password to update the password",
+                    file=sys.stderr,
+                )
+                return 1
+            await store.auth_user_set_password(args.email, pw_hash)
+            print(f"password reset for {args.email}")
+            return 0
+        doc = await us.create(
+            email=args.email,
+            display_name=args.display_name or "",
+            password_hash=pw_hash,
+            role=args.role,
+        )
+        print(f"created {args.role} user {doc['email']} (id {doc['id']})")
         return 0
-    doc = await us.create(
-        email=args.email,
-        display_name=args.display_name or "",
-        password_hash=pw_hash,
-        role=args.role,
-    )
-    print(f"created {args.role} user {doc['email']} (id {doc['id']})")
-    return 0
+    finally:
+        await store.close()
 
 
 def main(argv: list[str] | None = None) -> int:
