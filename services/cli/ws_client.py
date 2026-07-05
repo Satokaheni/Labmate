@@ -169,6 +169,21 @@ class LabmateWSClient:
         resp = await _http_post_json(f"{base}/auth/login", {"email": email, "password": password})
         return resp["token"]
 
+    @classmethod
+    async def local_login(cls, ws_url: str) -> str | None:
+        """Passwordless auto-auth for a single-user local harness (POST /auth/local).
+
+        Returns a token when the gateway is in single-user mode, else None (the
+        endpoint 404s on a multi-user gateway, or any transport error) so the
+        caller falls back to credential login.
+        """
+        base = _ws_to_http(ws_url)
+        try:
+            resp = await _http_post_json(f"{base}/auth/local", {})
+        except Exception:
+            return None
+        return resp.get("token") if isinstance(resp, dict) else None
+
     async def connect(self) -> None:
         self._ws = await websockets.connect(self._ws_url)
         await self._ws.send(json.dumps({"type": "auth", "token": self._token}))

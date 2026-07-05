@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Literal
 
 import jwt
 from argon2 import PasswordHasher
@@ -86,7 +86,7 @@ class AuthService:
             role=role,
         )
 
-    def mint_token(self, user: dict, now: Optional[float] = None, ttl: Optional[int] = None) -> str:
+    def mint_token(self, user: dict, now: float | None = None, ttl: int | None = None) -> str:
         issued = now if now is not None else time.time()
         expiry = ttl if ttl is not None else self._cfg.jwt_expiry_seconds
         payload = {
@@ -104,6 +104,24 @@ class AuthService:
         except jwt.PyJWTError:
             return None
 
+    def single_user_enabled(self) -> bool:
+        """True when this harness runs in single-user-per-harness mode (default)."""
+        return bool(getattr(self._cfg, "single_user", False))
+
+    async def local_token(self) -> str:
+        """Mint a token for the seeded admin WITHOUT credentials (single-user mode).
+
+        For the single-user-per-harness deployment the admin IS the only user and
+        the harness is loopback, so a password round-trip is pure friction. Raises
+        404 when single-user mode is off or the admin account isn't seeded yet.
+        """
+        if not self.single_user_enabled():
+            raise HTTPException(status_code=404, detail="single_user_disabled")
+        user = await self._store.find_by_email(self._cfg.admin_email)
+        if user is None:
+            raise HTTPException(status_code=404, detail="no_single_user")
+        return self.mint_token(user)
+
     def _record_failure(self, email: str) -> None:
         a = self._attempts.setdefault(email, _Attempts())
         a.count += 1
@@ -120,7 +138,26 @@ def build_auth_router(service: AuthService) -> APIRouter:
         claims = service.verify_token(token)
         return {
             "token": token,
-            "user": {"id": claims["sub"], "email": claims["email"], "role": claims.get("role", "user")},
+            "user": {
+                "id": claims["sub"],
+                "email": claims["email"],
+                "role": claims.get("role", "user"),
+            },
+        }
+
+    @router.post("/auth/local")
+    async def local_login() -> dict:
+        """Passwordless auto-auth for the single-user local harness. 404s on a
+        multi-user gateway (single-user mode off), so clients fall back to login."""
+        token = await service.local_token()
+        claims = service.verify_token(token)
+        return {
+            "token": token,
+            "user": {
+                "id": claims["sub"],
+                "email": claims["email"],
+                "role": claims.get("role", "user"),
+            },
         }
 
     @router.post("/auth/logout")
