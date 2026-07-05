@@ -14,7 +14,6 @@ def cfg():
         admin_password="correct-horse",
         jwt_expiry_seconds=3600,
         cors_origins=("http://localhost:5173",),
-        mongo_url="mongodb://localhost:27017",
     )
 
 

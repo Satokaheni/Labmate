@@ -20,7 +20,6 @@ def test_default_stores_are_sqlite(monkeypatch, tmp_path):
         admin_password="pw",
         jwt_expiry_seconds=3600,
         cors_origins=(),
-        mongo_url="",
     )
     assert isinstance(srv._default_session_store(cfg), SqliteSessionStore)
 

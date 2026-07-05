@@ -13,7 +13,6 @@ async def client(runtime, seeded_store):
         admin_password="pw",
         jwt_expiry_seconds=3600,
         cors_origins=(),
-        mongo_url="mongodb://localhost:27017",
     )
 
     async def ready(**_):
