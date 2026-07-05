@@ -139,6 +139,26 @@ enables Gemma 4 tool calling. Served model name (`--alias`) = `gemma-4`.
 > viable again and is preferred for continuous batching / multi-user throughput.
 > Swap `serve-model.sh` back to a vLLM serve command in that case.
 
+### 5. SearXNG (web-search skill) — Docker on macOS, native on Linux
+
+The `web-search` skill queries a local SearXNG instance's JSON API
+(`GET /search?format=json`). It has two install runtimes, chosen by
+`SEARXNG_MODE` (default `auto`):
+
+| OS | `auto` picks | Why |
+|---|---|---|
+| **macOS** | **docker** — official `searxng/searxng` image | The native path is an `apt` + source build that doesn't apply on macOS. If Docker is missing, `install.sh` installs a **headless** runtime via Homebrew (`colima` + the `docker` CLI — no Docker Desktop GUI/license) and `colima start`s it. A pre-existing Docker Desktop is used as-is. |
+| **Linux** | **native** — clone + venv + build | The original RunPod path; unchanged. |
+
+Override with `install.sh --searxng-docker` / `--searxng-native`. `start.sh` reads
+the recorded mode (`$SEARXNG_DIR/.mode`) and, in docker mode, runs the container
+`labmate-searxng` published on `127.0.0.1:${SEARXNG_PORT:-8080}` with the generated
+`settings.yml` mounted (JSON output on, abuse-limiter off — no valkey/redis needed);
+`stop.sh` stops the container. Either runtime is **non-fatal**: if it can't come up
+the rest of the harness still starts and only `web-search` is unavailable. Skip it
+entirely with `--no-searxng`. (Windows/WSL support is deferred until after live
+testing — the `auto` docker default already covers it, but it is untested.)
+
 ---
 
 ## Ports (this pod)

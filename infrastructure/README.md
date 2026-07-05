@@ -24,11 +24,24 @@ the inference server.
 
 ## Layout
 
+A single flat folder — the legacy `docker/` (Compose) and `local/` split was
+consolidated away.
+
 ```
 infrastructure/
-  docker/   ← legacy Docker Compose stack (superseded; kept for reference only)
-  local/    ← this folder: the live stack — install/start/stop/serve-model
+  install.sh       ← one-time setup (system + python + llama.cpp + GGUF; --server-only for the GPU box)
+  serve-model.sh   ← launch llama-server (Gemma 4) on :8000
+  start.sh         ← launch services.local.main (+ SearXNG for the web-search skill)
+  stop.sh          ← stop the harness (and SearXNG); --all also stops the model
+  status.sh        ← health of model + gateway + SearXNG
+  local.env        ← LOCAL_HOST / LOCAL_PORT / GEMMA_BASE / SEARXNG_* / admin creds
+  INSTALL.md       ← full from-scratch guide + the llama.cpp-vs-vLLM gotcha
 ```
+
+> **A note on the "no-Docker" title:** the harness *process* (`services.local.main`)
+> is always native — the RunPod pod cannot containerize it (below). The one thing
+> that may use Docker is the **optional SearXNG dependency**, and only on hosts that
+> can run it (macOS default) — see [`INSTALL.md` §5](./INSTALL.md).
 
 ## Usage
 

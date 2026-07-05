@@ -57,8 +57,15 @@ _stop_pid() {
 # ─── Local harness (single process: gateway + orchestrator) ───────────────────
 _stop_pid "services.local.main" "$PIDS/local.pid"
 
-# ─── SearXNG (native metasearch) ──────────────────────────────────────────────
+# ─── SearXNG (native process and/or docker container) ─────────────────────────
 _stop_pid "searx.webapp" "$PIDS/searxng.pid"
+# Docker runtime: stop the container if present (harmless no-op when native/absent).
+SEARXNG_CONTAINER="${SEARXNG_CONTAINER:-labmate-searxng}"
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 \
+   && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$SEARXNG_CONTAINER"; then
+  info "stopping SearXNG container '${SEARXNG_CONTAINER}' ..."
+  docker stop "$SEARXNG_CONTAINER" >/dev/null 2>&1 || true
+fi
 
 # ─── Model server (Gemma 4 via llama.cpp) — only with --all/--model ───────────
 if $STOP_MODEL; then

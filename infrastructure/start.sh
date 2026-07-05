@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # start.sh — Start the Labmate local harness NATIVELY on the host (no Docker).
 #
-# Why this exists: this pod cannot run any container engine (no NET_ADMIN, and
-# the unshare/clone namespace syscalls are blocked by seccomp). Docker/Podman
-# both fail at network/namespace creation. So the harness runs as an ordinary
-# host process here. The harness is local-only — there is no Docker path.
+# Why this exists: on the RunPod pod the harness cannot run in a container (no
+# NET_ADMIN; unshare/clone namespace syscalls are blocked by seccomp), so the
+# harness PROCESS (services.local.main) always runs as an ordinary host process.
+# The ONLY thing that may use a container is the optional SearXNG dependency, and
+# only on hosts that can (macOS default) — see the SearXNG section below.
 #
 # Runtime: a SINGLE co-located process (services.local.main — gateway +
 # orchestrator, one asyncio loop) backed by local SQLite state. There is no
@@ -39,37 +40,69 @@ if [[ "${1:-}" == "--status" ]]; then exec "${SCRIPT_DIR}/status.sh"; fi
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/local.env"
 
-# ─── SearXNG (native metasearch for the web-search skill) ─────────────────────
-# Internal instance with JSON output enabled. Non-fatal: if SearXNG isn't installed
-# or won't start, the rest of the stack still comes up (web-search is just unavailable).
+# ─── SearXNG (metasearch for the web-search skill) ────────────────────────────
+# Runtime is whatever install.sh recorded in ${SEARXNG_DIR}/.mode (docker | native;
+# default native for pre-existing installs). Non-fatal: if SearXNG isn't installed
+# or won't start, the rest of the stack still comes up (web-search just unavailable).
 SEARXNG_DIR="${SEARXNG_DIR:-/workspace/searxng}"
 SEARXNG_SRC="${SEARXNG_DIR}/searxng-src"
 SEARXNG_VENV="${SEARXNG_DIR}/searx-pyenv"
 SEARXNG_SETTINGS="${SEARXNG_DIR}/settings.yml"
 SEARXNG_PORT="${SEARXNG_PORT:-8080}"
+SEARXNG_IMAGE="${SEARXNG_IMAGE:-searxng/searxng}"
+SEARXNG_CONTAINER="${SEARXNG_CONTAINER:-labmate-searxng}"
+SEARXNG_MODE="$(cat "${SEARXNG_DIR}/.mode" 2>/dev/null || echo native)"
 searxng_alive() { curl -fsS "http://127.0.0.1:${SEARXNG_PORT}/search?q=ping&format=json" >/dev/null 2>&1; }
-if [[ ! -x "${SEARXNG_VENV}/bin/python" || ! -d "${SEARXNG_SRC}/searx" ]]; then
-  info "SearXNG not installed (run install.sh) — skipping; web-search skill will be unavailable"
-elif searxng_alive; then
-  info "searxng already running on :${SEARXNG_PORT}"
+
+if [[ "$SEARXNG_MODE" == "docker" ]]; then
+  # Bring up the daemon if the CLI is installed but idle (e.g. colima not started).
+  if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+    command -v colima >/dev/null 2>&1 && colima start >/dev/null 2>&1 || true
+  fi
+  if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+    info "SearXNG (docker): Docker daemon unavailable — skipping (start Docker Desktop / 'colima start'); web-search unavailable"
+  elif searxng_alive; then
+    info "searxng already running on :${SEARXNG_PORT}"
+  else
+    info "starting SearXNG container '${SEARXNG_CONTAINER}' on :${SEARXNG_PORT} ..."
+    if docker ps -a --format '{{.Names}}' | grep -qx "$SEARXNG_CONTAINER"; then
+      docker start "$SEARXNG_CONTAINER" >/dev/null 2>&1 \
+        || info "WARN: 'docker start ${SEARXNG_CONTAINER}' failed — see 'docker logs ${SEARXNG_CONTAINER}'"
+    else
+      # MSYS_NO_PATHCONV stops Git-Bash from mangling the container-side mount path.
+      MSYS_NO_PATHCONV=1 docker run -d --name "$SEARXNG_CONTAINER" --restart unless-stopped \
+        -p "127.0.0.1:${SEARXNG_PORT}:8080" \
+        -v "${SEARXNG_SETTINGS}:/etc/searxng/settings.yml:ro" \
+        "$SEARXNG_IMAGE" >/dev/null 2>&1 \
+        || info "WARN: 'docker run ${SEARXNG_IMAGE}' failed — web-search unavailable (check 'docker logs ${SEARXNG_CONTAINER}')"
+    fi
+    for _ in $(seq 1 30); do searxng_alive && break; sleep 1; done
+  fi
 else
-  info "starting SearXNG on :${SEARXNG_PORT} ..."
-  (
-    cd "$SEARXNG_SRC"
-    SEARXNG_SETTINGS_PATH="$SEARXNG_SETTINGS" \
-      nohup "${SEARXNG_VENV}/bin/python" -m searx.webapp >"$LOGS/searxng.log" 2>&1 &
-    echo $! >"$PIDS/searxng.pid"
-  )
-  for i in $(seq 1 30); do
-    searxng_alive && break
-    kill -0 "$(cat "$PIDS/searxng.pid" 2>/dev/null)" 2>/dev/null || { info "WARN: SearXNG exited — see $LOGS/searxng.log"; break; }
-    sleep 1
-  done
+  # native (Linux/apt) path — unchanged.
+  if [[ ! -x "${SEARXNG_VENV}/bin/python" || ! -d "${SEARXNG_SRC}/searx" ]]; then
+    info "SearXNG not installed (run install.sh) — skipping; web-search skill will be unavailable"
+  elif searxng_alive; then
+    info "searxng already running on :${SEARXNG_PORT}"
+  else
+    info "starting SearXNG on :${SEARXNG_PORT} ..."
+    (
+      cd "$SEARXNG_SRC"
+      SEARXNG_SETTINGS_PATH="$SEARXNG_SETTINGS" \
+        nohup "${SEARXNG_VENV}/bin/python" -m searx.webapp >"$LOGS/searxng.log" 2>&1 &
+      echo $! >"$PIDS/searxng.pid"
+    )
+    for _ in $(seq 1 30); do
+      searxng_alive && break
+      kill -0 "$(cat "$PIDS/searxng.pid" 2>/dev/null)" 2>/dev/null || { info "WARN: SearXNG exited — see $LOGS/searxng.log"; break; }
+      sleep 1
+    done
+  fi
 fi
 if searxng_alive; then
   pass "SearXNG ready :${SEARXNG_PORT}  (web-search skill -> SEARXNG_URL=http://localhost:${SEARXNG_PORT})"
 else
-  info "WARN: SearXNG not responding on :${SEARXNG_PORT} — web-search skill will be unavailable (see $LOGS/searxng.log)"
+  info "WARN: SearXNG not responding on :${SEARXNG_PORT} — web-search skill will be unavailable"
 fi
 
 # ─── MCP bridge (TypeScript) — build only; the orchestrator spawns it as a child ─

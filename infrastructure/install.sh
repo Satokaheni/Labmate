@@ -23,10 +23,16 @@
 #   vLLM becomes viable again (preferred for batching) — see INSTALL.md.
 #
 # Usage:
-#   infrastructure/install.sh               # everything (core + skills + model)
-#   infrastructure/install.sh --no-model    # skip the 18GB GGUF download
-#   infrastructure/install.sh --no-skills   # skip per-skill deps (core only)
-#   infrastructure/install.sh --server-only # RunPod/GPU box: ONLY the model server
+#   infrastructure/install.sh                 # everything (core + skills + model)
+#   infrastructure/install.sh --no-model      # skip the 18GB GGUF download
+#   infrastructure/install.sh --no-skills     # skip per-skill deps (core only)
+#   infrastructure/install.sh --server-only   # RunPod/GPU box: ONLY the model server
+#   infrastructure/install.sh --searxng-docker  # force the official searxng/searxng image
+#   infrastructure/install.sh --searxng-native  # force the native (Linux/apt) build
+#
+# SearXNG runtime defaults by OS (SEARXNG_MODE=auto): macOS -> docker (the native
+# apt build does not apply there; Docker is auto-installed via Homebrew colima if
+# absent), Linux -> native (unchanged RunPod path). Override with the flags above.
 #
 # --server-only installs JUST the inference engine (llama.cpp CUDA build + GGUF)
 # — nothing else. On the split topology the GPU box runs ONLY llama-server (:8000);
@@ -65,9 +71,16 @@ GGUF_FILE="${GGUF_FILE:-gemma-4-12b-it-UD-Q4_K_XL.gguf}"
 TOKENIZER_REPO="${TOKENIZER_REPO:-google/gemma-4-31B-it}"
 TOKENIZER_DIR="${TOKENIZER_DIR:-/workspace/models/gemma-4-gguf/tokenizer}"
 
-# SearXNG (native metasearch for the web-search skill).
+# SearXNG (metasearch for the web-search skill). Two runtimes:
+#   native — clone + venv + build (Linux/apt only; the original RunPod path).
+#   docker — the official searxng/searxng image (cross-platform; the only path
+#            that works on macOS, where the native apt build does not apply).
+# Mode is resolved below from --searxng-docker/--searxng-native or, in `auto`,
+# from the OS: macOS -> docker, Linux -> native (RunPod behavior unchanged).
 SEARXNG_DIR="${SEARXNG_DIR:-/workspace/searxng}"
 SEARXNG_PORT="${SEARXNG_PORT:-8080}"
+SEARXNG_MODE="${SEARXNG_MODE:-auto}"       # auto | docker | native
+SEARXNG_IMAGE="${SEARXNG_IMAGE:-searxng/searxng}"
 
 SKIP_MODEL=false
 SKIP_SKILLS=false
@@ -75,12 +88,30 @@ SKIP_SEARXNG=false
 SERVER_ONLY=false
 for arg in "$@"; do
   case "$arg" in
-    --no-model)    SKIP_MODEL=true ;;
-    --no-skills)   SKIP_SKILLS=true ;;
-    --no-searxng)  SKIP_SEARXNG=true ;;
-    --server-only) SERVER_ONLY=true ;;
+    --no-model)       SKIP_MODEL=true ;;
+    --no-skills)      SKIP_SKILLS=true ;;
+    --no-searxng)     SKIP_SEARXNG=true ;;
+    --server-only)    SERVER_ONLY=true ;;
+    --searxng-docker) SEARXNG_MODE=docker ;;
+    --searxng-native) SEARXNG_MODE=native ;;
   esac
 done
+
+# ─── Platform detection ───────────────────────────────────────────────────────
+case "$(uname -s)" in
+  Darwin) PLATFORM=mac ;;
+  Linux)  PLATFORM=linux ;;
+  *)      PLATFORM=other ;;
+esac
+
+# Resolve SEARXNG_MODE=auto → docker on macOS (no native apt path), native on
+# Linux (unchanged RunPod behavior). `other` (e.g. Git-Bash/WSL) → docker.
+if [[ "$SEARXNG_MODE" == "auto" ]]; then
+  case "$PLATFORM" in
+    mac|other) SEARXNG_MODE=docker ;;
+    linux)     SEARXNG_MODE=native ;;
+  esac
+fi
 
 # --server-only ⇒ only the inference engine. Force-skip the client-only sections
 # that have their own skip flags; the remaining client-only sections (§1 node/rg,
@@ -93,6 +124,49 @@ fi
 
 log()  { echo "[install] $*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# ensure_docker — make a usable Docker daemon available, auto-installing where it
+# is SAFE and non-invasive (Q2 policy), else guiding. Returns 0 if `docker info`
+# works afterward, 1 otherwise (caller degrades gracefully — web-search off).
+#   macOS: if docker is missing, install colima + the docker CLI via Homebrew (a
+#          headless VM runtime — no GUI, no license prompt) and `colima start`.
+#          A pre-existing Docker Desktop is used as-is; we never install it.
+#   Linux: use the official get.docker.com convenience script (root/sudo).
+#   other (Git-Bash/WSL): detect only — point at Docker Desktop + WSL2.
+ensure_docker() {
+  if have docker && docker info >/dev/null 2>&1; then return 0; fi
+  # docker CLI present but daemon down → try to bring up colima (mac), else guide.
+  if have docker && ! docker info >/dev/null 2>&1; then
+    if have colima; then log "docker CLI present, daemon down — 'colima start' ..."; colima start >/dev/null 2>&1 || true; fi
+    docker info >/dev/null 2>&1 && return 0
+    log "  WARN: docker installed but daemon unreachable — start Docker Desktop (or 'colima start') and re-run."
+    return 1
+  fi
+  # docker missing entirely.
+  case "$PLATFORM" in
+    mac)
+      if have brew; then
+        log "docker not found — installing colima + docker CLI via Homebrew (headless, no GUI) ..."
+        brew install colima docker >/dev/null 2>&1 || { log "  WARN: 'brew install colima docker' failed — install Docker Desktop manually."; return 1; }
+        log "starting colima VM (first start pulls a small Linux image) ..."
+        colima start >/dev/null 2>&1 || { log "  WARN: 'colima start' failed — run it manually, then re-run install."; return 1; }
+        docker info >/dev/null 2>&1 && { log "docker ready via colima."; return 0; }
+        log "  WARN: docker still not reachable after colima start."; return 1
+      fi
+      log "  Docker not found and Homebrew missing. Install Homebrew (https://brew.sh) then re-run,"
+      log "  or install Docker Desktop (https://docker.com/products/docker-desktop) and re-run."
+      return 1 ;;
+    linux)
+      log "docker not found — installing via get.docker.com convenience script ..."
+      curl -fsSL https://get.docker.com | sh >/dev/null 2>&1 || { log "  WARN: Docker convenience-script install failed — install Docker manually."; return 1; }
+      docker info >/dev/null 2>&1 && return 0
+      log "  WARN: docker installed but daemon not running — 'sudo systemctl start docker' then re-run."
+      return 1 ;;
+    *)
+      log "  Docker not found. On Windows, install Docker Desktop + enable WSL2, then run this inside WSL."
+      return 1 ;;
+  esac
+}
 
 # ─── 0. Detect GPU / CUDA ─────────────────────────────────────────────────────
 if have nvidia-smi; then
@@ -261,18 +335,70 @@ else
     || log "  WARN: tokenizer download failed — ast-repo-map falls back to the HF id, then a char estimate"
 fi
 
-# ─── 5. SearXNG (native metasearch for the web-search skill) ──────────────────
-# The web-search skill calls a SearXNG instance's JSON API (GET /search?format=json).
-# We run SearXNG NATIVELY here (this pod cannot run Docker — see the WHY note above).
-# The public-abuse limiter is DISABLED (this is an internal, single-agent instance),
-# so SearXNG needs no valkey/redis backend. JSON output is enabled (required by the skill).
+# ─── 5. SearXNG (metasearch for the web-search skill) ─────────────────────────
+# The web-search skill calls SearXNG's JSON API (GET /search?format=json). It runs
+# as an internal, single-agent instance with the abuse limiter DISABLED (no
+# valkey/redis needed) and JSON output enabled. Runtime is $SEARXNG_MODE:
+#   docker — the official ${SEARXNG_IMAGE} image (macOS default; cross-platform).
+#   native — clone + venv + build (Linux/apt only; the original RunPod path).
+# start.sh launches whichever mode was installed (recorded in ${SEARXNG_DIR}/.mode).
 # Pass --no-searxng to skip this section.
+SEARXNG_SETTINGS="${SEARXNG_DIR}/settings.yml"
+SEARXNG_MODE_FILE="${SEARXNG_DIR}/.mode"
+
+# write_searxng_settings <bind_address> <port> — emit the shared settings.yml.
+# Native binds host loopback (127.0.0.1) on the host SEARXNG_PORT. The docker image
+# always listens on 8080 INSIDE the container (start.sh maps host:SEARXNG_PORT ->
+# container:8080), so docker passes bind 0.0.0.0 + port 8080 regardless of the host
+# port — decoupling the host port from the container port.
+write_searxng_settings() {
+  local bind="$1" port="$2" secret
+  secret="$(openssl rand -hex 32 2>/dev/null || echo labmate-dev-secret)"
+  mkdir -p "$SEARXNG_DIR"
+  cat > "$SEARXNG_SETTINGS" <<YAML
+# Labmate SearXNG settings — internal instance for the web-search skill.
+# JSON output is REQUIRED by the skill (GET /search?format=json). The limiter is
+# disabled because this instance is private, so no valkey/redis backend is needed.
+use_default_settings: true
+general:
+  debug: false
+  instance_name: "labmate-searxng"
+search:
+  safe_search: 0
+  autocomplete: "duckduckgo"
+  formats:
+    - html
+    - json
+server:
+  bind_address: "${bind}"
+  port: ${port}
+  secret_key: "${secret}"
+  limiter: false
+  image_proxy: false
+YAML
+}
+
 if $SKIP_SEARXNG; then
   log "skipping SearXNG (--no-searxng)."
+elif [[ "$SEARXNG_MODE" == "docker" ]]; then
+  log "SearXNG runtime: docker (${SEARXNG_IMAGE})"
+  if ensure_docker; then
+    log "pulling ${SEARXNG_IMAGE} ..."
+    if docker pull "$SEARXNG_IMAGE" >/dev/null 2>&1; then
+      [[ -f "$SEARXNG_SETTINGS" ]] && log "SearXNG settings already present: ${SEARXNG_SETTINGS}" \
+        || { log "writing SearXNG settings: ${SEARXNG_SETTINGS}"; write_searxng_settings "0.0.0.0" "8080"; }
+      echo docker > "$SEARXNG_MODE_FILE"
+      log "SearXNG (docker) ready — start.sh will 'docker run' it on :${SEARXNG_PORT}."
+    else
+      log "  WARN: 'docker pull ${SEARXNG_IMAGE}' failed — web-search skill will be unavailable."
+    fi
+  else
+    log "  WARN: Docker unavailable — skipping SearXNG (web-search skill will be unavailable; see guidance above)."
+  fi
 else
+  # native (Linux/apt) — the original RunPod path.
   SEARXNG_SRC="${SEARXNG_DIR}/searxng-src"
   SEARXNG_VENV="${SEARXNG_DIR}/searx-pyenv"
-  SEARXNG_SETTINGS="${SEARXNG_DIR}/settings.yml"
   if [[ -x "${SEARXNG_VENV}/bin/python" && -d "${SEARXNG_SRC}/searx" ]]; then
     log "SearXNG already installed: ${SEARXNG_SRC}"
   else
@@ -291,34 +417,9 @@ else
       log "  WARN: SearXNG pip install FAILED — see .data/logs/searxng-build.log (web-search skill will be unavailable)"
     fi
   fi
-  # Settings: enable JSON format (required by the skill); disable the limiter (internal use).
-  if [[ ! -f "$SEARXNG_SETTINGS" ]]; then
-    log "writing SearXNG settings: ${SEARXNG_SETTINGS}"
-    SEARXNG_SECRET="$(openssl rand -hex 32 2>/dev/null || echo labmate-dev-secret)"
-    cat > "$SEARXNG_SETTINGS" <<YAML
-# Labmate local SearXNG settings — internal instance for the web-search skill.
-# JSON output is REQUIRED by the skill (GET /search?format=json). The limiter is
-# disabled because this instance is private (loopback only), so no valkey/redis is needed.
-use_default_settings: true
-general:
-  debug: false
-  instance_name: "labmate-searxng"
-search:
-  safe_search: 0
-  autocomplete: "duckduckgo"
-  formats:
-    - html
-    - json
-server:
-  bind_address: "127.0.0.1"
-  port: ${SEARXNG_PORT}
-  secret_key: "${SEARXNG_SECRET}"
-  limiter: false
-  image_proxy: false
-YAML
-  else
-    log "SearXNG settings already present: ${SEARXNG_SETTINGS}"
-  fi
+  [[ -f "$SEARXNG_SETTINGS" ]] && log "SearXNG settings already present: ${SEARXNG_SETTINGS}" \
+    || { log "writing SearXNG settings: ${SEARXNG_SETTINGS}"; write_searxng_settings "127.0.0.1" "${SEARXNG_PORT}"; }
+  echo native > "$SEARXNG_MODE_FILE"
 fi
 
 
