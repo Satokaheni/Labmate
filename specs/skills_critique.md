@@ -1,7 +1,0 @@
-| Skill Name | Research Logic | Input →\\rightarrow→ Output | Implementation |
-| --- | --- | --- | --- |
-| adversarial_audit | Self-Correction/Reflexion: Instead of asking "is this good?", it assigns a "Hater" persona whose only goal is to find a critical failure (security bug, logical flaw, or academic weakness). | content, context →\\rightarrow→ Critical Failure Report | Python** |
-| peer_review_sim | Synthetic Peer Review: Mimics the specific review criteria of a target venue (e.g., NeurIPS or a specific corporate style guide) to score the work on Rigor, Clarity, and Originality. | draft, venue_spec →\\rightarrow→ Scorecard (1-5) + Reviewer Comments | Python |
-| logic_consistency_check | Chain-of-Verification (CoVe): Breaks the output into individual claims. It then verifies each claim independently against the codebase or MISSION.md to find contradictions. | text →\\rightarrow→ Contradiction Map (Claim vs. Reality) | TypeScript/Rust** |
-| style_adversary | Linguistic Contrast: Compares the draft against a "Gold Standard" example of the target style and identifies specific phrases that sound "too AI" or "too casual." | draft, gold_standard →\\rightarrow→ Stylistic Mismatch List | Python** |
-| cross_persona_debate | Multi-Agent Debate: Spawns two agents—one "Optimist" and one "Pessimist"—to debate a specific architectural choice. The Orchestrator then synthesizes the winner. | architectural_choice →\\rightarrow→ Synthesized Consensus | Python |

@@ -1,6 +1,0 @@
-| Skill Name | Logic / Research Basis | Input →\\rightarrow→ Output | Implementation |
-| --- | --- | --- | --- |
-| map_symbol_graph | AST Analysis: Instead of grep, it uses ts-morph or tree-sitter to find every reference, implementation, and override of a symbol. | symbol_name →\\rightarrow→ JSON Graph of relations | TypeScript/Rust |
-| apply_structural_refactor | Tree-Sitter Transformation: Implements "Safe Refactoring." It doesn't just replace text; it modifies the AST and then regenerates the code to ensure syntax validity. | target_node, pattern →\\rightarrow→ Modified Code | Rust |
-| generate_test_suite | Invariant Detection: Analyzes the function's logic to find "edge cases" (nulls, overflows, timeouts) and generates a suite of Pytest/Jest tests. | function_body →\\rightarrow→ Test File | Python/TS |
-| analyze_complexity | Cyclomatic Complexity: Calculates the complexity of a function to flag "code smells" and suggests specific breaking points for refactoring. | file_path →\\rightarrow→ Complexity Report | Rust |

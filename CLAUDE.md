@@ -516,7 +516,6 @@ failure, so run `npm run build` in the skill dir before testing it.
 ## What NOT to Do
 
 - Do not load the model with `FastLanguageModel` — use the llama.cpp HTTP API
-- Do not modify `core/`, `tools/`, or the legacy `main.py`
 - Do not add `console.log` to any MCP server (use `console.error`)
 - Do not use `asyncio.run()` inside an async function
 - Do not import `tiktoken` anywhere in this project
