@@ -94,6 +94,15 @@ ENABLE_LOOP_CHECKPOINT = os.getenv("ENABLE_LOOP_CHECKPOINT", "0") not in (
     "",
 )
 
+# G3 recovery nudges (ml-intern port): a weak local model occasionally hits
+# max_tokens mid tool-call (finish_reason=="length") producing truncated/
+# garbage arguments, or emits invalid-JSON tool arguments outright. Both used
+# to silently default to args={} with no signal, wasting turns on a doomed
+# retry of the same giant write. Bounded so a persistently-broken model can't
+# be nudged forever — see _run_react_loop.
+MAX_LENGTH_NUDGES = int(os.getenv("LABMATE_MAX_LENGTH_NUDGES", "2"))
+MALFORMED_ARGS_LIMIT = int(os.getenv("LABMATE_MALFORMED_ARGS_LIMIT", "2"))
+
 
 # ---------------------------------------------------------------------------
 # Artifact helpers
@@ -628,6 +637,14 @@ class AsyncOrchestrator:
         # below). Loop-local, not checkpointed.
         seen_analysis: set[str] = set()
 
+        # G3 recovery-nudge counters (bounded — see MAX_LENGTH_NUDGES /
+        # MALFORMED_ARGS_LIMIT above). _length_nudges counts truncated
+        # (finish_reason=="length") turns nudged this goal; _malformed_streak
+        # counts CONSECUTIVE invalid-JSON tool-arg parses (reset on any valid
+        # parse) and fires a nudge once it reaches the limit.
+        _length_nudges = 0
+        _malformed_streak = 0
+
         # ReAct loop — bounded by an IterationBudget (replaces the bare
         # range(max_steps) cap). The budget grants ONE grace turn after
         # exhaustion and refunds cheap read-only iterations (CHEAP_TOOLS).
@@ -847,6 +864,40 @@ class AsyncOrchestrator:
                 # Check for tool calls early (before appending assistant turn)
                 tool_calls = getattr(msg, "tool_calls", None)
 
+                # G3: finish_reason=="length" recovery. A small model writing a
+                # giant tool call (e.g. a huge write_file) can hit max_tokens
+                # mid-call — the response is truncated and tool_calls[].
+                # function.arguments is truncated garbage. Left unchecked this
+                # silently parses to args={} downstream (a no-op/error) with no
+                # signal, and the model tends to retry the same doomed giant
+                # write. Detect it here, DROP the truncated tool_calls entirely
+                # (do not process/dispatch them), append the assistant's (empty/
+                # partial) text WITHOUT tool_calls so the transcript stays
+                # coherent, inject a bounded [RECOVERY] nudge, and go straight to
+                # the next model call. Bounded by MAX_LENGTH_NUDGES so a
+                # persistently-truncating model falls through to normal
+                # processing instead of nudging forever (the iteration/loop
+                # guards catch a persistent problem from there).
+                _finish_reason = getattr(r.choices[0], "finish_reason", None)
+                if _finish_reason == "length" and tool_calls and _length_nudges < MAX_LENGTH_NUDGES:
+                    _length_nudges += 1
+                    await events.emit("recovery.truncated", nudges=_length_nudges, steps=step + 1)
+                    messages.append({"role": "assistant", "content": (msg.content or "")})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "[RECOVERY] Your previous response was TRUNCATED (hit the "
+                                "output token limit) — its tool call was cut off and cannot "
+                                "be used. Do NOT repeat the same large output. Write files in "
+                                "SMALLER pieces (append/replace a section at a time, or a "
+                                "heredoc), or split the work into multiple smaller tool calls. "
+                                "Emit a single, complete, valid tool call now."
+                            ),
+                        }
+                    )
+                    continue  # next iteration; the budget/loop guards still apply
+
                 # Append assistant turn
                 if hasattr(msg, "model_dump"):
                     msg_dict = msg.model_dump()
@@ -895,8 +946,51 @@ class AsyncOrchestrator:
                         _tools_used.append(name)
                     try:
                         args = json.loads(tc.function.arguments or "{}")
+                        _malformed_streak = 0
                     except (json.JSONDecodeError, ValueError):
                         args = {}
+                        _malformed_streak += 1
+                        if _malformed_streak >= MALFORMED_ARGS_LIMIT:
+                            _malformed_streak = 0
+                            await events.emit("recovery.malformed_args", tool=name, steps=step + 1)
+                            # Do NOT dispatch this call with args={} — that would run
+                            # the tool as a silent no-op with no signal. Instead
+                            # append a synthetic tool-role result for THIS tc.id (the
+                            # assistant turn above already declared it, so a message
+                            # with tool_calls must be followed by a matching tool
+                            # result for every id, or the sequence is invalid for the
+                            # next model call) recording the rejection, then a
+                            # [RECOVERY] user nudge, then continue the per-tool-call
+                            # loop (only this malformed call is skipped — any other
+                            # tool_calls in this same turn are still processed below).
+                            messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": tc.id,
+                                    "content": json.dumps(
+                                        {
+                                            "error": "malformed_args",
+                                            "tool": name,
+                                            "reason": (
+                                                "arguments were not valid JSON "
+                                                "(repeatedly) — call not dispatched"
+                                            ),
+                                        }
+                                    ),
+                                }
+                            )
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        f"[RECOVERY] Your last tool arguments for '{name}' "
+                                        "were not valid JSON (repeatedly). Stop retrying "
+                                        "that shape — emit a SMALLER, strictly-valid JSON "
+                                        "object for the arguments."
+                                    ),
+                                }
+                            )
+                            continue
 
                     content = ""
 
