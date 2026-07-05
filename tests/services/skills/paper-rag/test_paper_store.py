@@ -4,24 +4,15 @@ import pytest
 
 
 @pytest.mark.mocked
-def test_chroma_client_uses_env_host_port(monkeypatch, mock_chroma, mock_docs):
-    monkeypatch.setenv("CHROMA_URL", "http://chroma:8000")
-    import importlib
-
-    import paper_store
-
-    importlib.reload(paper_store)
-    paper_store.PaperStore()
-    mock_chroma.assert_called_once_with(host="chroma", port=8000)
-
-
-@pytest.mark.mocked
-def test_persistent_client_never_imported():
+def test_no_chroma_or_vector_service_deps():
+    """paper-rag uses PaperQA2's native local index — no Chroma / vector service."""
     import inspect
 
     import paper_store
 
     src = inspect.getsource(paper_store)
+    assert "chromadb" not in src  # local harness has no Chroma
+    assert "CHROMA_URL" not in src
     assert "PersistentClient" not in src
     assert "EphemeralClient" not in src
     assert "print(" not in src  # stdout is sacred
@@ -29,7 +20,7 @@ def test_persistent_client_never_imported():
 
 @pytest.mark.mocked
 @pytest.mark.asyncio
-async def test_add_papers_calls_ingest_with_paths(tmp_path, mock_chroma, mock_docs):
+async def test_add_papers_calls_ingest_with_paths(tmp_path, mock_docs):
     import paper_store
 
     pdf = tmp_path / "a.pdf"
@@ -43,7 +34,7 @@ async def test_add_papers_calls_ingest_with_paths(tmp_path, mock_chroma, mock_do
 
 @pytest.mark.mocked
 @pytest.mark.asyncio
-async def test_add_papers_reports_missing_file(mock_chroma, mock_docs):
+async def test_add_papers_reports_missing_file(mock_docs):
     import paper_store
 
     store = paper_store.PaperStore()
@@ -54,7 +45,7 @@ async def test_add_papers_reports_missing_file(mock_chroma, mock_docs):
 
 @pytest.mark.mocked
 @pytest.mark.asyncio
-async def test_query_returns_answer_and_citations(mock_chroma, mock_docs):
+async def test_query_returns_answer_and_citations(mock_docs):
     import paper_store
 
     store = paper_store.PaperStore()
@@ -66,7 +57,7 @@ async def test_query_returns_answer_and_citations(mock_chroma, mock_docs):
 
 @pytest.mark.mocked
 @pytest.mark.asyncio
-async def test_search_returns_jsonl_parseable(mock_chroma, mock_docs):
+async def test_search_returns_jsonl_parseable(mock_docs):
     import paper_store
 
     store = paper_store.PaperStore()
@@ -80,7 +71,7 @@ async def test_search_returns_jsonl_parseable(mock_chroma, mock_docs):
 
 @pytest.mark.mocked
 @pytest.mark.asyncio
-async def test_list_papers_has_title_and_path(mock_chroma, mock_docs):
+async def test_list_papers_has_title_and_path(mock_docs):
     import paper_store
 
     store = paper_store.PaperStore()
