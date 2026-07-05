@@ -14,8 +14,10 @@ Design rules (see the implementation plan's Global Constraints):
     with no new signature; legitimately distinct calls never trip it.
   - stderr logging only (never stdout — MCP rule).
 """
+
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -48,18 +50,31 @@ def repeat_limit_for(name: str) -> int:
     return LOOP_REPEAT_LIMIT
 
 
-def call_signature(name: str, args: dict) -> str:
+def result_hash(result: str | None) -> str:
+    """Short stable hash of a tool result (for loop disambiguation). None/'' -> ''."""
+    if not result:
+        return ""
+    return hashlib.sha1(str(result).encode("utf-8", "replace")).hexdigest()[:12]
+
+
+def call_signature(name: str, args: dict, result: str | None = None) -> str:
     """Deterministic signature for a tool call.
 
     Argument key order must never change the signature, so we sort keys. Values
     that are not JSON-serializable fall back to str() rather than raising — the
     detector must never crash the executor.
+
+    When `result` is given, its hash is folded in so a same-name/same-args call
+    with a CHANGING result is a DISTINCT signature (progress, not a loop).
+    Back-compatible: result=None reproduces the old (name, args) signature.
     """
     try:
         norm = json.dumps(args or {}, sort_keys=True, default=str)
     except Exception:
         norm = str(args)
-    return f"{name}::{norm}"
+    base = f"{name}::{norm}"
+    rh = result_hash(result)
+    return f"{base}::{rh}" if rh else base
 
 
 class LoopDetector:
@@ -112,14 +127,14 @@ class LoopDetector:
         # 2) No-progress cycle. Look at the recent window; if it cycles a small
         # set of signatures and nothing in the last `repeat_limit` steps is a
         # FIRST-time signature (i.e. no genuine progress), treat it as a loop.
-        window = sigs[-self.cycle_window:]
+        window = sigs[-self.cycle_window :]
         if len(window) >= 2 * self.repeat_limit:
             distinct = set(window)
             # Small alternating/cycling set: distinct count is at most repeat_limit
             # and every recent step was already seen earlier in the window.
             if len(distinct) <= self.repeat_limit:
-                recent = sigs[-self.repeat_limit:]
-                earlier = set(sigs[:-self.repeat_limit])
+                recent = sigs[-self.repeat_limit :]
+                earlier = set(sigs[: -self.repeat_limit])
                 if all(s in earlier for s in recent):
                     self._reason = "cycle"
                     return True
