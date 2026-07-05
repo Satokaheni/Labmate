@@ -40,6 +40,27 @@ def _gemma_base() -> str:
     return os.getenv("GEMMA_BASE", "http://localhost:8000/v1")
 
 
+def _resolve_workspace_root(override: str | None = None) -> str:
+    """Pick the eval workspace root (where fixtures live + the harness edits).
+
+    Priority: explicit --workspace override → WORKSPACE_PATH env → "/workspace" if
+    it exists and is writable (RunPod, unchanged) → a repo-local fallback under
+    .data/eval-workspace (so the eval runs on a Mac/any client with no /workspace
+    mount). The chosen root is exported as WORKSPACE_PATH so OrchestratorProcess's
+    file tools resolve to the same place the fixtures were written.
+    """
+    root = override or os.getenv("WORKSPACE_PATH")
+    if not root:
+        if os.path.isdir("/workspace") and os.access("/workspace", os.W_OK):
+            root = "/workspace"
+        else:
+            repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            root = os.path.join(repo_root, ".data", "eval-workspace")
+    os.makedirs(root, exist_ok=True)
+    os.environ["WORKSPACE_PATH"] = root
+    return root
+
+
 def _model_server_reachable(base_url: str, timeout: float = 3.0) -> bool:
     """Best-effort GET on llama-server's /health — never raises.
 
@@ -192,21 +213,22 @@ async def _capture_trajectory(
     }
 
 
-async def _run(mode: str, trials: int, timeout: float) -> dict[str, Any]:
+async def _run(mode: str, trials: int, timeout: float, workspace_root: str) -> dict[str, Any]:
     import asyncio
 
-    from eval.local.cases import CASES, reset_fixtures
+    from eval.local.cases import cases_for, reset_fixtures
     from services.orchestrator.main import OrchestratorProcess, _setup_logging
 
     _setup_logging()
     proc = OrchestratorProcess()
     orch_task = asyncio.create_task(proc.run(), name="orchestrator")
 
+    cases = cases_for(workspace_root)  # task paths rebased onto the workspace root
     trajectories: list[dict[str, Any]] = []
     try:
         for _trial in range(trials):
-            for case in CASES:
-                reset_fixtures()
+            for case in cases:
+                reset_fixtures(workspace_root)
                 traj = await _capture_trajectory(proc, case, mode, timeout=timeout)
                 trajectories.append(traj)
     finally:
@@ -273,7 +295,19 @@ def main(argv: list[str] | None = None) -> int:
         default=float(os.getenv("LABMATE_EVAL_TIMEOUT_S", "180")),
         help="Per-case wait_result timeout in seconds (default 180).",
     )
+    parser.add_argument(
+        "--workspace",
+        default=None,
+        help=(
+            "Workspace root for fixtures + the harness's file tools. Default: "
+            "WORKSPACE_PATH env, else /workspace if writable (RunPod), else a "
+            "repo-local .data/eval-workspace (Mac/any client)."
+        ),
+    )
     args = parser.parse_args(argv)
+
+    workspace_root = _resolve_workspace_root(args.workspace)
+    print(f"workspace_root={workspace_root}")
 
     base_url = _gemma_base()
     if not _model_server_reachable(base_url):
@@ -287,7 +321,7 @@ def main(argv: list[str] | None = None) -> int:
 
     import asyncio
 
-    run_result = asyncio.run(_run(args.mode, args.trials, args.timeout))
+    run_result = asyncio.run(_run(args.mode, args.trials, args.timeout, workspace_root))
     report = _write_outputs(args.mode, run_result["trajectories"])
 
     kpis = report["kpis"]

@@ -73,12 +73,28 @@ CASES: list[dict[str, str]] = [
 ]
 
 
+def cases_for(workspace_root: str | None = None) -> list[dict[str, str]]:
+    """Return CASES with the fixture-path prefix rebased onto `workspace_root`.
+
+    The task strings hardcode the RunPod "/workspace/ab_*.py" paths; on any other
+    host (e.g. a Mac client) the harness runs against a different WORKSPACE_PATH,
+    so the paths the MODEL is told to edit must match where reset_fixtures() wrote
+    the files. When `workspace_root` is None or "/workspace" this is a no-op, so
+    RunPod runs are byte-identical (baseline comparability preserved).
+    """
+    if not workspace_root or workspace_root == "/workspace":
+        return [dict(c) for c in CASES]
+    root = workspace_root.rstrip("/")
+    return [{**c, "task": c["task"].replace("/workspace", root)} for c in CASES]
+
+
 def reset_fixtures(workspace_root: str | None = None) -> None:
     """Write each FIXTURES body back to disk, restoring the buggy starting state.
 
     Call before EACH trial so a previous trial's edit doesn't leak into the next.
     `workspace_root`, if given, replaces the "/workspace" prefix (useful when the
     local harness runs against a different WORKSPACE_PATH than the RunPod default).
+    Pair with cases_for(workspace_root) so the task strings point at the same paths.
     """
     import os
 
