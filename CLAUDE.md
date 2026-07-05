@@ -366,7 +366,7 @@ Requires the `codegraph` CLI installed (`shutil.which("codegraph")` or
 .data/logs/orchestrator.log        ← task complete/failed, exceptions
 .data/logs/llama-server.log        ← model load, VRAM, 5xx
 .data/logs/ws-gateway.log          ← auth failures, event relay errors
-.data/logs/codegraph-embedder.log  ← indexer startup, incremental updates
+(CodeGraph MCP daemon stderr surfaces in orchestrator.log — `codegraph serve --mcp`)
 ```
 
 | Log pattern | Likely cause |
@@ -374,7 +374,7 @@ Requires the `codegraph` CLI installed (`shutil.which("codegraph")` or
 | `task failed` + traceback | Exception in `run_task` or LangGraph node |
 | No `goal received` after submitting | `services.local.main` not running, or `submit_goal` never reached (check gateway logs) |
 | `MCP bridge did not become ready` | Bridge crash or missing `dist/index.js` — run `npm run build` in `services/mcp-bridge/` |
-| `codegraph MCP did not become ready` | `.codegraph/codegraph.db` missing or embed model not loaded — check codegraph-embedder.log |
+| `codegraph MCP did not become ready` | `codegraph` CLI not installed / repo not `codegraph init`'d (`.codegraph/` missing) — the orchestrator hosts `codegraph serve --mcp`; check orchestrator.log |
 | `llama-server` 5xx / timeout | Model not loaded or VRAM OOM |
 | ws_gateway `auth_failed` | JWT credentials wrong or `ADMIN_EMAIL`/`ADMIN_PASSWORD` not seeded |
 

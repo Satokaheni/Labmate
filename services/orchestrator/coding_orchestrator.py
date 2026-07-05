@@ -308,7 +308,7 @@ class AsyncOrchestrator:
         self._editor_bases = resolve_bases(qwen_api_base)
         self.skill_router = skill_router
         self.mcp = mcp
-        self.codegraph_mcp = None  # set after construction if codegraph-embedder is running
+        self.codegraph_mcp = None  # set after construction if the CodeGraph MCP daemon is running
         self.context_manager = None  # set after construction for conversation continuity
         self._active_session_id = ""  # set in execute node to track the current session
         self.session_search: SessionSearch | None = (
