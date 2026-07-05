@@ -15,7 +15,7 @@
 set -uo pipefail
 cd /workspace/Labmate
 MODE="$1"
-source infrastructure/local/local.env
+source infrastructure/local.env
 source .data/creds.env
 export PYTHONPATH="/workspace/Labmate"
 export MCP_BRIDGE_ARGS="/workspace/Labmate/services/mcp-bridge/dist/index.js"

@@ -5,7 +5,7 @@
 # gemma4-capable vLLM build is compiled for CUDA 13. See install.sh / INSTALL.md.
 # llama-server exposes the same OpenAI-compatible API on :8000.
 #
-# Prereqs: run infrastructure/local/install.sh once (builds llama.cpp, downloads GGUF).
+# Prereqs: run infrastructure/install.sh once (builds llama.cpp, downloads GGUF).
 #
 # Usage:
 #   ./serve-model.sh            # start llama-server (idempotent), wait until ready
@@ -13,7 +13,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # Honor local.env so MODEL (and any other served-model config) has ONE source of truth.
 # Guarded + set +u around it because local.env is a generic env file; MODEL exported on

@@ -36,7 +36,7 @@ cd Labmate
 ## Step 1 — Install dependencies (first time only)
 
 ```bash
-infrastructure/local/install.sh
+infrastructure/install.sh
 ```
 
 This builds llama.cpp from source, downloads the Gemma 4 31B GGUF, and installs Python packages. Takes ~15–30 minutes on first run. Idempotent — safe to re-run.
@@ -46,7 +46,7 @@ This builds llama.cpp from source, downloads the Gemma 4 31B GGUF, and installs 
 ## Step 2 — Start the model server
 
 ```bash
-infrastructure/local/serve-model.sh
+infrastructure/serve-model.sh
 ```
 
 Starts `llama-server` on port **8000** with the Gemma 4 31B GGUF. The script blocks until the model is loaded into VRAM and the `/health` endpoint responds (up to ~10 min for first load). Pass `--no-wait` to return immediately.
@@ -63,7 +63,7 @@ curl -s http://localhost:8000/health | grep '"status":"ok"'
 ## Step 3 — Start the local harness
 
 ```bash
-infrastructure/local/start.sh
+infrastructure/start.sh
 ```
 
 Starts (natively, no Docker, no MongoDB/Redis/Chroma):
@@ -78,7 +78,7 @@ The script is idempotent — already-running processes are left alone.
 
 **Verify each service:**
 ```bash
-infrastructure/local/status.sh
+infrastructure/status.sh
 ```
 
 Or manually:
@@ -98,7 +98,7 @@ curl -fsS http://localhost:8787/healthz                 # → {"ok":true}   (ser
 ## Step 4 — Start the CLI
 
 ```bash
-infrastructure/local/start-cli.sh
+infrastructure/start-cli.sh
 ```
 
 This sources `local.env`, checks the local harness (`services.local.main`) is alive via its pidfile and `/healthz`, then launches:
@@ -214,7 +214,7 @@ The local-harness log (`local.log`, combined gateway + orchestrator) shows:
 ## Stopping everything
 
 ```bash
-infrastructure/local/stop.sh
+infrastructure/stop.sh
 ```
 
 Stops `services.local.main` (gateway + orchestrator), the MCP bridge, and SearXNG (if running). Does **not** delete data — `.data/labmate_state.sqlite` persists.
@@ -247,6 +247,6 @@ The three tasks completed before the e2e run this runbook originally validated:
 3. **CLI connector** — `services/cli/` is a full Typer + Rich CLI with REPL, one-shot mode, session resume, workspace picker, and local identity.
 
 > Note: the storage layer described above is stale relative to the current
-> architecture — see `README.md`, `CLAUDE.md`, and `infrastructure/local/README.md`
+> architecture — see `README.md`, `CLAUDE.md`, and `infrastructure/README.md`
 > for the current single-process SQLite topology. This section is kept as
 > historical context for when the CLI/workspace tracking was first built.

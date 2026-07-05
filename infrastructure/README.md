@@ -33,14 +33,14 @@ infrastructure/
 ## Usage
 
 ```bash
-infrastructure/local/install.sh     # ONE-TIME: system + python + llama.cpp + GGUF (idempotent)
+infrastructure/install.sh     # ONE-TIME: system + python + llama.cpp + GGUF (idempotent)
 
-infrastructure/local/serve-model.sh # Gemma 4 via llama.cpp on :8000 (OpenAI API at /v1)
-infrastructure/local/start.sh       # start services.local.main (gateway + orchestrator, idempotent)
-infrastructure/local/status.sh      # health check (model + gateway)
-infrastructure/local/stop.sh        # stop all (SQLite data preserved)
+infrastructure/serve-model.sh # Gemma 4 via llama.cpp on :8000 (OpenAI API at /v1)
+infrastructure/start.sh       # start services.local.main (gateway + orchestrator, idempotent)
+infrastructure/status.sh      # health check (model + gateway)
+infrastructure/stop.sh        # stop all (SQLite data preserved)
 
-source infrastructure/local/local.env   # export LOCAL_HOST / LOCAL_PORT / GEMMA_BASE / etc.
+source infrastructure/local.env   # export LOCAL_HOST / LOCAL_PORT / GEMMA_BASE / etc.
 ```
 
 Full from-scratch / reinstall instructions, the **llama.cpp-vs-vLLM-CUDA-12.8

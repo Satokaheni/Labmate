@@ -4,8 +4,7 @@
 # Why this exists: this pod cannot run any container engine (no NET_ADMIN, and
 # the unshare/clone namespace syscalls are blocked by seccomp). Docker/Podman
 # both fail at network/namespace creation. So the harness runs as an ordinary
-# host process here. The Docker path lives in ../docker/ for when Labmate runs
-# on a privileged host / your own server.
+# host process here. The harness is local-only — there is no Docker path.
 #
 # Runtime: a SINGLE co-located process (services.local.main — gateway +
 # orchestrator, one asyncio loop) backed by local SQLite state. There is no
@@ -20,7 +19,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 DATA="${REPO_ROOT}/.data"
 LOGS="${DATA}/logs"
@@ -135,7 +134,7 @@ pass "Labmate stack is up. Connection settings:"
 echo "    SEARXNG_URL=http://localhost:${SEARXNG_PORT:-8080}  (web-search skill)"
 echo "    GEMMA_BASE=http://localhost:8000/v1"
 echo "    LABMATE_GATEWAY_URL=ws://localhost:8787/ws  (CLI + Electron connect here)"
-echo "    -> source infrastructure/local/local.env to export these."
+echo "    -> source infrastructure/local.env to export these."
 echo "    -> Logs: $LOGS/  PIDs: $PIDS/"
 info "admin login: ${ADMIN_EMAIL:-<unset>} (password from local.env ADMIN_PASSWORD)"
 [ -z "${ADMIN_PASSWORD:-}" ] && info "  WARN: ADMIN_PASSWORD unset — no admin will be seeded; login will be impossible until you set it"
