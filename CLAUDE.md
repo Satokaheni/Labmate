@@ -64,9 +64,11 @@ token_count = len(tokenizer.encode(text))
 ### 4. Chroma — removed from the core state path (historical)
 MongoDB/Chroma/Redis were retired by the local-state-sqlite rearchitecture; core
 session/turn/auth/checkpoint state now lives in one SQLite `LocalStore` (see the
-Architecture Map above). A couple of embedding-specific skills (`codegraph_embedder`,
-`paper-rag`) still import `chromadb` as legacy/unwired code — do not treat that as
-the state model; do not add new Chroma dependencies for orchestrator/session state.
+Architecture Map above). `services/codegraph_embedder/` (the Chroma-backed embedder)
+was deleted — the orchestrator now hosts the client's CodeGraph CLI daemon
+(SQLite-backed, no Chroma) instead. Only `paper-rag` still imports `chromadb` as
+legacy/unwired code — do not treat that as the state model; do not add new Chroma
+dependencies for orchestrator/session state.
 
 ### 5. Redis — removed (historical)
 Task queueing used to go through Redis Streams (`XADD`/`XREADGROUP`/`XACK`). The
@@ -337,9 +339,13 @@ Acceptance: new skill ≥ 0.80, no existing skill drops > 0.05. If a skill mis-r
   (`eval/routing_metrics.py`, `eval/seq_ab/baselines.py`). Stale 31B baselines archived
   as `results-*.31b.ref.json`; re-capture on 12B per the protocol doc.
 
-### 6. Semantic codegraph search (run when `services/codegraph_embedder/` is changed)
+### 6. Semantic codegraph search (run when CodeGraph daemon wiring is changed)
 
-The orchestrator spawns the codegraph MCP server automatically — no separate start needed.
+The orchestrator spawns the client's CodeGraph CLI daemon automatically
+(`codegraph serve --mcp --path $WORKSPACE_PATH`, SQLite-backed, no Chroma;
+`services/orchestrator/main.py::_build_codegraph_params`/`codegraph_enabled`) —
+no separate start needed. The agent's `code_semantic_search` tool routes to the
+daemon's `codegraph_explore` tool (NL question -> verbatim source).
 
 ```bash
 # Confirm orchestrator picked up the tool at startup
@@ -348,24 +354,19 @@ grep "codegraph semantic search ready" .data/logs/orchestrator.log
 # Semantic query via agent (golden-path test) — push via the CLI (see §4)
 PYTHONPATH=. python -m services.cli "Find the function that handles WebSocket authentication"
 # Expected: result references ws_gateway/server.py near the auth handshake
-
-# Incremental update — touch a file, wait 5 s, check the log
-touch services/orchestrator/main.py
-sleep 6
-grep "incremental_update" .data/logs/codegraph-embedder.log | tail -3
 ```
 
-`full_index` is skipped on restart if the codegraph index already has documents.
-(Note: `services/codegraph_embedder/` still uses a standalone `chromadb` client for
-its own vector store — separate from, and unrelated to, the retired core-state
-Chroma usage; this is legacy/unwired and out of scope for the SQLite migration.)
+Requires the `codegraph` CLI installed (`shutil.which("codegraph")` or
+`LABMATE_CODEGRAPH_PATH`) and the repo `codegraph init`'d; gracefully OFF
+(`codegraph_enabled()` False) when the binary is absent, e.g. CI. Toggle with
+`ENABLE_CODEGRAPH` (default on when the CLI resolves).
 
 ### 7. Log locations
 ```
 .data/logs/orchestrator.log        ← task complete/failed, exceptions
 .data/logs/llama-server.log        ← model load, VRAM, 5xx
 .data/logs/ws-gateway.log          ← auth failures, event relay errors
-.data/logs/codegraph-embedder.log  ← indexer startup, incremental updates
+(CodeGraph MCP daemon stderr surfaces in orchestrator.log — `codegraph serve --mcp`)
 ```
 
 | Log pattern | Likely cause |
@@ -373,7 +374,7 @@ Chroma usage; this is legacy/unwired and out of scope for the SQLite migration.)
 | `task failed` + traceback | Exception in `run_task` or LangGraph node |
 | No `goal received` after submitting | `services.local.main` not running, or `submit_goal` never reached (check gateway logs) |
 | `MCP bridge did not become ready` | Bridge crash or missing `dist/index.js` — run `npm run build` in `services/mcp-bridge/` |
-| `codegraph MCP did not become ready` | `.codegraph/codegraph.db` missing or embed model not loaded — check codegraph-embedder.log |
+| `codegraph MCP did not become ready` | `codegraph` CLI not installed / repo not `codegraph init`'d (`.codegraph/` missing) — the orchestrator hosts `codegraph serve --mcp`; check orchestrator.log |
 | `llama-server` 5xx / timeout | Model not loaded or VRAM OOM |
 | ws_gateway `auth_failed` | JWT credentials wrong or `ADMIN_EMAIL`/`ADMIN_PASSWORD` not seeded |
 

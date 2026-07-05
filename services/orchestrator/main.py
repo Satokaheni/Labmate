@@ -192,24 +192,32 @@ def _build_mcp_params() -> StdioServerParameters:
     return StdioServerParameters(command=cmd, args=[args_str])
 
 
-# P2-D: the pod CodeGraph embedder exists ONLY as the no-client / headless fallback.
-# When a capable client hosts CodeGraph (as an MCP server via ~/.labmate/mcp.json), the
-# pod `code_semantic_search` is already excluded for that client by build_tool_list (it
-# advertises the pod tool only when the manifest declares it). Set ENABLE_POD_CODEGRAPH=0
-# in a client-first deployment to skip spawning the embedder entirely (saves the index +
-# watch cost); no-client tasks then have no semantic search. Default 1 = unchanged.
-def pod_codegraph_enabled() -> bool:
-    """Whether the orchestrator should spawn the pod CodeGraph embedder at startup.
+def _codegraph_bin() -> str | None:
+    import shutil
+
+    return os.getenv("LABMATE_CODEGRAPH_PATH") or shutil.which("codegraph")
+
+
+# The local orchestrator hosts the client's CodeGraph CLI directly, scoped to
+# WORKSPACE_PATH: `codegraph serve --mcp --path <workspace>` (stdio MCP server,
+# SQLite-backed — no Chroma). Enabled by default when the `codegraph` binary is
+# resolvable; set ENABLE_CODEGRAPH=0 to disable explicitly, or leave the binary
+# absent (e.g. CI) for a graceful no-op skip.
+def codegraph_enabled() -> bool:
+    """Whether the orchestrator should spawn the CodeGraph CLI daemon at startup.
 
     Read once at process start (run()); set the env before launching the orchestrator.
     """
-    return os.getenv("ENABLE_POD_CODEGRAPH", "1").lower() not in ("0", "false", "no")
+    if os.getenv("ENABLE_CODEGRAPH", "1").lower() in ("0", "false", "no"):
+        return False
+    return _codegraph_bin() is not None
 
 
 def _build_codegraph_params() -> StdioServerParameters:
+    workspace = os.getenv("WORKSPACE_PATH") or os.getcwd()
     return StdioServerParameters(
-        command="python",
-        args=["-m", "services.codegraph_embedder.server"],
+        command=_codegraph_bin() or "codegraph",
+        args=["serve", "--mcp", "--path", workspace],
         env={**os.environ},
     )
 
@@ -267,7 +275,7 @@ class OrchestratorProcess:
             except TimeoutError:
                 _log.warning("MCP bridge did not become ready within 30 s — continuing")
 
-            if pod_codegraph_enabled():
+            if codegraph_enabled():
                 self._codegraph_mcp = MCPClientManager(_build_codegraph_params())
                 await self._codegraph_mcp.start()
                 try:
@@ -280,9 +288,8 @@ class OrchestratorProcess:
                         "codegraph MCP did not become ready within 120 s (index still building?) — continuing"
                     )
             else:
-                # P2-D: client-first deployment — clients host CodeGraph themselves.
                 self._codegraph_mcp = None
-                _log.info("pod codegraph embedder disabled (ENABLE_POD_CODEGRAPH=0)")
+                _log.info("codegraph CLI not found / disabled — code_semantic_search unavailable")
 
             # Note: skill_router is built below, so we'll update async_orch later
             async_orch = AsyncOrchestrator(
