@@ -8,8 +8,13 @@
 # Prereqs: run infrastructure/install.sh once (builds llama.cpp, downloads GGUF).
 #
 # Usage:
-#   ./serve-model.sh            # start llama-server (idempotent), wait until ready
-#   ./serve-model.sh --no-wait  # start and return immediately
+#   ./serve-model.sh                    # start llama-server (idempotent), wait until ready
+#   ./serve-model.sh --no-wait          # start and return immediately
+#   SERVE_HOST=127.0.0.1 ./serve-model.sh   # restrict bind to loopback (same-box only)
+#
+# Binds 0.0.0.0 by default so a remote harness (your Mac) can reach this box via
+# GEMMA_BASE. Override with SERVE_HOST. llama-server has no auth — gate the port at
+# the firewall / RunPod proxy on untrusted networks.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,6 +30,12 @@ LLAMA_SERVER="${LLAMA_SERVER:-/workspace/llama.cpp/build/bin/llama-server}"
 MODEL="${MODEL:-/workspace/models/gemma-4-12b-gguf/gemma-4-12b-it-UD-Q4_K_XL.gguf}"
 ALIAS="${ALIAS:-gemma-4}"
 PORT="${PORT:-8000}"
+# Bind host. Default 0.0.0.0 so the split topology works out of the box: the harness
+# runs on a DIFFERENT machine (your Mac) and reaches this box via GEMMA_BASE, which
+# a 127.0.0.1 bind would refuse (loopback-only). llama-server has no auth, so on an
+# untrusted network gate :$PORT at the firewall / RunPod proxy (RunPod already does).
+# Set SERVE_HOST=127.0.0.1 to restrict to same-box access (e.g. model + harness colocated).
+SERVE_HOST="${SERVE_HOST:-0.0.0.0}"
 # --ctx-size is the TOTAL KV budget SHARED across --parallel slots: each request gets
 # ctx-size / parallel tokens. 262144/2 = 131072 per request (= the model's n_ctx_train).
 # With the 4-bit KV cache below (--cache-type-k/v q4_0) the KV footprint is ~1/4 of f16:
@@ -73,11 +84,11 @@ if ready; then info "llama-server already serving on :${PORT}"; exit 0; fi
 [[ -x "$LLAMA_SERVER" ]] || fail "llama-server not built at $LLAMA_SERVER — run install.sh"
 [[ -f "$MODEL" ]]        || fail "GGUF not found at $MODEL — run install.sh"
 
-info "launching llama-server: ${MODEL##*/} on :${PORT} (ctx=${CTX}, ngl=${NGL}, parallel=${PARALLEL}, swa_full=${SWA_FULL}) ..."
+info "launching llama-server: ${MODEL##*/} on ${SERVE_HOST}:${PORT} (ctx=${CTX}, ngl=${NGL}, parallel=${PARALLEL}, swa_full=${SWA_FULL}) ..."
 nohup "$LLAMA_SERVER" \
   -m "$MODEL" \
   --alias "$ALIAS" \
-  --host 127.0.0.1 \
+  --host "$SERVE_HOST" \
   --port "$PORT" \
   --ctx-size "$CTX" \
   --n-gpu-layers "$NGL" \
