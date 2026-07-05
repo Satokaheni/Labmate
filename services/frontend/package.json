@@ -5,6 +5,9 @@
   "main": "dist-electron/main.js",
   "type": "module",
   "scripts": {
+    "ensure-config": "node -e \"const f=require('fs');const p='src/config.ts';if(!f.existsSync(p))f.copyFileSync('src/config.example.ts',p)\"",
+    "predev": "npm run ensure-config",
+    "prebuild": "npm run ensure-config",
     "dev": "vite",
     "build:main": "tsc -p electron/tsconfig.json && npm run postbuild:main",
     "postbuild:main": "node -e \"require('fs').writeFileSync('dist-electron/package.json', JSON.stringify({type:'commonjs'},null,2))\"",

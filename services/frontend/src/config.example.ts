@@ -1,3 +1,8 @@
+// config.example.ts — template copied to config.ts on setup (predev/prebuild/CI).
+// Edit config.ts, not this file, for local overrides — or better, set VITE_WS_URL
+// in services/frontend/.env (see .env.example) so config.ts never needs editing.
+import { DEFAULT_WS_URL } from '@/gateway-defaults';
+
 export interface ToolDescriptor {
   name: string;
   source: 'builtin' | 'mcp' | 'skill';
@@ -47,8 +52,8 @@ const ec = window.electronAPI?.config;
 // In dev (ELECTRON_DEV=1) or browser, use the Vite env var.
 // In a packaged build, use the runtime URL from userData/config.json.
 export const WS_URL: string = ec?.isDev
-  ? (import.meta.env.VITE_WS_URL as string | undefined) ?? 'wss://k49aase60no06l-8787.proxy.runpod.net/ws'
-  : ec?.wsUrl ?? '';
+  ? (import.meta.env.VITE_WS_URL as string | undefined) ?? DEFAULT_WS_URL
+  : ec?.wsUrl ?? DEFAULT_WS_URL;
 
 export const API_URL: string = WS_URL
   .replace(/^wss:\/\//, 'https://')
