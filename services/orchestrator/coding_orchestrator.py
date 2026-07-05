@@ -988,51 +988,13 @@ class AsyncOrchestrator:
                             "tests_passed": tests_passed,
                         }
 
-                    # No-progress / tool-loop detection. finish already returned
-                    # above, so only genuinely dispatched tools reach here.
-                    # Special case: for repeat load_skill calls, skip the halt check
-                    # because we will dedupe them (short-circuit + refund). Still
-                    # record the signature for backstop detection in case a true
-                    # loop of failed loads occurs.
+                    # Compute the repeat-load_skill backstop flag here (before
+                    # dispatch); the loop record+halt itself now happens
+                    # POST-execution (after `content` is finalized, below) so
+                    # the result can be folded into the loop signature.
                     _is_repeat_load_skill = name == "load_skill" and is_repeat_load(
                         args.get("name", ""), loaded_skills
                     )
-                    if not _is_repeat_load_skill and loop_detector.record(
-                        call_signature(name, args),
-                        repeat_limit=repeat_limit_for(name),
-                    ):
-                        _reason = loop_detector.reason()
-                        await events.emit(
-                            "loop.detected",
-                            tool=name,
-                            reason=_reason,
-                            signature=call_signature(name, args),
-                            steps=step + 1,
-                        )
-                        import logging as _logging
-
-                        _logging.getLogger("orchestrator").warning(
-                            "tool-loop detected (%s) on '%s' at step %d — halting",
-                            _reason,
-                            name,
-                            step + 1,
-                        )
-                        return {
-                            "ok": False,
-                            "summary": (
-                                f"loop detected ({_reason}): repeated tool "
-                                f"'{name}' — halting to avoid burning steps"
-                            ),
-                            "tools_used": _tools_used,
-                        }
-
-                    # For repeat load_skill, record the signature for backstop
-                    # loop detection in case a true loop of failed loads occurs.
-                    if _is_repeat_load_skill:
-                        loop_detector.record(
-                            call_signature(name, args),
-                            repeat_limit=repeat_limit_for(name),
-                        )
 
                     # Emit tool.start for all non-finish tools
                     _tool_id = uuid.uuid4().hex[:12]
@@ -1365,6 +1327,56 @@ class AsyncOrchestrator:
                         )
                     except Exception:
                         _td_status = "done"
+
+                    # No-progress / tool-loop detection (POST-execution): fold the
+                    # RESULT hash into the signature so legitimate polling (same
+                    # name+args, CHANGING result — e.g. run_tests while a build runs)
+                    # is progress, not a loop. A loop = same name+args+result repeated.
+                    # load_skill repeats are deduped+refunded elsewhere; still record
+                    # (backstop) but do not halt on them.
+                    _sig = call_signature(
+                        name,
+                        args,
+                        result=content
+                        if isinstance(content, str)
+                        else json.dumps(content, default=str),
+                    )
+                    _broke = loop_detector.record(_sig, repeat_limit=repeat_limit_for(name))
+                    if _broke and not _is_repeat_load_skill:
+                        _reason = loop_detector.reason()
+                        await events.emit(
+                            "loop.detected",
+                            tool=name,
+                            reason=_reason,
+                            signature=_sig,
+                            steps=step + 1,
+                        )
+                        import logging as _logging
+
+                        _logging.getLogger("orchestrator").warning(
+                            "tool-loop detected (%s) on '%s' at step %d — halting",
+                            _reason,
+                            name,
+                            step + 1,
+                        )
+                        # still emit tool.done for the just-run tool so the stream is consistent
+                        await events.emit(
+                            "tool.done",
+                            tool_id=_tool_id,
+                            status=_td_status,
+                            summary=str(content)[:200],
+                            result=content,
+                            duration_ms=int((time.monotonic() - _t0) * 1000),
+                        )
+                        return {
+                            "ok": False,
+                            "summary": (
+                                f"loop detected ({_reason}): repeated tool "
+                                f"'{name}' with no changing result — halting to avoid burning steps"
+                            ),
+                            "tools_used": _tools_used,
+                        }
+
                     await events.emit(
                         "tool.done",
                         tool_id=_tool_id,
