@@ -23,13 +23,13 @@
 #   vLLM becomes viable again (preferred for batching) — see INSTALL.md.
 #
 # Usage:
-#   infrastructure/local/install.sh             # everything (core + skills + model)
-#   infrastructure/local/install.sh --no-model  # skip the 18GB GGUF download
-#   infrastructure/local/install.sh --no-skills # skip per-skill deps (core only)
+#   infrastructure/install.sh             # everything (core + skills + model)
+#   infrastructure/install.sh --no-model  # skip the 18GB GGUF download
+#   infrastructure/install.sh --no-skills # skip per-skill deps (core only)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # Build/install steps below redirect logs into .data/logs — make sure it exists
 # before the first write (the llama.cpp build redirect fails on a missing dir).
@@ -233,8 +233,6 @@ fi
 # We run SearXNG NATIVELY here (this pod cannot run Docker — see the WHY note above).
 # The public-abuse limiter is DISABLED (this is an internal, single-agent instance),
 # so SearXNG needs no valkey/redis backend. JSON output is enabled (required by the skill).
-# The Docker stack runs SearXNG as the `lm-searxng` container instead — see
-# infrastructure/docker/docker-compose.yml + infrastructure/docker/searxng-config/settings.yml.
 # Pass --no-searxng to skip this section.
 if $SKIP_SEARXNG; then
   log "skipping SearXNG (--no-searxng)."
@@ -302,15 +300,15 @@ if [[ -f "${FRONTEND_DIR}/src/config.example.ts" && ! -f "${FRONTEND_DIR}/src/co
 fi
 
 log "DONE. Next:"
-log "  infrastructure/local/start.sh         # services.local.main (single process) + SearXNG"
-log "  infrastructure/local/serve-model.sh   # Gemma 4 via llama.cpp on :8000"
-log "  source infrastructure/local/local.env # export connection URLs (incl. SEARXNG_URL)"
+log "  infrastructure/start.sh         # services.local.main (single process) + SearXNG"
+log "  infrastructure/serve-model.sh   # Gemma 4 via llama.cpp on :8000"
+log "  source infrastructure/local.env # export connection URLs (incl. SEARXNG_URL)"
 log ""
 log "Set GEMMA_BASE in local.env to your model server. Local default:"
 log "  http://localhost:8000/v1 (run serve-model.sh on the same box). Remote GPU"
 log "  box: http://<host>:8000/v1 — this is the harness's sole remote dependency."
 log ""
-log "Admin login: set ADMIN_EMAIL / ADMIN_PASSWORD in infrastructure/local/local.env"
+log "Admin login: set ADMIN_EMAIL / ADMIN_PASSWORD in infrastructure/local.env"
 log "  (dev defaults are already set there). The admin account is auto-seeded on"
 log "  services.local.main's FIRST boot — only when the auth store is empty. If"
 log "  ADMIN_PASSWORD is unset/empty, no admin is seeded and login is impossible."

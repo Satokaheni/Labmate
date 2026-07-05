@@ -9,7 +9,7 @@ The runtime is two processes: `llama-server` (inference) and `services.local.mai
 turns, auth, LangGraph checkpoints — lives in one SQLite database file. There is
 no MongoDB, no Redis, no Chroma, and no Docker anywhere in this stack.
 
-> **TL;DR:** `infrastructure/local/install.sh` does all of this idempotently.
+> **TL;DR:** `infrastructure/install.sh` does all of this idempotently.
 > Then `serve-model.sh` (the model) and `start.sh` (the harness).
 
 ---
@@ -17,8 +17,8 @@ no MongoDB, no Redis, no Chroma, and no Docker anywhere in this stack.
 ## One-command install
 
 ```bash
-infrastructure/local/install.sh            # system + python + llama.cpp + 18.8GB GGUF
-infrastructure/local/install.sh --no-model # skip the GGUF download
+infrastructure/install.sh            # system + python + llama.cpp + 18.8GB GGUF
+infrastructure/install.sh --no-model # skip the GGUF download
 ```
 
 Re-running is safe — every step is guarded and skips work already done.
@@ -26,10 +26,10 @@ Re-running is safe — every step is guarded and skips work already done.
 Then:
 
 ```bash
-infrastructure/local/serve-model.sh   # Gemma 4 via llama.cpp on :8000
-infrastructure/local/start.sh         # services.local.main (gateway + orchestrator, SQLite state)
-infrastructure/local/status.sh        # health of both
-source infrastructure/local/local.env # export LOCAL_HOST / LOCAL_PORT / GEMMA_BASE / etc.
+infrastructure/serve-model.sh   # Gemma 4 via llama.cpp on :8000
+infrastructure/start.sh         # services.local.main (gateway + orchestrator, SQLite state)
+infrastructure/status.sh        # health of both
+source infrastructure/local.env # export LOCAL_HOST / LOCAL_PORT / GEMMA_BASE / etc.
 ```
 
 ---
@@ -38,16 +38,16 @@ source infrastructure/local/local.env # export LOCAL_HOST / LOCAL_PORT / GEMMA_B
 
 End-to-end, in order:
 
-1. **Install:** `bash infrastructure/local/install.sh` — system + Python deps,
+1. **Install:** `bash infrastructure/install.sh` — system + Python deps,
    MCP bridge build, frontend `config.ts` provisioning. Idempotent; safe to re-run.
-2. **Configure:** edit `infrastructure/local/local.env` — set `GEMMA_BASE` to your
+2. **Configure:** edit `infrastructure/local.env` — set `GEMMA_BASE` to your
    model server (`http://localhost:8000/v1` if serving on this same box, or
    `http://<gpu-host>:8000/v1` for a remote GPU box — this is the harness's
    **sole remote dependency**), and set `ADMIN_EMAIL` / `ADMIN_PASSWORD` (these
    auto-seed the admin account on first boot).
-3. **Start the model server:** `infrastructure/local/serve-model.sh` on the GPU
+3. **Start the model server:** `infrastructure/serve-model.sh` on the GPU
    box — wait until `/health` reports `"ok"` (see `status.sh` or curl it directly).
-4. **Start the harness:** `bash infrastructure/local/start.sh` — launches
+4. **Start the harness:** `bash infrastructure/start.sh` — launches
    `services.local.main` (gateway + orchestrator, one process) and prints the
    seeded admin login once healthy.
 5. **Frontend:** defaults to `ws://localhost:8787/ws` for local use; log in with
@@ -130,7 +130,7 @@ enables Gemma 4 tool calling. Served model name (`--alias`) = `gemma-4`.
 
 No MongoDB, Redis, or Chroma ports — those services were retired; all
 application state is a single SQLite file (see "Auth model" below and
-`infrastructure/local/README.md` § State model).
+`infrastructure/README.md` § State model).
 
 ## Data / logs
 
@@ -148,7 +148,7 @@ Registration is **closed** — there is no signup UI or public registration endp
 
 - **Bootstrap admin:** on first boot, `services.local.main` auto-seeds a single
   admin account into the SQLite `auth_users` table from the `ADMIN_EMAIL` /
-  `ADMIN_PASSWORD` environment variables (see `infrastructure/local/local.env`).
+  `ADMIN_PASSWORD` environment variables (see `infrastructure/local.env`).
   **If `ADMIN_PASSWORD` is unset, login is impossible** — set it before first
   boot (the shipped default in `local.env` is a dev-only throwaway; override it
   for anything beyond local dev).

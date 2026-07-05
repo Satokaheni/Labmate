@@ -43,7 +43,7 @@ RunPod works too, but nothing here requires it.
 | M3 — MCP bridge | ✅ Done | TypeScript MCP server + Python MCP client |
 | M4 — Local state | ✅ Done | SQLite LocalStore (sessions, turns, auth, checkpoints) — replaced MongoDB/Chroma/Redis |
 | M5 — Skills | ✅ Done | Polyglot skill framework, SKILL.md discovery |
-| M6 — llama.cpp serving | ✅ Done | `llama-server` OpenAI-compatible API (see the vLLM-vs-CUDA note in `infrastructure/local/INSTALL.md`) |
+| M6 — llama.cpp serving | ✅ Done | `llama-server` OpenAI-compatible API (see the vLLM-vs-CUDA note in `infrastructure/INSTALL.md`) |
 | M7 — Discord | ⬜ Deferred | Discord bot connector, edit-based streaming (do not wire until explicitly instructed) |
 
 ---
@@ -69,27 +69,27 @@ nvidia-smi
 
 ### 1. One-time install (system + Python + llama.cpp + GGUF model)
 ```bash
-infrastructure/local/install.sh
+infrastructure/install.sh
 ```
 
 ### 2. Start the inference server
 ```bash
-infrastructure/local/serve-model.sh   # Gemma 4 via llama.cpp on :8000, waits until healthy
+infrastructure/serve-model.sh   # Gemma 4 via llama.cpp on :8000, waits until healthy
 ```
 
 ### 3. Start the local harness (one process: gateway + orchestrator, SQLite state)
 ```bash
-infrastructure/local/start.sh
-infrastructure/local/status.sh        # all green before testing
+infrastructure/start.sh
+infrastructure/status.sh        # all green before testing
 ```
 
 ### 4. Run the CLI
 ```bash
-source infrastructure/local/local.env
+source infrastructure/local.env
 PYTHONPATH=. python -m services.cli "Write a Python function that returns the square of a number."
 ```
 
-See `infrastructure/local/README.md` and `infrastructure/local/INSTALL.md` for
+See `infrastructure/README.md` and `infrastructure/INSTALL.md` for
 full details, ports, and the auth model (bootstrap admin + admin-created users).
 
 ---
@@ -119,12 +119,9 @@ labmate/
 │   ├── skill-worker/              # Skill execution worker
 │   └── skills/                    # Individual SKILL.md skill definitions
 │
-├── infrastructure/
-│   ├── local/                     # LIVE stack: install/start/stop/serve-model,
-│   │                              #   native host processes, no Docker, no Mongo/
-│   │                              #   Redis/Chroma — SQLite state under .data/
-│   └── docker/                    # Legacy Docker Compose stack (superseded by
-│                                   #   infrastructure/local/; kept for reference)
+├── infrastructure/                # LIVE stack: install/start/stop/serve-model,
+│                                   #   native host processes, no Docker, no Mongo/
+│                                   #   Redis/Chroma — SQLite state under .data/
 │
 ├── research/
 │   └── llm-harness-research/
@@ -221,22 +218,20 @@ No Docker, no MongoDB, no Redis, no Chroma.
 
 ```bash
 # One-time install (system + Python + llama.cpp + GGUF)
-infrastructure/local/install.sh
+infrastructure/install.sh
 
 # Start the model
-infrastructure/local/serve-model.sh
+infrastructure/serve-model.sh
 
 # Start the harness
-infrastructure/local/start.sh
+infrastructure/start.sh
 
 # Status
-infrastructure/local/status.sh
+infrastructure/status.sh
 
 # Stop everything (data preserved under .data/)
-infrastructure/local/stop.sh
+infrastructure/stop.sh
 ```
 
-See `infrastructure/local/README.md` for what runs, and `INSTALL.md` for the
+See `infrastructure/README.md` for what runs, and `INSTALL.md` for the
 full from-scratch setup (including the llama.cpp-vs-vLLM CUDA gotcha).
-The legacy `infrastructure/docker/` Compose stack is superseded and kept only
-for reference.

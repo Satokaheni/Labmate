@@ -277,9 +277,9 @@ A live A/B on RunPod (`eval/reports/ab_agentic_fix_loop_report.md`) drove a seco
 Run these after any change to confirm the stack still works. Start services in order:
 
 ```bash
-infrastructure/local/serve-model.sh   # wait until model healthy
-infrastructure/local/start.sh
-infrastructure/local/status.sh        # all services must be green before testing
+infrastructure/serve-model.sh   # wait until model healthy
+infrastructure/start.sh
+infrastructure/status.sh        # all services must be green before testing
 ```
 
 ### 1. Service health checks
@@ -302,7 +302,7 @@ python -m pytest tests/ -v 2>&1 | tail -20
 
 ### 4. One-shot CLI smoke test
 ```bash
-source infrastructure/local/local.env
+source infrastructure/local.env
 PYTHONPATH=. python -m services.cli "Write a Python function that returns the square of a number."
 ```
 Success: answer streams live and process exits 0.
@@ -383,7 +383,7 @@ These are unit/BDD-covered (`PYTHONPATH=. python -m pytest tests/services/orches
 
 ```bash
 # Conditional gates — OFF by default; enable, then a trivial task should skip the ambiguity + verify gates
-ENABLE_CONDITIONAL_GATES=1 infrastructure/local/start.sh   # (or export before starting the orchestrator)
+ENABLE_CONDITIONAL_GATES=1 infrastructure/start.sh   # (or export before starting the orchestrator)
 PYTHONPATH=. python -m services.cli "What is 2+2? Reply in one sentence."
 #   log: assess_ambiguity skipped (trivial) + verify skipped → faster turn. An ambiguous task ("improve it") still gates.
 
@@ -408,7 +408,7 @@ GEMMA_BASE="http://localhost:9999/v1" LABMATE_FALLBACK_BASES="http://localhost:8
 # Sequencing mode — DEFAULT is skill_first (one skill/goal). The mode is read by the ORCHESTRATOR
 # at startup (process-wide), NOT by the CLI — to change it, restart the orchestrator under the env
 # var, then push a task. For the proper comparison use the A/B harness in §9 (it restarts per mode).
-SEQUENCING_MODE=react infrastructure/local/start.sh    # restart orchestrator in react (opt-in) mode
+SEQUENCING_MODE=react infrastructure/start.sh    # restart orchestrator in react (opt-in) mode
 PYTHONPATH=. python -m services.cli "Review /workspace/ab_buggy.py for bugs, then fix the code."
 #   skill_first: ONE skill dispatch then finish (honest 'partial' if the skill can't edit code).
 #   react:       always uses _run_react_loop for every goal; diagnostic / routing-regression baseline.
@@ -432,11 +432,11 @@ redis-cli SET "labmate:steer:$TASK_ID" "focus on the off-by-one in the loop rang
 #   log: "wall-clock deadline exceeded" OR "no-progress breaker tripped".
 
 # Revise-before-deliver (opt-in) — enable, then a thin/wrong final answer gets ONE revision pass before delivery
-ENABLE_FINALIZE_REVISION=1 infrastructure/local/start.sh
+ENABLE_FINALIZE_REVISION=1 infrastructure/start.sh
 #   log (revise node): should_revise → one architect() pass → revised final_answer. OFF by default (no latency).
 
 # Skill curator (opt-in) — enable; after successful sequences it STAGES drafts for review (never auto-activates)
-ENABLE_SKILL_CURATOR=1 infrastructure/local/start.sh
+ENABLE_SKILL_CURATOR=1 infrastructure/start.sh
 #   → check services/skills/.proposed/<name>/ for staged SKILL.md drafts + a skill.proposed event. discover() skips .proposed/.
 ```
 
