@@ -599,6 +599,17 @@ class LocalStore:
         (n,) = await cur.fetchone()
         return int(n)
 
+    async def auth_user_set_password(self, email: str, password_hash: str) -> bool:
+        """Update an existing auth user's password hash. Returns True if a row
+        was updated (email existed), False otherwise."""
+        conn = await self._connected()
+        cur = await conn.execute(
+            "UPDATE auth_users SET password_hash = ? WHERE email = ?",
+            (password_hash, email.lower()),
+        )
+        await conn.commit()
+        return cur.rowcount > 0
+
     # ── inner-loop checkpoints (crash recovery) ──────────────────────────
     async def checkpoint_put(self, task_id: str, payload: dict) -> None:
         conn = await self._connected()

@@ -46,3 +46,22 @@ async def test_auth_user_create_duplicate_email_raises(tmp_path):
             created_at="t2",
         )
     await store.close()
+
+
+@pytest.mark.asyncio
+async def test_auth_user_set_password(tmp_path):
+    store = LocalStore(tmp_path / "state.db")
+    await store.auth_user_create(
+        id="u-1",
+        email="a@x.io",
+        display_name="A",
+        password_hash="old-hash",
+        role="user",
+        created_at="t",
+    )
+    assert await store.auth_user_set_password("a@x.io", "new-hash") is True
+    got = await store.auth_user_find_by_email("a@x.io")
+    assert got is not None
+    assert got["passwordHash"] == "new-hash"
+    assert await store.auth_user_set_password("missing@x.io", "whatever") is False
+    await store.close()

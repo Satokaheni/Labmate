@@ -34,6 +34,33 @@ source infrastructure/local/local.env # export LOCAL_HOST / LOCAL_PORT / GEMMA_B
 
 ---
 
+## Quickstart
+
+End-to-end, in order:
+
+1. **Install:** `bash infrastructure/local/install.sh` — system + Python deps,
+   MCP bridge build, frontend `config.ts` provisioning. Idempotent; safe to re-run.
+2. **Configure:** edit `infrastructure/local/local.env` — set `GEMMA_BASE` to your
+   model server (`http://localhost:8000/v1` if serving on this same box, or
+   `http://<gpu-host>:8000/v1` for a remote GPU box — this is the harness's
+   **sole remote dependency**), and set `ADMIN_EMAIL` / `ADMIN_PASSWORD` (these
+   auto-seed the admin account on first boot).
+3. **Start the model server:** `infrastructure/local/serve-model.sh` on the GPU
+   box — wait until `/health` reports `"ok"` (see `status.sh` or curl it directly).
+4. **Start the harness:** `bash infrastructure/local/start.sh` — launches
+   `services.local.main` (gateway + orchestrator, one process) and prints the
+   seeded admin login once healthy.
+5. **Frontend:** defaults to `ws://localhost:8787/ws` for local use; log in with
+   the seeded admin credentials from step 2.
+6. **Add more users** (registration is closed — no signup UI): run the headless
+   admin CLI, no running server required —
+   ```bash
+   python -m services.ws_gateway.seed_user --email teammate@example.com --password ... [--role admin]
+   ```
+   Pass `--reset-password` to rotate an existing user's password instead.
+
+---
+
 ## What gets installed (and the gotchas)
 
 ### 1. System packages
@@ -125,14 +152,21 @@ Registration is **closed** — there is no signup UI or public registration endp
   **If `ADMIN_PASSWORD` is unset, login is impossible** — set it before first
   boot (the shipped default in `local.env` is a dev-only throwaway; override it
   for anything beyond local dev).
-- **Additional users:** created by an admin via `POST /auth/users` against the
-  gateway, authenticated with the admin's Bearer token (admin-only endpoint —
-  see `services/ws_gateway/auth.py`). There is no CLI or frontend affordance for
-  this yet (deferred to Piece 7); use `curl` or an HTTP client directly, e.g.:
-
-  ```bash
-  curl -X POST "http://localhost:8787/auth/users" \
-    -H "Authorization: Bearer <admin JWT from /auth/login>" \
-    -H "Content-Type: application/json" \
-    -d '{"email": "teammate@example.com", "password": "..."}'
-  ```
+- **Additional users:** two ways to add the 2nd/3rd user or rotate a password:
+  - **Headless admin CLI** (`services/ws_gateway/seed_user.py`, Piece 7c) — writes
+    directly to the SQLite `auth_users` table, no running gateway required:
+    ```bash
+    python -m services.ws_gateway.seed_user --email teammate@example.com --password ... [--role admin]
+    python -m services.ws_gateway.seed_user --email teammate@example.com --password newpw --reset-password
+    ```
+    Creating an email that already exists fails (exit 1) unless `--reset-password`
+    is passed, in which case the password is updated instead.
+  - **HTTP API** — `POST /auth/users` against a running gateway, authenticated
+    with the admin's Bearer token (admin-only endpoint — see
+    `services/ws_gateway/auth.py`):
+    ```bash
+    curl -X POST "http://localhost:8787/auth/users" \
+      -H "Authorization: Bearer <admin JWT from /auth/login>" \
+      -H "Content-Type: application/json" \
+      -d '{"email": "teammate@example.com", "password": "..."}'
+    ```
