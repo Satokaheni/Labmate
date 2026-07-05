@@ -82,6 +82,18 @@ def _raw_tool_name(frame: dict[str, Any]) -> str:
         # mcp__<server>__<tool> hosted-capability calls also surface as kind=="skill"
         # with neither shape; not an edit tool, so the exact label only affects
         # the tool:<name> tag, not the tagger's honesty/verification rules.
+        #
+        # KNOWN LIMITATION (skill_first mode): SkillRouter.run() (skill_router.py)
+        # emits tool.start with the TARGET SKILL's own args (e.g. {"target": "f.py"}),
+        # which matches neither shape above, so a skill dispatch in skill_first mode
+        # returns the skill name (e.g. "code-review") rather than "call_skill_tool".
+        # => the `edited+verified`/`edited_unverified` tags (which key on the
+        # `call_skill_tool` edit tool) UNDER-COUNT edits made via skill_first. The
+        # honesty-critical `fabricated` tag is UNAFFECTED (it keys on tests_passed +
+        # the answer's claim, not edit-detection), and `tests_passed` is the
+        # mode-independent verification signal. Trust edit-detection primarily in
+        # `react` mode; for skill_first, read tests_passed. (Authoritative fix =
+        # expose edited_files in the goal result — a harness follow-up.)
         return str(frame.get("name", ""))
     return str(frame.get("name", ""))
 
@@ -149,7 +161,7 @@ async def _capture_trajectory(
         # then force-close so the subscription is always released.
         try:
             await asyncio.wait_for(drain_task, timeout=5.0)
-        except (TimeoutError, Exception):
+        except Exception:
             drain_task.cancel()
         sub.close()
 
@@ -171,7 +183,10 @@ async def _capture_trajectory(
         "verify_nudges": verify_nudges,
         "cancelled": cancelled,
         "llm_calls": int(result.get("llm_calls") or 0),
-        "peak_prompt_tokens": int(result.get("peak_prompt_tokens") or 0),
+        # NOTE: peak_prompt_tokens is NOT in the goal result payload (call_counter
+        # tracks it only for local context-window bookkeeping, never persisted to
+        # wait_result), so it is intentionally omitted rather than captured as a
+        # silently-always-0 field. Re-add here if the harness starts persisting it.
         "wall_time_s": wall_time_s,
         "ttfa_s": ttfa_s,
     }

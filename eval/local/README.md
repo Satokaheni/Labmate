@@ -86,3 +86,18 @@ regression in either shows up even when the raw pass-rate doesn't move (e.g.
 an "ok=True" answer that is actually a fabricated claim is excluded from
 `edited+verified` and flagged by `fabricated_rate`, not silently counted as a
 clean win).
+
+## Limitations
+
+- **Edit-detection is `react`-mode accurate; `skill_first` under-counts.** The
+  `edited+verified` / `edited_unverified` tags key on the `call_skill_tool` edit
+  tool. In `skill_first` mode, a skill dispatch is emitted by `SkillRouter.run()`
+  with the target skill's own args (not the `call_skill_tool` shape), so it is not
+  recognized as an edit tool. The honesty-critical `fabricated` tag is UNAFFECTED
+  (it keys on `tests_passed` + the answer's claim), and `tests_passed` is the
+  mode-independent verification signal — trust it over edit-detection for
+  `skill_first` runs. (Authoritative fix = expose `edited_files` in the goal
+  result; a harness follow-up.)
+- `peak_prompt_tokens` is not persisted to the goal result, so it is not captured.
+- `run_local_eval.py` + `compare_local.py` need `GEMMA_BASE` up and are not run in
+  CI; only the pure scorer (`score_trajectory.py`) is CI-tested.
