@@ -23,9 +23,18 @@
 #   vLLM becomes viable again (preferred for batching) — see INSTALL.md.
 #
 # Usage:
-#   infrastructure/install.sh             # everything (core + skills + model)
-#   infrastructure/install.sh --no-model  # skip the 18GB GGUF download
-#   infrastructure/install.sh --no-skills # skip per-skill deps (core only)
+#   infrastructure/install.sh               # everything (core + skills + model)
+#   infrastructure/install.sh --no-model    # skip the 18GB GGUF download
+#   infrastructure/install.sh --no-skills   # skip per-skill deps (core only)
+#   infrastructure/install.sh --server-only # RunPod/GPU box: ONLY the model server
+#
+# --server-only installs JUST the inference engine (llama.cpp CUDA build + GGUF)
+# — nothing else. On the split topology the GPU box runs ONLY llama-server (:8000);
+# the harness (Node/mcp-bridge, orchestrator/ws_gateway/cli Python deps, skills,
+# SearXNG, tokenizer, frontend) runs on the CLIENT (your Mac), which points at this
+# box via GEMMA_BASE. So --server-only skips every client-only section and does only
+# GPU-detect (§0) + llama.cpp + GGUF (§4). Combine with --no-model to build the
+# engine but bring your own weights.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -63,13 +72,24 @@ SEARXNG_PORT="${SEARXNG_PORT:-8080}"
 SKIP_MODEL=false
 SKIP_SKILLS=false
 SKIP_SEARXNG=false
+SERVER_ONLY=false
 for arg in "$@"; do
   case "$arg" in
-    --no-model)   SKIP_MODEL=true ;;
-    --no-skills)  SKIP_SKILLS=true ;;
-    --no-searxng) SKIP_SEARXNG=true ;;
+    --no-model)    SKIP_MODEL=true ;;
+    --no-skills)   SKIP_SKILLS=true ;;
+    --no-searxng)  SKIP_SEARXNG=true ;;
+    --server-only) SERVER_ONLY=true ;;
   esac
 done
+
+# --server-only ⇒ only the inference engine. Force-skip the client-only sections
+# that have their own skip flags; the remaining client-only sections (§1 node/rg,
+# §2 mcp-bridge, §3 python deps, §4b tokenizer, §6 frontend) are guarded on
+# $SERVER_ONLY inline below.
+if $SERVER_ONLY; then
+  SKIP_SKILLS=true
+  SKIP_SEARXNG=true
+fi
 
 log()  { echo "[install] $*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -84,28 +104,31 @@ else
   log "WARNING: nvidia-smi not found — inference build will be CPU-only."
 fi
 
-# ─── 1. System packages ───────────────────────────────────────────────────────
-log "system packages ..."
+# ─── 1. System packages (CLIENT-ONLY: node runs mcp-bridge, rg backs search_files) ──
 export DEBIAN_FRONTEND=noninteractive
-
-if ! have node; then
-  log "installing Node.js 22 (NodeSource) ..."
-  curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null 2>&1
-  apt-get install -y nodejs >/dev/null
-fi
-log "node $(node --version)"
-
-if ! have rg; then
-  log "installing ripgrep (used by search_files; Python fallback exists) ..."
-  if have apt-get; then
-    apt-get install -y ripgrep >/dev/null
-  elif have brew; then
-    brew install ripgrep >/dev/null
-  else
-    log "  WARN: no apt-get/brew found — install ripgrep manually (https://github.com/BurntSushi/ripgrep#installation)"
+if $SERVER_ONLY; then
+  log "server-only: skipping node + ripgrep (client-only; the model box needs neither)."
+else
+  log "system packages ..."
+  if ! have node; then
+    log "installing Node.js 22 (NodeSource) ..."
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null 2>&1
+    apt-get install -y nodejs >/dev/null
   fi
+  log "node $(node --version)"
+
+  if ! have rg; then
+    log "installing ripgrep (used by search_files; Python fallback exists) ..."
+    if have apt-get; then
+      apt-get install -y ripgrep >/dev/null
+    elif have brew; then
+      brew install ripgrep >/dev/null
+    else
+      log "  WARN: no apt-get/brew found — install ripgrep manually (https://github.com/BurntSushi/ripgrep#installation)"
+    fi
+  fi
+  have rg && log "ripgrep $(rg --version | head -1)" || log "  WARN: rg still not on PATH — search_files will fall back to its Python implementation"
 fi
-have rg && log "ripgrep $(rg --version | head -1)" || log "  WARN: rg still not on PATH — search_files will fall back to its Python implementation"
 
 # ─── 2. Node deps + build (mcp-bridge) ────────────────────────────────────────
 # dist/ is gitignored (build output), so a fresh clone has NO dist/index.js until
@@ -113,7 +136,9 @@ have rg && log "ripgrep $(rg --version | head -1)" || log "  WARN: rg still not 
 # it must exist before the stack runs. (start.sh also rebuilds a missing/stale
 # dist as a safety net, but building at install time surfaces TS errors during
 # setup instead of as an opaque "MCP bridge did not become ready" at first start.)
-if [[ -f "${REPO_ROOT}/services/mcp-bridge/package.json" ]]; then
+if $SERVER_ONLY; then
+  log "server-only: skipping mcp-bridge (client-only)."
+elif [[ -f "${REPO_ROOT}/services/mcp-bridge/package.json" ]]; then
   log "npm install + build (mcp-bridge) ..."
   ( cd "${REPO_ROOT}/services/mcp-bridge" \
       && npm install --no-audit --no-fund >/dev/null 2>&1 \
@@ -126,21 +151,27 @@ fi
 # Install requirements for every core service that runs in the local stack —
 # not just memory + mcp-bridge. Missing any of these makes start.sh fail at
 # runtime (e.g. skill-worker dies with ModuleNotFoundError: 'frontmatter').
-log "python deps (core services) ..."
+# PIP is also used by later sections (§4 huggingface-hub, §4b tokenizer), so define
+# it before the server-only short-circuit.
 PIP="pip install --break-system-packages -q"
-# Auto-discover every top-level service's requirements.txt (services/<name>/requirements.txt)
-# rather than hardcoding a list — a hardcoded list silently misses newly-added services
-# (e.g. a future service dir), whose absence only surfaces later as a runtime
-# ModuleNotFoundError. The glob matches DIRECT children only, so per-skill deps
-# (services/skills/<name>/, handled in §3b) and the DEFERRED Discord connector
-# (services/connectors/deferred/) are intentionally NOT matched.
-for req in "${REPO_ROOT}"/services/*/requirements.txt; do
-  [[ -f "$req" ]] || continue
-  svc="$(basename "$(dirname "$req")")"
-  log "  pip: services/${svc}"
-  $PIP -r "$req"
-done
-# NOTE: We deliberately do NOT install vllm here (CUDA-13 incompatibility above).
+if $SERVER_ONLY; then
+  log "server-only: skipping core-service python deps (client-only)."
+else
+  log "python deps (core services) ..."
+  # Auto-discover every top-level service's requirements.txt (services/<name>/requirements.txt)
+  # rather than hardcoding a list — a hardcoded list silently misses newly-added services
+  # (e.g. a future service dir), whose absence only surfaces later as a runtime
+  # ModuleNotFoundError. The glob matches DIRECT children only, so per-skill deps
+  # (services/skills/<name>/, handled in §3b) and the DEFERRED Discord connector
+  # (services/connectors/deferred/) are intentionally NOT matched.
+  for req in "${REPO_ROOT}"/services/*/requirements.txt; do
+    [[ -f "$req" ]] || continue
+    svc="$(basename "$(dirname "$req")")"
+    log "  pip: services/${svc}"
+    $PIP -r "$req"
+  done
+  # NOTE: We deliberately do NOT install vllm here (CUDA-13 incompatibility above).
+fi
 
 # ─── 3b. Skill dependencies (Python requirements + TypeScript build) ───────────
 # Each skill in services/skills/<name> is an independent MCP server with its own
@@ -218,7 +249,9 @@ fi
 # downloaded, so this uses no VRAM. NOT gated by --no-model: it's tiny and the
 # skill needs it even when you bring your own weights. The skill loads it from
 # REPO_MAP_TOKENIZER (set in local.env) so no network is needed at runtime.
-if [[ -f "${TOKENIZER_DIR}/tokenizer.json" ]]; then
+if $SERVER_ONLY; then
+  log "server-only: skipping tokenizer (client-side ast-repo-map skill needs it, not the model box)."
+elif [[ -f "${TOKENIZER_DIR}/tokenizer.json" ]]; then
   log "tokenizer already present: ${TOKENIZER_DIR}"
 else
   have hf || $PIP "huggingface-hub>=0.34"
@@ -293,26 +326,37 @@ fi
 # config.ts is gitignored (personal gateway URL); provision it from the committed
 # template so a local build/typecheck works without manual setup. If the frontend
 # isn't present, this is a no-op — its own predev/prebuild scripts do this too.
-FRONTEND_DIR="${REPO_ROOT}/services/frontend"
-if [[ -f "${FRONTEND_DIR}/src/config.example.ts" && ! -f "${FRONTEND_DIR}/src/config.ts" ]]; then
+if $SERVER_ONLY; then
+  : # server-only: no frontend on the model box
+elif [[ -f "${FRONTEND_DIR:="${REPO_ROOT}/services/frontend"}/src/config.example.ts" && ! -f "${FRONTEND_DIR}/src/config.ts" ]]; then
   log "frontend: provisioning src/config.ts from config.example.ts (local default: ws://localhost:8787/ws)"
   cp "${FRONTEND_DIR}/src/config.example.ts" "${FRONTEND_DIR}/src/config.ts"
 fi
 
-log "DONE. Next:"
-log "  infrastructure/start.sh         # services.local.main (single process) + SearXNG"
-log "  infrastructure/serve-model.sh   # Gemma 4 via llama.cpp on :8000"
-log "  source infrastructure/local.env # export connection URLs (incl. SEARXNG_URL)"
-log ""
-log "Set GEMMA_BASE in local.env to your model server. Local default:"
-log "  http://localhost:8000/v1 (run serve-model.sh on the same box). Remote GPU"
-log "  box: http://<host>:8000/v1 — this is the harness's sole remote dependency."
-log ""
-log "Admin login: set ADMIN_EMAIL / ADMIN_PASSWORD in infrastructure/local.env"
-log "  (dev defaults are already set there). The admin account is auto-seeded on"
-log "  services.local.main's FIRST boot — only when the auth store is empty. If"
-log "  ADMIN_PASSWORD is unset/empty, no admin is seeded and login is impossible."
-log "  Additional users (2nd/3rd account) or password rotation: run"
-log "  python -m services.ws_gateway.seed_user --email a@b.c --password ... [--role admin]"
-log "  (headless CLI, no running server needed; pass --reset-password to rotate)."
-log "  start.sh prints the admin email/password reminder once the harness is healthy."
+if $SERVER_ONLY; then
+  log "DONE (server-only). This box runs ONLY the model server. Next:"
+  log "  infrastructure/serve-model.sh   # Gemma 4 via llama.cpp on :8000"
+  log "  curl -s http://localhost:8000/health   # → {\"status\":\"ok\"} once loaded"
+  log ""
+  log "Then, on your CLIENT (Mac) harness, point GEMMA_BASE at THIS box:"
+  log "  GEMMA_BASE=http://<this-host>:8000/v1  (the harness's sole remote dependency)."
+  log "  (Expose port 8000 / use the RunPod TCP proxy so the Mac can reach it.)"
+else
+  log "DONE. Next:"
+  log "  infrastructure/start.sh         # services.local.main (single process) + SearXNG"
+  log "  infrastructure/serve-model.sh   # Gemma 4 via llama.cpp on :8000"
+  log "  source infrastructure/local.env # export connection URLs (incl. SEARXNG_URL)"
+  log ""
+  log "Set GEMMA_BASE in local.env to your model server. Local default:"
+  log "  http://localhost:8000/v1 (run serve-model.sh on the same box). Remote GPU"
+  log "  box: http://<host>:8000/v1 — this is the harness's sole remote dependency."
+  log ""
+  log "Admin login: set ADMIN_EMAIL / ADMIN_PASSWORD in infrastructure/local.env"
+  log "  (dev defaults are already set there). The admin account is auto-seeded on"
+  log "  services.local.main's FIRST boot — only when the auth store is empty. If"
+  log "  ADMIN_PASSWORD is unset/empty, no admin is seeded and login is impossible."
+  log "  Additional users (2nd/3rd account) or password rotation: run"
+  log "  python -m services.ws_gateway.seed_user --email a@b.c --password ... [--role admin]"
+  log "  (headless CLI, no running server needed; pass --reset-password to rotate)."
+  log "  start.sh prints the admin email/password reminder once the harness is healthy."
+fi

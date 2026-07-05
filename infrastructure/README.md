@@ -43,6 +43,11 @@ infrastructure/stop.sh        # stop all (SQLite data preserved)
 source infrastructure/local.env   # export LOCAL_HOST / LOCAL_PORT / GEMMA_BASE / etc.
 ```
 
+**GPU box (RunPod) — model server only:** `infrastructure/install.sh --server-only`
+installs *just* llama.cpp + the GGUF (no Node/Python/skills/SearXNG/frontend), then
+`serve-model.sh`. The harness runs on your client and points at the box via
+`GEMMA_BASE=http://<gpu-host>:8000/v1`. See [`INSTALL.md`](./INSTALL.md#split-topology-model-box-vs-harness-client).
+
 Full from-scratch / reinstall instructions, the **llama.cpp-vs-vLLM-CUDA-12.8
 gotcha**, ports, and the auth model are in [`INSTALL.md`](./INSTALL.md).
 

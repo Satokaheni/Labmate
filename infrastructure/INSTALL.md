@@ -23,6 +23,26 @@ infrastructure/install.sh --no-model # skip the GGUF download
 
 Re-running is safe — every step is guarded and skips work already done.
 
+### Split topology: model box vs harness client
+
+In the split setup the **GPU box (e.g. RunPod) runs ONLY the model server**
+(`llama-server` on :8000); the **harness runs on your client (Mac)** and points at
+the box via `GEMMA_BASE`. On the GPU box, install just the inference engine:
+
+```bash
+infrastructure/install.sh --server-only   # ONLY llama.cpp (CUDA) + GGUF — nothing else
+infrastructure/serve-model.sh             # launch llama-server on :8000
+curl -s http://localhost:8000/health      # → {"status":"ok"} once loaded
+```
+
+`--server-only` skips every client-only section (Node/mcp-bridge, the
+orchestrator/ws_gateway/cli Python deps, per-skill deps, SearXNG, the tokenizer,
+and the frontend) and runs only GPU-detect + the llama.cpp build + GGUF download.
+Combine with `--no-model` to build the engine but bring your own weights. Then on
+the **client**, run the full `infrastructure/install.sh` and set
+`GEMMA_BASE=http://<gpu-host>:8000/v1` (expose port 8000 / use the RunPod TCP
+proxy so the client can reach it).
+
 Then:
 
 ```bash
