@@ -10,6 +10,7 @@ whether to reflect-retry, back off, or finalize immediately.
 This module is PURE: no I/O, no env reads, no logging. classify_error() is a
 total function over (str | Exception | None).
 """
+
 from __future__ import annotations
 
 from enum import Enum
@@ -17,12 +18,14 @@ from enum import Enum
 
 class ErrorClass(str, Enum):
     """Mutually-exclusive failure categories. .value == .name for JSON safety."""
-    TERMINAL_DEPENDENCY = "TERMINAL_DEPENDENCY"   # missing tool/sandbox/skill/docker
-    TERMINAL_CREDENTIAL = "TERMINAL_CREDENTIAL"   # missing/invalid api key or auth
-    TERMINAL_NETWORK = "TERMINAL_NETWORK"         # connection refused / DNS / unreachable
-    RATE_LIMITED = "RATE_LIMITED"                 # 429 — bounded backoff then terminal
-    TRANSIENT = "TRANSIENT"                       # timeouts — limited retry
-    RETRYABLE = "RETRYABLE"                       # default / unknown — normal retry budget
+
+    TERMINAL_DEPENDENCY = "TERMINAL_DEPENDENCY"  # missing tool/sandbox/skill/docker
+    TERMINAL_CREDENTIAL = "TERMINAL_CREDENTIAL"  # missing/invalid api key or auth
+    TERMINAL_NETWORK = "TERMINAL_NETWORK"  # connection refused / DNS / unreachable
+    TERMINAL_CONTEXT = "TERMINAL_CONTEXT"  # prompt exceeds the model context window
+    RATE_LIMITED = "RATE_LIMITED"  # 429 — bounded backoff then terminal
+    TRANSIENT = "TRANSIENT"  # timeouts — limited retry
+    RETRYABLE = "RETRYABLE"  # default / unknown — normal retry budget
 
 
 TERMINAL_CLASSES: frozenset[ErrorClass] = frozenset(
@@ -30,6 +33,10 @@ TERMINAL_CLASSES: frozenset[ErrorClass] = frozenset(
         ErrorClass.TERMINAL_DEPENDENCY,
         ErrorClass.TERMINAL_CREDENTIAL,
         ErrorClass.TERMINAL_NETWORK,
+        # Context overflow is unfixable by retry (the same oversized prompt would
+        # 400 again) — retrying only burns budget. Compaction is one-shot upstream;
+        # if the assembled prompt still exceeds the window, finalize, don't retry.
+        ErrorClass.TERMINAL_CONTEXT,
     }
 )
 
@@ -53,25 +60,70 @@ _PATTERNS: tuple[tuple[ErrorClass, tuple[str, ...]], ...] = (
     (
         ErrorClass.TERMINAL_CREDENTIAL,
         (
-            "api key", "api_key", "apikey", "credential",
-            "unauthorized", "401", "403", "forbidden",
-            "authentication failed", "auth failed",
+            "api key",
+            "api_key",
+            "apikey",
+            "credential",
+            "unauthorized",
+            "401",
+            "403",
+            "forbidden",
+            "authentication failed",
+            "auth failed",
         ),
     ),
     (
         ErrorClass.TERMINAL_NETWORK,
         (
-            "connection refused", "econnrefused", "network is unreachable",
-            "name resolution", "enotfound", "getaddrinfo", "network",
+            "connection refused",
+            "econnrefused",
+            "network is unreachable",
+            "name resolution",
+            "enotfound",
+            "getaddrinfo",
+            "network",
             "dns",
         ),
     ),
     (
         ErrorClass.TERMINAL_DEPENDENCY,
         (
-            "skillunavailable", "unavailable", "not available", "no such",
-            "not found", "missing", "docker", "unshare", "eperm", "enoent",
-            "nsjail", "bwrap", "gvisor", "sandbox", "permission denied",
+            "skillunavailable",
+            "unavailable",
+            "not available",
+            "no such",
+            "not found",
+            "missing",
+            "docker",
+            "unshare",
+            "eperm",
+            "enoent",
+            "nsjail",
+            "bwrap",
+            "gvisor",
+            "sandbox",
+            "permission denied",
+        ),
+    ),
+    (
+        # Prompt exceeds the model context window — retry can't fix an oversized
+        # prompt (compaction is one-shot upstream). Substrings kept specific to
+        # avoid false positives on the bare word "context".
+        ErrorClass.TERMINAL_CONTEXT,
+        (
+            "context length",
+            "context_length",
+            "context window",
+            "context_window",
+            "context_length_exceeded",
+            "maximum context",
+            "max context",
+            "too many tokens",
+            "prompt is too long",
+            "exceeds the context",
+            "exceed context",
+            "reduce the length",
+            "n_ctx",
         ),
     ),
     (
@@ -81,7 +133,7 @@ _PATTERNS: tuple[tuple[ErrorClass, tuple[str, ...]], ...] = (
 )
 
 
-def classify_error(error: "str | Exception | None") -> ErrorClass:
+def classify_error(error: str | Exception | None) -> ErrorClass:
     """Classify a failure into exactly one ErrorClass.
 
     Pure, case-insensitive, deterministic, total. Unknown/empty -> RETRYABLE
@@ -100,5 +152,5 @@ def classify_error(error: "str | Exception | None") -> ErrorClass:
 
 
 def is_terminal(cls: ErrorClass) -> bool:
-    """True for the three terminal classes (never reflect-retry these)."""
+    """True for the terminal classes (never reflect-retry these)."""
     return cls in TERMINAL_CLASSES
