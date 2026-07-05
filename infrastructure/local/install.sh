@@ -290,7 +290,26 @@ YAML
   fi
 fi
 
+
+# ─── 6. Frontend config (optional — only if the frontend is checked out here) ──
+# config.ts is gitignored (personal gateway URL); provision it from the committed
+# template so a local build/typecheck works without manual setup. If the frontend
+# isn't present, this is a no-op — its own predev/prebuild scripts do this too.
+FRONTEND_DIR="${REPO_ROOT}/services/frontend"
+if [[ -f "${FRONTEND_DIR}/src/config.example.ts" && ! -f "${FRONTEND_DIR}/src/config.ts" ]]; then
+  log "frontend: provisioning src/config.ts from config.example.ts (local default: ws://localhost:8787/ws)"
+  cp "${FRONTEND_DIR}/src/config.example.ts" "${FRONTEND_DIR}/src/config.ts"
+fi
+
 log "DONE. Next:"
 log "  infrastructure/local/start.sh         # services.local.main (single process) + SearXNG"
 log "  infrastructure/local/serve-model.sh   # Gemma 4 via llama.cpp on :8000"
 log "  source infrastructure/local/local.env # export connection URLs (incl. SEARXNG_URL)"
+log ""
+log "Admin login: set ADMIN_EMAIL / ADMIN_PASSWORD in infrastructure/local/local.env"
+log "  (dev defaults are already set there). The admin account is auto-seeded on"
+log "  services.local.main's FIRST boot — only when the auth store is empty. If"
+log "  ADMIN_PASSWORD is unset/empty, no admin is seeded and login is impossible."
+log "  Additional users are created by an admin via POST /auth/users (Bearer token);"
+log "  a CLI for this ships in Piece 7c. start.sh prints the admin email/password"
+log "  reminder once the harness is healthy."

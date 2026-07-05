@@ -33,6 +33,13 @@ fail() { echo "[local] FAIL: $*" >&2; exit 1; }
 
 if [[ "${1:-}" == "--status" ]]; then exec "${SCRIPT_DIR}/status.sh"; fi
 
+# Source local.env in THIS shell (not just the harness subshell below) so
+# ADMIN_EMAIL/ADMIN_PASSWORD are available for the login banner printed at the
+# end of this script, regardless of which branch (fresh start vs already-running)
+# is taken.
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/local.env"
+
 # ─── SearXNG (native metasearch for the web-search skill) ─────────────────────
 # Internal instance with JSON output enabled. Non-fatal: if SearXNG isn't installed
 # or won't start, the rest of the stack still comes up (web-search is just unavailable).
@@ -130,3 +137,6 @@ echo "    GEMMA_BASE=http://localhost:8000/v1"
 echo "    LABMATE_GATEWAY_URL=ws://localhost:8787/ws  (CLI + Electron connect here)"
 echo "    -> source infrastructure/local/local.env to export these."
 echo "    -> Logs: $LOGS/  PIDs: $PIDS/"
+info "admin login: ${ADMIN_EMAIL:-<unset>} (password from local.env ADMIN_PASSWORD)"
+[ -z "${ADMIN_PASSWORD:-}" ] && info "  WARN: ADMIN_PASSWORD unset — no admin will be seeded; login will be impossible until you set it"
+true

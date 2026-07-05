@@ -34,6 +34,9 @@ services/skills/.skill_telemetry.json
 .env
 .env.*
 !.env.example
+# Personal gateway URL / dev overrides (Piece 7b) — see config.example.ts for the
+# committed template; config.ts is auto-provisioned from it (predev/prebuild/CI).
+services/frontend/src/config.ts
 
 # ─── Models, weights & large artifacts ────────────────────────────────────────
 # These normally live OUTSIDE the repo (/workspace/models, /workspace/.hf-cache,

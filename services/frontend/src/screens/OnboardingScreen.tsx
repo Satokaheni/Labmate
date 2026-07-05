@@ -94,7 +94,9 @@ export function OnboardingScreen({ onSaved }: OnboardingScreenProps) {
           <p className="text-center text-sm text-mono">
             Enter the WebSocket URL of your backend.
             <br />
-            Looks like <span className="font-mono text-xs" style={{ color: 'var(--accent-blue)' }}>wss://your-pod.runpod.net/ws</span>
+            Looks like <span className="font-mono text-xs" style={{ color: 'var(--accent-blue)' }}>ws://localhost:8787/ws</span> (local)
+            <br />
+            or <span className="font-mono text-xs" style={{ color: 'var(--accent-blue)' }}>wss://your-pod.runpod.net/ws</span> (remote)
           </p>
         </div>
 
@@ -104,7 +106,7 @@ export function OnboardingScreen({ onSaved }: OnboardingScreenProps) {
             aria-label="Backend WebSocket URL"
             value={raw}
             onChange={(e) => { setRaw(e.target.value); setTestState('idle'); setErrorMsg(''); }}
-            placeholder="wss://…  or  https://…"
+            placeholder="ws://localhost:8787/ws"
             className="w-full rounded-card border border-border-2 bg-panel px-3 py-2 text-sm text-primary outline-none placeholder:text-mono focus:border-[var(--accent-blue)]"
             onKeyDown={(e) => e.key === 'Enter' && void save()}
           />
