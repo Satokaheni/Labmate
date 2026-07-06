@@ -10,6 +10,8 @@ import { resolveMcpPathArgs, injectCodegraphProjectPath } from './mcp-path-rooti
 import { skillDescriptors } from './skill-discovery.js';
 import { userSkillsDir, ensureUserSkillsDir } from './labmate-home.js';
 import { AppConfig, loadConfig as loadConfigAt, saveConfig as saveConfigAt } from './config-store';
+import { BackendSupervisor } from './backend-supervisor.js';
+import { startupSequence } from './startup-sequence.js';
 
 const DEV_URL = 'http://localhost:8080';
 const IS_DEV = process.env.ELECTRON_DEV === '1';
@@ -190,6 +192,17 @@ function buildMenu(): Menu {
 const mcpManager = new McpHostManager();
 let mcpReady: Promise<void> = Promise.resolve();
 
+// ── Backend supervisor (spawns infrastructure/start.sh, health-gates it) ─────
+
+// main.ts compiles to dist-electron/main.js (see package.json "main"), which
+// lives at <repoRoot>/services/frontend/dist-electron/main.js — three levels
+// up from __dirname is the repo root (verified: infrastructure/start.sh
+// resolves from there).
+const REPO_ROOT = path.join(__dirname, '..', '..', '..');
+const LOCAL_PORT = Number(process.env.LOCAL_PORT ?? 8787);
+
+const supervisor = new BackendSupervisor();
+
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
 let tray: Tray | null = null;
@@ -198,6 +211,10 @@ let isQuitting = false;
 app.on('before-quit', (_event) => {
   isQuitting = true;
   void mcpManager.stopAll();
+  // Best-effort teardown: BackendSupervisor.stop() has its own bounded grace
+  // (SIGTERM, then SIGKILL after STOP_GRACE_MS) so this never blocks quit
+  // beyond the supervisor's own guard.
+  void supervisor.stop();
 });
 
 function createWindow(): BrowserWindow {
@@ -402,7 +419,7 @@ ipcMain.handle(
   },
 );
 
-void app.whenReady().then(() => {
+void app.whenReady().then(async () => {
   ensureUserSkillsDir();
   mcpReady = mcpManager.startAll().catch((e) => {
     console.error('mcp startAll failed:', e);
@@ -413,6 +430,18 @@ void app.whenReady().then(() => {
   } catch (err) {
     console.error('failed to seed initial workspace roots:', err);
   }
+
+  // Forward backend supervisor status to every open renderer.
+  supervisor.onStatus((s) => {
+    for (const w of BrowserWindow.getAllWindows()) w.webContents.send('labmate:backend-status', s);
+  });
+  try {
+    await startupSequence(supervisor, loadConfig(), LOCAL_PORT, REPO_ROOT);
+  } catch (e) {
+    // boot_failed status already emitted via onStatus; StartupScreen shows the log tail.
+    console.error('backend startup failed:', e);
+  }
+
   createWindow();
 });
 

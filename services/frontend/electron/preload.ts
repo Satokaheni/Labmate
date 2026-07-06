@@ -73,4 +73,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('labmate:search-workspace', { sessionId, query }),
   setActiveSession: (sessionId: string | null): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke('labmate:active-session', { sessionId }),
+
+  // ── Backend supervisor status (pushed from main via whenReady wiring) ──
+  onBackendStatus: (cb: (s: unknown) => void): void => {
+    ipcRenderer.on('labmate:backend-status', (_e, s) => cb(s));
+  },
 });

@@ -23,6 +23,11 @@ export interface WorkspaceEntry {
   isDir: boolean;
 }
 
+export type SupervisorStatus =
+  | { phase: 'starting'; step: string }
+  | { phase: 'ready' }
+  | { phase: 'boot_failed'; logTail: string };
+
 declare global {
   interface Window {
     electronAPI?: {
@@ -42,6 +47,7 @@ declare global {
       setDefaultWorkspace(): Promise<{ path: string | null }>;
       searchWorkspace(sessionId: string | null, query: string): Promise<{ entries: WorkspaceEntry[] }>;
       setActiveSession(sessionId: string | null): Promise<{ ok: boolean }>;
+      onBackendStatus(cb: (s: SupervisorStatus) => void): void;
     };
   }
 }
