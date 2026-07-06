@@ -6,8 +6,9 @@ from __future__ import annotations
 
 import json
 
-from . import client_context, events
-from .graph import AMBIGUITY_THRESHOLD, ASSESS_MAX_TOKENS, ASSESS_THINKING_BUDGET
+from . import client_context, events, lite_persistence
+from .graph import AMBIGUITY_THRESHOLD, ASSESS_MAX_TOKENS, ASSESS_THINKING_BUDGET, MAX_GOAL_ATTEMPTS
+from .lite_approval import requires_approval
 from .lite_state import build_initial_state
 from .task_complexity import classify_complexity
 
@@ -175,10 +176,48 @@ async def run_goal_lite(
     # NOTE: direct-answer fast-path deferred; react_execute handles trivial tasks
     # execute_node (graph.py:300) ultimately drives react_execute; reuse it (do NOT
     # fork the tool loop). Single-intent: the goal itself is the intent.
-    # Task 6: verify + check + reflect-retry + approval go here (before finalize)
-    result = await async_orch.react_execute(task)
+
+    # Approval gate (reproduces approval:572). Only gated when a SignalRegistry is
+    # supplied — callers that don't wire signals (e.g. unit tests exercising only
+    # the ambiguity/execute path) get the pre-Task-6 behavior of always executing.
+    if signals is not None and requires_approval(task):
+        await events.emit(
+            "reasoning",
+            node="approval",
+            summary="awaiting approval",
+            text="This task requests an irreversible action; awaiting approval.",
+        )
+        if store is not None:
+            await lite_persistence.save_suspend(store, session_id, state, phase="await_approval")
+        decision = await signals.await_approval(session_id)
+        if store is not None:
+            await lite_persistence.clear(store, session_id)
+        if decision == "reject":
+            state["final_answer"] = "Blocked — the irreversible action was not approved."
+            state["ok"] = False
+            return state
+        # approve -> fall through to execute
+
+    # NOTE: verify gate is a no-op in default config (critique off); deferred.
+
+    # Reflect-retry loop (reproduces check/router's FAILED-and-attempts<MAX_GOAL_ATTEMPTS
+    # -> reflect -> execute, graph.py:883-907, and reflect:526's diagnosis).
+    goal = task
+    result: dict = {}
+    for attempt in range(MAX_GOAL_ATTEMPTS):
+        result = await async_orch.react_execute(goal)
+        if result.get("ok"):
+            break
+        if attempt + 1 < MAX_GOAL_ATTEMPTS:
+            # reflect (graph.py:526): a bounded diagnosis pass that informs the retry
+            diag = await orch.architect(
+                f"The last attempt at this task failed. Summary: {result.get('summary', '')}. "
+                "Diagnose the root cause in 1-2 sentences and state what to do differently."
+            )
+            goal = f"{task}\n\nA prior attempt FAILED. Diagnosis: {diag}\nApply this and try again."
+
     state["final_answer"] = result.get("summary", "")
     state["ok"] = result.get("ok", False)
     state["tests_passed"] = result.get("tests_passed", False)
     state["_result"] = result
-    return state  # Task 6 will insert verify/check/reflect-retry/approval before this return
+    return state

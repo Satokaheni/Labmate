@@ -79,3 +79,56 @@ async def test_execute_carries_tests_passed_signal():
     out = await run_goal_lite(orch, async_orch, "fix the bug in x.py", "sess")
     assert out.get("tests_passed") is True
     assert out.get("ok") is True
+
+
+@pytest.mark.asyncio
+async def test_failing_goal_retries_then_finalizes():
+    orch = MagicMock()
+    orch.context_manager = None
+    orch.architect = AsyncMock(
+        side_effect=['{"ambiguity":0.0,"blocking_question":""}', "diagnosis: the fix was wrong"]
+    )
+    async_orch = MagicMock()
+    async_orch.react_execute = AsyncMock(
+        side_effect=[
+            {"ok": False, "summary": "attempt 1 failed", "tests_passed": False},
+            {"ok": True, "summary": "attempt 2 fixed it", "tests_passed": True},
+        ]
+    )
+    out = await run_goal_lite(orch, async_orch, "fix the bug", "sess")
+    assert async_orch.react_execute.await_count == 2  # retried once
+    assert out["ok"] is True and out["tests_passed"] is True
+
+
+@pytest.mark.asyncio
+async def test_irreversible_reject_blocks_without_executing():
+    from services.orchestrator.inproc_bus import SignalRegistry
+
+    sig = SignalRegistry()
+    sig.set_approval("sess", "reject")
+    orch = MagicMock()
+    orch.context_manager = None
+    orch.architect = AsyncMock(return_value='{"ambiguity":0.0,"blocking_question":""}')
+    async_orch = MagicMock()
+    async_orch.react_execute = AsyncMock()
+    out = await run_goal_lite(orch, async_orch, "deploy to production", "sess", signals=sig)
+    async_orch.react_execute.assert_not_called()
+    assert out["ok"] is False and "not approved" in out["final_answer"].lower()
+
+
+@pytest.mark.asyncio
+async def test_irreversible_approve_executes():
+    from services.orchestrator.inproc_bus import SignalRegistry
+
+    sig = SignalRegistry()
+    sig.set_approval("sess", "approve")
+    orch = MagicMock()
+    orch.context_manager = None
+    orch.architect = AsyncMock(return_value='{"ambiguity":0.0,"blocking_question":""}')
+    async_orch = MagicMock()
+    async_orch.react_execute = AsyncMock(
+        return_value={"ok": True, "summary": "deployed", "tests_passed": False}
+    )
+    out = await run_goal_lite(orch, async_orch, "deploy to production", "sess", signals=sig)
+    async_orch.react_execute.assert_awaited_once()
+    assert out["ok"] is True
