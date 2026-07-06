@@ -1,15 +1,17 @@
 ---
 name: web-search
 description: >
-  Live web search and page fetching via self-hosted SearXNG. Use when the local corpus
-  lacks current information — API documentation updates, recent papers, library changelogs,
-  or any fact requiring freshness. Also use to LOCATE a software tool, model, library,
-  package, project homepage, or source-code/GitHub repository, and to answer general
-  "where can I find / download / get X" questions (e.g. "where can I find Whisper?" →
-  finds github.com/openai/whisper). Prefer this over dataset-search whenever the target
-  is software/a repo/a model rather than a training or evaluation dataset. Pairs with
-  citation-check for grounding web results. Operates fully locally (no cloud search API).
-trigger: "Use when needing current information not available in the local document library"
+  Live web search and page fetching via self-hosted SearXNG. Use for information from the
+  public internet: current events and recent news, recent papers, up-to-date external
+  API/library documentation and changelogs, and locating a NAMED third-party
+  tool/model/library/package by its homepage or GitHub repo (e.g. "search the web for
+  recent papers on X", "where can I download Whisper?" → github.com/openai/whisper).
+  Exception: do NOT use for questions about THIS project's own code, architecture, or
+  harness — "how does X work here", "how do I integrate/interact with the harness or this
+  repo" — those are answered from the local codebase (code_semantic_search / reading
+  files), not the web. Prefer over dataset-search when the target is external software/a
+  repo/a model rather than a dataset. Operates fully locally (no cloud search API).
+trigger: "Use for public-internet information — current events, recent papers, external docs, or locating a named third-party tool/repo. Not for questions about this project's own code or architecture."
 tools:
   - search
   - fetch_page
