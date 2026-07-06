@@ -7,6 +7,7 @@ export interface ExecuteToolResponse {
 
 export interface AppConfig {
   wsUrl: string | null;
+  gemmaBase: string | null;
   isDev: boolean;
 }
 
@@ -34,8 +35,8 @@ const token = ipcRenderer.sendSync('labmate:get-token') as string | null;
 contextBridge.exposeInMainWorld('electronAPI', {
   config,
   token,
-  setConfig: (wsUrl: string): Promise<void> =>
-    ipcRenderer.invoke('labmate:set-config', wsUrl),
+  setConfig: (cfg: { wsUrl: string | null; gemmaBase: string | null }): Promise<void> =>
+    ipcRenderer.invoke('labmate:set-config', cfg),
   setToken: (t: string, remember: boolean): Promise<void> =>
     ipcRenderer.invoke('labmate:set-token', { token: t, remember }),
   clearToken: (): Promise<void> =>

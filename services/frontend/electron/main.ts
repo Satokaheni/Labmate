@@ -9,6 +9,7 @@ import { McpHostManager } from './mcp-registry.js';
 import { resolveMcpPathArgs, injectCodegraphProjectPath } from './mcp-path-rooting.js';
 import { skillDescriptors } from './skill-discovery.js';
 import { userSkillsDir, ensureUserSkillsDir } from './labmate-home.js';
+import { AppConfig, loadConfig as loadConfigAt, saveConfig as saveConfigAt } from './config-store';
 
 const DEV_URL = 'http://localhost:8080';
 const IS_DEV = process.env.ELECTRON_DEV === '1';
@@ -21,20 +22,11 @@ let _sessionToken: string | null = null;
 
 function tokenFile() { return path.join(app.getPath('userData'), 'token.enc'); }
 
-// ── App config (runtime WS URL) ───────────────────────────────────────────────
+// ── App config (runtime WS URL + model endpoint) ──────────────────────────────
 
-interface AppConfig { wsUrl: string | null; isDev: boolean; }
-
-function configFile() { return path.join(app.getPath('userData'), 'config.json'); }
-
-function loadConfig(): AppConfig {
-  if (IS_DEV) return { wsUrl: null, isDev: true };
-  try { return { wsUrl: (JSON.parse(fs.readFileSync(configFile(), 'utf8')) as { wsUrl: string }).wsUrl, isDev: false }; }
-  catch { return { wsUrl: null, isDev: false }; }
-}
-
-function saveConfig(wsUrl: string): void {
-  fs.writeFileSync(configFile(), JSON.stringify({ wsUrl }), 'utf8');
+function loadConfig(): AppConfig { return loadConfigAt(app.getPath('userData')); }
+function saveConfig(cfg: { wsUrl: string | null; gemmaBase: string | null }): void {
+  saveConfigAt(cfg, app.getPath('userData'));
 }
 
 // ── Per-chat workspace store ──────────────────────────────────────────────────
@@ -290,7 +282,9 @@ ipcMain.handle('labmate:clear-token', () => {
   try { fs.unlinkSync(tokenFile()); } catch { /* ignore */ }
 });
 
-ipcMain.handle('labmate:set-config', (_evt, wsUrl: string) => { saveConfig(wsUrl); });
+ipcMain.handle('labmate:set-config', (_evt, cfg: { wsUrl: string | null; gemmaBase: string | null }) => {
+  saveConfig(cfg);
+});
 
 // ── Workspace (multi-root per chat) ───────────────────────────────────────────
 
