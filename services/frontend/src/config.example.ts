@@ -52,10 +52,14 @@ export interface WorkspaceMentionEntry {
 
 const ec = window.electronAPI?.config;
 
-// In dev (ELECTRON_DEV=1) or browser, use the Vite env var.
-// In a packaged build, use the runtime URL from userData/config.json.
+// Prefer the onboarded/runtime gateway URL (userData/config.json) in BOTH dev and
+// packaged builds, so the renderer connects to the same gateway the backend was
+// spawned on (the port the supervisor derives from cfg.wsUrl). In dev, VITE_WS_URL
+// remains the PRE-onboarding fallback (before cfg.wsUrl is set); this avoids the
+// footgun where .env's port disagrees with the onboarded port (green backend behind
+// a renderer dialing a dead port).
 export const WS_URL: string = ec?.isDev
-  ? (import.meta.env.VITE_WS_URL as string | undefined) ?? DEFAULT_WS_URL
+  ? ec?.wsUrl ?? (import.meta.env.VITE_WS_URL as string | undefined) ?? DEFAULT_WS_URL
   : ec?.wsUrl ?? DEFAULT_WS_URL;
 
 export const API_URL: string = WS_URL
