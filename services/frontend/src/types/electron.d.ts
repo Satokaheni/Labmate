@@ -23,12 +23,17 @@ export interface WorkspaceEntry {
   isDir: boolean;
 }
 
+export type SupervisorStatus =
+  | { phase: 'starting'; step: string }
+  | { phase: 'ready' }
+  | { phase: 'boot_failed'; logTail: string };
+
 declare global {
   interface Window {
     electronAPI?: {
-      config: { wsUrl: string | null; isDev: boolean };
+      config: { wsUrl: string | null; gemmaBase: string | null; isDev: boolean };
       token: string | null;
-      setConfig(wsUrl: string): Promise<void>;
+      setConfig(cfg: { wsUrl: string | null; gemmaBase: string | null }): Promise<void>;
       setToken(token: string, remember: boolean): Promise<void>;
       clearToken(): Promise<void>;
       executeTool(name: string, args: Record<string, unknown>, sessionId?: string | null): Promise<ExecuteToolResponse>;
@@ -42,6 +47,9 @@ declare global {
       setDefaultWorkspace(): Promise<{ path: string | null }>;
       searchWorkspace(sessionId: string | null, query: string): Promise<{ entries: WorkspaceEntry[] }>;
       setActiveSession(sessionId: string | null): Promise<{ ok: boolean }>;
+      onBackendStatus?(cb: (s: SupervisorStatus) => void): void;
+      getBackendStatus?(): Promise<{ phase: string } | null>;
+      retryBackend?(): Promise<{ phase: string } | null>;
     };
   }
 }

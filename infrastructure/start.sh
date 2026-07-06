@@ -32,6 +32,8 @@ pass() { echo "[local] PASS: $*"; }
 fail() { echo "[local] FAIL: $*" >&2; exit 1; }
 
 if [[ "${1:-}" == "--status" ]]; then exec "${SCRIPT_DIR}/status.sh"; fi
+FOREGROUND=0
+if [[ "${1:-}" == "--foreground" ]]; then FOREGROUND=1; fi
 
 # Source local.env in THIS shell (not just the harness subshell below) so
 # ADMIN_EMAIL/ADMIN_PASSWORD are available for the login banner printed at the
@@ -140,6 +142,19 @@ fi
 
 # Skill dispatch runs in-process inside the local harness (SkillRegistry, Piece 4) —
 # no standalone skill-worker process to start.
+
+# ─── Foreground mode: the CALLER (Electron / a terminal / a future CLI) owns the
+# process. Run the SAME prep above (SearXNG best-effort + MCP bridge build already
+# ran), then exec the harness in the foreground — no nohup, no pidfile. The caller
+# health-gates /healthz itself.
+if [[ "$FOREGROUND" == "1" ]]; then
+  info "starting local harness in FOREGROUND (services.local.main) — caller owns the process"
+  # shellcheck source=/dev/null
+  source "${SCRIPT_DIR}/local.env"
+  export PYTHONPATH="${REPO_ROOT}"
+  export MCP_BRIDGE_ARGS="${MCP_DIST}"
+  exec python -m services.local.main
+fi
 
 # ─── Local harness (single process: gateway + orchestrator, one asyncio loop) ──
 _local_alive() { [[ -f "$PIDS/local.pid" ]] && kill -0 "$(cat "$PIDS/local.pid")" 2>/dev/null; }
