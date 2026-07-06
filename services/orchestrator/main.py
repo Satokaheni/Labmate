@@ -90,9 +90,6 @@ FULL_THRESH = int(CTX_TOKENS * 0.85)
 # the live refresher (a single emit at turn start + one at turn end still fire).
 CONTEXT_REFRESH_S = float(os.getenv("CONTEXT_REFRESH_SECONDS", "2.0"))
 
-# Strangler flag: "graph" (default, LangGraph) or "lite" (run_goal_lite). Process-wide.
-ORCHESTRATOR_ENGINE_DEFAULT = os.getenv("ORCHESTRATOR_ENGINE", "graph")
-
 
 def _context_window(used_fallback: int = 0, used_floor: int = 0) -> dict:
     """Build the context-window telemetry payload from the live token high-water mark.

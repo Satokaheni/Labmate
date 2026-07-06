@@ -22,8 +22,10 @@ LITE_MODULES = [
 GRAPH_PY = "services/orchestrator/graph.py"
 ORCH_REQS = "services/orchestrator/requirements.txt"
 
-# In-file lite additions that are not whole modules (approximate, hand-maintained).
-INFILE_LITE_LOC = 50  # ~15 approval channel on inproc_bus.py + ~35 _run_engine in main.py
+# In-file lite additions that are not whole modules (measured, hand-maintained:
+# re-derive via `git show a5572d5 -- services/orchestrator/inproc_bus.py` for the
+# approval channel, and the `_run_engine` method span in main.py, if either changes).
+INFILE_LITE_LOC = 75  # ~29 approval channel on inproc_bus.py + ~46 _run_engine in main.py
 
 _SCAFFOLD_PATTERNS = [
     r"^\s*from langgraph",

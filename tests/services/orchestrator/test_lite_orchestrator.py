@@ -101,6 +101,50 @@ async def test_failing_goal_retries_then_finalizes():
 
 
 @pytest.mark.asyncio
+async def test_terminal_failure_does_not_retry():
+    # A terminal failure (missing docker/dependency) must NOT reflect+retry — one
+    # react_execute call, no architect diagnosis, finalizes ok=False (parity with
+    # graph's error-class gate). "docker is not installed on this host" classifies
+    # as ErrorClass.TERMINAL_DEPENDENCY (see error_classifier.py's marker table).
+    orch = MagicMock()
+    orch.context_manager = None
+    orch.architect = AsyncMock(return_value='{"ambiguity":0.0,"blocking_question":""}')
+    async_orch = MagicMock()
+    async_orch.react_execute = AsyncMock(
+        return_value={
+            "ok": False,
+            "summary": "docker is not installed on this host",
+            "tests_passed": False,
+        }
+    )
+    out = await run_goal_lite(orch, async_orch, "run it in the sandbox", "sess")
+    assert async_orch.react_execute.await_count == 1  # terminal -> no retry
+    # architect called once for the ambiguity assess only, NOT again for reflection
+    assert orch.architect.await_count == 1
+    assert out["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_retryable_failure_still_retries():
+    # A non-terminal (RETRYABLE) failure still reflects+retries, then succeeds.
+    orch = MagicMock()
+    orch.context_manager = None
+    orch.architect = AsyncMock(
+        side_effect=['{"ambiguity":0.0,"blocking_question":""}', "diagnosis text"]
+    )
+    async_orch = MagicMock()
+    async_orch.react_execute = AsyncMock(
+        side_effect=[
+            {"ok": False, "summary": "assertion failed: expected 4 got 5", "tests_passed": False},
+            {"ok": True, "summary": "fixed", "tests_passed": True},
+        ]
+    )
+    out = await run_goal_lite(orch, async_orch, "fix the bug", "sess")
+    assert async_orch.react_execute.await_count == 2  # retried
+    assert out["ok"] is True
+
+
+@pytest.mark.asyncio
 async def test_irreversible_reject_blocks_without_executing():
     from services.orchestrator.inproc_bus import SignalRegistry
 

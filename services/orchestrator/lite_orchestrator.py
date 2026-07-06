@@ -4,10 +4,18 @@ AsyncOrchestrator.react_execute for execution."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 from . import client_context, events, lite_persistence
-from .graph import AMBIGUITY_THRESHOLD, ASSESS_MAX_TOKENS, ASSESS_THINKING_BUDGET, MAX_GOAL_ATTEMPTS
+from .error_classifier import ErrorClass, classify_error, is_terminal
+from .graph import (
+    AMBIGUITY_THRESHOLD,
+    ASSESS_MAX_TOKENS,
+    ASSESS_THINKING_BUDGET,
+    MAX_GOAL_ATTEMPTS,
+    RATE_LIMIT_BACKOFF_SECONDS,
+)
 from .lite_approval import requires_approval
 from .lite_state import build_initial_state
 from .task_complexity import classify_complexity
@@ -208,7 +216,16 @@ async def run_goal_lite(
         result = await async_orch.react_execute(goal)
         if result.get("ok"):
             break
+        # Error-class gate (parity with graph.py check node, :335): a TERMINAL
+        # failure (missing dep/credential/network/context) fails identically on
+        # every retry — fail fast instead of paying a reflect()+re-execute. A
+        # RATE_LIMITED failure gets a bounded backoff before the retry.
+        cls = classify_error(result.get("summary") or "")
+        if is_terminal(cls):
+            break
         if attempt + 1 < MAX_GOAL_ATTEMPTS:
+            if cls == ErrorClass.RATE_LIMITED and RATE_LIMIT_BACKOFF_SECONDS > 0:
+                await asyncio.sleep(RATE_LIMIT_BACKOFF_SECONDS)
             # reflect (graph.py:526): a bounded diagnosis pass that informs the retry
             diag = await orch.architect(
                 f"The last attempt at this task failed. Summary: {result.get('summary', '')}. "

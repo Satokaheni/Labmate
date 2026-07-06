@@ -5,7 +5,7 @@
 
 ## LOC delta
 
-- Lite code added: **380 LOC** (41 + 39 + 223 + 27 across 4 new modules + ~50 in-file for the approval channel + `_run_engine`).
+- Lite code added: **422 LOC** (41 + 39 + 240 + 27 across 4 new modules + ~75 in-file for the approval channel + `_run_engine`).
 - `graph.py` total: 1060 LOC.
 - LangGraph scaffolding removable-if-adopted: **~28 LOC** (the `StateGraph` wiring, `add_node`/`add_edge`/`add_conditional_edges`, `.compile`, `interrupt`, and the two checkpointer helpers).
 
