@@ -1,16 +1,13 @@
-import type { AppConfig } from './config-store';
 import type { BackendSupervisor } from './backend-supervisor';
 
-/** Start the backend if an endpoint is configured; a no-endpoint config means a
- * fresh user who still needs onboarding, so we skip supervision and let the UI
- * render the onboarding screen. */
+/** Always start the local backend. The model URL is NOT injected here — the
+ *  spawned start.sh --foreground sources local.env for GEMMA_BASE (single source
+ *  of truth); we only pin LOCAL_PORT so the renderer and backend agree. */
 export async function startupSequence(
   supervisor: BackendSupervisor,
-  cfg: AppConfig,
   localPort: number,
   repoRoot: string,
   logPath?: string,
 ): Promise<void> {
-  if (!cfg.gemmaBase) return;
-  await supervisor.start({ gemmaBase: cfg.gemmaBase, localPort, repoRoot, logPath });
+  await supervisor.start({ gemmaBase: null, localPort, repoRoot, logPath });
 }
