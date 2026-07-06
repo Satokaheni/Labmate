@@ -13,9 +13,9 @@ export interface ToolDescriptor {
 declare global {
   interface Window {
     electronAPI?: {
-      config: { wsUrl: string | null; isDev: boolean };
+      config: { wsUrl: string | null; gemmaBase: string | null; isDev: boolean };
       token: string | null;
-      setConfig: (wsUrl: string) => Promise<void>;
+      setConfig: (cfg: { wsUrl: string | null; gemmaBase: string | null }) => Promise<void>;
       setToken: (token: string, remember: boolean) => Promise<void>;
       clearToken: () => Promise<void>;
       executeTool: (
