@@ -22,6 +22,20 @@ from services.ws_gateway.sessions import InMemorySessionStore, build_sessions_ro
 logger = logging.getLogger(__name__)
 
 
+def _brain_probe_request(url: str):
+    """Build the brain-check HTTP probe request.
+
+    A RunPod proxy 403s the default Python-urllib User-Agent (the split
+    Mac->pod topology), which would surface a perfectly reachable model as
+    "Brain: HTTP Error 403" on the boot screen. Send a curl-style UA so the
+    probe matches what curl/browsers get (200). Mirrors the same fix in the
+    live skill harness's inference_available().
+    """
+    import urllib.request
+
+    return urllib.request.Request(url, headers={"User-Agent": "curl/8.0"})
+
+
 def _now_iso() -> str:
     from datetime import datetime
 
@@ -475,7 +489,7 @@ def build_app(
             import urllib.request
 
             def _do() -> object:
-                return urllib.request.urlopen(url, timeout=2)
+                return urllib.request.urlopen(_brain_probe_request(url), timeout=5)
 
             return await asyncio.to_thread(_do)
 
