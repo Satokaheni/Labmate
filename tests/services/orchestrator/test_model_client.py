@@ -1,31 +1,37 @@
 from __future__ import annotations
 
-import pytest
 import litellm
+import pytest
 
-from services.orchestrator.model_client import is_retryable, resolve_bases
+from services.model_client import is_retryable, resolve_bases
 
 
 @pytest.mark.mocked
-@pytest.mark.parametrize("exc", [
-    litellm.APIConnectionError(message="refused", llm_provider="openai", model="m"),
-    litellm.Timeout(message="timeout", llm_provider="openai", model="m"),
-    litellm.ServiceUnavailableError(message="503", llm_provider="openai", model="m"),
-    litellm.InternalServerError(message="500", llm_provider="openai", model="m"),
-    litellm.RateLimitError(message="429", llm_provider="openai", model="m"),
-])
+@pytest.mark.parametrize(
+    "exc",
+    [
+        litellm.APIConnectionError(message="refused", llm_provider="openai", model="m"),
+        litellm.Timeout(message="timeout", llm_provider="openai", model="m"),
+        litellm.ServiceUnavailableError(message="503", llm_provider="openai", model="m"),
+        litellm.InternalServerError(message="500", llm_provider="openai", model="m"),
+        litellm.RateLimitError(message="429", llm_provider="openai", model="m"),
+    ],
+)
 def test_is_retryable_true_for_transient(exc):
     assert is_retryable(exc) is True
 
 
 @pytest.mark.mocked
-@pytest.mark.parametrize("exc", [
-    litellm.BadRequestError(message="400", llm_provider="openai", model="m"),
-    litellm.AuthenticationError(message="401", llm_provider="openai", model="m"),
-    litellm.NotFoundError(message="404", llm_provider="openai", model="m"),
-    litellm.ContextWindowExceededError(message="ctx", llm_provider="openai", model="m"),
-    ValueError("not an llm error"),
-])
+@pytest.mark.parametrize(
+    "exc",
+    [
+        litellm.BadRequestError(message="400", llm_provider="openai", model="m"),
+        litellm.AuthenticationError(message="401", llm_provider="openai", model="m"),
+        litellm.NotFoundError(message="404", llm_provider="openai", model="m"),
+        litellm.ContextWindowExceededError(message="ctx", llm_provider="openai", model="m"),
+        ValueError("not an llm error"),
+    ],
+)
 def test_is_retryable_false_for_4xx_and_unknown(exc):
     assert is_retryable(exc) is False
 
@@ -53,7 +59,7 @@ def test_resolve_bases_reads_env_when_arg_is_none(monkeypatch):
     ]
 
 
-from services.orchestrator.model_client import backoff_delay
+from services.model_client import backoff_delay
 
 
 @pytest.mark.mocked
@@ -75,19 +81,16 @@ def test_backoff_applies_jitter_floor_of_half():
     assert backoff_delay(1, base_s=0.5, max_s=4.0, rng=zero) == pytest.approx(0.5)
 
 
-import asyncio
 from types import SimpleNamespace
 
-from services.orchestrator.model_client import (
-    acompletion_with_failover,
+from services.model_client import (
     AllEndpointsExhausted,
+    acompletion_with_failover,
 )
 
 
 def _ok(content="hi"):
-    return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
-    )
+    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
 
 
 async def _noop_sleep(_):  # never actually wait in tests
@@ -192,7 +195,6 @@ async def test_single_endpoint_transient_blip_recovers_within_budget():
     assert calls == ["http://a/v1", "http://a/v1"]
 
 
-import respx
 import httpx
 
 
@@ -212,8 +214,11 @@ async def test_single_endpoint_no_failures_matches_direct_call(respx_mock):
                         "id": "x",
                         "object": "chat.completion",
                         "choices": [
-                            {"index": 0, "message": {"role": "assistant", "content": "pong"},
-                             "finish_reason": "stop"}
+                            {
+                                "index": 0,
+                                "message": {"role": "assistant", "content": "pong"},
+                                "finish_reason": "stop",
+                            }
                         ],
                     },
                 )
@@ -221,7 +226,7 @@ async def test_single_endpoint_no_failures_matches_direct_call(respx_mock):
             r = await acompletion_with_failover(
                 model="openai/gemma-4-31b",
                 bases=["http://a:8000/v1"],
-                sleep=lambda _ : None,   # not used; one base, one success
+                sleep=lambda _: None,  # not used; one base, one success
                 rng=lambda: 0.0,
                 messages=[{"role": "user", "content": "ping"}],
                 extra_body={"thinking_budget_tokens": 0},
@@ -246,9 +251,15 @@ async def test_respx_primary_503_then_secondary_200(respx_mock):
             secondary = respx_mock.post("http://b:8000/v1/chat/completions").mock(
                 return_value=httpx.Response(
                     200,
-                    json={"choices": [{"index": 0,
-                                       "message": {"role": "assistant", "content": "from-b"},
-                                       "finish_reason": "stop"}]},
+                    json={
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {"role": "assistant", "content": "from-b"},
+                                "finish_reason": "stop",
+                            }
+                        ]
+                    },
                 )
             )
 
@@ -271,6 +282,7 @@ async def test_respx_primary_503_then_secondary_200(respx_mock):
 
 
 from unittest.mock import AsyncMock, patch
+
 from services.orchestrator.coding_orchestrator import CodingOrchestrator
 
 
@@ -279,7 +291,9 @@ from services.orchestrator.coding_orchestrator import CodingOrchestrator
 async def test_architect_routes_through_failover_wrapper(monkeypatch):
     monkeypatch.delenv("LABMATE_FALLBACK_BASES", raising=False)
     orch = CodingOrchestrator(
-        graph=None, workspace_path=".", docker_container="",
+        graph=None,
+        workspace_path=".",
+        docker_container="",
         gemma_api_base="http://primary:8000/v1",
     )
     seen = {}
@@ -300,3 +314,78 @@ async def test_architect_routes_through_failover_wrapper(monkeypatch):
     assert seen["model"] == "openai/gemma-4-31b"
     assert seen["bases"] == ["http://primary:8000/v1"]
     assert seen["extra_body"] == {"thinking_budget_tokens": 3000}
+
+
+# ── sync completion_with_failover + resilient_completion (shared skill path) ──
+
+
+@pytest.mark.mocked
+def test_completion_with_failover_succeeds_first_base():
+    from services.model_client import completion_with_failover
+
+    calls = []
+
+    def fake(**kw):
+        calls.append(kw["api_base"])
+        return "OK"
+
+    out = completion_with_failover(
+        model="m", bases=["http://a/v1", "http://b/v1"], messages=[], _completion=fake
+    )
+    assert out == "OK"
+    assert calls == ["http://a/v1"]  # never touched the fallback
+
+
+@pytest.mark.mocked
+def test_completion_with_failover_fails_over_on_transient():
+    from services.model_client import completion_with_failover
+
+    calls = []
+
+    def fake(**kw):
+        calls.append(kw["api_base"])
+        if kw["api_base"] == "http://a/v1":
+            raise litellm.APIConnectionError(message="refused", llm_provider="openai", model="m")
+        return "OK"
+
+    out = completion_with_failover(
+        model="m",
+        bases=["http://a/v1", "http://b/v1"],
+        messages=[],
+        max_attempts_per_base=1,
+        sleep=lambda _s: None,
+        _completion=fake,
+    )
+    assert out == "OK"
+    assert calls == ["http://a/v1", "http://b/v1"]  # failed over to the fallback
+
+
+@pytest.mark.mocked
+def test_completion_with_failover_4xx_is_terminal():
+    from services.model_client import completion_with_failover
+
+    def fake(**kw):
+        raise litellm.BadRequestError(message="bad", llm_provider="openai", model="m")
+
+    with pytest.raises(litellm.BadRequestError):
+        completion_with_failover(model="m", bases=["http://a/v1"], messages=[], _completion=fake)
+
+
+@pytest.mark.mocked
+def test_resilient_completion_resolves_bases_from_gemma_base(monkeypatch):
+    """resilient_completion (the instructor-facing adapter) dispatches through
+    completion_with_failover with bases resolved from api_base + fallbacks."""
+    import services.model_client as mc
+
+    seen = {}
+
+    def fake_cwf(*, model, bases, **kw):
+        seen["model"] = model
+        seen["bases"] = bases
+        return "OK"
+
+    monkeypatch.setattr(mc, "completion_with_failover", fake_cwf)
+    monkeypatch.setenv("LABMATE_FALLBACK_BASES", "http://fb/v1")
+    out = mc.resilient_completion(model="m", api_base="http://primary/v1", messages=[])
+    assert out == "OK"
+    assert seen["bases"] == ["http://primary/v1", "http://fb/v1"]

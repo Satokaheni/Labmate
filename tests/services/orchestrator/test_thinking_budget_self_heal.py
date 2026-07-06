@@ -17,8 +17,8 @@ from __future__ import annotations
 import litellm
 import pytest
 
-from services.orchestrator import model_client
-from services.orchestrator.model_client import acompletion_with_failover
+from services import model_client
+from services.model_client import acompletion_with_failover
 
 
 @pytest.fixture(autouse=True)

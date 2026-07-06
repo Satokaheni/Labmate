@@ -14,6 +14,7 @@ import litellm
 from aiolimiter import AsyncLimiter
 
 from services.cli.local_tool_executor import execute_local_tool
+from services.model_client import acompletion_with_failover, resolve_bases
 
 from . import client_context, events
 from .completion_guard import is_assertion_verification, reconcile_cutoff, reconcile_ok
@@ -33,7 +34,6 @@ from .message_repair import (
     patch_dangling_tool_calls,
     sanitize_messages,
 )
-from .model_client import acompletion_with_failover, resolve_bases
 from .progress_breaker import ProgressBreaker, ProgressStep
 from .prompt_assembler import PromptAssembler, measure_prompt_segments
 from .repeat_analysis_guard import (

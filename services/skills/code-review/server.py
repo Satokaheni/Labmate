@@ -2,6 +2,7 @@
 
 CRITICAL: stdout carries JSON-RPC. All logging goes to stderr.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -10,12 +11,10 @@ import logging
 import os
 import sys
 
-import litellm
 import instructor
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
-
 from reviewer import CodeReviewer
 
 logging.basicConfig(
@@ -29,10 +28,23 @@ GEMMA_BASE = os.getenv("GEMMA_BASE", "http://localhost:8000/v1")
 THINKING_BUDGET = int(os.getenv("CODE_REVIEW_THINKING_BUDGET", "0"))
 MAX_RETRIES = int(os.getenv("CODE_REVIEW_MAX_RETRIES", "2"))
 
+# Route the skill's model call through the SHARED resilient client
+# (services.model_client.resilient_completion): cross-endpoint failover + the same
+# transient-retry / thinking_budget self-heal the orchestrator uses, instead of a
+# naked litellm.completion that dies on the first connection blip. Available in the
+# harness (skill_registry puts the repo root on PYTHONPATH); fall back to raw
+# litellm when the skill is run standalone (e.g. its own unit tests).
+try:
+    from services.model_client import resilient_completion as _COMPLETION
+except ImportError:  # pragma: no cover — standalone skill run, no repo on path
+    import litellm
+
+    _COMPLETION = litellm.completion
+
 
 class _GemmaClient:
     def chat(self, *, response_model, messages: list[dict], temperature: float = 0.2):
-        client = instructor.from_litellm(litellm.completion)
+        client = instructor.from_litellm(_COMPLETION)
         return client.chat.completions.create(
             model="openai/gemma-4-31b",
             messages=messages,
@@ -94,10 +106,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         k: int = int(arguments.get("k", 15))
 
         if not diff and not path:
-            return [TextContent(
-                type="text",
-                text=json.dumps({"error": "provide 'diff' or 'path'"}),
-            )]
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps({"error": "provide 'diff' or 'path'"}),
+                )
+            ]
 
         def _run() -> dict:
             result = _reviewer.review(diff=diff, path=path, k=k)
