@@ -7,15 +7,41 @@ Pipeline:
   4. Gap     — one fresh-eyes LLM call looking for what scan missed
   5. Rank    — merge, deduplicate by (file, line), sort by severity, return top k
 """
+
 from __future__ import annotations
 
 import logging
+import os
 import re
 import subprocess
-import sys
 from pathlib import Path
 
-from schemas import Candidate, ReviewResult, ScanResult, VerifiedFinding, VerifyResult
+from schemas import ReviewResult, ScanResult, VerifiedFinding, VerifyResult
+
+
+def _resolve_path(path: str | None) -> str | None:
+    """Resolve a review target to an EXISTING file.
+
+    The model may hand us a workspace-relative path ("ab_buggy.py") or a legacy
+    "/workspace/..." path even when the real workspace lives elsewhere (the split
+    topology: a Mac harness against a remote model). Skills now receive
+    WORKSPACE_PATH (see skill_registry._skill_env), so resolve those forms against
+    it. Returns the path unchanged when nothing resolves — the caller's no-code
+    guard then fails clearly instead of sending an empty prompt to the model.
+    """
+    if not path or Path(path).exists():
+        return path
+    ws = os.getenv("WORKSPACE_PATH")
+    if ws:
+        candidates = []
+        if path.startswith("/workspace"):
+            candidates.append(ws + path[len("/workspace") :])
+        candidates.append(os.path.join(ws, path.lstrip("/")))
+        for cand in candidates:
+            if Path(cand).exists():
+                return cand
+    return path
+
 
 log = logging.getLogger("code_review.reviewer")
 
@@ -134,9 +160,7 @@ def _ground(diff: str | None, path: str | None) -> tuple[str, int]:
             parts.append(f"[ruff]\n{out}")
             count += out.count("\n")
 
-        out, _ = _run(
-            ["mypy", "--no-error-summary", "--ignore-missing-imports"] + py_targets
-        )
+        out, _ = _run(["mypy", "--no-error-summary", "--ignore-missing-imports"] + py_targets)
         if out:
             parts.append(f"[mypy]\n{out}")
             count += out.count("error:")
@@ -169,8 +193,23 @@ class CodeReviewer:
         if not diff and not path:
             raise ValueError("provide diff or path")
 
+        # Resolve a workspace-relative / legacy /workspace path against the real
+        # WORKSPACE_PATH before grounding + prompt-building.
+        path = _resolve_path(path)
+
         lint_out, lint_count = _ground(diff, path)
         body = _build_scan_prompt(diff, path, lint_out)
+
+        # No-code guard: if there is nothing to actually review (no diff, and the
+        # path does not resolve to an existing file), FAIL FAST with a clear error.
+        # Otherwise _build_scan_prompt yields a code-less prompt, the model replies
+        # in prose ("please provide the code"), and instructor's TOOLS mode crashes
+        # on the missing tool call — the confusing c4 failure.
+        if not (diff or (path and Path(path).exists())):
+            raise ValueError(
+                "code_review: no reviewable code — provide a non-empty git diff or "
+                f"an existing file path (got path={path!r}, exists=False)"
+            )
 
         # --- Scan ---
         scan_raw = self._lm.chat(
@@ -205,9 +244,9 @@ class CodeReviewer:
             verified = verify_raw.findings
 
         # --- Gap sweep ---
-        existing_summary = "\n".join(
-            f"- {f.file}:{f.line} {f.summary}" for f in verified
-        ) or "(none yet)"
+        existing_summary = (
+            "\n".join(f"- {f.file}:{f.line} {f.summary}" for f in verified) or "(none yet)"
+        )
         gap_raw = self._lm.chat(
             response_model=ScanResult,
             messages=[
