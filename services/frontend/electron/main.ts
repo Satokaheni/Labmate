@@ -12,7 +12,7 @@ import { userSkillsDir, ensureUserSkillsDir } from './labmate-home.js';
 import { AppConfig, loadConfig as loadConfigAt, saveConfig as saveConfigAt } from './config-store';
 import { BackendSupervisor, type SupervisorStatus } from './backend-supervisor.js';
 import { startupSequence } from './startup-sequence.js';
-import { portFromWsUrl } from './port-from-url.js';
+import { readLocalEnv, type LocalEnv } from './local-env.js';
 
 const DEV_URL = 'http://localhost:8080';
 const IS_DEV = process.env.ELECTRON_DEV === '1';
@@ -218,21 +218,24 @@ function broadcastBackendStatus(s: BackendStatus): void {
 }
 supervisor.onStatus(broadcastBackendStatus);
 
-async function runStartupAndProbe(cfg: AppConfig): Promise<void> {
-  // Derive the backend's port from the configured gateway URL so the spawned
-  // backend always binds the SAME port the renderer connects to (fixes the
-  // 8787-vs-8788 mismatch that LOCAL_PORT alone could produce).
-  const localPort = portFromWsUrl(cfg.wsUrl);
+// infrastructure/local.env is the single source of truth for LOCAL_PORT +
+// GEMMA_BASE (the same file the backend sources). Read once at startup and
+// again on every retry so an edit to the pod URL + Retry works without a
+// full app restart.
+let localEnv: LocalEnv = { localPort: 8787, gemmaBase: '' };
+
+async function runStartupAndProbe(): Promise<void> {
+  const localPort = localEnv.localPort;
   const logPath = path.join(REPO_ROOT, '.data', 'logs', 'local.log');
   try {
-    await startupSequence(supervisor, cfg, localPort, REPO_ROOT, logPath);
+    await startupSequence(supervisor, localPort, REPO_ROOT, logPath);
   } catch (e) {
     console.error('backend startup failed:', e);
     return; // boot_failed already broadcast by the supervisor
   }
-  if (cfg.gemmaBase) {
-    const ok = await BackendSupervisor.probeModel(cfg.gemmaBase);
-    broadcastBackendStatus(ok ? { phase: 'ready' } : { phase: 'model_unreachable', url: cfg.gemmaBase });
+  if (localEnv.gemmaBase) {
+    const ok = await BackendSupervisor.probeModel(localEnv.gemmaBase);
+    broadcastBackendStatus(ok ? { phase: 'ready' } : { phase: 'model_unreachable', url: localEnv.gemmaBase });
   }
 }
 
@@ -302,7 +305,13 @@ function createWindow(): BrowserWindow {
   return win;
 }
 
-ipcMain.on('labmate:get-config', (event) => { event.returnValue = loadConfig(); });
+ipcMain.on('labmate:get-config', (event) => {
+  event.returnValue = {
+    wsUrl: `ws://localhost:${localEnv.localPort}/ws`,
+    gemmaBase: localEnv.gemmaBase || null,
+    isDev: IS_DEV,
+  };
+});
 
 ipcMain.on('labmate:get-token', (event) => {
   if (_sessionToken !== null) { event.returnValue = _sessionToken; return; }
@@ -340,7 +349,8 @@ ipcMain.handle('labmate:set-config', (_evt, cfg: { wsUrl: string | null; gemmaBa
 
 ipcMain.handle('labmate:get-backend-status', () => latestBackendStatus);
 ipcMain.handle('labmate:retry-backend', async () => {
-  await runStartupAndProbe(loadConfig());
+  localEnv = await readLocalEnv(REPO_ROOT);
+  await runStartupAndProbe();
   return latestBackendStatus;
 });
 
@@ -472,7 +482,8 @@ void app.whenReady().then(async () => {
     console.error('failed to seed initial workspace roots:', err);
   }
 
-  await runStartupAndProbe(loadConfig());
+  localEnv = await readLocalEnv(REPO_ROOT);
+  await runStartupAndProbe();
 
   createWindow();
 });
