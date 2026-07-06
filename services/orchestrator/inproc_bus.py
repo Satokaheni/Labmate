@@ -127,6 +127,7 @@ class SignalRegistry:
         self._cancelled: set[str] = set()
         self._steer: dict[str, str] = {}
         self._persist_owned: set[str] = set()
+        self._approvals: dict[str, str] = {}
 
     def request_cancel(self, task_id: str) -> None:
         self._cancelled.add(task_id)
@@ -139,6 +140,33 @@ class SignalRegistry:
 
     def read_and_clear_steer(self, task_id: str) -> str | None:
         return self._steer.pop(task_id, None)
+
+    def set_approval(self, task_id: str, decision: str) -> None:
+        """Record a human approve/reject decision for a suspended lite task."""
+        self._approvals[task_id] = decision
+
+    def get_approval(self, task_id: str) -> str | None:
+        """Consume-once read of a pending approval decision."""
+        return self._approvals.pop(task_id, None)
+
+    async def await_approval(
+        self, task_id: str, poll_s: float = 0.2, timeout_s: float | None = None
+    ) -> str:
+        """Block until a decision is set (or cancel/timeout). In-proc replacement for
+        the removed Redis approval signal; polling keeps it loop-agnostic and testable."""
+        import asyncio as _asyncio
+        import time as _time
+
+        start = _time.monotonic()
+        while True:
+            d = self.get_approval(task_id)
+            if d is not None:
+                return d
+            if self.is_cancelled(task_id):
+                return "reject"
+            if timeout_s is not None and (_time.monotonic() - start) >= timeout_s:
+                raise TimeoutError(f"approval for {task_id!r} timed out")
+            await _asyncio.sleep(poll_s)
 
     # NOTE: persistence-ownership is keyed by SESSION id (the gateway marks it in
     # _handle_send with session_id; _persist_turns checks it with session_id), and
@@ -158,6 +186,7 @@ class SignalRegistry:
         self._cancelled.discard(task_id)
         self._steer.pop(task_id, None)
         self._persist_owned.discard(task_id)
+        self._approvals.pop(task_id, None)
 
 
 class ResultRegistry:
