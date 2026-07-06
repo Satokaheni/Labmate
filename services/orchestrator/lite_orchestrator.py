@@ -172,5 +172,13 @@ async def run_goal_lite(
         state["final_answer"] = question
         return state
 
-    # Task 5: route + execute here
-    return state
+    # NOTE: direct-answer fast-path deferred; react_execute handles trivial tasks
+    # execute_node (graph.py:300) ultimately drives react_execute; reuse it (do NOT
+    # fork the tool loop). Single-intent: the goal itself is the intent.
+    # Task 6: verify + check + reflect-retry + approval go here (before finalize)
+    result = await async_orch.react_execute(task)
+    state["final_answer"] = result.get("summary", "")
+    state["ok"] = result.get("ok", False)
+    state["tests_passed"] = result.get("tests_passed", False)
+    state["_result"] = result
+    return state  # Task 6 will insert verify/check/reflect-retry/approval before this return

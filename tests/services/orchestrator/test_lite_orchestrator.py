@@ -32,6 +32,50 @@ async def test_clear_task_does_not_halt_on_ambiguity():
     )
     orch.context_manager = None
     async_orch = MagicMock()
+    async_orch.react_execute = AsyncMock(
+        return_value={
+            "ok": True,
+            "summary": "def reverse(s): return s[::-1]",
+            "tools_used": [],
+            "tests_passed": False,
+        }
+    )
     out = await run_goal_lite(orch, async_orch, "reverse a string in python", "sess")
     # gate did not set a blocking-question final answer
     assert out.get("final_answer", "") == "" or "?" not in out.get("final_answer", "")
+
+
+@pytest.mark.asyncio
+async def test_non_ambiguous_task_executes_via_react():
+    orch = MagicMock()
+    orch.architect = AsyncMock(
+        return_value='{"assumptions": [], "ambiguity": 0.1, "blocking_question": ""}'
+    )
+    orch.context_manager = None
+    async_orch = MagicMock()
+    async_orch.react_execute = AsyncMock(
+        return_value={"ok": True, "summary": "2 + 2 is 4.", "tools_used": [], "tests_passed": False}
+    )
+    out = await run_goal_lite(orch, async_orch, "What is 2+2?", "sess")
+    async_orch.react_execute.assert_awaited_once()
+    assert out["final_answer"] == "2 + 2 is 4."
+    assert out.get("ok") is True
+
+
+@pytest.mark.asyncio
+async def test_execute_carries_tests_passed_signal():
+    orch = MagicMock()
+    orch.architect = AsyncMock(return_value='{"ambiguity": 0.0, "blocking_question": ""}')
+    orch.context_manager = None
+    async_orch = MagicMock()
+    async_orch.react_execute = AsyncMock(
+        return_value={
+            "ok": True,
+            "summary": "fixed",
+            "tools_used": ["write_file"],
+            "tests_passed": True,
+        }
+    )
+    out = await run_goal_lite(orch, async_orch, "fix the bug in x.py", "sess")
+    assert out.get("tests_passed") is True
+    assert out.get("ok") is True
