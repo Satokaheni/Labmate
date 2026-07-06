@@ -306,6 +306,12 @@ class LocalSubprocessExecutor:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=cwd,
+                # PYTHONUNBUFFERED so a child's stdout is line-flushed to the pipe as it
+                # runs. Without it the child block-buffers (stdout is a pipe, not a TTY),
+                # so on a timeout SIGKILL any not-yet-flushed output is lost and the
+                # caller sees empty partial output (observed on macOS). Unbuffered also
+                # makes run_tests/pytest output stream promptly.
+                env={**os.environ, "PYTHONUNBUFFERED": "1"},
                 preexec_fn=self._make_preexec_fn(timeout),
                 text=True,
                 start_new_session=True,  # NEW: isolate process group
