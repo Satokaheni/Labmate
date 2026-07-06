@@ -1,17 +1,20 @@
 """Unit tests for CodeReviewer — all LLM calls are mocked."""
+
 from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent.parent / "services" / "skills" / "code-review"))
+sys.path.insert(
+    0,
+    str(Path(__file__).parent.parent.parent.parent.parent / "services" / "skills" / "code-review"),
+)
 
+from reviewer import CodeReviewer, _build_scan_prompt, _ground
 from schemas import Candidate, ReviewResult, ScanResult, VerifiedFinding, VerifyResult
-from reviewer import CodeReviewer, _ground, _build_scan_prompt
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -60,6 +63,7 @@ def _make_client(scan_candidates=None, verify_findings=None, gap_candidates=None
 # _ground
 # ---------------------------------------------------------------------------
 
+
 def test_ground_returns_empty_for_nonexistent_path():
     out, count = _ground(diff=None, path="/nonexistent/path/file.py")
     assert out == ""
@@ -75,6 +79,7 @@ def test_ground_returns_empty_when_no_targets():
 # ---------------------------------------------------------------------------
 # _build_scan_prompt
 # ---------------------------------------------------------------------------
+
 
 def test_scan_prompt_includes_diff():
     prompt = _build_scan_prompt(diff=SIMPLE_DIFF, path=None, lint="")
@@ -92,6 +97,7 @@ def test_scan_prompt_includes_lint_when_present():
 # CodeReviewer.review
 # ---------------------------------------------------------------------------
 
+
 def test_review_raises_without_diff_or_path():
     reviewer = CodeReviewer(_make_client())
     with pytest.raises(ValueError, match="provide diff or path"):
@@ -102,10 +108,13 @@ def test_review_returns_verified_findings():
     client = _make_client(
         scan_candidates=[
             Candidate(
-                file="foo.py", line=2,
+                file="foo.py",
+                line=2,
                 summary="Integer division silently changes semantics",
                 failure_scenario="divide(5,2) returns 2 not 2.5",
-                severity="high", category="correctness", angle="A",
+                severity="high",
+                category="correctness",
+                angle="A",
             )
         ],
         verify_findings=[FINDING],
@@ -123,7 +132,8 @@ def test_review_returns_verified_findings():
 def test_review_respects_k_limit():
     many_findings = [
         VerifiedFinding(
-            file="f.py", line=i,
+            file="f.py",
+            line=i,
             summary=f"bug {i}",
             failure_scenario="...",
             severity="low",
@@ -139,18 +149,15 @@ def test_review_respects_k_limit():
 
 
 def test_review_deduplicates_same_file_line():
-    dup = VerifiedFinding(
-        file="foo.py", line=2,
-        summary="Integer division silently changes semantics",
-        failure_scenario="...",
-        severity="high", category="correctness", confidence="confirmed",
-    )
     # Gap sweep returns the same finding — should be deduplicated
     gap_dup = Candidate(
-        file="foo.py", line=2,
+        file="foo.py",
+        line=2,
         summary="Integer division silently changes semantics",
         failure_scenario="...",
-        severity="high", category="correctness", angle="gap",
+        severity="high",
+        category="correctness",
+        angle="gap",
     )
     client = _make_client(verify_findings=[FINDING], gap_candidates=[gap_dup])
     reviewer = CodeReviewer(client)
@@ -160,14 +167,33 @@ def test_review_deduplicates_same_file_line():
 
 def test_review_sorts_critical_before_low():
     findings = [
-        VerifiedFinding(file="f.py", line=1, summary="low bug", failure_scenario="...",
-                        severity="low", category="correctness", confidence="plausible"),
-        VerifiedFinding(file="f.py", line=2, summary="critical bug", failure_scenario="...",
-                        severity="critical", category="security", confidence="confirmed"),
+        VerifiedFinding(
+            file="f.py",
+            line=1,
+            summary="low bug",
+            failure_scenario="...",
+            severity="low",
+            category="correctness",
+            confidence="plausible",
+        ),
+        VerifiedFinding(
+            file="f.py",
+            line=2,
+            summary="critical bug",
+            failure_scenario="...",
+            severity="critical",
+            category="security",
+            confidence="confirmed",
+        ),
     ]
     dummy_candidate = Candidate(
-        file="f.py", line=1, summary="low bug", failure_scenario="...",
-        severity="low", category="correctness", angle="A",
+        file="f.py",
+        line=1,
+        summary="low bug",
+        failure_scenario="...",
+        severity="low",
+        category="correctness",
+        angle="A",
     )
     client = _make_client(scan_candidates=[dummy_candidate], verify_findings=findings)
     reviewer = CodeReviewer(client)
@@ -179,13 +205,70 @@ def test_review_sorts_critical_before_low():
 def test_review_empty_scan_still_runs_gap():
     # Even with no scan candidates, gap sweep runs and can surface findings
     gap_cand = Candidate(
-        file="foo.py", line=10,
+        file="foo.py",
+        line=10,
         summary="Unclosed file handle",
         failure_scenario="open() without context manager leaks fd on exception",
-        severity="medium", category="correctness", angle="gap",
+        severity="medium",
+        category="correctness",
+        angle="gap",
     )
     client = _make_client(scan_candidates=[], verify_findings=[], gap_candidates=[gap_cand])
     reviewer = CodeReviewer(client)
     result = reviewer.review(diff=SIMPLE_DIFF)
     assert len(result.findings) == 1
     assert result.findings[0].confidence == "plausible"
+
+
+# ---------------------------------------------------------------------------
+# c4 fix: workspace path resolution + no-code guard
+# ---------------------------------------------------------------------------
+
+from reviewer import _resolve_path  # noqa: E402
+
+
+def test_resolve_path_rebases_legacy_workspace(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORKSPACE_PATH", str(tmp_path))
+    (tmp_path / "ab_buggy.py").write_text("x = 1\n")
+    assert _resolve_path("/workspace/ab_buggy.py") == str(tmp_path / "ab_buggy.py")
+
+
+def test_resolve_path_rebases_relative(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORKSPACE_PATH", str(tmp_path))
+    (tmp_path / "ab_buggy.py").write_text("x = 1\n")
+    assert _resolve_path("ab_buggy.py") == str(tmp_path / "ab_buggy.py")
+
+
+def test_resolve_path_keeps_existing_absolute(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORKSPACE_PATH", str(tmp_path))
+    p = tmp_path / "real.py"
+    p.write_text("x = 1\n")
+    assert _resolve_path(str(p)) == str(p)
+
+
+def test_resolve_path_returns_unchanged_when_unresolvable(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORKSPACE_PATH", str(tmp_path))
+    assert _resolve_path("/nope/missing.py") == "/nope/missing.py"
+
+
+def test_review_no_code_fails_fast_without_calling_model(monkeypatch):
+    """A path that doesn't resolve must raise a clear error BEFORE any model call
+    (the c4 crash: empty prompt -> model asks for code -> instructor TOOLS crash)."""
+    monkeypatch.delenv("WORKSPACE_PATH", raising=False)
+    client = MagicMock()
+    reviewer = CodeReviewer(client)
+    with pytest.raises(ValueError, match="no reviewable code"):
+        reviewer.review(path="/does/not/exist.py")
+    client.chat.assert_not_called()  # never reached the model
+
+
+def test_review_resolves_relative_path_then_reviews(tmp_path, monkeypatch):
+    """With a relative path + WORKSPACE_PATH set, review reads the file and calls
+    the model (the c4 recovery path)."""
+    monkeypatch.setenv("WORKSPACE_PATH", str(tmp_path))
+    (tmp_path / "ab_buggy.py").write_text("def f():\n    return 1/0\n")
+    client = MagicMock()
+    client.chat.return_value = ScanResult(candidates=[])
+    reviewer = CodeReviewer(client)
+    reviewer.review(path="ab_buggy.py")
+    assert client.chat.called  # reached the model with real code
