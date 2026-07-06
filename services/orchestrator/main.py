@@ -57,6 +57,7 @@ from services.orchestrator.graph import (
     build_graph,
 )
 from services.orchestrator.inproc_bus import EventBus, ResultRegistry, SignalRegistry
+from services.orchestrator.lite_orchestrator import run_goal_lite
 from services.orchestrator.mcp_client_manager import MCPClientManager
 from services.orchestrator.session_search import SessionSearch
 from services.orchestrator.skill_curator import (
@@ -88,6 +89,9 @@ FULL_THRESH = int(CTX_TOKENS * 0.85)
 # frontend strip climbs live instead of only updating once at turn end. 0 disables
 # the live refresher (a single emit at turn start + one at turn end still fire).
 CONTEXT_REFRESH_S = float(os.getenv("CONTEXT_REFRESH_SECONDS", "2.0"))
+
+# Strangler flag: "graph" (default, LangGraph) or "lite" (run_goal_lite). Process-wide.
+ORCHESTRATOR_ENGINE_DEFAULT = os.getenv("ORCHESTRATOR_ENGINE", "graph")
 
 
 def _context_window(used_fallback: int = 0, used_floor: int = 0) -> dict:
@@ -388,6 +392,8 @@ class OrchestratorProcess:
             checkpointer = await _make_async_sqlite_checkpointer()
             graph, _cp = build_graph(orch=orch, async_orch=async_orch, checkpointer=checkpointer)
             orch.graph = graph
+            # Store async_orch on self so _handle can reach it
+            self.async_orch = async_orch
             # Wire context_manager to CodingOrchestrator (best-effort)
             try:
                 orch.context_manager = _sm.context_manager
@@ -538,6 +544,53 @@ class OrchestratorProcess:
                 raise
             except Exception:
                 _log.debug("background curator sweep failed (non-fatal)", exc_info=True)
+
+    async def _run_engine(
+        self,
+        orch: CodingOrchestrator,
+        task_text: str,
+        session_id: str,
+        *,
+        user_id: str,
+        workspace_id: str,
+        agent_instructions: str,
+        store,
+    ) -> dict:
+        """Dispatch a goal to the configured orchestration engine.
+
+        ORCHESTRATOR_ENGINE=graph (default) runs the LangGraph run_task; "lite"
+        runs run_goal_lite (the strangler path). Read at call time so the flag is
+        monkeypatchable in tests. The lite path returns an `ok` bool but no
+        `error` key, so normalize it into the `error` field _handle expects
+        downstream (ok_flag = final_state["error"] is None).
+        """
+        engine = os.getenv("ORCHESTRATOR_ENGINE", "graph")
+        if engine == "lite":
+            state = await run_goal_lite(
+                orch,
+                self.async_orch,
+                task_text,
+                session_id,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                store=store,
+                signals=self.signals,
+            )
+            # NOTE (spike limitation): agent_instructions is not threaded into the
+            # lite path (run_goal_lite has no such parameter yet).
+            if isinstance(state, dict) and not state.get("awaiting_clarification"):
+                if state.get("ok"):
+                    state.setdefault("error", None)
+                elif state.get("error") is None:
+                    state["error"] = "lite engine: goal did not complete successfully"
+            return state
+        return await orch.run_task(
+            task_text,
+            session_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            agent_instructions=agent_instructions,
+        )
 
     async def _handle(
         self,
@@ -721,12 +774,14 @@ class OrchestratorProcess:
                 _log.warning("auto-compact check failed (non-fatal): %s", exc)
 
             _log.info("task %s: %.80s", task_id, task_text)
-            final_state = await orch.run_task(
+            final_state = await self._run_engine(
+                orch,
                 task_text,
                 session_id,
                 user_id=user_id,
                 workspace_id=workspace_id,
                 agent_instructions=agent_instructions,
+                store=storage.local_store,
             )
             task_succeeded = True
             # If the graph halted for clarification, surface the question — do NOT
