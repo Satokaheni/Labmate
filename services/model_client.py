@@ -16,7 +16,7 @@ import time
 
 import litellm
 
-_log = logging.getLogger("orchestrator.model_client")
+_log = logging.getLogger("model_client")
 
 # Transient transport errors → retry / fail over to the next endpoint.
 _RETRYABLE = (

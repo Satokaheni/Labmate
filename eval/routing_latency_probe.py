@@ -46,7 +46,7 @@ import os
 import statistics
 from pathlib import Path
 
-from services.orchestrator.model_client import acompletion_with_failover, resolve_bases
+from services.model_client import acompletion_with_failover, resolve_bases
 
 MODEL = "openai/gemma-4-31b"
 
