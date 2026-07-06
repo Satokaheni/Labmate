@@ -4,9 +4,15 @@ import os
 import sys
 
 import litellm
+from bm25_index import BM25Index
 from tree_sitter_language_pack import get_parser
 
-from bm25_index import BM25Index
+# Shared resilient model-call path (failover + transient retry); falls back to raw
+# litellm.completion when the skill runs standalone (no repo on PYTHONPATH).
+try:
+    from services.model_client import resilient_completion as _completion
+except ImportError:  # pragma: no cover — standalone skill run
+    _completion = litellm.completion
 
 # All diagnostics to stderr — stdout is reserved for JSON-RPC.
 logging.basicConfig(stream=sys.stderr, level=logging.INFO)
@@ -16,8 +22,12 @@ GEMMA_BASE = os.getenv("GEMMA_BASE", "http://localhost:8000/v1")
 GEMMA_MODEL = os.getenv("GEMMA_MODEL", "google/gemma-4-31B-it")
 
 _LANG_BY_EXT = {
-    ".py": "python", ".ts": "typescript", ".tsx": "tsx",
-    ".js": "javascript", ".jsx": "javascript", ".rs": "rust",
+    ".py": "python",
+    ".ts": "typescript",
+    ".tsx": "tsx",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".rs": "rust",
 }
 
 
@@ -38,7 +48,7 @@ class FaultLocalizer:
         return os.path.join(self._repo_path, rel_or_abs)
 
     def _call_gemma(self, prompt: str) -> str:
-        resp = litellm.completion(
+        resp = _completion(
             model=f"openai/{GEMMA_MODEL}",
             api_base=GEMMA_BASE,
             api_key="not-needed",
@@ -59,7 +69,7 @@ class FaultLocalizer:
             log.warning("no JSON array in LLM output")
             return []
         try:
-            parsed = json.loads(s[start:end + 1])
+            parsed = json.loads(s[start : end + 1])
             return parsed if isinstance(parsed, list) else []
         except json.JSONDecodeError:
             log.warning("failed to parse LLM JSON array")
@@ -67,7 +77,7 @@ class FaultLocalizer:
 
     def _snippet(self, rel_path: str, max_lines: int = 40) -> str:
         try:
-            with open(self._abs(rel_path), "r", encoding="utf-8", errors="replace") as fh:
+            with open(self._abs(rel_path), encoding="utf-8", errors="replace") as fh:
                 lines = fh.read().splitlines()
         except OSError:
             return ""
@@ -108,15 +118,22 @@ CANDIDATE FILES:
                 score = float(item.get("score", 0.0))
             except (TypeError, ValueError):
                 score = 0.0
-            out.append({"file": f, "score": round(max(0.0, min(1.0, score)), 4),
-                        "reason": str(item.get("reason", ""))})
+            out.append(
+                {
+                    "file": f,
+                    "score": round(max(0.0, min(1.0, score)), 4),
+                    "reason": str(item.get("reason", "")),
+                }
+            )
         if out:
             return out
         # Fallback: normalized BM25 scores.
         log.warning("LLM rerank empty; falling back to BM25 order")
         top = candidates[0][1] or 1.0
-        return [{"file": p, "score": round(s / top, 4), "reason": "BM25 keyword match"}
-                for p, s in candidates]
+        return [
+            {"file": p, "score": round(s / top, 4), "reason": "BM25 keyword match"}
+            for p, s in candidates
+        ]
 
     def locate_files(self, issue: str, top_k: int = 5) -> list[dict]:
         self._ensure_index()
@@ -131,9 +148,11 @@ CANDIDATE FILES:
             return candidates
         try:
             import importlib.util
+
             graph_dir = os.path.join(os.path.dirname(__file__), "..", "repo-graph")
             spec = importlib.util.spec_from_file_location(
-                "_rg_builder", os.path.join(graph_dir, "graph_builder.py"))
+                "_rg_builder", os.path.join(graph_dir, "graph_builder.py")
+            )
             if spec is None or spec.loader is None:
                 return candidates
             mod = importlib.util.module_from_spec(spec)
@@ -153,9 +172,12 @@ CANDIDATE FILES:
         return sorted(seen.items(), key=lambda p: p[1], reverse=True)
 
     _DEF_KINDS = {
-        "function_definition": "function", "function_declaration": "function",
-        "function_item": "function", "method_definition": "method",
-        "class_definition": "class", "class_declaration": "class",
+        "function_definition": "function",
+        "function_declaration": "function",
+        "function_item": "function",
+        "method_definition": "method",
+        "class_definition": "class",
+        "class_declaration": "class",
         "struct_item": "class",
     }
 
@@ -180,13 +202,17 @@ CANDIDATE FILES:
             if kind is not None:
                 name = node.child_by_field_name("name")
                 if name is not None:
-                    out.append({
-                        "file": rel_path,
-                        "symbol": src_bytes[name.start_byte():name.end_byte()].decode("utf-8", "replace"),
-                        "kind": kind,
-                        "start_line": node.start_position().row + 1,
-                        "end_line": node.end_position().row + 1,
-                    })
+                    out.append(
+                        {
+                            "file": rel_path,
+                            "symbol": src_bytes[name.start_byte() : name.end_byte()].decode(
+                                "utf-8", "replace"
+                            ),
+                            "kind": kind,
+                            "start_line": node.start_position().row + 1,
+                            "end_line": node.end_position().row + 1,
+                        }
+                    )
             for i in range(node.child_count()):
                 walk(node.child(i))
 
@@ -216,7 +242,8 @@ SYMBOLS:
         by_name = {s["symbol"]: s for s in symbols}
         listing = "\n".join(
             f"- {s['symbol']} ({s['kind']}, lines {s['start_line']}-{s['end_line']})"
-            for s in symbols)
+            for s in symbols
+        )
         prompt = self._SYMBOL_PROMPT.format(issue=issue, file=file, symbols=listing)
         picked = self._parse_json_array(self._call_gemma(prompt))
 
@@ -252,7 +279,7 @@ SOURCE:
         if not wanted:
             return []
         try:
-            with open(self._abs(file), "r", encoding="utf-8", errors="replace") as fh:
+            with open(self._abs(file), encoding="utf-8", errors="replace") as fh:
                 lines = fh.read().splitlines()
         except OSError as exc:
             log.warning("cannot read %s: %s", file, exc)
@@ -263,8 +290,7 @@ SOURCE:
         for s in wanted:
             lo, hi = s["start_line"], s["end_line"]
             bounds[s["symbol"]] = (lo, hi)
-            numbered = "\n".join(f"{i}: {lines[i - 1]}"
-                                 for i in range(lo, min(hi, len(lines)) + 1))
+            numbered = "\n".join(f"{i}: {lines[i - 1]}" for i in range(lo, min(hi, len(lines)) + 1))
             blocks.append(f"### {s['symbol']} ({file})\n{numbered}")
         prompt = self._EDIT_PROMPT.format(issue=issue, source="\n\n".join(blocks))
         hunks = self._parse_json_array(self._call_gemma(prompt))
@@ -280,6 +306,12 @@ SOURCE:
                 continue
             start = max(lo_all, min(start, hi_all))
             end = max(start, min(end, hi_all))
-            out.append({"file": file, "start_line": start, "end_line": end,
-                        "reason": str(h.get("reason", ""))})
+            out.append(
+                {
+                    "file": file,
+                    "start_line": start,
+                    "end_line": end,
+                    "reason": str(h.get("reason", "")),
+                }
+            )
         return out

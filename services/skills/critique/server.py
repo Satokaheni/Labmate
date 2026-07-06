@@ -2,6 +2,7 @@
 
 CRITICAL: stdout carries JSON-RPC. All logging goes to stderr.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -12,14 +13,21 @@ import sys
 from typing import Literal
 
 import litellm
+from critique_skill import CritiqueSkill
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from critique_skill import CritiqueSkill
+# Shared resilient model-call path (failover + transient retry); falls back to raw
+# litellm.completion when the skill runs standalone (no repo on PYTHONPATH).
+try:
+    from services.model_client import resilient_completion as _completion
+except ImportError:  # pragma: no cover — standalone skill run
+    _completion = litellm.completion
 
-logging.basicConfig(stream=sys.stderr, level=logging.INFO,
-                    format="%(name)s %(levelname)s %(message)s")
+logging.basicConfig(
+    stream=sys.stderr, level=logging.INFO, format="%(name)s %(levelname)s %(message)s"
+)
 log = logging.getLogger("critique.server")
 
 GEMMA_BASE = os.getenv("GEMMA_BASE", "http://localhost:8000/v1")
@@ -44,7 +52,7 @@ class _GemmaClient:
     """Sync litellm shim that fulfils the CritiqueSkill lm_client interface."""
 
     def complete(self, prompt: str) -> str:
-        r = litellm.completion(
+        r = _completion(
             model="openai/gemma-4-31b",
             api_base=GEMMA_BASE,
             api_key="not-needed",
@@ -55,7 +63,8 @@ class _GemmaClient:
 
     def chat(self, *, response_model, messages: list[dict], temperature: float = 0.1):
         import instructor
-        client = instructor.from_litellm(litellm.completion)
+
+        client = instructor.from_litellm(_completion)
         return client.chat.completions.create(
             model="openai/gemma-4-31b",
             messages=messages,

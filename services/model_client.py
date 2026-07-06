@@ -12,10 +12,11 @@ import asyncio
 import logging
 import os
 import random
+import time
 
 import litellm
 
-_log = logging.getLogger("orchestrator.model_client")
+_log = logging.getLogger("model_client")
 
 # Transient transport errors → retry / fail over to the next endpoint.
 _RETRYABLE = (
@@ -267,3 +268,93 @@ async def acompletion_with_failover(
                 if attempt + 1 < attempts_cap:
                     await sleep(backoff_delay(attempt, bb, mb, rng))
     raise AllEndpointsExhausted(history)
+
+
+def completion_with_failover(
+    *,
+    model: str,
+    bases: list[str],
+    api_key: str = "not-needed",
+    max_attempts_per_base: int | None = None,
+    base_backoff_s: float | None = None,
+    max_backoff_s: float | None = None,
+    sleep=time.sleep,
+    rng=random.random,
+    _completion=None,
+    **kwargs,
+):
+    """SYNC twin of acompletion_with_failover (over litellm.completion).
+
+    For callers on a synchronous interface — notably SKILLS that use instructor's
+    sync client (``instructor.from_litellm(resilient_completion)``). Same ordered-
+    endpoint failover, bounded per-base retry with jittered backoff, and the G5
+    thinking_budget self-heal. KEEP IN SYNC with acompletion_with_failover above.
+    """
+    if not bases:
+        raise ValueError("completion_with_failover requires at least one base url")
+    if _completion is None:
+        _completion = litellm.completion
+    attempts_cap = (
+        max_attempts_per_base if max_attempts_per_base is not None else _DEFAULT_MAX_ATTEMPTS
+    )
+    bb = base_backoff_s if base_backoff_s is not None else _DEFAULT_BACKOFF_BASE
+    mb = max_backoff_s if max_backoff_s is not None else _DEFAULT_BACKOFF_MAX
+
+    history: list[tuple[str, Exception]] = []
+    for base in bases:
+        base_kwargs = (
+            _strip_thinking_budget(kwargs)
+            if _THINKING_BUDGET_SELF_HEAL and base in _NO_THINKING_BUDGET_BASES
+            else kwargs
+        )
+        for attempt in range(attempts_cap):
+            try:
+                return _completion(model=model, api_base=base, api_key=api_key, **base_kwargs)
+            except Exception as exc:  # noqa: BLE001 — classify, then re-raise or retry
+                if (
+                    _THINKING_BUDGET_SELF_HEAL
+                    and _has_thinking_budget(base_kwargs)
+                    and _is_thinking_budget_rejection(exc)
+                ):
+                    _NO_THINKING_BUDGET_BASES.add(base)
+                    base_kwargs = _strip_thinking_budget(base_kwargs)
+                    _log.warning(
+                        "base %s rejected thinking_budget_tokens (%s); retrying "
+                        "without it and caching",
+                        base,
+                        type(exc).__name__,
+                    )
+                    try:
+                        return _completion(
+                            model=model, api_base=base, api_key=api_key, **base_kwargs
+                        )
+                    except Exception as exc2:  # noqa: BLE001 — fall through to classify
+                        exc = exc2
+                if not is_retryable(exc):
+                    raise exc
+                history.append((base, exc))
+                _log.warning(
+                    "model endpoint %s attempt %d/%d failed (%s); will retry/failover",
+                    base,
+                    attempt + 1,
+                    attempts_cap,
+                    type(exc).__name__,
+                )
+                if attempt + 1 < attempts_cap:
+                    sleep(backoff_delay(attempt, bb, mb, rng))
+    raise AllEndpointsExhausted(history)
+
+
+def resilient_completion(*, model: str, api_base: str | None = None, **kwargs):
+    """``litellm.completion``-compatible callable with cross-endpoint failover +
+    the shared retry / thinking_budget self-heal policy — the SHARED resilient path
+    for SKILLS (and anything on the sync interface).
+
+    Drop-in for ``instructor.from_litellm(resilient_completion)``: it resolves the
+    ordered base list from ``api_base`` (or ``GEMMA_BASE``) + ``LABMATE_FALLBACK_BASES``
+    and dispatches through completion_with_failover, so a skill's model call gets the
+    same resilience as the orchestrator's instead of a naked ``litellm.completion``
+    that dies on the first transient blip.
+    """
+    primary = api_base or os.getenv("GEMMA_BASE", "http://localhost:8000/v1")
+    return completion_with_failover(model=model, bases=resolve_bases(primary), **kwargs)
