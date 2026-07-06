@@ -153,7 +153,10 @@ if [[ "$FOREGROUND" == "1" ]]; then
   source "${SCRIPT_DIR}/local.env"
   export PYTHONPATH="${REPO_ROOT}"
   export MCP_BRIDGE_ARGS="${MCP_DIST}"
-  exec python -m services.local.main
+  # Redirect to the log file (like daemon mode) so the backend never blocks on a
+  # slow/paused stdout reader (e.g. the Electron supervisor pipe). The caller
+  # health-gates via /healthz, not this stream.
+  exec python -m services.local.main >>"$LOGS/local.log" 2>&1
 fi
 
 # ─── Local harness (single process: gateway + orchestrator, one asyncio loop) ──

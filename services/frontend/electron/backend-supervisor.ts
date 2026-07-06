@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 
 export type SupervisorStatus =
@@ -10,6 +11,20 @@ export interface StartOpts {
   gemmaBase: string | null;
   localPort: number;
   repoRoot: string;
+  logPath?: string;
+}
+
+// The backend's --foreground stdout/stderr is redirected to logPath (see
+// infrastructure/start.sh) so it never blocks on a paused pipe reader; read
+// the tail from there for the boot_failed diagnostic instead of the pipe.
+function tailFile(p: string | undefined, maxBytes = 4000): string {
+  if (!p) return '';
+  try {
+    const s = readFileSync(p, 'utf8');
+    return s.slice(-maxBytes);
+  } catch {
+    return '';
+  }
 }
 
 const HEALTH_TIMEOUT_MS = 60_000;
@@ -58,7 +73,7 @@ export class BackendSupervisor {
     const deadline = Date.now() + HEALTH_TIMEOUT_MS;
     while (Date.now() < deadline) {
       if (this.childExited) {
-        const tail = this.logTail.join('').slice(-2000);
+        const tail = tailFile(opts.logPath);
         this.emit({ phase: 'boot_failed', logTail: tail });
         throw new Error(`backend exited before ready:\n${tail}`);
       }
@@ -71,7 +86,7 @@ export class BackendSupervisor {
       this.emit({ phase: 'starting', step: 'waiting for backend health' });
       await new Promise((res) => setTimeout(res, HEALTH_INTERVAL_MS));
     }
-    const tail = this.logTail.join('').slice(-2000);
+    const tail = tailFile(opts.logPath);
     this.emit({ phase: 'boot_failed', logTail: tail });
     throw new Error(`backend health timeout:\n${tail}`);
   }

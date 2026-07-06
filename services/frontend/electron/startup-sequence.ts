@@ -9,7 +9,8 @@ export async function startupSequence(
   cfg: AppConfig,
   localPort: number,
   repoRoot: string,
+  logPath?: string,
 ): Promise<void> {
   if (!cfg.gemmaBase) return;
-  await supervisor.start({ gemmaBase: cfg.gemmaBase, localPort, repoRoot });
+  await supervisor.start({ gemmaBase: cfg.gemmaBase, localPort, repoRoot, logPath });
 }

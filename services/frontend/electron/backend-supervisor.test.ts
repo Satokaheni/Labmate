@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter } from 'node:events';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 // Fake child process: an EventEmitter with stdout/stderr streams + a kill spy.
 class FakeChild extends EventEmitter {
@@ -16,7 +19,7 @@ let fakeChild: FakeChild;
 spawnMock.mockImplementation(() => { fakeChild = new FakeChild(); return fakeChild; });
 vi.mock('node:child_process', () => ({ default: { spawn: spawnMock }, spawn: spawnMock }));
 
-import { BackendSupervisor } from './backend-supervisor';
+import { BackendSupervisor, type SupervisorStatus } from './backend-supervisor';
 
 const OPTS = { gemmaBase: 'https://x/v1', localPort: 8799, repoRoot: '/repo' };
 
@@ -39,11 +42,40 @@ describe('BackendSupervisor.start', () => {
 
   it('rejects with a log tail when the child exits before healthz', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('conn refused'); }));
-    const sup = new BackendSupervisor();
-    const p = sup.start({ ...OPTS });
-    fakeChild.stderr.emit('data', Buffer.from('Traceback: boom\n'));
-    fakeChild.emit('exit', 1);
-    await expect(p).rejects.toThrow(/boom/);
+    // The backend's stdout/stderr is now redirected to a log file (start.sh
+    // --foreground), not piped to the supervisor, so the boot_failed tail is
+    // read from opts.logPath rather than the child's stderr stream.
+    const logPath = path.join(os.tmpdir(), `backend-supervisor-test-reject-${Date.now()}.log`);
+    fs.writeFileSync(logPath, 'Traceback: boom\n');
+    try {
+      const sup = new BackendSupervisor();
+      const p = sup.start({ ...OPTS, logPath });
+      fakeChild.emit('exit', 1);
+      await expect(p).rejects.toThrow(/boom/);
+    } finally {
+      fs.rmSync(logPath, { force: true });
+    }
+  });
+
+  it('reads the boot_failed logTail from opts.logPath, not the piped stdout/stderr', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('conn refused'); }));
+    const logPath = path.join(os.tmpdir(), `backend-supervisor-test-${Date.now()}.log`);
+    fs.writeFileSync(logPath, 'FILE TAIL MARKER: startup exploded\n');
+    try {
+      const sup = new BackendSupervisor();
+      const statuses: SupervisorStatus[] = [];
+      sup.onStatus((s) => statuses.push(s));
+      const p = sup.start({ ...OPTS, logPath });
+      // Piped stdout/stderr carries unrelated noise now that the child logs to
+      // the file instead — the boot_failed tail must NOT come from this.
+      fakeChild.stderr.emit('data', Buffer.from('irrelevant pipe noise\n'));
+      fakeChild.emit('exit', 1);
+      await expect(p).rejects.toThrow(/FILE TAIL MARKER/);
+      const failed = statuses.find((s) => s.phase === 'boot_failed');
+      expect(failed && 'logTail' in failed ? failed.logTail : '').toMatch(/FILE TAIL MARKER/);
+    } finally {
+      fs.rmSync(logPath, { force: true });
+    }
   });
 
   it('stop() SIGTERMs then SIGKILLs the child', async () => {

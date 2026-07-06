@@ -12,6 +12,7 @@ import { userSkillsDir, ensureUserSkillsDir } from './labmate-home.js';
 import { AppConfig, loadConfig as loadConfigAt, saveConfig as saveConfigAt } from './config-store';
 import { BackendSupervisor, type SupervisorStatus } from './backend-supervisor.js';
 import { startupSequence } from './startup-sequence.js';
+import { portFromWsUrl } from './port-from-url.js';
 
 const DEV_URL = 'http://localhost:8080';
 const IS_DEV = process.env.ELECTRON_DEV === '1';
@@ -218,8 +219,13 @@ function broadcastBackendStatus(s: BackendStatus): void {
 supervisor.onStatus(broadcastBackendStatus);
 
 async function runStartupAndProbe(cfg: AppConfig): Promise<void> {
+  // Derive the backend's port from the configured gateway URL so the spawned
+  // backend always binds the SAME port the renderer connects to (fixes the
+  // 8787-vs-8788 mismatch that LOCAL_PORT alone could produce).
+  const localPort = portFromWsUrl(cfg.wsUrl);
+  const logPath = path.join(REPO_ROOT, '.data', 'logs', 'local.log');
   try {
-    await startupSequence(supervisor, cfg, LOCAL_PORT, REPO_ROOT);
+    await startupSequence(supervisor, cfg, localPort, REPO_ROOT, logPath);
   } catch (e) {
     console.error('backend startup failed:', e);
     return; // boot_failed already broadcast by the supervisor
