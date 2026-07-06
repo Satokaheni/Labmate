@@ -78,4 +78,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onBackendStatus: (cb: (s: unknown) => void): void => {
     ipcRenderer.on('labmate:backend-status', (_e, s) => cb(s));
   },
+  getBackendStatus: (): Promise<unknown> => ipcRenderer.invoke('labmate:get-backend-status'),
+  retryBackend: (): Promise<unknown> => ipcRenderer.invoke('labmate:retry-backend'),
 });

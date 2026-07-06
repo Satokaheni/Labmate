@@ -10,7 +10,7 @@ import { resolveMcpPathArgs, injectCodegraphProjectPath } from './mcp-path-rooti
 import { skillDescriptors } from './skill-discovery.js';
 import { userSkillsDir, ensureUserSkillsDir } from './labmate-home.js';
 import { AppConfig, loadConfig as loadConfigAt, saveConfig as saveConfigAt } from './config-store';
-import { BackendSupervisor } from './backend-supervisor.js';
+import { BackendSupervisor, type SupervisorStatus } from './backend-supervisor.js';
 import { startupSequence } from './startup-sequence.js';
 
 const DEV_URL = 'http://localhost:8080';
@@ -203,6 +203,33 @@ const LOCAL_PORT = Number(process.env.LOCAL_PORT ?? 8787);
 
 const supervisor = new BackendSupervisor();
 
+// Latest backend status, tracked so a renderer created AFTER `ready` (or any
+// other status) already fired can still learn the current state via a pull
+// (`labmate:get-backend-status`) instead of only a push. The supervisor emits
+// `ready` DURING startupSequence, BEFORE createWindow() runs, so a push-only
+// design would miss it entirely.
+type BackendStatus = SupervisorStatus | { phase: 'model_unreachable'; url: string };
+let latestBackendStatus: BackendStatus | null = null;
+
+function broadcastBackendStatus(s: BackendStatus): void {
+  latestBackendStatus = s;
+  for (const w of BrowserWindow.getAllWindows()) w.webContents.send('labmate:backend-status', s);
+}
+supervisor.onStatus(broadcastBackendStatus);
+
+async function runStartupAndProbe(cfg: AppConfig): Promise<void> {
+  try {
+    await startupSequence(supervisor, cfg, LOCAL_PORT, REPO_ROOT);
+  } catch (e) {
+    console.error('backend startup failed:', e);
+    return; // boot_failed already broadcast by the supervisor
+  }
+  if (cfg.gemmaBase) {
+    const ok = await BackendSupervisor.probeModel(cfg.gemmaBase);
+    if (!ok) broadcastBackendStatus({ phase: 'model_unreachable', url: cfg.gemmaBase });
+  }
+}
+
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
 let tray: Tray | null = null;
@@ -301,6 +328,14 @@ ipcMain.handle('labmate:clear-token', () => {
 
 ipcMain.handle('labmate:set-config', (_evt, cfg: { wsUrl: string | null; gemmaBase: string | null }) => {
   saveConfig(cfg);
+});
+
+// ── Backend supervisor status: pull (in case a renderer misses the push) + retry ──
+
+ipcMain.handle('labmate:get-backend-status', () => latestBackendStatus);
+ipcMain.handle('labmate:retry-backend', async () => {
+  await runStartupAndProbe(loadConfig());
+  return latestBackendStatus;
 });
 
 // ── Workspace (multi-root per chat) ───────────────────────────────────────────
@@ -431,16 +466,7 @@ void app.whenReady().then(async () => {
     console.error('failed to seed initial workspace roots:', err);
   }
 
-  // Forward backend supervisor status to every open renderer.
-  supervisor.onStatus((s) => {
-    for (const w of BrowserWindow.getAllWindows()) w.webContents.send('labmate:backend-status', s);
-  });
-  try {
-    await startupSequence(supervisor, loadConfig(), LOCAL_PORT, REPO_ROOT);
-  } catch (e) {
-    // boot_failed status already emitted via onStatus; StartupScreen shows the log tail.
-    console.error('backend startup failed:', e);
-  }
+  await runStartupAndProbe(loadConfig());
 
   createWindow();
 });

@@ -47,7 +47,9 @@ declare global {
       setDefaultWorkspace(): Promise<{ path: string | null }>;
       searchWorkspace(sessionId: string | null, query: string): Promise<{ entries: WorkspaceEntry[] }>;
       setActiveSession(sessionId: string | null): Promise<{ ok: boolean }>;
-      onBackendStatus(cb: (s: SupervisorStatus) => void): void;
+      onBackendStatus?(cb: (s: SupervisorStatus) => void): void;
+      getBackendStatus?(): Promise<{ phase: string } | null>;
+      retryBackend?(): Promise<{ phase: string } | null>;
     };
   }
 }

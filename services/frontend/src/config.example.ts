@@ -34,6 +34,9 @@ declare global {
         sessionId: string | null,
         query: string,
       ) => Promise<{ entries: WorkspaceMentionEntry[] }>;
+      onBackendStatus?: (cb: (s: { phase: string }) => void) => void;
+      getBackendStatus?: () => Promise<{ phase: string } | null>;
+      retryBackend?: () => Promise<{ phase: string } | null>;
     };
   }
 }
