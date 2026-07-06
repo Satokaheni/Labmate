@@ -842,6 +842,14 @@ class AsyncOrchestrator:
                         import logging as _logging
 
                         _seg = measure_prompt_segments(assembler, _messages_for_model)
+                        # Feed the measured prompt size into the context-window gauge.
+                        # The gauge's high-water mark is otherwise fed only from the
+                        # model's usage.prompt_tokens, which llama.cpp/RunPod omits —
+                        # leaving the gauge at 0 and "resetting" it each message. This
+                        # measured total is the real, accumulating context size.
+                        from . import call_counter as _cc
+
+                        _cc.note_prompt_tokens(int(_seg.get("total", 0)))
                         _logging.getLogger("orchestrator").info(
                             "token_breakdown session=%s %s", self._active_session_id, _seg
                         )

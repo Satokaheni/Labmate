@@ -22,6 +22,7 @@ Counts made off the task's context (no counter set) are ignored.
 
 CRITICAL: never write to stdout — log to stderr. Never raise from the callback.
 """
+
 from __future__ import annotations
 
 import logging
@@ -55,9 +56,7 @@ class CallCounter:
 
 
 # Task-scoped counter. No counter set (e.g. unit tests, off-task calls) => callback no-ops.
-current_counter: ContextVar["CallCounter | None"] = ContextVar(
-    "current_counter", default=None
-)
+current_counter: ContextVar[CallCounter | None] = ContextVar("current_counter", default=None)
 
 
 def start() -> Any:
@@ -88,6 +87,25 @@ def get_peak_prompt_tokens() -> int:
     """
     counter = current_counter.get()
     return counter.peak_prompt_tokens if counter is not None else 0
+
+
+def note_prompt_tokens(prompt_tokens: int) -> None:
+    """Record a LOCALLY-MEASURED prompt size into the current task's counter.
+
+    The context-window gauge derives its fill from `peak_prompt_tokens`, which is
+    normally fed from each completion's `usage.prompt_tokens`. But some servers
+    (llama.cpp / the RunPod proxy) omit `usage`, leaving the peak at 0 — so the
+    gauge resets to 0 every message instead of reflecting the accumulating context.
+    Feeding the orchestrator's own `measure_prompt_segments` total here keeps the
+    high-water mark real (and monotonic within a task) regardless of server usage.
+    No-op when no counter is set or the value is non-positive; never raises.
+    """
+    try:
+        counter = current_counter.get()
+        if counter is not None and prompt_tokens > 0:
+            counter.observe_prompt_tokens(prompt_tokens)
+    except Exception:  # pragma: no cover - defensive: never break a task
+        pass
 
 
 def _extract_prompt_tokens(response_obj: Any) -> int:
