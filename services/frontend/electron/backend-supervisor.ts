@@ -15,11 +15,13 @@ export interface StartOpts {
 const HEALTH_TIMEOUT_MS = 60_000;
 const HEALTH_INTERVAL_MS = 500;
 const STOP_GRACE_MS = 5_000;
+const STOP_FALLBACK_MS = 1_000;
 
 export class BackendSupervisor {
   private child: ChildProcess | null = null;
   private logTail: string[] = [];
   private cbs: ((s: SupervisorStatus) => void)[] = [];
+  private childExited = false;
 
   onStatus(cb: (s: SupervisorStatus) => void): void { this.cbs.push(cb); }
   private emit(s: SupervisorStatus): void { for (const cb of this.cbs) cb(s); }
@@ -41,16 +43,15 @@ export class BackendSupervisor {
       },
     });
     this.child = child;
+    this.childExited = false;
     child.stdout?.on('data', (c: Buffer) => this.pushLog(c));
     child.stderr?.on('data', (c: Buffer) => this.pushLog(c));
-
-    let exited = false;
-    child.on('exit', () => { exited = true; });
+    child.on('exit', () => { this.childExited = true; });
 
     // Health-gate: poll /healthz until ok, the child exits, or we time out.
     const deadline = Date.now() + HEALTH_TIMEOUT_MS;
     while (Date.now() < deadline) {
-      if (exited) {
+      if (this.childExited) {
         const tail = this.logTail.join('').slice(-2000);
         this.emit({ phase: 'boot_failed', logTail: tail });
         throw new Error(`backend exited before ready:\n${tail}`);
@@ -71,12 +72,31 @@ export class BackendSupervisor {
 
   async stop(): Promise<void> {
     const child = this.child;
-    if (!child || child.killed) return;
+    // Idempotent: nothing to stop, or the child is already gone (either we
+    // killed it ourselves, or it exited on its own — crash / boot failure /
+    // reaped). In the latter case `child.killed` stays false forever, so we
+    // must also consult `childExited` or `stop()` would hang waiting on an
+    // 'exit' event that will never fire again.
+    if (!child || child.killed || this.childExited) {
+      this.child = null;
+      return;
+    }
     await new Promise<void>((resolve) => {
-      const onExit = () => { clearTimeout(timer); resolve(); };
-      child.once('exit', onExit);
+      let graceTimer: ReturnType<typeof setTimeout> | undefined;
+      let fallbackTimer: ReturnType<typeof setTimeout> | undefined;
+      const finish = () => {
+        if (graceTimer) clearTimeout(graceTimer);
+        if (fallbackTimer) clearTimeout(fallbackTimer);
+        resolve();
+      };
+      child.once('exit', finish);
       child.kill('SIGTERM');
-      const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already gone */ } }, STOP_GRACE_MS);
+      graceTimer = setTimeout(() => {
+        try { child.kill('SIGKILL'); } catch { /* already gone */ }
+        // Fallback: even if 'exit' never fires after SIGKILL (unforeseen
+        // no-exit case), resolve so stop() can never hang forever.
+        fallbackTimer = setTimeout(finish, STOP_FALLBACK_MS);
+      }, STOP_GRACE_MS);
     });
     this.child = null;
   }
