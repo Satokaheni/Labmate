@@ -29,6 +29,17 @@ describe('portFromWsUrl', () => {
     expect(portFromWsUrl('not a url')).toBe(8787);
   });
 
+  it('falls back to LOCAL_PORT/8787 for a URL with NO explicit port (not 80/443)', () => {
+    // A no-port gateway URL must NOT resolve to 80/443 (would EACCES on bind).
+    expect(portFromWsUrl('ws://localhost/ws')).toBe(8787);
+    expect(portFromWsUrl('wss://pod.example.com/ws')).toBe(8787);
+  });
+
+  it('honors LOCAL_PORT for a no-explicit-port URL', () => {
+    process.env.LOCAL_PORT = '8788';
+    expect(portFromWsUrl('ws://localhost/ws')).toBe(8788);
+  });
+
   it('falls back to LOCAL_PORT env when wsUrl is null', () => {
     process.env.LOCAL_PORT = '9001';
     expect(portFromWsUrl(null)).toBe(9001);
