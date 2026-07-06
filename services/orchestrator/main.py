@@ -50,7 +50,12 @@ from mcp import StdioServerParameters
 from services.orchestrator import call_counter, client_context, ctx_window, events, skill_curator
 from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
 from services.orchestrator.completion_guard import reconcile_final_answer
-from services.orchestrator.graph import GEMMA_BASE, QWEN_BASE, build_graph
+from services.orchestrator.graph import (
+    GEMMA_BASE,
+    QWEN_BASE,
+    _make_async_sqlite_checkpointer,
+    build_graph,
+)
 from services.orchestrator.inproc_bus import EventBus, ResultRegistry, SignalRegistry
 from services.orchestrator.mcp_client_manager import MCPClientManager
 from services.orchestrator.session_search import SessionSearch
@@ -377,7 +382,11 @@ class OrchestratorProcess:
                 mcp=self._mcp,
                 skill_router=skill_router,
             )
-            graph, _cp = build_graph(orch=orch, async_orch=async_orch)
+            # Async checkpointer: the harness runs graph.ainvoke, which needs an
+            # AsyncSqliteSaver (the sync SqliteSaver raises on aget_tuple/aput).
+            # Created on THIS loop so the aiosqlite connection is loop-bound to it.
+            checkpointer = await _make_async_sqlite_checkpointer()
+            graph, _cp = build_graph(orch=orch, async_orch=async_orch, checkpointer=checkpointer)
             orch.graph = graph
             # Wire context_manager to CodingOrchestrator (best-effort)
             try:

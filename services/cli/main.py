@@ -11,18 +11,19 @@ Environment variables:
     LABMATE_EMAIL         Login email (prompted if absent and no cached token)
     LABMATE_PASSWORD      Login password (prompted if absent and no cached token)
 """
+
 from __future__ import annotations
+
 import asyncio
 import getpass
 import json
 import os
 import uuid
 from pathlib import Path
-from typing import Optional
 
 import typer
 
-from .identity import load_or_create_identity, Identity
+from .identity import Identity, load_or_create_identity
 from .renderer import Renderer, extract_answer
 from .repl import REPL, REPLContext
 from .token_store import clear_token, load_token, save_token
@@ -69,8 +70,7 @@ def _save_workspace(ws: dict) -> None:
         except Exception:
             pass
     if not any(
-        w.get("workspace_id") == ws["workspace_id"]
-        and w.get("user_id") == ws.get("user_id")
+        w.get("workspace_id") == ws["workspace_id"] and w.get("user_id") == ws.get("user_id")
         for w in existing
     ):
         existing.append(ws)
@@ -79,9 +79,16 @@ def _save_workspace(ws: dict) -> None:
 
 
 async def _get_token(ws_url: str) -> str:
-    """Return a valid JWT: from cache, from env vars, or by interactive prompt."""
+    """Return a valid JWT: from cache, single-user auto-auth, env vars, or prompt."""
     token = load_token()
     if token:
+        return token
+
+    # Single-user local harness: passwordless auto-auth. Returns None on a
+    # multi-user gateway (endpoint 404s), so we fall through to credential login.
+    token = await LabmateWSClient.local_login(ws_url)
+    if token:
+        save_token(token)
         return token
 
     email = os.getenv("LABMATE_EMAIL", "")
@@ -99,9 +106,9 @@ async def _get_token(ws_url: str) -> str:
 
 @app.command()
 def main(
-    prompt: Optional[str] = typer.Argument(None, help="One-shot task (skips REPL)"),
-    resume: Optional[str] = typer.Option(None, "--resume", "-r", help="Resume session ID"),
-    workspace: Optional[str] = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
+    prompt: str | None = typer.Argument(None, help="One-shot task (skips REPL)"),
+    resume: str | None = typer.Option(None, "--resume", "-r", help="Resume session ID"),
+    workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace ID"),
 ) -> None:
     asyncio.run(_async_main(prompt, resume, workspace))
 
@@ -119,21 +126,27 @@ async def _async_main(
         token = await _get_token(ws_url)
     except Exception as exc:
         _renderer.print_error(f"Login failed: {exc}")
-        raise SystemExit(1)
+        raise SystemExit(1) from None
 
     if resume_id:
         from .session_store import SessionStore
+
         prior_sessions = SessionStore().list()
         prior = next((s for s in prior_sessions if s.session_id == resume_id), None)
         if prior is None:
             _renderer.print_info(f"Session {resume_id[:8]}… not found — pick a workspace.")
         if prior:
-            prior_ws = next((w for w in existing_ws
-                            if w.get("workspace_id") == prior.workspace_id), None)
+            prior_ws = next(
+                (w for w in existing_ws if w.get("workspace_id") == prior.workspace_id), None
+            )
             if prior_ws is None:
-                _renderer.print_info(f"Session {resume_id[:8]}… found but workspace not in local cache.")
+                _renderer.print_info(
+                    f"Session {resume_id[:8]}… found but workspace not in local cache."
+                )
             if prior_ws:
-                _renderer.print_info(f"Resuming session {resume_id[:8]}… (workspace: {prior_ws['name']})")
+                _renderer.print_info(
+                    f"Resuming session {resume_id[:8]}… (workspace: {prior_ws['name']})"
+                )
                 ctx = REPLContext(
                     identity=Identity(user_id=identity.user_id, display_name=identity.display_name),
                     workspace_id=prior_ws["workspace_id"],
@@ -160,11 +173,12 @@ async def _async_main(
                 "user_id": identity.user_id,
             }
             _save_workspace(ws_choice_raw)
-            _renderer.print_info(f"Workspace '{workspace_id_flag}' not found — created a seeded workspace.")
+            _renderer.print_info(
+                f"Workspace '{workspace_id_flag}' not found — created a seeded workspace."
+            )
     elif one_shot or not existing_ws:
         ws_choice_raw = _default_workspace(identity.user_id)
     else:
-        from .workspace_picker import WorkspaceChoice
         ws_choice = pick_workspace(existing_ws)
         ws_choice_raw = {
             "workspace_id": ws_choice.workspace_id,
@@ -181,13 +195,14 @@ async def _async_main(
 
     if one_shot:
         from .event_stream import run_task_with_streaming
+
         client = LabmateWSClient(ws_url, token)
         try:
             await client.connect()
         except PermissionError as exc:
             clear_token()
             _renderer.print_error(f"Auth failed: {exc}")
-            raise SystemExit(1)
+            raise SystemExit(1) from None
 
         task_id = str(uuid.uuid4())
         _renderer.print_workspace(ws_choice_raw["name"], ws_choice_raw["workspace_id"])
@@ -200,17 +215,15 @@ async def _async_main(
                 user_id=identity.user_id,
                 workspace_id=ws_choice_raw["workspace_id"],
             )
-            result = await run_task_with_streaming(
-                client, _renderer, task_id, workspace=workspace
-            )
+            result = await run_task_with_streaming(client, _renderer, task_id, workspace=workspace)
         except Exception as exc:
             _renderer.print_error(f"Connection error: {exc}")
             await client.aclose()
-            raise SystemExit(1)
+            raise SystemExit(1) from None
         await client.aclose()
         if not result.get("ok"):
             _renderer.print_error(result.get("error", "unknown"))
-            raise SystemExit(1)
+            raise SystemExit(1) from None
         state = result.get("state", {})
         if isinstance(state, dict) and state.get("awaiting_clarification"):
             _renderer.print_clarification(

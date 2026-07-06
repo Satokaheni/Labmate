@@ -1,6 +1,4 @@
-import json
 import pytest
-from unittest.mock import MagicMock
 
 pytestmark = pytest.mark.mocked
 
@@ -38,8 +36,10 @@ def test_run_python_captures_exit_code(patched_executor):
 
 def test_run_python_separates_streams(patched_executor):
     executor, client, container = patched_executor
+
     def logs(stdout=True, stderr=False):
         return b"OUT" if stdout else b"ERR"
+
     container.logs.side_effect = logs
     result = executor.run_python("print('OUT')")
     assert result.stdout == "OUT"
@@ -106,8 +106,6 @@ def test_run_tests_forwards_k_expression(local_executor, monkeypatch):
     captured_cmd = []
     from executor import ExecutionResult
 
-    original_run_process = local_executor._run_process
-
     def spy_run_process(cmd, timeout, cwd):
         captured_cmd.append(cmd)
         # Return a fake result with no tests found (to avoid subprocess issues)
@@ -124,11 +122,7 @@ def test_run_tests_forwards_k_expression(local_executor, monkeypatch):
     monkeypatch.setattr(local_executor, "_run_process", spy_run_process)
 
     # Call run_tests with expr parameter
-    result = local_executor.run_tests(
-        "/fake/test_sample.py",
-        expr="alpha",
-        timeout=30
-    )
+    local_executor.run_tests("/fake/test_sample.py", expr="alpha", timeout=30)
 
     # Verify that -k and the expr value are in the captured command
     assert len(captured_cmd) == 1
@@ -162,12 +156,45 @@ def test_run_tests_without_expr_omits_k(local_executor, monkeypatch):
     monkeypatch.setattr(local_executor, "_run_process", spy_run_process)
 
     # Call run_tests WITHOUT expr parameter
-    result = local_executor.run_tests(
-        "/fake/test_sample.py",
-        timeout=30
-    )
+    local_executor.run_tests("/fake/test_sample.py", timeout=30)
 
     # Verify that -k is NOT in the captured command
     assert len(captured_cmd) == 1
     cmd = captured_cmd[0]
     assert "-k" not in cmd, f"Expected no '-k' in {cmd} when expr is None"
+
+
+# ── cross-platform local execution (regression: preexec rlimits must be best-effort) ──
+
+
+def test_local_executor_runs_python_on_this_platform(local_executor):
+    """The LOCAL executor must run real code on ANY OS. Its preexec_fn applies
+    POSIX rlimits that are best-effort — RLIMIT_AS raises 'current limit exceeds
+    maximum limit' on macOS, and aborting the preexec used to make code-sandbox
+    unusable off Linux ('Exception occurred in preexec_fn'). Containment is the
+    process group + timeout, not the rlimits, so a rejected limit must degrade."""
+    r = local_executor.run_python("print(2 + 2)")
+    assert r.exit_code == 0, r.stderr
+    assert r.stdout.strip() == "4"
+
+
+def test_local_executor_mmap_import_not_broken(local_executor):
+    """A wrongly-enforced RLIMIT_AS breaks mmap-heavy imports; ensure a normal
+    stdlib import still runs (i.e. the address-space limit didn't wedge it)."""
+    r = local_executor.run_python("import json, os, sys, ctypes; print('ok')")
+    assert r.exit_code == 0, r.stderr
+    assert "ok" in r.stdout
+
+
+def test_local_executor_runs_shell(local_executor):
+    r = local_executor.run_shell("echo hello-xplat")
+    assert r.exit_code == 0, r.stderr
+    assert r.stdout.strip() == "hello-xplat"
+
+
+def test_local_executor_still_times_out(local_executor):
+    """The timeout + process-group kill (the REAL containment) still works even
+    though the rlimits are now best-effort."""
+    r = local_executor.run_shell("sleep 5", timeout=1)
+    assert r.timed_out is True
+    assert r.exit_code == -1

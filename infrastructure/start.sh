@@ -165,8 +165,8 @@ fi
 echo
 pass "Labmate stack is up. Connection settings:"
 echo "    SEARXNG_URL=http://localhost:${SEARXNG_PORT:-8080}  (web-search skill)"
-echo "    GEMMA_BASE=http://localhost:8000/v1"
-echo "    LABMATE_GATEWAY_URL=ws://localhost:8787/ws  (CLI + Electron connect here)"
+echo "    GEMMA_BASE=${GEMMA_BASE:-http://localhost:8000/v1}"
+echo "    LABMATE_GATEWAY_URL=ws://localhost:${LOCAL_PORT:-8787}/ws  (CLI + Electron connect here)"
 echo "    -> source infrastructure/local.env to export these."
 echo "    -> Logs: $LOGS/  PIDs: $PIDS/"
 info "admin login: ${ADMIN_EMAIL:-<unset>} (password from local.env ADMIN_PASSWORD)"

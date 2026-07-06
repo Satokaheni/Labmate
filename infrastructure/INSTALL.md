@@ -38,10 +38,22 @@ curl -s http://localhost:8000/health      # → {"status":"ok"} once loaded
 `--server-only` skips every client-only section (Node/mcp-bridge, the
 orchestrator/ws_gateway/cli Python deps, per-skill deps, SearXNG, the tokenizer,
 and the frontend) and runs only GPU-detect + the llama.cpp build + GGUF download.
-Combine with `--no-model` to build the engine but bring your own weights. Then on
-the **client**, run the full `infrastructure/install.sh` and set
-`GEMMA_BASE=http://<gpu-host>:8000/v1` (expose port 8000 / use the RunPod TCP
-proxy so the client can reach it).
+Combine with `--no-model` to build the engine but bring your own weights.
+
+On the **client** (your Mac), use the inverse flag:
+
+```bash
+infrastructure/install.sh --client-only    # everything EXCEPT the llama.cpp build + GGUF
+export GEMMA_BASE="https://<pod-id>-8000.proxy.runpod.net/v1"   # point at the model box
+infrastructure/start.sh                     # services.local.main + SearXNG
+```
+
+`--client-only` installs Node/mcp-bridge, the core **and per-skill** Python deps
+(so skills like `code-review` don't crash on a missing dep), the tokenizer,
+SearXNG, and the frontend config — and **skips** the llama.cpp build + GGUF
+download (the model is remote via `GEMMA_BASE`). `--server-only` and
+`--client-only` are mutually exclusive. If port `8787` is taken on the client,
+start with `LOCAL_PORT=<free>` and connect at `ws://localhost:<free>/ws`.
 
 Then:
 
