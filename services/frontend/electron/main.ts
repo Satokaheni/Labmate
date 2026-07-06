@@ -226,7 +226,7 @@ async function runStartupAndProbe(cfg: AppConfig): Promise<void> {
   }
   if (cfg.gemmaBase) {
     const ok = await BackendSupervisor.probeModel(cfg.gemmaBase);
-    if (!ok) broadcastBackendStatus({ phase: 'model_unreachable', url: cfg.gemmaBase });
+    broadcastBackendStatus(ok ? { phase: 'ready' } : { phase: 'model_unreachable', url: cfg.gemmaBase });
   }
 }
 

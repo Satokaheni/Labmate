@@ -32,6 +32,12 @@ export class BackendSupervisor {
   }
 
   async start(opts: StartOpts): Promise<void> {
+    if (this.child && !this.childExited) {
+      // Already running — never spawn a second backend (would fight for LOCAL_PORT
+      // and orphan the first). A retry from model_unreachable re-probes instead.
+      this.emit({ phase: 'ready' });
+      return;
+    }
     this.emit({ phase: 'starting', step: 'launching backend' });
     const script = path.join(opts.repoRoot, 'infrastructure', 'start.sh');
     const child = spawn('bash', [script, '--foreground'], {

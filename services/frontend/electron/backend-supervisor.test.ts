@@ -77,6 +77,31 @@ describe('BackendSupervisor.start', () => {
     }
   });
 
+  it('does not spawn a second backend when a child is already alive (idempotent start)', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ ok: true }) })));
+    const sup = new BackendSupervisor();
+    await sup.start(OPTS);
+    expect(spawnMock).toHaveBeenCalledOnce();
+
+    // Second start() call while the first child is still alive (no exit) must
+    // NOT spawn a second backend — it would fight for LOCAL_PORT and orphan
+    // the first, healthy one.
+    await sup.start(OPTS);
+    expect(spawnMock).toHaveBeenCalledOnce();
+  });
+
+  it('allows a genuine restart once the prior child has exited', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ ok: true }) })));
+    const sup = new BackendSupervisor();
+    await sup.start(OPTS);
+    expect(spawnMock).toHaveBeenCalledOnce();
+
+    fakeChild.emit('exit', 1); // natural exit — childExited becomes true
+
+    await sup.start(OPTS);
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+  });
+
   it('stop() resolves promptly when the child already exited on its own', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ ok: true }) })));
     const sup = new BackendSupervisor();
