@@ -232,14 +232,29 @@ async def _run(mode: str, trials: int, timeout: float, workspace_root: str) -> d
                 traj = await _capture_trajectory(proc, case, mode, timeout=timeout)
                 trajectories.append(traj)
     finally:
-        await proc.stop()
+        # Write the report FIRST, from the trajectories already captured. The
+        # orchestrator's graceful teardown (27 skill subprocesses + MCP bridge +
+        # codegraph daemon) can hang on a wedged skill, and asyncio.run()'s own
+        # task-cancellation on exit can hang on that too — either would strand the
+        # KPIs even though every case completed. stop.sh handles the same hang with
+        # a SIGTERM->SIGKILL escalation; here we persist the report, attempt a
+        # bounded graceful shutdown, then HARD-exit so nothing can block the result.
+        report = _write_outputs(mode, trajectories)
+        _print_kpis(mode, trials, report)
+        try:
+            await asyncio.wait_for(proc.stop(), timeout=5)
+        except BaseException:  # noqa: BLE001 — shutdown must never block the result
+            pass
         orch_task.cancel()
         try:
-            await orch_task
-        except asyncio.CancelledError:
+            await asyncio.wait_for(orch_task, timeout=10)
+        except BaseException:  # noqa: BLE001
             pass
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
 
-    return {"mode": mode, "trials": trials, "trajectories": trajectories}
+    return {"mode": mode, "trials": trials, "trajectories": trajectories}  # unreachable
 
 
 def _write_outputs(mode: str, trajectories: list[dict[str, Any]]) -> dict[str, Any]:
@@ -260,6 +275,16 @@ def _write_outputs(mode: str, trajectories: list[dict[str, Any]]) -> dict[str, A
         json.dump(report, f, indent=2)
 
     return report
+
+
+def _print_kpis(mode: str, trials: int, report: dict[str, Any]) -> None:
+    kpis = report["kpis"]
+    print(f"mode={mode} trials={trials} n={kpis['n']}")
+    print(
+        f"ok_rate={kpis['ok_rate']:.2f} edited_verified_rate={kpis['edited_verified_rate']:.2f} "
+        f"fabricated_rate={kpis['fabricated_rate']:.2f} doom_loop_rate={kpis['doom_loop_rate']:.2f}"
+    )
+    print(f"report written: eval/local/report-{mode}.json")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -321,16 +346,12 @@ def main(argv: list[str] | None = None) -> int:
 
     import asyncio
 
+    # _run writes the report + prints KPIs + os._exit(0) in its finally (so a
+    # hanging orchestrator shutdown can't strand the result), so this normally
+    # does not return. The lines below are a fallback for the no-hang path.
     run_result = asyncio.run(_run(args.mode, args.trials, args.timeout, workspace_root))
     report = _write_outputs(args.mode, run_result["trajectories"])
-
-    kpis = report["kpis"]
-    print(f"mode={args.mode} trials={args.trials} n={kpis['n']}")
-    print(
-        f"ok_rate={kpis['ok_rate']:.2f} edited_verified_rate={kpis['edited_verified_rate']:.2f} "
-        f"fabricated_rate={kpis['fabricated_rate']:.2f} doom_loop_rate={kpis['doom_loop_rate']:.2f}"
-    )
-    print(f"report written: eval/local/report-{args.mode}.json")
+    _print_kpis(args.mode, args.trials, report)
     return 0
 
 
