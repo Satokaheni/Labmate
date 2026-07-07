@@ -5,6 +5,7 @@ subprocess in the current event loop, so a pytest-asyncio test can register a
 skill and call its tools directly. Used by the contract suite (breadth) and the
 execution-smoke suite (depth).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -14,9 +15,9 @@ import urllib.request
 from pathlib import Path
 
 from services.skill_runner.skill_registry import (
-    SkillRegistry,
     SkillManifest,
     SkillProcess,
+    SkillRegistry,
 )
 from services.skill_worker.manifest_loader import discover_manifests
 
@@ -127,7 +128,7 @@ async def register_skill(
         return await asyncio.wait_for(
             _register_skill_inner(manifest, timeout), timeout=timeout + 5.0
         )
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         raise SkillRegisterError(
             f"{manifest.name}: registration exceeded {timeout + 5.0}s hard ceiling"
         ) from exc
@@ -144,7 +145,7 @@ async def teardown_skill(reg: SkillRegistry, sp: SkillProcess) -> None:
         # task stays cancelled and the event loop reaps it (or the child exit)
         # eventually — better an orphaned task than a multi-hour suite hang.
         await asyncio.wait_for(task, timeout=TEARDOWN_TIMEOUT)
-    except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001
+    except (TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001
         pass
 
 
@@ -159,7 +160,9 @@ def result_is_error(result) -> bool:
     return bool(getattr(result, "isError", False))
 
 
-async def call_skill_tool(manifest: SkillManifest, tool: str, arguments: dict, timeout: float = 60.0):
+async def call_skill_tool(
+    manifest: SkillManifest, tool: str, arguments: dict, timeout: float = 60.0
+):
     """Register a skill, call a tool, and teardown."""
     reg, sp = await register_skill(manifest, timeout=timeout)
     try:
@@ -174,7 +177,13 @@ def inference_available() -> bool:
     if base.endswith("/v1"):
         base = base[: -len("/v1")]
     try:
-        with urllib.request.urlopen(f"{base}/health", timeout=2) as resp:
+        # A RunPod proxy (split Mac->pod topology) 403s the default Python-urllib
+        # User-Agent, so this probe would wrongly report "unreachable" and SKIP every
+        # inference-guarded skill test even though the model is up (the skills use
+        # httpx/litellm, which the proxy allows). Send a curl-style UA. The timeout is
+        # generous enough for a remote proxy round-trip (localhost is effectively instant).
+        req = urllib.request.Request(f"{base}/health", headers={"User-Agent": "curl/8.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
             return 200 <= resp.status < 300
     except Exception:  # noqa: BLE001
         return False

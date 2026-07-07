@@ -3,12 +3,11 @@ from __future__ import annotations
 import httpx
 import litellm
 import pytest
-import respx
-from pytest_bdd import scenarios, given, when, then, parsers
+from pytest_bdd import given, parsers, scenarios, then, when
 
-from services.orchestrator.model_client import (
-    acompletion_with_failover,
+from services.model_client import (
     AllEndpointsExhausted,
+    acompletion_with_failover,
 )
 from tests.conftest import run_async
 
@@ -23,9 +22,15 @@ B = "http://b:8000/v1"
 def _completion(content: str) -> httpx.Response:
     return httpx.Response(
         200,
-        json={"choices": [{"index": 0,
-                           "message": {"role": "assistant", "content": content},
-                           "finish_reason": "stop"}]},
+        json={
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": content},
+                    "finish_reason": "stop",
+                }
+            ]
+        },
     )
 
 
@@ -53,6 +58,7 @@ def ctx(router):
 def _no_sleep(ctx):
     async def _noop(_):
         return None
+
     ctx["sleep"] = _noop
 
 
@@ -64,9 +70,7 @@ def _det_jitter(ctx):
 # ── Given endpoints ──────────────────────────────────────────────────────────
 @given("a primary base url that always returns connection errors")
 def _primary_conn_err(ctx, router):
-    router.post(f"{A}/chat/completions").mock(
-        side_effect=httpx.ConnectError("refused")
-    )
+    router.post(f"{A}/chat/completions").mock(side_effect=httpx.ConnectError("refused"))
     ctx["bases"].append(A)
 
 
@@ -86,9 +90,7 @@ def _primary_503(ctx, router):
 
 @given("a secondary base url that always returns connection errors")
 def _secondary_conn_err(ctx, router):
-    router.post(f"{B}/chat/completions").mock(
-        side_effect=httpx.ConnectError("refused")
-    )
+    router.post(f"{B}/chat/completions").mock(side_effect=httpx.ConnectError("refused"))
     ctx["bases"].append(B)
 
 

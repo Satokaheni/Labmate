@@ -6,22 +6,20 @@ from services.ws_gateway.server import build_app
 
 
 @pytest.fixture
-async def client(redis, seeded_store):
+async def client(runtime, seeded_store):
     cfg = Config(
-        redis_url="redis://localhost:6379/0",
         jwt_secret="s",
         admin_email="admin@labmate.local",
         admin_password="pw",
         jwt_expiry_seconds=3600,
         cors_origins=(),
-        mongo_url="mongodb://localhost:27017",
     )
 
     async def ready(**_):
         return ("ready", "ok", "")
 
     checks = {k: ready for k in ("brain", "nervous_system", "hands", "memory", "workspace")}
-    app = build_app(cfg, redis=redis, boot_checks=checks, user_store=seeded_store)
+    app = build_app(cfg, runtime=runtime, boot_checks=checks, user_store=seeded_store)
     return TestClient(app), app
 
 

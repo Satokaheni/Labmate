@@ -1,7 +1,7 @@
 """Durable per-turn checkpoint for the inner ReAct loop (_run_react_loop).
 
-The OUTER LangGraph layer is already crash-durable via AsyncMongoDBSaver, which
-checkpoints between super-steps. This module closes the complementary gap in the
+The OUTER LangGraph layer is already crash-durable via the local SqliteSaver
+checkpointer, which checkpoints between super-steps. This module closes the complementary gap in the
 INNER loop: a crash mid-_run_react_loop otherwise loses the whole turn-by-turn
 state (messages, iteration budget, edited files, verify-nudge count, loop-detector
 signatures, wall-clock start) and the loop restarts from turn 0 on the next
@@ -17,6 +17,7 @@ Two halves:
 
 CLAUDE.md: stdout is sacred (log to stderr); no tiktoken; asyncio-correct.
 """
+
 from __future__ import annotations
 
 import logging
@@ -40,6 +41,7 @@ class LoopCheckpoint:
     (monotonic clocks are not comparable across a process restart). On resume the
     loop rebases its deadline clock against this elapsed offset.
     """
+
     task_id: str
     goal: str
     messages: list[dict] = field(default_factory=list)
@@ -125,28 +127,24 @@ def from_dict(d: dict | None) -> LoopCheckpoint | None:
 class CheckpointStore:
     """Best-effort persistence of one inner-loop checkpoint per task_id.
 
-    Backed by a Motor (async) collection. EVERY method swallows and logs (to
+    Backed by the local SQLite LocalStore. EVERY method swallows and logs (to
     stderr via logging) all errors and never raises — a checkpoint failure must
     never break the ReAct loop. Keyed by task_id; save() upserts so only the
     latest snapshot per task is kept.
     """
 
-    def __init__(self, collection: Any) -> None:
-        self._col = collection
+    def __init__(self, store: Any) -> None:
+        self._store = store  # services.orchestrator.local_store.LocalStore
 
     async def save(self, cp: LoopCheckpoint) -> None:
         try:
-            await self._col.update_one(
-                {"task_id": cp.task_id},
-                {"$set": to_dict(cp)},
-                upsert=True,
-            )
-        except Exception as exc:  # best-effort: never break the loop
+            await self._store.checkpoint_put(cp.task_id, to_dict(cp))
+        except Exception as exc:
             _log.warning("checkpoint save failed for %s: %s", cp.task_id, exc)
 
     async def load(self, task_id: str) -> LoopCheckpoint | None:
         try:
-            doc = await self._col.find_one({"task_id": task_id})
+            doc = await self._store.checkpoint_get(task_id)
         except Exception as exc:
             _log.warning("checkpoint load failed for %s: %s", task_id, exc)
             return None
@@ -154,7 +152,7 @@ class CheckpointStore:
 
     async def clear(self, task_id: str) -> None:
         try:
-            await self._col.delete_one({"task_id": task_id})
+            await self._store.checkpoint_delete(task_id)
         except Exception as exc:
             _log.warning("checkpoint clear failed for %s: %s", task_id, exc)
 

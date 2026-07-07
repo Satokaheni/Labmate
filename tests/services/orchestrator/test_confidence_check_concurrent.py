@@ -3,6 +3,7 @@
 filter Nones, Counter.most_common, confidence = votes / SELECT_ATTEMPTS, and
 (None, 0.0) when no sample picked a skill.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -10,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from services.orchestrator.skill_router import SkillRouter, SELECT_ATTEMPTS
+from services.orchestrator.skill_router import SELECT_ATTEMPTS, SkillRouter
 
 
 def make_runner() -> MagicMock:
@@ -21,15 +22,14 @@ def make_runner() -> MagicMock:
     return runner
 
 
-def make_redis() -> MagicMock:
-    redis = MagicMock()
-    redis.xadd = AsyncMock()
-    redis.get = AsyncMock(return_value=None)
-    return redis
+def make_registry() -> MagicMock:
+    registry = MagicMock()
+    registry.call_tool = AsyncMock(return_value=None)
+    return registry
 
 
 def _router() -> SkillRouter:
-    return SkillRouter(make_runner(), make_redis(), "http://test/v1")
+    return SkillRouter(make_runner(), make_registry(), "http://test/v1")
 
 
 @pytest.mark.asyncio

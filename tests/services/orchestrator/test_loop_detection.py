@@ -4,12 +4,13 @@ from __future__ import annotations
 import pytest
 
 from services.orchestrator.loop_detection import (
+    LOOP_REPEAT_LIMIT,
+    LOOP_REPEAT_LIMIT_MUTATING,
+    MUTATING_TOOLS,
     LoopDetector,
     call_signature,
-    LOOP_REPEAT_LIMIT,
-    MUTATING_TOOLS,
-    LOOP_REPEAT_LIMIT_MUTATING,
     repeat_limit_for,
+    result_hash,
 )
 
 
@@ -156,3 +157,89 @@ class TestMutatingTolerance:
         sig = call_signature("run_bash", {"command": "ls"})
         d.record(sig)
         assert d.record(sig) is True
+
+
+@pytest.mark.mocked
+class TestResultHash:
+    def test_none_and_empty_string_hash_to_empty(self):
+        assert result_hash(None) == ""
+        assert result_hash("") == ""
+
+    def test_same_text_same_hash(self):
+        assert result_hash("hello") == result_hash("hello")
+
+    def test_different_text_different_hash(self):
+        assert result_hash("hello") != result_hash("world")
+
+    def test_hash_is_short_and_stable_format(self):
+        h = result_hash("some tool output")
+        assert isinstance(h, str)
+        assert len(h) == 12
+
+
+@pytest.mark.mocked
+class TestCallSignatureResultHash:
+    def test_result_none_matches_old_signature(self):
+        # Back-compat: result=None reproduces the old (name, args) signature.
+        old = call_signature("run_tests", {"path": "."})
+        new = call_signature("run_tests", {"path": "."}, result=None)
+        assert old == new
+
+    def test_omitting_result_kwarg_matches_result_none(self):
+        assert call_signature("run_tests", {"path": "."}) == call_signature(
+            "run_tests", {"path": "."}, result=None
+        )
+
+    def test_different_results_produce_different_signatures(self):
+        a = call_signature("run_tests", {"path": "."}, result="1 failed")
+        b = call_signature("run_tests", {"path": "."}, result="2 failed")
+        assert a != b
+
+    def test_same_args_and_result_produce_same_signature(self):
+        a = call_signature("run_tests", {"path": "."}, result="1 failed")
+        b = call_signature("run_tests", {"path": "."}, result="1 failed")
+        assert a == b
+
+    def test_result_signature_differs_from_no_result_signature(self):
+        no_result = call_signature("run_tests", {"path": "."})
+        with_result = call_signature("run_tests", {"path": "."}, result="1 failed")
+        assert no_result != with_result
+
+
+@pytest.mark.mocked
+class TestPollingVsTrueLoop:
+    def test_polling_with_changing_result_never_trips(self):
+        # Same tool + same args, but a DIFFERENT result each call (e.g.
+        # run_tests while a build runs) must read as progress, not a loop.
+        d = LoopDetector(repeat_limit=2)
+        tripped = False
+        for i in range(6):
+            sig = call_signature("run_tests", {"path": "."}, result=f"attempt {i}")
+            tripped = d.record(sig, repeat_limit=repeat_limit_for("run_tests"))
+        assert tripped is False
+        assert d.should_break() is False
+
+    def test_true_loop_identical_result_trips_at_repeat_limit(self):
+        # Same tool + same args + IDENTICAL result repeated must still halt.
+        d = LoopDetector(repeat_limit=2)
+        tripped = False
+        for _ in range(6):
+            sig = call_signature("run_tests", {"path": "."}, result="still failing")
+            tripped = d.record(sig, repeat_limit=repeat_limit_for("run_tests"))
+        assert tripped is True
+        assert d.reason() == "repeat"
+
+    def test_cycle_detection_still_works_with_result_inclusive_signatures(self):
+        # A→B→A→B cycle, each with a stable per-call result, is still detected.
+        d = LoopDetector(repeat_limit=2)
+        calls = [
+            ("run_bash", {"command": "ls"}, "out-ls"),
+            ("run_bash", {"command": "pwd"}, "out-pwd"),
+            ("run_bash", {"command": "ls"}, "out-ls"),
+            ("run_bash", {"command": "pwd"}, "out-pwd"),
+        ]
+        tripped = False
+        for name, args, result in calls:
+            tripped = d.record(call_signature(name, args, result=result))
+        assert tripped is True
+        assert d.reason() == "cycle"

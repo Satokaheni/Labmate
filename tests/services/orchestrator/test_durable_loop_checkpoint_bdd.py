@@ -1,4 +1,5 @@
 """Step definitions for the durable inner-loop checkpoint BDD feature."""
+
 from __future__ import annotations
 
 import importlib
@@ -6,10 +7,10 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pytest_bdd import scenarios, given, when, then, parsers
+from pytest_bdd import given, parsers, scenarios, then, when
 
 from services.orchestrator import events
-from services.orchestrator.loop_checkpoint import LoopCheckpoint, FakeCheckpointStore
+from services.orchestrator.loop_checkpoint import FakeCheckpointStore, LoopCheckpoint
 from tests.conftest import run_async
 
 pytestmark = [pytest.mark.bdd, pytest.mark.mocked]
@@ -33,13 +34,20 @@ def _finish_msg(summary: str):
 
 @pytest.fixture
 def ctx():
-    return {"store": None, "task_id": None, "response": None, "result": None,
-            "co": None, "token": None}
+    return {
+        "store": None,
+        "task_id": None,
+        "response": None,
+        "result": None,
+        "co": None,
+        "token": None,
+    }
 
 
 @given(parsers.parse('an AsyncOrchestrator with a fake checkpoint store and task id "{task_id}"'))
 def _orch(ctx, task_id):
     import services.orchestrator.coding_orchestrator as co
+
     ctx["co"] = co
     store = FakeCheckpointStore()
     store.load = AsyncMock(wraps=store.load)
@@ -61,11 +69,18 @@ def _disable(ctx, monkeypatch):
     ctx["co"] = importlib.reload(ctx["co"])
 
 
-@given(parsers.parse(
-    'a checkpoint is pre-seeded for goal "{goal}" at turn {turn:d} with prior message "{msg}"'))
+@given(
+    parsers.parse(
+        'a checkpoint is pre-seeded for goal "{goal}" at turn {turn:d} with prior message "{msg}"'
+    )
+)
 def _preseed(ctx, goal, turn, msg):
     seeded = LoopCheckpoint(
-        task_id=ctx["task_id"], goal=goal, turn=turn, used=turn, absolute_turns=turn,
+        task_id=ctx["task_id"],
+        goal=goal,
+        turn=turn,
+        used=turn,
+        absolute_turns=turn,
         messages=[
             {"role": "system", "content": "sys"},
             {"role": "user", "content": goal},
@@ -81,6 +96,7 @@ def _preseed(ctx, goal, turn, msg):
 def _preseed_loaded_skills(ctx, skills):
     # Parse the skills as a JSON string like ["read_file", "write_file"]
     import json
+
     loaded = run_async(ctx["store"].load(ctx["task_id"]))
     if loaded is not None:
         loaded.loaded_skills = json.loads(skills)
@@ -98,17 +114,21 @@ def _run(ctx, goal):
     co = ctx["co"]
     orch = co.AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
     orch.checkpoint_store = ctx["store"]
-    orch.redis = MagicMock()
+    orch.local_client = MagicMock()
     ctx["captured_messages"] = {}
 
     async def _go():
         em = events.EventEmitter(MagicMock(), ctx["task_id"])
         token = events.current_emitter.set(em)
         try:
-            with patch.object(co.events, "is_cancelled", new=AsyncMock(return_value=False)), \
-                 patch.object(co.events, "read_and_clear_steer", new=AsyncMock(return_value=None)), \
-                 patch("services.orchestrator.coding_orchestrator.acompletion_with_failover",
-                       new=AsyncMock(return_value=ctx["response"])):
+            with (
+                patch.object(co.events, "is_cancelled", new=AsyncMock(return_value=False)),
+                patch.object(co.events, "read_and_clear_steer", new=AsyncMock(return_value=None)),
+                patch(
+                    "services.orchestrator.coding_orchestrator.acompletion_with_failover",
+                    new=AsyncMock(return_value=ctx["response"]),
+                ),
+            ):
                 # Capture the messages list the store saw via the save mock.
                 res = await orch._run_react_loop(goal, 6)
             return res

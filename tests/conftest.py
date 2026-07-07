@@ -12,6 +12,7 @@ Fixtures:
 Shared BDD Contract: see
 docs/superpowers/plans/2026-06-25-bdd-harness-foundation.md
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -31,8 +32,8 @@ def run_async(coro):
 
     This helper cancels and awaits all pending tasks before closing the event
     loop, preventing "coroutine '...' was never awaited" RuntimeWarnings from
-    background tasks (OutboxWorker.run, litellm logging workers, etc.) that
-    are spawned incidentally but not essential to the test assertion.
+    background tasks (litellm logging workers, etc.) that are spawned
+    incidentally but not essential to the test assertion.
 
     Use in place of bare asyncio.run() in BDD step defs.
     """
@@ -108,9 +109,7 @@ async def fake_model(respx_mock):
                 "object": "chat.completion",
                 "created": 0,
                 "model": "gemma4-local",
-                "choices": [
-                    {"index": 0, "message": message, "finish_reason": finish_reason}
-                ],
+                "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
                 "usage": {
                     "prompt_tokens": 10,
                     "completion_tokens": 5,

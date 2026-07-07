@@ -72,6 +72,9 @@ jobs:
         working-directory: services/frontend
         run: |
           npm install --no-audit --no-fund
+          # config.ts is gitignored (personal gateway URL) — provision it from the
+          # committed template so tsc can resolve `@/config`. `-n`: don't clobber.
+          cp -n src/config.example.ts src/config.ts
           # Non-build mode: type-check src/ with noEmit. `tsc -b --noEmit` trips
           # TS6310 because tsconfig.json references the composite tsconfig.node.json.
           npx tsc --noEmit -p tsconfig.json

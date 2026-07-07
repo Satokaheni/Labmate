@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+# start.sh — Start the Labmate local harness NATIVELY on the host (no Docker).
+#
+# Why this exists: on the RunPod pod the harness cannot run in a container (no
+# NET_ADMIN; unshare/clone namespace syscalls are blocked by seccomp), so the
+# harness PROCESS (services.local.main) always runs as an ordinary host process.
+# The ONLY thing that may use a container is the optional SearXNG dependency, and
+# only on hosts that can (macOS default) — see the SearXNG section below.
+#
+# Runtime: a SINGLE co-located process (services.local.main — gateway +
+# orchestrator, one asyncio loop) backed by local SQLite state. There is no
+# MongoDB, Redis, or Chroma — those were retired when the runtime was unified
+# onto SQLite (see docs/superpowers for the local-state-unification design).
+#
+# Data + logs + pidfiles live under <repo>/.data (gitignored).
+#
+# Usage:
+#   ./start.sh           # start everything that isn't already running (idempotent)
+#   ./start.sh --status  # alias for ./status.sh
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+DATA="${REPO_ROOT}/.data"
+LOGS="${DATA}/logs"
+PIDS="${DATA}/pids"
+mkdir -p "$LOGS" "$PIDS"
+
+info() { echo "[local] $*"; }
+pass() { echo "[local] PASS: $*"; }
+fail() { echo "[local] FAIL: $*" >&2; exit 1; }
+
+if [[ "${1:-}" == "--status" ]]; then exec "${SCRIPT_DIR}/status.sh"; fi
+FOREGROUND=0
+if [[ "${1:-}" == "--foreground" ]]; then FOREGROUND=1; fi
+
+# Source local.env in THIS shell (not just the harness subshell below) so
+# ADMIN_EMAIL/ADMIN_PASSWORD are available for the login banner printed at the
+# end of this script, regardless of which branch (fresh start vs already-running)
+# is taken.
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/local.env"
+
+# ─── SearXNG (metasearch for the web-search skill) ────────────────────────────
+# Runtime is whatever install.sh recorded in ${SEARXNG_DIR}/.mode (docker | native;
+# default native for pre-existing installs). Non-fatal: if SearXNG isn't installed
+# or won't start, the rest of the stack still comes up (web-search just unavailable).
+SEARXNG_DIR="${SEARXNG_DIR:-/workspace/searxng}"
+SEARXNG_SRC="${SEARXNG_DIR}/searxng-src"
+SEARXNG_VENV="${SEARXNG_DIR}/searx-pyenv"
+SEARXNG_SETTINGS="${SEARXNG_DIR}/settings.yml"
+SEARXNG_PORT="${SEARXNG_PORT:-8080}"
+SEARXNG_IMAGE="${SEARXNG_IMAGE:-searxng/searxng}"
+SEARXNG_CONTAINER="${SEARXNG_CONTAINER:-labmate-searxng}"
+SEARXNG_MODE="$(cat "${SEARXNG_DIR}/.mode" 2>/dev/null || echo native)"
+searxng_alive() { curl -fsS "http://127.0.0.1:${SEARXNG_PORT}/search?q=ping&format=json" >/dev/null 2>&1; }
+
+if [[ "$SEARXNG_MODE" == "docker" ]]; then
+  # Bring up the daemon if the CLI is installed but idle (e.g. colima not started).
+  if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+    command -v colima >/dev/null 2>&1 && colima start >/dev/null 2>&1 || true
+  fi
+  if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+    info "SearXNG (docker): Docker daemon unavailable — skipping (start Docker Desktop / 'colima start'); web-search unavailable"
+  elif searxng_alive; then
+    info "searxng already running on :${SEARXNG_PORT}"
+  else
+    info "starting SearXNG container '${SEARXNG_CONTAINER}' on :${SEARXNG_PORT} ..."
+    if docker ps -a --format '{{.Names}}' | grep -qx "$SEARXNG_CONTAINER"; then
+      docker start "$SEARXNG_CONTAINER" >/dev/null 2>&1 \
+        || info "WARN: 'docker start ${SEARXNG_CONTAINER}' failed — see 'docker logs ${SEARXNG_CONTAINER}'"
+    else
+      # MSYS_NO_PATHCONV stops Git-Bash from mangling the container-side mount path.
+      MSYS_NO_PATHCONV=1 docker run -d --name "$SEARXNG_CONTAINER" --restart unless-stopped \
+        -p "127.0.0.1:${SEARXNG_PORT}:8080" \
+        -v "${SEARXNG_SETTINGS}:/etc/searxng/settings.yml:ro" \
+        "$SEARXNG_IMAGE" >/dev/null 2>&1 \
+        || info "WARN: 'docker run ${SEARXNG_IMAGE}' failed — web-search unavailable (check 'docker logs ${SEARXNG_CONTAINER}')"
+    fi
+    for _ in $(seq 1 30); do searxng_alive && break; sleep 1; done
+  fi
+else
+  # native (Linux/apt) path — unchanged.
+  if [[ ! -x "${SEARXNG_VENV}/bin/python" || ! -d "${SEARXNG_SRC}/searx" ]]; then
+    info "SearXNG not installed (run install.sh) — skipping; web-search skill will be unavailable"
+  elif searxng_alive; then
+    info "searxng already running on :${SEARXNG_PORT}"
+  else
+    info "starting SearXNG on :${SEARXNG_PORT} ..."
+    (
+      cd "$SEARXNG_SRC"
+      SEARXNG_SETTINGS_PATH="$SEARXNG_SETTINGS" \
+        nohup "${SEARXNG_VENV}/bin/python" -m searx.webapp >"$LOGS/searxng.log" 2>&1 &
+      echo $! >"$PIDS/searxng.pid"
+    )
+    for _ in $(seq 1 30); do
+      searxng_alive && break
+      kill -0 "$(cat "$PIDS/searxng.pid" 2>/dev/null)" 2>/dev/null || { info "WARN: SearXNG exited — see $LOGS/searxng.log"; break; }
+      sleep 1
+    done
+  fi
+fi
+if searxng_alive; then
+  pass "SearXNG ready :${SEARXNG_PORT}  (web-search skill -> SEARXNG_URL=http://localhost:${SEARXNG_PORT})"
+else
+  info "WARN: SearXNG not responding on :${SEARXNG_PORT} — web-search skill will be unavailable"
+fi
+
+# ─── MCP bridge (TypeScript) — build only; the orchestrator spawns it as a child ─
+MCP_BRIDGE_DIR="${REPO_ROOT}/services/mcp-bridge"
+MCP_DIST="${MCP_BRIDGE_DIR}/dist/index.js"
+# Rebuild when dist is missing OR stale. A stale dist — e.g. compiled before a
+# new src/ file was added — loads but crashes the bridge at import time
+# (ERR_MODULE_NOT_FOUND), which the orchestrator only surfaces as "MCP bridge
+# did not become ready". Two staleness signals:
+#   (a) any src/*.ts newer than the compiled entrypoint (normal edit-then-run);
+#   (b) any src/*.ts with NO matching dist/*.js — catches an incomplete/committed
+#       dist on a FRESH CHECKOUT, where every file has the same mtime so (a) can
+#       never fire (this is exactly how dist/utils/formatError.js went missing).
+_mcp_stale() {
+  [[ ! -f "$MCP_DIST" ]] && return 0
+  [[ -n "$(find "$MCP_BRIDGE_DIR/src" -name '*.ts' -newer "$MCP_DIST" -print -quit 2>/dev/null)" ]] && return 0
+  local ts rel js
+  while IFS= read -r ts; do
+    rel="${ts#"$MCP_BRIDGE_DIR"/src/}"
+    js="$MCP_BRIDGE_DIR/dist/${rel%.ts}.js"
+    [[ -f "$js" ]] || return 0
+  done < <(find "$MCP_BRIDGE_DIR/src" -name '*.ts' ! -name '*.d.ts' 2>/dev/null)
+  return 1
+}
+if _mcp_stale; then
+  info "building MCP bridge (npm ci && npm run build) ..."
+  command -v node >/dev/null 2>&1 || fail "node not found — install Node.js"
+  (cd "$MCP_BRIDGE_DIR" && rm -rf dist && npm ci --quiet && npm run build --quiet) \
+    >"$LOGS/mcp-bridge-build.log" 2>&1 \
+    || fail "MCP bridge build failed — see $LOGS/mcp-bridge-build.log"
+  pass "MCP bridge built → $MCP_DIST"
+else
+  info "MCP bridge already built (dist/index.js up to date)"
+fi
+
+# Skill dispatch runs in-process inside the local harness (SkillRegistry, Piece 4) —
+# no standalone skill-worker process to start.
+
+# ─── Foreground mode: the CALLER (Electron / a terminal / a future CLI) owns the
+# process. Run the SAME prep above (SearXNG best-effort + MCP bridge build already
+# ran), then exec the harness in the foreground — no nohup, no pidfile. The caller
+# health-gates /healthz itself.
+if [[ "$FOREGROUND" == "1" ]]; then
+  info "starting local harness in FOREGROUND (services.local.main) — caller owns the process"
+  # shellcheck source=/dev/null
+  source "${SCRIPT_DIR}/local.env"
+  export PYTHONPATH="${REPO_ROOT}"
+  export MCP_BRIDGE_ARGS="${MCP_DIST}"
+  # Redirect to the log file (like daemon mode) so the backend never blocks on a
+  # slow/paused stdout reader (e.g. the Electron supervisor pipe). The caller
+  # health-gates via /healthz, not this stream.
+  exec python -m services.local.main >>"$LOGS/local.log" 2>&1
+fi
+
+# ─── Local harness (single process: gateway + orchestrator, one asyncio loop) ──
+_local_alive() { [[ -f "$PIDS/local.pid" ]] && kill -0 "$(cat "$PIDS/local.pid")" 2>/dev/null; }
+if _local_alive; then
+  info "local harness already running (pid $(cat "$PIDS/local.pid"))"
+else
+  info "starting local harness (services.local.main) ..."
+  (
+    source "${SCRIPT_DIR}/local.env"
+    export PYTHONPATH="${REPO_ROOT}"
+    export MCP_BRIDGE_ARGS="${MCP_DIST}"
+    nohup python -m services.local.main >"$LOGS/local.log" 2>&1 &
+    echo $! >"$PIDS/local.pid"
+  )
+  for i in $(seq 1 60); do
+    _local_alive || { fail "local harness exited — see $LOGS/local.log"; }
+    curl -fsS "http://127.0.0.1:${LOCAL_PORT:-8787}/healthz" >/dev/null 2>&1 && break
+    sleep 1
+  done
+  pass "local harness running (pid $(cat "$PIDS/local.pid"))"
+fi
+
+echo
+pass "Labmate stack is up. Connection settings:"
+echo "    SEARXNG_URL=http://localhost:${SEARXNG_PORT:-8080}  (web-search skill)"
+echo "    GEMMA_BASE=${GEMMA_BASE:-http://localhost:8000/v1}"
+echo "    LABMATE_GATEWAY_URL=ws://localhost:${LOCAL_PORT:-8787}/ws  (CLI + Electron connect here)"
+echo "    -> source infrastructure/local.env to export these."
+echo "    -> Logs: $LOGS/  PIDs: $PIDS/"
+info "admin login: ${ADMIN_EMAIL:-<unset>} (password from local.env ADMIN_PASSWORD)"
+[ -z "${ADMIN_PASSWORD:-}" ] && info "  WARN: ADMIN_PASSWORD unset — no admin will be seeded; login will be impossible until you set it"
+true

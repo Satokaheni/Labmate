@@ -411,13 +411,17 @@ class TestAsyncOrchestrator:
 
         orch = AsyncOrchestrator(skill_router=None, mcp=MagicMock(), max_steps=2)
 
-        # run_tests goes through build_run_tests_command + a bash seam; stub the
-        # seam so each call returns a benign failing-but-valid result and a DISTINCT
-        # signature (distinct command) so the loop detector never trips.
-        async def _bash(*a, **k):
-            return MagicMock(content=[MagicMock(text="0 passed")], isError=False)
-
-        orch.mcp.call_tool = _bash
+        # run_tests now runs as a direct local subprocess; stub
+        # asyncio.create_subprocess_shell so each call returns a benign
+        # failing-but-valid result without spawning a real process. Each model
+        # turn uses a DISTINCT path (distinct command) so the loop detector
+        # never trips.
+        fake_proc = MagicMock()
+        fake_proc.communicate = AsyncMock(return_value=(b"0 passed", None))
+        fake_proc.returncode = 1
+        fake_proc.kill = MagicMock()
+        fake_proc.wait = AsyncMock()
+        subprocess_mock = AsyncMock(return_value=fake_proc)
 
         calls = [0]
 
@@ -437,10 +441,16 @@ class TestAsyncOrchestrator:
             async def emit(self, type, **f):
                 pass
 
-        with patch(
-            "services.orchestrator.coding_orchestrator.acompletion_with_failover",
-            new_callable=AsyncMock,
-            side_effect=_model,
+        with (
+            patch(
+                "services.orchestrator.coding_orchestrator.acompletion_with_failover",
+                new_callable=AsyncMock,
+                side_effect=_model,
+            ),
+            patch(
+                "services.orchestrator.coding_orchestrator.asyncio.create_subprocess_shell",
+                new=subprocess_mock,
+            ),
         ):
             token = events.current_emitter.set(FakeEmitter())
             try:
@@ -858,6 +868,60 @@ class TestReactExecute:
             mcp.call_tool.assert_awaited()
 
     @pytest.mark.asyncio
+    async def test_code_semantic_search_dispatches_to_codegraph_explore(self):
+        """code_semantic_search routes to the CodeGraph CLI daemon's codegraph_explore
+        tool (NL question -> verbatim source), not the old Chroma-embedder tool name,
+        and drops the k arg (codegraph_explore is internally capped)."""
+        orch = self._make_orch()
+
+        r = self._make_tool_call_response(
+            "code_semantic_search", {"query": "where is auth handled?", "k": 8}
+        )
+
+        codegraph_mcp = AsyncMock()
+        mcp_result = MagicMock()
+        mcp_result.content = [MagicMock(text="def authenticate(): ...")]
+        codegraph_mcp.call_tool.return_value = mcp_result
+        orch.codegraph_mcp = codegraph_mcp
+
+        with patch(
+            "services.orchestrator.coding_orchestrator.litellm.acompletion",
+            new_callable=AsyncMock,
+            side_effect=[r],
+        ):
+            await orch.react_execute("where is auth handled?")
+
+        codegraph_mcp.call_tool.assert_awaited_once_with(
+            "codegraph_explore", {"question": "where is auth handled?"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_code_semantic_search_without_codegraph_mcp(self):
+        """code_semantic_search fails gracefully when no codegraph_mcp is attached
+        (e.g. the CodeGraph CLI wasn't found at startup)."""
+        orch = self._make_orch()
+        orch.codegraph_mcp = None
+
+        r = self._make_tool_call_response("code_semantic_search", {"query": "anything"})
+        r2 = MagicMock()
+        msg2 = MagicMock()
+        msg2.content = None
+        tc2 = MagicMock()
+        tc2.id = "call_2"
+        tc2.function.name = "finish"
+        tc2.function.arguments = json.dumps({"summary": "done"})
+        msg2.tool_calls = [tc2]
+        r2.choices = [MagicMock(message=msg2)]
+
+        with patch(
+            "services.orchestrator.coding_orchestrator.litellm.acompletion",
+            new_callable=AsyncMock,
+            side_effect=[r, r2],
+        ):
+            result = await orch.react_execute("search for something")
+            assert result["ok"] is True
+
+    @pytest.mark.asyncio
     async def test_react_execute_run_bash_without_mcp(self):
         """run_bash fails gracefully when no MCP."""
         orch = self._make_orch(mcp=None)
@@ -1176,7 +1240,9 @@ class TestReactExecute:
     async def test_react_execute_distinct_calls_do_not_trip_loop(self):
         """Distinct read_file paths must NOT trip the detector; finish ends cleanly."""
         orch = self._make_orch(max_steps=6, mcp=None)
-        orch.redis = None  # read_file without redis returns a structured error, not a crash
+        orch.local_client = (
+            None  # read_file with no client attached returns a structured error, not a crash
+        )
 
         # Three distinct reads, then finish — no two consecutive identical sigs.
         r1 = self._make_tool_call_response("read_file", {"path": "a.txt"})
@@ -1470,7 +1536,7 @@ class TestReactExecuteBudget:
         r3 = MagicMock(choices=[MagicMock(message=self._bash_resp("echo b"))])
         r4 = MagicMock(choices=[MagicMock(message=self._finish_resp("done after refund"))])
 
-        # list_dir routes through local tools; with redis=None it returns a
+        # list_dir routes through local tools; with local_client=None it returns a
         # structured error but still counts as a cheap (refunded) read turn.
         with patch(
             "services.orchestrator.coding_orchestrator.litellm.acompletion",
@@ -1514,7 +1580,7 @@ class TestReactExecuteBudget:
 
     @pytest.mark.mocked
     @pytest.mark.asyncio
-    async def test_edit_goal_gets_higher_iteration_ceiling(self, monkeypatch):
+    async def test_edit_goal_gets_higher_iteration_ceiling(self, monkeypatch, tmp_path):
         """An edit-intent goal builds the budget with LABMATE_MAX_ITERATIONS_EDIT
         (default 12), giving more than max_steps (6) turns of headroom."""
         monkeypatch.setattr(
@@ -1526,14 +1592,10 @@ class TestReactExecuteBudget:
         from services.orchestrator import events
 
         orch = AsyncOrchestrator(skill_router=None, mcp=MagicMock(), max_steps=6)
-
-        async def _local(redis, name, args):
-            if name == "read_file":
-                return args.get("content", "")  # echo so write verifies
-            return {"ok": True}
-
-        monkeypatch.setattr("services.orchestrator.coding_orchestrator.request_local_tool", _local)
-        orch.redis = MagicMock()
+        # Direct execution (execute_local_tool) now writes/reads real files under
+        # a real workspace root — each write_file's distinct content read-verifies.
+        orch.workspace = str(tmp_path)
+        orch.local_client = MagicMock()
 
         calls = [0]
 
@@ -1572,45 +1634,26 @@ class TestReactExecuteBudget:
 
 
 @pytest.mark.asyncio
-async def test_react_routes_read_file_to_local_tool():
-    """ReAct loop routes read_file through request_local_tool and returns the result."""
-    import fakeredis.aioredis
-
+async def test_react_routes_read_file_to_local_tool(tmp_path):
+    """ReAct loop executes read_file DIRECTLY via execute_local_tool (no bus
+    round-trip): the real file content from disk reaches the turn-2 model call.
+    """
     from services.orchestrator import events
-    from services.orchestrator.local_tools import TOOL_RESULTS_PREFIX
 
-    redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
-    task_id = "task-react-file"
-    emitter = events.EventEmitter(redis, task_id)
-    token = events.current_emitter.set(emitter)
+    # Seed a real file in the workspace so direct execution has real content
+    # to return — proves this is execute_local_tool reading the real disk,
+    # not a mocked/round-tripped result.
+    (tmp_path / "a.txt").write_text("FILE BODY", encoding="utf-8")
+
+    class FakeEmitter:
+        async def emit(self, type, **f):
+            pass
+
+    token = events.current_emitter.set(FakeEmitter())
 
     orch = AsyncOrchestrator(skill_router=None, max_steps=3)
-    orch.redis = redis
-
-    # Responder: posts a tool.result as soon as tool.request lands on event stream
-    async def responder():
-        ev_stream = f"{events.EVENTS_STREAM_PREFIX}{task_id}"
-        for _ in range(100):
-            resp = await redis.xread({ev_stream: "0"}, count=20, block=100)
-            if not resp:
-                continue
-            for _s, entries in resp:
-                for _id, f in entries:
-                    ev = json.loads(f["event"])
-                    if ev.get("type") == "tool.request":
-                        await redis.xadd(
-                            f"{TOOL_RESULTS_PREFIX}{task_id}",
-                            {
-                                "result": json.dumps(
-                                    {
-                                        "tool_request_id": ev["tool_request_id"],
-                                        "result": {"content": "FILE BODY"},
-                                        "error": None,
-                                    }
-                                )
-                            },
-                        )
-                        return
+    orch.workspace = str(tmp_path)
+    orch.local_client = MagicMock()  # truthy so the local-tool branch is taken
 
     # Turn 1: LLM calls read_file. Turn 2: LLM calls finish.
     read_file_msg = _msg_with_tool_call("read_file", '{"path": "a.txt"}')
@@ -1619,133 +1662,95 @@ async def test_react_routes_read_file_to_local_tool():
     resp1 = MagicMock(choices=[MagicMock(message=read_file_msg)])
     resp2 = MagicMock(choices=[MagicMock(message=finish_msg_obj)])
 
-    responder_task = asyncio.create_task(responder())
     try:
         with patch(
-            "services.orchestrator.coding_orchestrator.litellm.acompletion",
+            "services.orchestrator.coding_orchestrator.acompletion_with_failover",
             new_callable=AsyncMock,
             side_effect=[resp1, resp2],
-        ):
+        ) as mock_acompletion:
             out = await orch.react_execute("read a.txt")
-        await responder_task
     finally:
         events.current_emitter.reset(token)
-        await redis.aclose()
 
     assert out["ok"] is True
     assert out["summary"] == "read complete"
 
-
-@pytest.mark.asyncio
-async def test_react_routes_search_files_to_local_tool():
-    """ReAct loop routes search_files through request_local_tool and the hits reach the model.
-
-    search_files only routes to the client when a manifest DECLARES it (it is NOT in
-    the static LOCAL_TOOL_NAMES fallback). Without the manifest the call would fall through
-    to the ``unknown tool`` branch, no tool.request would fire, and the test would still pass
-    off the turn-2 finish(). To give the test teeth we (a) install a manifest declaring
-    search_files, (b) assert the responder actually saw a search_files tool.request (proves
-    it routed to the client, not a pod/unknown path), and (c) assert the hits payload was fed
-    back into the turn-2 model call.
-    """
-    import fakeredis.aioredis
-
-    from services.orchestrator import client_context, events
-    from services.orchestrator.local_tools import TOOL_RESULTS_PREFIX
-    from services.orchestrator.tool_manifest import parse_manifest
-
-    redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
-    task_id = "task-react-search"
-    emitter = events.EventEmitter(redis, task_id)
-    token = events.current_emitter.set(emitter)
-
-    # Install a manifest declaring search_files so the dispatcher routes it to the client.
-    manifest = parse_manifest({"tools": [{"name": "search_files", "source": "builtin"}]})
-    ctx_token = client_context.set_manifest(manifest)
-
-    orch = AsyncOrchestrator(skill_router=None, max_steps=3)
-    orch.redis = redis
-
-    # Responder: records which tool.request names it saw and posts a tool.result for them.
-    seen: list[str] = []
-
-    async def responder():
-        ev_stream = f"{events.EVENTS_STREAM_PREFIX}{task_id}"
-        for _ in range(100):
-            resp = await redis.xread({ev_stream: "0"}, count=20, block=100)
-            if not resp:
-                continue
-            for _s, entries in resp:
-                for _id, f in entries:
-                    ev = json.loads(f["event"])
-                    if ev.get("type") == "tool.request":
-                        seen.append(ev.get("name", ""))
-                        await redis.xadd(
-                            f"{TOOL_RESULTS_PREFIX}{task_id}",
-                            {
-                                "result": json.dumps(
-                                    {
-                                        "tool_request_id": ev["tool_request_id"],
-                                        "result": {
-                                            "hits": [
-                                                {"file": "a.py", "line": 1, "text": "def foo():"},
-                                                {"file": "b.py", "line": 42, "text": "def bar():"},
-                                            ],
-                                            "truncated": False,
-                                        },
-                                        "error": None,
-                                    }
-                                )
-                            },
-                        )
-                        return
-
-    # Turn 1: LLM calls search_files. Turn 2: LLM calls finish.
-    search_msg = _msg_with_tool_call("search_files", '{"query": "def foo"}')
-    finish_msg_obj = _msg_with_tool_call("finish", '{"summary": "found functions"}')
-
-    resp1 = MagicMock(choices=[MagicMock(message=search_msg)])
-    resp2 = MagicMock(choices=[MagicMock(message=finish_msg_obj)])
-
-    responder_task = asyncio.create_task(responder())
-    try:
-        with patch(
-            "services.orchestrator.coding_orchestrator.litellm.acompletion",
-            new_callable=AsyncMock,
-            side_effect=[resp1, resp2],
-        ) as mock_acompletion:
-            out = await orch.react_execute("search for foo")
-        await responder_task
-    finally:
-        client_context.reset_manifest(ctx_token)
-        events.current_emitter.reset(token)
-        await redis.aclose()
-
-    assert out["ok"] is True
-    assert out["summary"] == "found functions"
-
-    # Positive routing proof: a search_files tool.request actually fired, so the call
-    # routed to the client (NOT the unknown-tool / pod fallback path). If the manifest
-    # were missing, `seen` would be empty and this assertion would fail.
-    assert "search_files" in seen, f"expected a search_files tool.request, saw: {seen}"
-
-    # Payload proof: the hits returned by the client were fed back into the turn-2 model
-    # call as a tool result message. Inspect the messages passed to the 2nd acompletion call.
+    # Positive proof: the REAL file content ("FILE BODY", read straight off disk
+    # via execute_local_tool) was fed back into the turn-2 model call — not a
+    # round-trip mock and not "no local tool client connected".
     assert mock_acompletion.call_count == 2
     turn2_messages = mock_acompletion.call_args_list[1].kwargs["messages"]
     tool_msgs = [m for m in turn2_messages if m.get("role") == "tool"]
     assert tool_msgs, "expected a tool-result message fed back into turn 2"
     tool_result_blob = " ".join(str(m.get("content", "")) for m in tool_msgs)
     assert (
-        "a.py" in tool_result_blob
-    ), f"expected the search hits (a.py) in the turn-2 tool result, got: {tool_result_blob}"
+        "FILE BODY" in tool_result_blob
+    ), f"expected the real file content in the turn-2 tool result, got: {tool_result_blob}"
+    assert "no local tool client connected" not in tool_result_blob
 
 
 @pytest.mark.asyncio
-async def test_react_file_tool_with_no_redis_returns_error():
-    """When redis is None, file tools return a structured error rather than raising."""
+async def test_react_routes_write_file_to_local_tool(monkeypatch, tmp_path):
+    """ReAct loop executes write_file DIRECTLY via execute_local_tool: the file
+    really lands on disk under tmp_path, the read-back verify passes, and the
+    path is recorded in edited_files (verification-stop bookkeeping)."""
+    from services.orchestrator import events
+
+    # Disable the verification-stop nudge so a bare write+finish completes in
+    # 2 turns — this test targets the direct-execution write mechanics, not
+    # the verify-nudge flow (covered separately by the verification_stop tests).
+    monkeypatch.setenv("MAX_VERIFY_NUDGES", "0")
+
+    class FakeEmitter:
+        async def emit(self, type, **f):
+            pass
+
+    token = events.current_emitter.set(FakeEmitter())
+
+    orch = AsyncOrchestrator(skill_router=None, max_steps=3)
+    orch.workspace = str(tmp_path)
+    orch.local_client = MagicMock()  # truthy so the local-tool branch is taken
+
+    write_msg = _msg_with_tool_call(
+        "write_file", json.dumps({"path": "out.txt", "content": "NEW CONTENT"})
+    )
+    finish_msg_obj = _msg_with_tool_call("finish", '{"summary": "write complete"}')
+
+    resp1 = MagicMock(choices=[MagicMock(message=write_msg)])
+    resp2 = MagicMock(choices=[MagicMock(message=finish_msg_obj)])
+
+    try:
+        with patch(
+            "services.orchestrator.coding_orchestrator.acompletion_with_failover",
+            new_callable=AsyncMock,
+            side_effect=[resp1, resp2],
+        ) as mock_acompletion:
+            out = await orch.react_execute("write out.txt")
+    finally:
+        events.current_emitter.reset(token)
+
+    assert out["ok"] is True
+    assert "write complete" in out["summary"]
+
+    # The write really landed on disk (not a mock, not a round-trip).
+    written = tmp_path / "out.txt"
+    assert written.exists()
+    assert written.read_text(encoding="utf-8") == "NEW CONTENT"
+
+    # The read-back verify passed, and the tool result reflects that.
+    assert mock_acompletion.call_count == 2
+    turn2_messages = mock_acompletion.call_args_list[1].kwargs["messages"]
+    tool_msgs = [m for m in turn2_messages if m.get("role") == "tool"]
+    assert tool_msgs, "expected a tool-result message fed back into turn 2"
+    tool_result_blob = " ".join(str(m.get("content", "")) for m in tool_msgs)
+    assert '"verified": true' in tool_result_blob.lower()
+
+
+@pytest.mark.asyncio
+async def test_react_file_tool_with_no_local_client_returns_error():
+    """When local_client is None, file tools return a structured error rather than raising."""
     orch = AsyncOrchestrator(skill_router=None, max_steps=2)
-    assert orch.redis is None  # default
+    assert orch.local_client is None  # default
 
     read_file_msg = _msg_with_tool_call("read_file", '{"path": "x.txt"}')
     finish_msg_obj = _msg_with_tool_call("finish", '{"summary": "done"}')
@@ -1966,6 +1971,27 @@ class TestEditIntentRouting:
         assert not loop_spy.called, "flag off must preserve today's skill_first path"
         assert "read-only review output" in result["summary"]
 
+    @pytest.mark.asyncio
+    async def test_file_read_goal_enters_react_loop_not_skill_first(self):
+        """Piece 5 fix-B: a read-only file-access goal ('read x.py and summarize')
+        must ALSO bypass _run_skill_first and reach _run_react_loop, since the
+        single-skill fast-path has no file-tool access. requires_local_tools
+        broadens the loop-entry gate beyond requires_editing for this case."""
+        orch = self._make_orch()
+
+        with (
+            patch.object(orch, "_run_skill_first", new_callable=AsyncMock) as skill_first_spy,
+            patch.object(orch, "_run_react_loop", new_callable=AsyncMock) as loop_spy,
+        ):
+            loop_spy.return_value = {"ok": True, "summary": "read x.py and summarized it"}
+            result = await orch.react_execute("read x.py and summarize it")
+
+        assert (
+            not skill_first_spy.called
+        ), "skill-first fast-path must be skipped for file-access goals"
+        assert loop_spy.called, "the multi-tool ReAct loop must run for file-access goals"
+        assert result["ok"] is True
+
 
 def _vt_tool_msg(name, arguments):
     """A litellm-style assistant message that calls a single tool (verify-stop tests)."""
@@ -1983,37 +2009,29 @@ def _vt_tool_msg(name, arguments):
 
 
 @pytest.mark.asyncio
-async def test_verification_stop_nudges_then_accepts_after_tests_pass(monkeypatch):
+async def test_verification_stop_nudges_then_accepts_after_tests_pass(monkeypatch, tmp_path):
     """Edit then finish without tests must be nudged, not accepted."""
     from services.orchestrator import events
 
     monkeypatch.setenv("MAX_VERIFY_NUDGES", "2")
     # Ensure we're exercising the ReAct loop, not skill-first
     monkeypatch.setattr("services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "react")
-    orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
+    orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace=str(tmp_path))
 
-    # Stub redis so write_file succeeds through request_local_tool.
-    # For write_file calls, return success. For read_file (verification), return the content.
-    async def _fake_local_tool(redis, name, args):
-        if name == "read_file":
-            # Return the content for verification
-            return "x = 1"
-        return {"path": args.get("path"), "written": True}
+    # write_file now executes directly (execute_local_tool) against tmp_path; the
+    # read-back verify reads the real file it just wrote, so no local-tool mock
+    # is needed for read/write.
+    orch.local_client = MagicMock()  # truthy so the write_file branch is taken
 
-    monkeypatch.setattr(
-        "services.orchestrator.coding_orchestrator.request_local_tool",
-        AsyncMock(side_effect=_fake_local_tool),
-    )
-    orch.redis = MagicMock()  # truthy so the write_file branch is taken
-
-    # Stub mcp so run_tests returns a passing result.
-    mcp = AsyncMock()
-    mcp_result = MagicMock()
-    mcp_result.content = [
-        MagicMock(text=json.dumps({"ok": True, "exit_code": 0, "raw_output": "1 passed"}))
-    ]
-    mcp.call_tool.return_value = mcp_result
-    orch.mcp = mcp
+    # run_tests now runs as a direct local subprocess; stub
+    # asyncio.create_subprocess_shell so it returns a passing result without
+    # spawning a real process.
+    fake_proc = MagicMock()
+    fake_proc.communicate = AsyncMock(return_value=(b"1 passed", None))
+    fake_proc.returncode = 0
+    fake_proc.kill = MagicMock()
+    fake_proc.wait = AsyncMock()
+    subprocess_mock = AsyncMock(return_value=fake_proc)
 
     responses = [
         _vt_tool_msg("write_file", {"path": "src/app.py", "content": "x = 1"}),
@@ -2028,11 +2046,17 @@ async def test_verification_stop_nudges_then_accepts_after_tests_pass(monkeypatc
         async def emit(self, type, **f):
             pass
 
-    with patch(
-        "services.orchestrator.coding_orchestrator.acompletion_with_failover",
-        new_callable=AsyncMock,
-        side_effect=responses,
-    ) as mock:
+    with (
+        patch(
+            "services.orchestrator.coding_orchestrator.acompletion_with_failover",
+            new_callable=AsyncMock,
+            side_effect=responses,
+        ) as mock,
+        patch(
+            "services.orchestrator.coding_orchestrator.asyncio.create_subprocess_shell",
+            new=subprocess_mock,
+        ),
+    ):
         token = events.current_emitter.set(FakeEmitter())
         try:
             result = await orch.react_execute("fix the bug in src/app.py")
@@ -2048,15 +2072,15 @@ async def test_verification_stop_nudges_then_accepts_after_tests_pass(monkeypatc
 
 @pytest.mark.asyncio
 async def test_run_tests_client_routed_pass(monkeypatch):
-    """Client-routed run_tests (manifest declares it): should route to request_local_tool
-    with a long timeout, parse the {ok, exit_code, raw_output} response, and record
-    tests_passed when ok=True."""
+    """run_tests runs as a direct local subprocess (asyncio.create_subprocess_shell),
+    even when a client with a run_tests-declaring manifest is attached — parse the
+    {ok, exit_code, raw_output} response, and record tests_passed when ok=True."""
     from services.orchestrator import events
     from services.orchestrator.tool_manifest import parse_manifest
 
     monkeypatch.setattr("services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "react")
     orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
-    orch.redis = MagicMock()
+    orch.local_client = MagicMock()
 
     # Set up client context with a manifest that declares run_tests.
     manifest = parse_manifest(
@@ -2079,15 +2103,15 @@ async def test_run_tests_client_routed_pass(monkeypatch):
     # Mock the client_context to return our manifest
     monkeypatch.setattr("services.orchestrator.coding_orchestrator.client_context", FakeContext())
 
-    # Mock request_local_tool to return a passing test result.
-    async def _fake_local_tool(redis, name, args, timeout=None):
-        assert name == "run_tests", f"expected run_tests, got {name}"
-        assert timeout is not None and timeout >= 30.0, f"timeout too short: {timeout}"
-        return {"ok": True, "exit_code": 0, "raw_output": "3 passed"}
-
+    # Stub the direct-subprocess seam to return a passing test result.
+    fake_proc = MagicMock()
+    fake_proc.communicate = AsyncMock(return_value=(b"3 passed", None))
+    fake_proc.returncode = 0
+    fake_proc.kill = MagicMock()
+    fake_proc.wait = AsyncMock()
     monkeypatch.setattr(
-        "services.orchestrator.coding_orchestrator.request_local_tool",
-        AsyncMock(side_effect=_fake_local_tool),
+        "services.orchestrator.coding_orchestrator.asyncio.create_subprocess_shell",
+        AsyncMock(return_value=fake_proc),
     )
 
     # Single model response: call run_tests then finish
@@ -2117,14 +2141,14 @@ async def test_run_tests_client_routed_pass(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_run_tests_client_routed_fail(monkeypatch):
-    """Client-routed run_tests with ok=False should not set tests_passed and may trigger
-    verification-stop nudge."""
+    """A direct-subprocess run_tests with a nonzero exit (ok=False) should not set
+    tests_passed and may trigger the verification-stop nudge."""
     from services.orchestrator import events
     from services.orchestrator.tool_manifest import parse_manifest
 
     monkeypatch.setattr("services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "react")
     orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
-    orch.redis = MagicMock()
+    orch.local_client = MagicMock()
 
     manifest = parse_manifest(
         {
@@ -2145,14 +2169,15 @@ async def test_run_tests_client_routed_fail(monkeypatch):
 
     monkeypatch.setattr("services.orchestrator.coding_orchestrator.client_context", FakeContext())
 
-    async def _fake_local_tool(redis, name, args, timeout=None):
-        if name == "run_tests":
-            return {"ok": False, "exit_code": 1, "raw_output": "1 failed"}
-        return {}
-
+    # Stub the direct-subprocess seam to return a failing test result.
+    fake_proc = MagicMock()
+    fake_proc.communicate = AsyncMock(return_value=(b"1 failed", None))
+    fake_proc.returncode = 1
+    fake_proc.kill = MagicMock()
+    fake_proc.wait = AsyncMock()
     monkeypatch.setattr(
-        "services.orchestrator.coding_orchestrator.request_local_tool",
-        AsyncMock(side_effect=_fake_local_tool),
+        "services.orchestrator.coding_orchestrator.asyncio.create_subprocess_shell",
+        AsyncMock(return_value=fake_proc),
     )
 
     responses = [
@@ -2161,7 +2186,7 @@ async def test_run_tests_client_routed_fail(monkeypatch):
     ]
 
     # Capture the run_tests tool result fed back to the model. This is the
-    # ground truth of what the client-routed branch shaped — mutation-proof:
+    # ground truth of what the direct-subprocess branch shaped — mutation-proof:
     # if the shaper forced "ok": True for a failing run, this captured value
     # would be ok=True and the assertions below would FAIL.
     run_tests_results: list[dict] = []
@@ -2188,7 +2213,7 @@ async def test_run_tests_client_routed_fail(monkeypatch):
         finally:
             events.current_emitter.reset(token)
 
-    # The client-routed branch must have run and shaped the failing result.
+    # The direct-subprocess branch must have run and shaped the failing result.
     assert run_tests_results, "run_tests tool result was never emitted (branch not taken)"
     shaped = run_tests_results[-1]
     # A FAILING client test result must NOT be credited as a pass: the shaped
@@ -2203,16 +2228,16 @@ async def test_run_tests_client_routed_fail(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_run_tests_no_client_uses_pod_path(monkeypatch):
-    """When no client attached (no manifest), run_tests should use the pod code-sandbox
-    path via skill_router."""
+    """When no client and no skill_router are attached, run_tests still works — it
+    runs as a direct local subprocess (asyncio.create_subprocess_shell), no client
+    or skill router needed."""
     from services.orchestrator import events
 
     monkeypatch.setattr("services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "react")
 
-    # Create orchestrator with a mock skill_router but no redis (simulating no client)
-    skill_router = MagicMock()
-    orch = AsyncOrchestrator(skill_router=skill_router, mcp=None, workspace="/tmp")
-    orch.redis = None  # No client attached
+    # No skill_router, no local_client attached (simulating a bare co-located orchestrator).
+    orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
+    orch.local_client = None  # No client attached
 
     # Mock client_context to return None (no manifest)
     class FakeContext:
@@ -2224,11 +2249,13 @@ async def test_run_tests_no_client_uses_pod_path(monkeypatch):
 
     monkeypatch.setattr("services.orchestrator.coding_orchestrator.client_context", FakeContext())
 
-    # Mock skill_router.execute to return a sandbox-shaped result
-    async def _fake_execute(*args, **kwargs):
-        return {"ok": True, "exit_code": 0, "raw_output": "2 passed"}
-
-    skill_router.execute = AsyncMock(side_effect=_fake_execute)
+    # Stub the direct-subprocess seam to return a passing test result.
+    fake_proc = MagicMock()
+    fake_proc.communicate = AsyncMock(return_value=(b"2 passed", None))
+    fake_proc.returncode = 0
+    fake_proc.kill = MagicMock()
+    fake_proc.wait = AsyncMock()
+    subprocess_mock = AsyncMock(return_value=fake_proc)
 
     # Single model response: call run_tests then finish
     responses = [
@@ -2240,27 +2267,25 @@ async def test_run_tests_no_client_uses_pod_path(monkeypatch):
         async def emit(self, type, **f):
             pass
 
-    with patch(
-        "services.orchestrator.coding_orchestrator.acompletion_with_failover",
-        new_callable=AsyncMock,
-        side_effect=responses,
+    with (
+        patch(
+            "services.orchestrator.coding_orchestrator.acompletion_with_failover",
+            new_callable=AsyncMock,
+            side_effect=responses,
+        ),
+        patch(
+            "services.orchestrator.coding_orchestrator.asyncio.create_subprocess_shell",
+            new=subprocess_mock,
+        ),
     ):
-        with patch(
-            "services.orchestrator.coding_orchestrator.build_sandbox_test_args",
-            return_value={"timeout": 120000, "test_path": "tests/"},
-        ):
-            with patch(
-                "services.orchestrator.coding_orchestrator.shape_sandbox_test_result",
-                return_value={"ok": True, "exit_code": 0, "raw_output": "2 passed"},
-            ):
-                token = events.current_emitter.set(FakeEmitter())
-                try:
-                    result = await orch.react_execute("run tests")
-                finally:
-                    events.current_emitter.reset(token)
+        token = events.current_emitter.set(FakeEmitter())
+        try:
+            result = await orch.react_execute("run tests")
+        finally:
+            events.current_emitter.reset(token)
 
-    # Verify skill_router.execute was called (pod path taken)
-    assert skill_router.execute.called, "pod path (skill_router) should be used when no client"
+    # Verify the direct-subprocess seam was used (no skill_router / client needed)
+    assert subprocess_mock.called, "run_tests should call create_subprocess_shell directly"
     assert result["ok"] is True
 
 
@@ -2288,7 +2313,6 @@ async def test_gating_run_bash_and_code_semantic_search_not_advertised_when_clie
         manifest,
         skill_router=None,
         codegraph_enabled=False,
-        memory_enabled=False,
         static_tail=_static_tail_schemas(),
     )
 
@@ -2346,24 +2370,16 @@ async def test_verification_stop_no_edits_finishes_immediately(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_verification_stop_cap_accepts_finish_honestly(monkeypatch):
+async def test_verification_stop_cap_accepts_finish_honestly(monkeypatch, tmp_path):
     """After MAX_VERIFY_NUDGES the finish is accepted but annotated honestly."""
     from services.orchestrator import events
 
     monkeypatch.setenv("MAX_VERIFY_NUDGES", "1")
     monkeypatch.setattr("services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "react")
-    orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
-
-    async def _fake_local_tool(redis, name, args):
-        if name == "read_file":
-            return "x = 1"
-        return {"path": args.get("path"), "written": True}
-
-    monkeypatch.setattr(
-        "services.orchestrator.coding_orchestrator.request_local_tool",
-        AsyncMock(side_effect=_fake_local_tool),
-    )
-    orch.redis = MagicMock()
+    orch = AsyncOrchestrator(skill_router=None, mcp=None, workspace=str(tmp_path))
+    # write_file executes directly against tmp_path; the read-back verify reads
+    # the real file it just wrote, so no local-tool mock is needed.
+    orch.local_client = MagicMock()
 
     responses = [
         _vt_tool_msg("write_file", {"path": "src/app.py", "content": "x = 1"}),
@@ -2393,23 +2409,17 @@ async def test_verification_stop_cap_accepts_finish_honestly(monkeypatch):
 
 @pytest.mark.mocked
 @pytest.mark.asyncio
-async def test_react_loop_tolerates_two_identical_write_file_calls(monkeypatch):
+async def test_react_loop_tolerates_two_identical_write_file_calls(monkeypatch, tmp_path):
     """A legit 'edit, test failed, edit again' retry: two identical write_file
     calls must NOT trip the loop detector (mutating tolerance >= 4)."""
     monkeypatch.setattr("services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "skill_first")
     from services.orchestrator import events
 
     orch = AsyncOrchestrator(skill_router=None, mcp=MagicMock(), max_steps=6)
-
-    # write_file goes through the local-tool seam; make read-back match so the
-    # write is reported as verified (content "x").
-    async def _local(redis, name, args):
-        if name == "read_file":
-            return "x"
-        return {"ok": True}
-
-    monkeypatch.setattr("services.orchestrator.coding_orchestrator.request_local_tool", _local)
-    orch.redis = MagicMock()
+    # write_file executes directly (execute_local_tool) against tmp_path; the
+    # read-back verify reads the real file it just wrote (content "x").
+    orch.workspace = str(tmp_path)
+    orch.local_client = MagicMock()
 
     def write_msg():
         return MagicMock(

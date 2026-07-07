@@ -2,16 +2,17 @@
 from __future__ import annotations
 
 import json
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-from pytest_bdd import scenarios, given, when, then, parsers
 
+import pytest
+from pytest_bdd import given, parsers, scenarios, then, when
+
+from services.orchestrator.iteration_budget import IterationBudget
 from services.orchestrator.loop_detection import (
     LoopDetector,
     call_signature,
     repeat_limit_for,
 )
-from services.orchestrator.iteration_budget import IterationBudget
 from tests.conftest import run_async
 
 pytestmark = [pytest.mark.bdd, pytest.mark.mocked]
@@ -46,16 +47,12 @@ def _record_read(ctx, name, args):
 def _should_break(ctx):
     # The break check must use the same per-tool threshold the records used.
     # All recorded calls in a scenario share one tool name, so derive it.
-    assert ctx["detector"].should_break(
-        repeat_limit=repeat_limit_for(_last_tool(ctx))
-    ) is True
+    assert ctx["detector"].should_break(repeat_limit=repeat_limit_for(_last_tool(ctx))) is True
 
 
 @then("the detector reports it should not break")
 def _should_not_break(ctx):
-    assert ctx["detector"].should_break(
-        repeat_limit=repeat_limit_for(_last_tool(ctx))
-    ) is False
+    assert ctx["detector"].should_break(repeat_limit=repeat_limit_for(_last_tool(ctx))) is False
 
 
 @then(parsers.parse('the trip reason mentions "{word}"'))
@@ -111,23 +108,17 @@ def _write_then_finish_responses():
 
 
 @given("a ReAct orchestrator wired to a fake model that writes a file then finishes")
-def _orch_write_finish(ctx, monkeypatch):
+def _orch_write_finish(ctx, monkeypatch, tmp_path):
     from services.orchestrator.coding_orchestrator import AsyncOrchestrator
 
-    monkeypatch.setattr(
-        "services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "skill_first"
-    )
-
-    async def _local(redis, name, args):
-        if name == "read_file":
-            return "patched"  # match write content -> verified
-        return {"ok": True}
-    monkeypatch.setattr(
-        "services.orchestrator.coding_orchestrator.request_local_tool", _local
-    )
+    monkeypatch.setattr("services.orchestrator.coding_orchestrator.SEQUENCING_MODE", "skill_first")
 
     orch = AsyncOrchestrator(skill_router=None, mcp=MagicMock(), max_steps=6)
-    orch.redis = MagicMock()
+    # write_file/read_file now execute directly (execute_local_tool) against a
+    # real tmp_path workspace; the read-back verify reads the real file it
+    # just wrote ("patched"), so no local-tool mock is needed.
+    orch.workspace = str(tmp_path)
+    orch.local_client = MagicMock()
     ctx["orch"] = orch
 
 
@@ -147,6 +138,7 @@ def _execute_edit_goal(ctx, goal):
 
     async def _run():
         from services.orchestrator import events
+
         with patch(
             "services.orchestrator.coding_orchestrator.acompletion_with_failover",
             new_callable=AsyncMock,
@@ -172,7 +164,9 @@ def _headroom(ctx):
     # strictly greater than max_steps (6). Verify the configured ceiling rather
     # than forcing 12 real turns: re-run the cap computation the loop uses.
     import os
+
     from services.orchestrator.edit_intent import requires_editing
+
     assert requires_editing("fix the bug in app.py") is True
     cap = int(os.getenv("LABMATE_MAX_ITERATIONS_EDIT", "12"))
     assert cap > ctx["orch"].max_steps

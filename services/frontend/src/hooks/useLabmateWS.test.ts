@@ -128,7 +128,7 @@ describe('useLabmateWS', () => {
     const executeTool = vi.fn().mockResolvedValue({ result: { content: "hi" } });
     // Set electronAPI directly to avoid replacing window (which breaks React DOM instanceof checks)
     (window as Window & { electronAPI?: unknown }).electronAPI = {
-      config: { wsUrl: null, isDev: true }, token: null,
+      config: { wsUrl: null, gemmaBase: null, isDev: true }, token: null,
       setConfig: vi.fn(), setToken: vi.fn(), clearToken: vi.fn(), executeTool,
       getMcpTools: vi.fn().mockResolvedValue([]),
       getWorkspaceRoots: vi.fn().mockResolvedValue([]),
@@ -177,7 +177,7 @@ describe('useLabmateWS', () => {
   it("routes a tool.request to the workspace of its turn session", async () => {
     const executeTool = vi.fn().mockResolvedValue({ result: { content: 'hi' } });
     (window as Window & { electronAPI?: unknown }).electronAPI = {
-      config: { wsUrl: null, isDev: true }, token: null,
+      config: { wsUrl: null, gemmaBase: null, isDev: true }, token: null,
       setConfig: vi.fn(), setToken: vi.fn(), clearToken: vi.fn(), executeTool,
       getMcpTools: vi.fn().mockResolvedValue([]),
       getWorkspaceRoots: vi.fn().mockResolvedValue([]),
@@ -747,7 +747,7 @@ describe('ensureActiveSession', () => {
 
   it('sends capabilities frame after auth.ok with builtins only', async () => {
     (window as Window & { electronAPI?: unknown }).electronAPI = {
-      config: { wsUrl: null, isDev: true }, token: null,
+      config: { wsUrl: null, gemmaBase: null, isDev: true }, token: null,
       setConfig: vi.fn(), setToken: vi.fn(), clearToken: vi.fn(),
       executeTool: vi.fn(),
       getMcpTools: vi.fn().mockResolvedValue([]),
@@ -802,7 +802,7 @@ describe('ensureActiveSession', () => {
       schema: { type: 'object', properties: {} },
     };
     (window as Window & { electronAPI?: unknown }).electronAPI = {
-      config: { wsUrl: null, isDev: true }, token: null,
+      config: { wsUrl: null, gemmaBase: null, isDev: true }, token: null,
       setConfig: vi.fn(), setToken: vi.fn(), clearToken: vi.fn(),
       executeTool: vi.fn(),
       getMcpTools: vi.fn().mockResolvedValue([mcpTool]),
@@ -844,7 +844,7 @@ describe('ensureActiveSession', () => {
   it('sends capabilities frame with builtins only when getMcpTools is absent', async () => {
     // No getMcpTools in electronAPI (cast away the requirement for this test)
     (window as Window & { electronAPI?: unknown }).electronAPI = {
-      config: { wsUrl: null, isDev: true }, token: null,
+      config: { wsUrl: null, gemmaBase: null, isDev: true }, token: null,
       setConfig: vi.fn(), setToken: vi.fn(), clearToken: vi.fn(),
       executeTool: vi.fn(),
       getMcpTools: undefined,

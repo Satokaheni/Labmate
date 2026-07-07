@@ -354,7 +354,6 @@ def build_tool_list(
     *,
     skill_router: Any = None,
     codegraph_enabled: bool = False,
-    memory_enabled: bool = False,
     session_search_enabled: bool = False,
     static_tail: list[dict],
 ) -> list[dict]:
@@ -365,7 +364,6 @@ def build_tool_list(
         manifest: Parsed ClientManifest or None (no client attached, use full fallback).
         skill_router: SkillRouter instance, if skills are enabled.
         codegraph_enabled: Whether codegraph MCP is active.
-        memory_enabled: Whether memory store is active.
         static_tail: Result of prompt_assembler._static_tail_schemas(); used for fallback.
 
     Returns:
@@ -381,10 +379,6 @@ def build_tool_list(
             from services.orchestrator.prompt_assembler import _code_semantic_search_schema
 
             tools.append(_code_semantic_search_schema())
-        if memory_enabled:
-            from services.orchestrator.prompt_assembler import _memory_search_schema
-
-            tools.append(_memory_search_schema())
         if session_search_enabled:
             from services.orchestrator.prompt_assembler import _session_search_schema
 
@@ -469,12 +463,6 @@ def build_tool_list(
         from services.orchestrator.prompt_assembler import _code_semantic_search_schema
 
         tools.append(_code_semantic_search_schema())
-
-    # 3. memory_search (if memory enabled).
-    if memory_enabled:
-        from services.orchestrator.prompt_assembler import _memory_search_schema
-
-        tools.append(_memory_search_schema())
 
     # 3b. session_search (if session search enabled).
     if session_search_enabled:

@@ -11,16 +11,6 @@ sys.path.insert(0, str(SKILL_DIR))
 
 
 @pytest.fixture
-def mock_chroma(monkeypatch):
-    """Replace chromadb.AsyncHttpClient with a MagicMock; capture ctor kwargs."""
-    import chromadb
-
-    ctor = MagicMock(return_value=MagicMock())
-    monkeypatch.setattr(chromadb, "AsyncHttpClient", ctor)
-    return ctor
-
-
-@pytest.fixture
 def mock_docs(monkeypatch):
     """Replace paperqa.Docs with a mock exposing async aadd/aquery/aget_evidence."""
     import paperqa
@@ -33,7 +23,9 @@ def mock_docs(monkeypatch):
             contexts=[
                 SimpleNamespace(
                     context="Light is converted to chemical energy.",
-                    text=SimpleNamespace(name="Smith2020", doc=SimpleNamespace(docname="Smith2020")),
+                    text=SimpleNamespace(
+                        name="Smith2020", doc=SimpleNamespace(docname="Smith2020")
+                    ),
                     score=5,
                 )
             ],
@@ -44,7 +36,9 @@ def mock_docs(monkeypatch):
             contexts=[
                 SimpleNamespace(
                     context="Relevant passage.",
-                    text=SimpleNamespace(name="Smith2020", doc=SimpleNamespace(docname="Smith2020")),
+                    text=SimpleNamespace(
+                        name="Smith2020", doc=SimpleNamespace(docname="Smith2020")
+                    ),
                     score=4,
                 )
             ]

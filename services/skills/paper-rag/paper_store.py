@@ -1,18 +1,20 @@
 """PaperStore — cited agentic RAG over scientific PDFs using PaperQA2.
 
-The vector store points at the shared Chroma container (client-server mode,
-CLAUDE.md rule #4), not PaperQA's default local index. All logging is to
-stderr — stdout is reserved for MCP JSON-RPC.
+Uses PaperQA2's own local file-based index (``paperqa.Docs``) with a local
+embedding model — no external vector-store service. (Earlier revisions pointed
+the index at a Chroma container; the local harness has no Chroma, so we use
+PaperQA's native local index, which needs no server.) All logging is to stderr —
+stdout is reserved for MCP JSON-RPC.
 """
+
 from __future__ import annotations
 
 import logging
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
-import chromadb
 import paperqa
 from paperqa import Settings
 from paperqa.settings import AgentSettings
@@ -21,34 +23,21 @@ from paperqa.settings import AgentSettings
 logging.basicConfig(stream=sys.stderr, level=logging.INFO)
 log = logging.getLogger("paper-rag")
 
-CHROMA_URL = os.getenv("CHROMA_URL", "http://chroma:8000")
-CHROMA_COLLECTION = os.getenv("PAPER_RAG_COLLECTION", "paper_rag")
 # Local embedding model — local-first constraint, no OpenAI embeddings.
 EMBED_MODEL = os.getenv("PAPER_RAG_EMBED_MODEL", "st-all-MiniLM-L6-v2")
 
 
-def _chroma_host_port(url: str) -> tuple[str, int]:
-    """Parse 'http://chroma:8000' -> ('chroma', 8000)."""
-    host = url.split("//")[1].split(":")[0]
-    port = int(url.split(":")[-1])
-    return host, port
-
-
 class PaperStore:
-    """Wraps a PaperQA2 ``Docs`` index backed by the Chroma container."""
+    """Wraps a PaperQA2 ``Docs`` index (native local file-based store)."""
 
     def __init__(self) -> None:
-        host, port = _chroma_host_port(CHROMA_URL)
-        # CORRECT: client-server mode only. Do not use the local client variants.
-        self._chroma = chromadb.AsyncHttpClient(host=host, port=port)
-        self._collection_name = CHROMA_COLLECTION
         # PaperQA2 settings: local embedding model, no remote LLM embeddings.
         self._settings = Settings(
             embedding=EMBED_MODEL,
             agent=AgentSettings(agent_llm=os.getenv("PAPER_RAG_LLM", "ollama/llama3")),
         )
         self._docs = paperqa.Docs()
-        log.info("PaperStore initialized (chroma=%s:%s, embed=%s)", host, port, EMBED_MODEL)
+        log.info("PaperStore initialized (local paperqa.Docs, embed=%s)", EMBED_MODEL)
 
     async def add_papers(self, paths: list[str]) -> dict:
         """Ingest PDF files: parse, embed, store. Returns a summary dict."""
@@ -67,7 +56,7 @@ class PaperStore:
                     {
                         "path": str(p),
                         "docname": docname,
-                        "added_at": datetime.now(timezone.utc).isoformat(),
+                        "added_at": datetime.now(UTC).isoformat(),
                     }
                 )
                 log.info("add_papers: ingested %s as %s", p, docname)

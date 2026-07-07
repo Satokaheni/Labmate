@@ -1,15 +1,25 @@
 """Local-tool responder for the A/B harness.
 
-The orchestrator's read_file/write_file/list_dir are CLIENT-delegated: it emits a
-`tool.request` on labmate:events:<task_id> and BLOCKS on labmate:tool-results:<task_id>
-for a matching frame. Under the live CLI, services/cli/event_stream.py answers it.
-The A/B harness injects goals with no client, so those tools time out (30s) every
-call. This responder restores them: it tails the event stream, runs each tool with
-the CLI's execute_local_tool, and writes the result frame the orchestrator awaits.
+NOTE — eval-tooling only, describes the harness's OWN simulated transport, not
+the current live architecture: since the local-state-sqlite rearchitecture, the
+live stack runs `services.local.main` as one co-located process (gateway +
+orchestrator, one asyncio loop, SQLite LocalStore) and client-delegated tools
+(read_file/write_file/list_dir) dispatch directly in-process via
+`execute_local_tool` — there is no Redis event round-trip on the live path
+anymore. This A/B harness (`eval/seq_ab/run_seq_ab.py`, RunPod-only) still
+drives goals through a standalone Redis stream to simulate a detached client:
+it emits a `tool.request` on labmate:events:<task_id> and BLOCKS on
+labmate:tool-results:<task_id> for a matching frame, so those tools would
+otherwise time out (30s) with no client attached. This responder answers them:
+it tails the event stream, runs each tool with the CLI's execute_local_tool,
+and writes the result frame the orchestrator awaits.
 
-RunPod-only (sync redis). The pure handle_event_frame() is unit-tested; the thread
-loop is validated by the live A/B.
+RunPod-only (sync redis) — kept as-is pending the eval-tooling follow-up that
+retires the Redis-based A/B harness in favor of the SQLite/in-process model.
+The pure handle_event_frame() is unit-tested; the thread loop is validated by
+the live A/B.
 """
+
 from __future__ import annotations
 
 import json

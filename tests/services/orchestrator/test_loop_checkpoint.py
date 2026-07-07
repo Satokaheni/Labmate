@@ -2,19 +2,21 @@
 
 No Mongo, no asyncio in this file — to_dict/from_dict are pure sync functions.
 """
+
 from __future__ import annotations
 
 import json
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from services.orchestrator.loop_checkpoint import (
     CHECKPOINT_VERSION,
-    LoopCheckpoint,
-    to_dict,
-    from_dict,
     CheckpointStore,
     FakeCheckpointStore,
+    LoopCheckpoint,
+    from_dict,
+    to_dict,
 )
 
 
@@ -25,10 +27,17 @@ def _sample() -> LoopCheckpoint:
         messages=[
             {"role": "system", "content": "you are a coding agent"},
             {"role": "user", "content": "fix the factorial off-by-one"},
-            {"role": "assistant", "content": "", "tool_calls": [
-                {"id": "c1", "type": "function",
-                 "function": {"name": "read_file", "arguments": "{}"}}
-            ]},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{}"},
+                    }
+                ],
+            },
             {"role": "tool", "tool_call_id": "c1", "content": "def factorial(...)"},
         ],
         used=3,
@@ -37,7 +46,7 @@ def _sample() -> LoopCheckpoint:
         edited_files=["src/math.py"],
         tests_passed=False,
         verify_nudges_used=1,
-        loop_signatures=["read_file::{}", "write_file::{\"path\":\"x\"}"],
+        loop_signatures=["read_file::{}", 'write_file::{"path":"x"}'],
         tools_used=["read_file", "write_file"],
         loaded_skills=["read_file", "write_file"],
         start_monotonic_offset=12.5,
@@ -115,84 +124,78 @@ async def test_fake_store_save_overwrites_latest():
 
 
 @pytest.mark.asyncio
-async def test_mongo_store_save_upserts_by_task_id():
-    col = MagicMock()
-    col.update_one = AsyncMock()
-    store = CheckpointStore(col)
+async def test_store_save_calls_checkpoint_put():
+    store_mock = MagicMock()
+    store_mock.checkpoint_put = AsyncMock()
+    store = CheckpointStore(store_mock)
     await store.save(_sample())
-    args, kwargs = col.update_one.call_args
-    assert args[0] == {"task_id": "task-123"}      # filter
-    assert kwargs.get("upsert") is True
+    store_mock.checkpoint_put.assert_awaited_once()
+    args, kwargs = store_mock.checkpoint_put.call_args
+    assert args[0] == "task-123"  # task_id
+    assert isinstance(args[1], dict)  # to_dict payload
 
 
 @pytest.mark.asyncio
-async def test_mongo_store_load_returns_checkpoint():
-    col = MagicMock()
-    col.find_one = AsyncMock(return_value=to_dict(_sample()))
-    store = CheckpointStore(col)
+async def test_store_load_returns_checkpoint():
+    store_mock = MagicMock()
+    store_mock.checkpoint_get = AsyncMock(return_value=to_dict(_sample()))
+    store = CheckpointStore(store_mock)
     assert await store.load("task-123") == _sample()
 
 
 @pytest.mark.asyncio
-async def test_mongo_store_load_missing_returns_none():
-    col = MagicMock()
-    col.find_one = AsyncMock(return_value=None)
-    store = CheckpointStore(col)
+async def test_store_load_missing_returns_none():
+    store_mock = MagicMock()
+    store_mock.checkpoint_get = AsyncMock(return_value=None)
+    store = CheckpointStore(store_mock)
     assert await store.load("nope") is None
 
 
 @pytest.mark.asyncio
 async def test_store_errors_are_swallowed_never_raised():
-    # save/load/clear must be best-effort: a raising collection must NOT
+    # save/load/clear must be best-effort: a raising store must NOT
     # propagate (the ReAct loop must never break on a checkpoint failure).
-    col = MagicMock()
-    col.update_one = AsyncMock(side_effect=RuntimeError("mongo down"))
-    col.find_one = AsyncMock(side_effect=RuntimeError("mongo down"))
-    col.delete_one = AsyncMock(side_effect=RuntimeError("mongo down"))
-    store = CheckpointStore(col)
-    await store.save(_sample())          # must not raise
-    assert await store.load("task-123") is None   # error -> None
-    await store.clear("task-123")        # must not raise
+    store_mock = MagicMock()
+    store_mock.checkpoint_put = AsyncMock(side_effect=RuntimeError("sqlite error"))
+    store_mock.checkpoint_get = AsyncMock(side_effect=RuntimeError("sqlite error"))
+    store_mock.checkpoint_delete = AsyncMock(side_effect=RuntimeError("sqlite error"))
+    store = CheckpointStore(store_mock)
+    await store.save(_sample())  # must not raise
+    assert await store.load("task-123") is None  # error -> None
+    await store.clear("task-123")  # must not raise
 
 
 # ─────────────────────────────────────────────────────────────────────────
 # Storage manager accessor test
 # ─────────────────────────────────────────────────────────────────────────
 
-from services.orchestrator.loop_checkpoint import CHECKPOINT_COLLECTION
 
-
-def test_storage_manager_exposes_loop_checkpoint_collection():
+def test_storage_manager_has_no_loop_checkpoint_collection():
+    """StorageManager is Mongo-free (T9) — CheckpointStore is already off Mongo (T8)."""
     from services.orchestrator.storage_manager import StorageManager
-    db = MagicMock()
-    sentinel = MagicMock()
-    db.__getitem__ = MagicMock(return_value=sentinel)
-    mongo = MagicMock()
-    mongo.__getitem__ = MagicMock(return_value=db)
-    redis = MagicMock()
-    sm = StorageManager.from_clients(mongo=mongo, chroma=MagicMock(), redis=redis)
-    col = sm.loop_checkpoint_collection
-    db.__getitem__.assert_called_with(CHECKPOINT_COLLECTION)
-    assert col is sentinel
+
+    sm = StorageManager()
+    assert not hasattr(sm, "loop_checkpoint_collection")
 
 
 # ─────────────────────────────────────────────────────────────────────────
 # Wire-in tests (Insertion A/B/C + flag + _checkpoint_active + module reload)
 # ─────────────────────────────────────────────────────────────────────────
 
-import json as _json
-from unittest.mock import patch
+import json as _json  # noqa: E402
+from unittest.mock import patch  # noqa: E402
 
-from services.orchestrator import events
-from services.orchestrator.coding_orchestrator import AsyncOrchestrator
+from services.orchestrator import events  # noqa: E402
 
 
 def _finish_response(summary: str):
     msg = MagicMock()
-    msg.tool_calls = [MagicMock(
-        id="c1",
-        function=MagicMock(name="finish", arguments=_json.dumps({"summary": summary})),
-    )]
+    msg.tool_calls = [
+        MagicMock(
+            id="c1",
+            function=MagicMock(name="finish", arguments=_json.dumps({"summary": summary})),
+        )
+    ]
     # MagicMock(name=...) sets the mock's repr name, not .name — set explicitly:
     msg.tool_calls[0].function.name = "finish"
     msg.content = ""
@@ -206,7 +209,9 @@ async def test_run_react_loop_resumes_from_preseeded_checkpoint(monkeypatch):
     monkeypatch.setenv("ENABLE_LOOP_CHECKPOINT", "1")
     # Reload the module-level flag computed at import time.
     import importlib
+
     import services.orchestrator.coding_orchestrator as co
+
     importlib.reload(co)
 
     store = FakeCheckpointStore()
@@ -219,23 +224,29 @@ async def test_run_react_loop_resumes_from_preseeded_checkpoint(monkeypatch):
             {"role": "user", "content": "resume me"},
             {"role": "assistant", "content": "prior work done"},
         ],
-        used=2, absolute_turns=2, turn=2,
+        used=2,
+        absolute_turns=2,
+        turn=2,
         tools_used=["read_file"],
     )
     await store.save(seeded)
 
     orch = co.AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
     orch.checkpoint_store = store
-    orch.redis = MagicMock()
+    orch.local_client = MagicMock()
 
     # Active emitter so current_task_id() returns our task id.
     em = events.EventEmitter(MagicMock(), "task-resume")
     token = events.current_emitter.set(em)
     try:
-        with patch.object(co.events, "is_cancelled", new=AsyncMock(return_value=False)), \
-             patch.object(co.events, "read_and_clear_steer", new=AsyncMock(return_value=None)), \
-             patch("services.orchestrator.coding_orchestrator.acompletion_with_failover",
-                   new=AsyncMock(return_value=_finish_response("finished after resume"))):
+        with (
+            patch.object(co.events, "is_cancelled", new=AsyncMock(return_value=False)),
+            patch.object(co.events, "read_and_clear_steer", new=AsyncMock(return_value=None)),
+            patch(
+                "services.orchestrator.coding_orchestrator.acompletion_with_failover",
+                new=AsyncMock(return_value=_finish_response("finished after resume")),
+            ),
+        ):
             result = await orch._run_react_loop("resume me", 6)
     finally:
         events.current_emitter.reset(token)
@@ -253,7 +264,9 @@ async def test_flag_off_performs_no_checkpoint_io(monkeypatch):
     # Default flag (OFF) -> store is never touched even when wired.
     # Ensure the flag is OFF by not setting the env var and reloading the module.
     import importlib
+
     import services.orchestrator.coding_orchestrator as co
+
     # Clear the env var to ensure it defaults to OFF.
     monkeypatch.delenv("ENABLE_LOOP_CHECKPOINT", raising=False)
     importlib.reload(co)
@@ -265,15 +278,19 @@ async def test_flag_off_performs_no_checkpoint_io(monkeypatch):
 
     orch = co.AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
     orch.checkpoint_store = store
-    orch.redis = MagicMock()
+    orch.local_client = MagicMock()
 
     em = events.EventEmitter(MagicMock(), "task-off")
     token = events.current_emitter.set(em)
     try:
-        with patch.object(co.events, "is_cancelled", new=AsyncMock(return_value=False)), \
-             patch.object(co.events, "read_and_clear_steer", new=AsyncMock(return_value=None)), \
-             patch("services.orchestrator.coding_orchestrator.acompletion_with_failover",
-                   new=AsyncMock(return_value=_finish_response("done"))):
+        with (
+            patch.object(co.events, "is_cancelled", new=AsyncMock(return_value=False)),
+            patch.object(co.events, "read_and_clear_steer", new=AsyncMock(return_value=None)),
+            patch(
+                "services.orchestrator.coding_orchestrator.acompletion_with_failover",
+                new=AsyncMock(return_value=_finish_response("done")),
+            ),
+        ):
             await orch._run_react_loop("no checkpoint", 6)
     finally:
         events.current_emitter.reset(token)
@@ -292,7 +309,9 @@ async def test_resumed_loop_restores_loaded_skills_and_does_not_recharge_budget(
     monkeypatch.setenv("ENABLE_LOOP_CHECKPOINT", "1")
     # Reload the module-level flag computed at import time.
     import importlib
+
     import services.orchestrator.coding_orchestrator as co
+
     importlib.reload(co)
 
     store = FakeCheckpointStore()
@@ -306,7 +325,9 @@ async def test_resumed_loop_restores_loaded_skills_and_does_not_recharge_budget(
             {"role": "user", "content": "resume with skills"},
             {"role": "assistant", "content": "prior work"},
         ],
-        used=1, absolute_turns=1, turn=1,
+        used=1,
+        absolute_turns=1,
+        turn=1,
         tools_used=["read_file"],
         loaded_skills=["read_file", "write_file"],
     )
@@ -314,16 +335,20 @@ async def test_resumed_loop_restores_loaded_skills_and_does_not_recharge_budget(
 
     orch = co.AsyncOrchestrator(skill_router=None, mcp=None, workspace="/tmp")
     orch.checkpoint_store = store
-    orch.redis = MagicMock()
+    orch.local_client = MagicMock()
 
     # Active emitter so current_task_id() returns our task id.
     em = events.EventEmitter(MagicMock(), "task-skills")
     token = events.current_emitter.set(em)
     try:
-        with patch.object(co.events, "is_cancelled", new=AsyncMock(return_value=False)), \
-             patch.object(co.events, "read_and_clear_steer", new=AsyncMock(return_value=None)), \
-             patch("services.orchestrator.coding_orchestrator.acompletion_with_failover",
-                   new=AsyncMock(return_value=_finish_response("finished after resume"))):
+        with (
+            patch.object(co.events, "is_cancelled", new=AsyncMock(return_value=False)),
+            patch.object(co.events, "read_and_clear_steer", new=AsyncMock(return_value=None)),
+            patch(
+                "services.orchestrator.coding_orchestrator.acompletion_with_failover",
+                new=AsyncMock(return_value=_finish_response("finished after resume")),
+            ),
+        ):
             result = await orch._run_react_loop("resume with skills", 6)
     finally:
         events.current_emitter.reset(token)
@@ -343,10 +368,28 @@ async def test_resumed_loop_restores_loaded_skills_and_does_not_recharge_budget(
         task_id="task-skills-2",
         goal="test loaded_skills",
         messages=[],
-        used=0, absolute_turns=0, turn=0,
+        used=0,
+        absolute_turns=0,
+        turn=0,
         loaded_skills=["read_file", "write_file"],
     )
     await store.save(seeded_after)
     restored = await store.load("task-skills-2")
     assert restored is not None
     assert restored.loaded_skills == ["read_file", "write_file"]
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_store_over_localstore(tmp_path):
+    from services.orchestrator.local_store import LocalStore
+    from services.orchestrator.loop_checkpoint import CheckpointStore, LoopCheckpoint
+
+    store = LocalStore(tmp_path / "state.db")
+    cs = CheckpointStore(store)
+    cp = LoopCheckpoint(task_id="t1", goal="g", messages=[{"role": "user", "content": "x"}])
+    await cs.save(cp)
+    loaded = await cs.load("t1")
+    assert loaded is not None and loaded.task_id == "t1" and loaded.goal == "g"
+    await cs.clear("t1")
+    assert await cs.load("t1") is None
+    await store.close()

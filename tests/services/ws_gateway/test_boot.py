@@ -40,8 +40,8 @@ async def test_check_brain_failed_when_healthz_errors():
 
 
 @pytest.mark.asyncio
-async def test_check_memory_ready_when_redis_pings(redis):
-    state, detail, message = await check_memory(redis=redis)
+async def test_check_memory_ready_in_process():
+    state, detail, message = await check_memory()
     assert state == "ready"
 
 
@@ -56,7 +56,7 @@ async def test_check_hands_counts_skill_dirs(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_run_boot_sequence_emits_updates_then_ready(redis):
+async def test_run_boot_sequence_emits_updates_then_ready():
     emitted = []
 
     async def emit(ev):
@@ -125,3 +125,19 @@ async def test_run_boot_sequence_empty_store_sends_empty_sessions():
     boot_ready = next(e for e in emitted if e["type"] == "boot.ready")
     assert boot_ready["sessionBootstrap"]["sessions"] == []
     assert boot_ready["sessionBootstrap"]["activeSessionId"] is None
+
+
+# ---------------------------------------------------------------------------
+# Regression: brain-check probe must send a non-default User-Agent
+# (a RunPod proxy 403s the default Python-urllib UA -> false "Brain failed").
+# ---------------------------------------------------------------------------
+
+
+def test_brain_probe_request_sets_curl_user_agent():
+    from services.ws_gateway.server import _brain_probe_request
+
+    req = _brain_probe_request("https://pod-8000.proxy.runpod.net/health")
+    # urllib normalizes header keys to Capitalized form (User-agent).
+    ua = req.get_header("User-agent")
+    assert ua is not None and "curl" in ua.lower()
+    assert req.full_url == "https://pod-8000.proxy.runpod.net/health"

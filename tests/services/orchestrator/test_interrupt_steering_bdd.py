@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
-import pytest
-import fakeredis.aioredis
 from unittest.mock import AsyncMock, MagicMock, patch
-from pytest_bdd import scenarios, given, when, then, parsers
 
-from services.orchestrator.coding_orchestrator import AsyncOrchestrator
+import pytest
+from pytest_bdd import given, parsers, scenarios, then, when
+
 from services.orchestrator import events
+from services.orchestrator.coding_orchestrator import AsyncOrchestrator
+from services.orchestrator.inproc_bus import SignalRegistry
 from services.orchestrator.steer_inject import OOB_OPEN
 from tests.conftest import run_async
 
@@ -33,7 +34,7 @@ def _tool_resp(name, args, call_id="c"):
 @pytest.fixture
 def ctx():
     return {
-        "redis": fakeredis.aioredis.FakeRedis(decode_responses=True),
+        "signals": SignalRegistry(),
         "task_id": None,
         "responses": [],
         "steer_before_turn": None,
@@ -51,7 +52,7 @@ def _orch(ctx):
     bash_result.content = [MagicMock(text="files")]
     bash_result.isError = False
     orch.mcp.call_tool = AsyncMock(return_value=bash_result)
-    orch.redis = ctx["redis"]
+    orch.signals = ctx["signals"]
     ctx["orch"] = orch
 
 
@@ -111,20 +112,22 @@ def _run_goal(ctx, goal):
         # Fire the scheduled steer/cancel BEFORE producing this turn's response,
         # so it is visible at the TOP of the NEXT turn.
         if ctx["steer_before_turn"] == turn["n"] + 1 and ctx["steer_text"]:
-            await events.write_steer(ctx["redis"], ctx["task_id"], ctx["steer_text"])
+            await events.write_steer(ctx["signals"], ctx["task_id"], ctx["steer_text"])
         if ctx["cancel_before_turn"] == turn["n"] + 1:
-            await ctx["redis"].set(f"labmate:cancel:{ctx['task_id']}", "1", ex=60)
+            ctx["signals"].request_cancel(ctx["task_id"])
         if ctx["responses"] == "ALWAYS_BASH":
             return _tool_resp("run_bash", {"command": "ls"})
         return ctx["responses"].pop(0)
 
-    em = events.EventEmitter(ctx["redis"], ctx["task_id"])
+    em = events.EventEmitter(MagicMock(), ctx["task_id"])
     em.emit = AsyncMock()
     token = events.current_emitter.set(em)
 
     async def _go():
-        with patch("services.orchestrator.coding_orchestrator.acompletion_with_failover",
-                   new=AsyncMock(side_effect=_model)):
+        with patch(
+            "services.orchestrator.coding_orchestrator.acompletion_with_failover",
+            new=AsyncMock(side_effect=_model),
+        ):
             return await orch.react_execute(goal)
 
     try:
@@ -146,7 +149,8 @@ def _wraps_steer(ctx):
 
 @then(parsers.parse('the steer key "{key}" is empty afterward'))
 def _steer_key_empty(ctx, key):
-    assert run_async(ctx["redis"].exists(key)) == 0
+    # Consume-once semantics on the SignalRegistry: a second read returns None.
+    assert run_async(events.read_and_clear_steer(ctx["signals"], ctx["task_id"])) is None
 
 
 @then("react_execute returns ok False")

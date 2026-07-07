@@ -8,7 +8,7 @@ from services.orchestrator.routing_pregate import SkillPreGate
 def _fake_embed(vectors):
     """Factory for deterministic test embeddings (GPU-free)."""
 
-    async def _e(texts, redis=None):
+    async def _e(texts):
         return [vectors[t] for t in texts]
 
     return _e
@@ -53,7 +53,7 @@ async def test_empty_catalog_is_implausible():
 async def test_embed_failure_fails_safe_to_true():
     """An embed_fn that raises makes any_plausible_skill return True (fail-safe)."""
 
-    async def _boom(texts, redis=None):
+    async def _boom(texts):
         raise RuntimeError("embed down")
 
     gate = SkillPreGate({"x": "y"}, threshold=0.5, embed_fn=_boom)
@@ -107,7 +107,7 @@ async def test_max_similarity_empty_catalog_returns_neg_inf():
 async def test_max_similarity_embed_error_returns_pos_inf():
     """Embed error → float('inf') so any_plausible_skill is True (fail-safe)."""
 
-    async def _boom(texts, redis=None):
+    async def _boom(texts):
         raise RuntimeError("embed down")
 
     gate = SkillPreGate({"x": "y"}, threshold=0.5, embed_fn=_boom)

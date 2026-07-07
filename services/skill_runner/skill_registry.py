@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import jsonschema
 from mcp import ClientSession, StdioServerParameters
@@ -12,6 +14,32 @@ from mcp.client.stdio import stdio_client
 # CRITICAL: log handler must write to sys.stderr, NEVER sys.stdout.
 # The host's stdout is the JSON-RPC channel for any parent MCP server.
 log = logging.getLogger("skill_registry")
+
+# Repo root (parent of services/), for putting the shared package tree on a
+# spawned skill's PYTHONPATH.
+_REPO_ROOT = str(Path(__file__).resolve().parents[2])
+
+
+def _skill_env(manifest_env: dict | None) -> dict:
+    """Build the environment for a spawned skill subprocess.
+
+    The MCP stdio SDK's default env (when a manifest sets none) is MINIMAL —
+    HOME/PATH/SHELL/USER only — which silently DROPS GEMMA_BASE/QWEN_BASE and every
+    other harness config. Skills then fall back to http://localhost:8000, which is
+    the model only when it's CO-LOCATED (the RunPod pod). In the split topology
+    (Mac harness, remote model) that's a dead endpoint → the skill's model call
+    connection-refuses. Skills are same-trust local code that legitimately need the
+    harness config (model bases, API keys), so we inherit the FULL parent env and
+    prepend the repo root to an ABSOLUTE PYTHONPATH — the latter so skills can
+    import the shared resilient client (services.model_client) rather than each
+    rolling a naked litellm call. Manifest-specific env overrides last.
+    """
+    env = dict(os.environ)
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = _REPO_ROOT + (os.pathsep + existing if existing else "")
+    if manifest_env:
+        env.update(manifest_env)
+    return env
 
 
 def _log_task_exception(task: asyncio.Task) -> None:
@@ -46,6 +74,7 @@ def _drain_inbox(sp: SkillProcess, exc: BaseException) -> None:
 @dataclass
 class _SkillReq:
     """A tool call request posted to a skill's inbox queue."""
+
     tool: str
     arguments: dict
     future: asyncio.Future
@@ -61,8 +90,8 @@ class SkillDraining(Exception):
 
 @dataclass
 class SkillManifest:
-    name: str            # namespace prefix, e.g. "ast.repo-map"
-    command: str         # "node" | "python" | absolute path to a rust binary
+    name: str  # namespace prefix, e.g. "ast.repo-map"
+    command: str  # "node" | "python" | absolute path to a rust binary
     args: list[str]
     env: dict | None = None
     version: str | None = None
@@ -75,7 +104,7 @@ class SkillProcess:
     session: ClientSession | None = None
     stack: AsyncExitStack | None = None
     tools: dict[str, dict] = field(default_factory=dict)  # tool_name -> inputSchema
-    state: str = "INIT"   # INIT | READY | DRAINING | DEAD
+    state: str = "INIT"  # INIT | READY | DRAINING | DEAD
     inflight: int = 0
     restarts: int = 0
     _inbox: asyncio.Queue = field(default_factory=asyncio.Queue)
@@ -99,7 +128,7 @@ class SkillRegistry:
 
     def __init__(self, call_timeout: float = 30.0) -> None:
         self._skills: dict[str, SkillProcess] = {}
-        self._tool_index: dict[str, str] = {}   # "ns.tool" -> skill name
+        self._tool_index: dict[str, str] = {}  # "ns.tool" -> skill name
         self._call_timeout = call_timeout
         self._lock = asyncio.Lock()
 
@@ -112,14 +141,12 @@ class SkillRegistry:
     async def _spawn(self, sp: SkillProcess) -> None:
         """Start the owning background task and wait for it to signal ready."""
         sp._ready.clear()
-        sp._run_task = asyncio.create_task(
-            self._run_skill(sp), name=f"skill-{sp.manifest.name}"
-        )
+        sp._run_task = asyncio.create_task(self._run_skill(sp), name=f"skill-{sp.manifest.name}")
         try:
             await asyncio.wait_for(sp._ready.wait(), timeout=30.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             sp._run_task.cancel()
-            raise RuntimeError(f"Skill {sp.manifest.name!r} did not become ready in 30s")
+            raise RuntimeError(f"Skill {sp.manifest.name!r} did not become ready in 30s") from None
 
     async def _run_skill(self, sp: SkillProcess) -> None:
         """Owns stdio_client + ClientSession for the full lifetime of this skill.
@@ -127,7 +154,7 @@ class SkillRegistry:
         Runs restart loops internally so cancel scopes are NEVER crossed.
         """
         m = sp.manifest
-        params = StdioServerParameters(command=m.command, args=m.args, env=m.env)
+        params = StdioServerParameters(command=m.command, args=m.args, env=_skill_env(m.env))
 
         while True:  # restart loop
             try:
@@ -171,8 +198,9 @@ class SkillRegistry:
                     _drain_inbox(sp, exc)
                 return  # clean shutdown
             except Exception as exc:
-                log.error("skill %s crashed: %r — restarting in %ds",
-                          m.name, exc, min(2 ** sp.restarts, 30))
+                log.error(
+                    "skill %s crashed: %r — restarting in %ds", m.name, exc, min(2**sp.restarts, 30)
+                )
                 sp.session = None
                 async with self._lock:
                     sp.state = "DEAD"
@@ -180,7 +208,7 @@ class SkillRegistry:
                     _drain_inbox(sp, exc)
 
             # Backoff before restart
-            backoff = min(2 ** sp.restarts, 30)
+            backoff = min(2**sp.restarts, 30)
             sp.restarts += 1
             await asyncio.sleep(backoff)
             sp.state = "INIT"
@@ -195,9 +223,7 @@ class SkillRegistry:
         schema = sp.tools.get(tool)
         if schema is None:
             valid = ", ".join(sorted(sp.tools)) or "(none advertised)"
-            raise SkillUnavailable(
-                f"no tool {tool!r} in skill {ns!r}; valid tools: {valid}"
-            )
+            raise SkillUnavailable(f"no tool {tool!r} in skill {ns!r}; valid tools: {valid}")
         # jsonschema gate: validates BEFORE any subprocess round-trip.
         jsonschema.validate(instance=arguments, schema=schema)
 
@@ -219,7 +245,7 @@ class SkillRegistry:
             sp.inflight -= 1
             raise
         except Exception as exc:
-            log.error("call %s failed: %r", qualified_name, exc)   # -> stderr only
+            log.error("call %s failed: %r", qualified_name, exc)  # -> stderr only
             task = asyncio.create_task(self._maybe_restart(sp))
             task.add_done_callback(_log_task_exception)
             raise
@@ -238,8 +264,7 @@ class SkillRegistry:
                 return
             sp.state = "DEAD"
             # Remove this skill's tools from the routing index.
-            dead_keys = [k for k, v in self._tool_index.items()
-                         if v == sp.manifest.name]
+            dead_keys = [k for k, v in self._tool_index.items() if v == sp.manifest.name]
             for k in dead_keys:
                 self._tool_index.pop(k, None)
         await sp._inbox.put(_RESTART_SENTINEL)
@@ -248,12 +273,12 @@ class SkillRegistry:
         """Hot-reload: drain in-flight calls, then signal restart."""
         sp = self._skills[name]
         async with self._lock:
-            sp.state = "DRAINING"           # router stops accepting new calls
+            sp.state = "DRAINING"  # router stops accepting new calls
         while sp.inflight > 0:
-            await asyncio.sleep(0.05)       # let in-flight calls finish
-        sp._ready.clear()                   # clear BEFORE sending sentinel
+            await asyncio.sleep(0.05)  # let in-flight calls finish
+        sp._ready.clear()  # clear BEFORE sending sentinel
         await sp._inbox.put(_RESTART_SENTINEL)
-        await sp._ready.wait()              # now actually waits for the new session
+        await sp._ready.wait()  # now actually waits for the new session
 
     async def supervise(self, interval: float = 5.0) -> None:
         """Background health loop. Run as an asyncio.Task at harness startup."""

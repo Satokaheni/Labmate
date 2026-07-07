@@ -5,13 +5,14 @@ import asyncio
 import contextlib
 import json
 import urllib.request
-from typing import Any, AsyncIterator, Optional
+from collections.abc import AsyncIterator
+from typing import Any
 
 import websockets
 import websockets.exceptions
 
-
 # ── Event normalisation ────────────────────────────────────────────────────────
+
 
 def _normalize_ws_event(ev: dict) -> dict:
     etype = ev.get("type")
@@ -61,15 +62,15 @@ def _normalize_ws_event(ev: dict) -> dict:
 
 # ── WSEventStream ──────────────────────────────────────────────────────────────
 
-class WSEventStream:
 
+class WSEventStream:
     def __init__(self, ws) -> None:
         self._ws = ws
-        self._pending: Optional[dict] = None
+        self._pending: dict | None = None
         self._done: bool = False
         self._events: list[dict] = []
 
-    async def _recv(self) -> Optional[dict]:
+    async def _recv(self) -> dict | None:
         try:
             raw = await self._ws.recv()
         except Exception:
@@ -79,10 +80,10 @@ class WSEventStream:
         except json.JSONDecodeError:
             return {}  # malformed frame — events() will skip
 
-    async def first(self, timeout: float) -> Optional[dict]:
+    async def first(self, timeout: float) -> dict | None:
         try:
             ev = await asyncio.wait_for(self._recv(), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return None
         if ev is None:
             return None
@@ -139,34 +140,49 @@ class WSEventStream:
 
 # ── LabmateWSClient ────────────────────────────────────────────────────────────
 
+
 def _ws_to_http(ws_url: str) -> str:
     return ws_url.replace("wss://", "https://").replace("ws://", "http://").removesuffix("/ws")
 
 
 async def _http_post_json(url: str, body: dict) -> dict:
     data = json.dumps(body).encode()
-    req = urllib.request.Request(
-        url, data=data, headers={"Content-Type": "application/json"}
-    )
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+
     def _do() -> dict:
         with urllib.request.urlopen(req, timeout=10) as resp:
             return json.loads(resp.read())
+
     return await asyncio.to_thread(_do)
 
 
 class LabmateWSClient:
-
     def __init__(self, ws_url: str, token: str) -> None:
         self._ws_url = ws_url
         self._token = token
         self._ws: Any = None
-        self._current_stream: Optional[WSEventStream] = None
+        self._current_stream: WSEventStream | None = None
 
     @classmethod
     async def login(cls, ws_url: str, email: str, password: str) -> str:
         base = _ws_to_http(ws_url)
         resp = await _http_post_json(f"{base}/auth/login", {"email": email, "password": password})
         return resp["token"]
+
+    @classmethod
+    async def local_login(cls, ws_url: str) -> str | None:
+        """Passwordless auto-auth for a single-user local harness (POST /auth/local).
+
+        Returns a token when the gateway is in single-user mode, else None (the
+        endpoint 404s on a multi-user gateway, or any transport error) so the
+        caller falls back to credential login.
+        """
+        base = _ws_to_http(ws_url)
+        try:
+            resp = await _http_post_json(f"{base}/auth/local", {})
+        except Exception:
+            return None
+        return resp.get("token") if isinstance(resp, dict) else None
 
     async def connect(self) -> None:
         self._ws = await websockets.connect(self._ws_url)
@@ -185,15 +201,19 @@ class LabmateWSClient:
         user_id: str = "",
         workspace_id: str = "",
     ) -> None:
-        # Single-turn model: task_id/user_id/workspace_id accepted for drop-in
-        # compatibility with LabmateRedisClient but not forwarded — ws_gateway
-        # routes events to this connection by session.
+        # Single-turn model: task_id/user_id/workspace_id accepted for a
+        # stable call signature but not forwarded — ws_gateway routes events
+        # to this connection by session.
         self._current_stream = WSEventStream(self._ws)
-        await self._ws.send(json.dumps({
-            "type": "send",
-            "text": task,
-            "sessionId": session_id,
-        }))
+        await self._ws.send(
+            json.dumps(
+                {
+                    "type": "send",
+                    "text": task,
+                    "sessionId": session_id,
+                }
+            )
+        )
 
     def subscribe_events(self, task_id: str) -> WSEventStream:
         if self._current_stream is None:
@@ -209,7 +229,7 @@ class LabmateWSClient:
                 async with asyncio.timeout(timeout):
                     async for _ in stream.events():
                         pass
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 return {"ok": False, "error": "timeout"}
         return stream.result()
 
@@ -217,14 +237,18 @@ class LabmateWSClient:
         self,
         tool_request_id: str,
         result: Any,
-        error: Optional[str],
+        error: str | None,
     ) -> None:
-        await self._ws.send(json.dumps({
-            "type": "tool.result",
-            "toolRequestId": tool_request_id,
-            "result": result,
-            "error": error,
-        }))
+        await self._ws.send(
+            json.dumps(
+                {
+                    "type": "tool.result",
+                    "toolRequestId": tool_request_id,
+                    "result": result,
+                    "error": error,
+                }
+            )
+        )
 
     async def aclose(self) -> None:
         if self._ws is not None:

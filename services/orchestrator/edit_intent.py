@@ -22,6 +22,7 @@ Rule (documented so it can be audited):
      "explain", "what/why/how" questions are read-only UNLESS an edit verb from
      rule 1 also appears later in the goal (e.g. "review then fix").
 """
+
 from __future__ import annotations
 
 import os
@@ -67,9 +68,7 @@ _EDIT_VERBS = (
     r"appl(?:y|ies|ied|ying)",
     r"updat(?:e|es|ed|ing)",
 )
-_EDIT_VERB_RE = re.compile(
-    r"\b(?:" + "|".join(_EDIT_VERBS) + r")\b", re.IGNORECASE
-)
+_EDIT_VERB_RE = re.compile(r"\b(?:" + "|".join(_EDIT_VERBS) + r")\b", re.IGNORECASE)
 
 # Rule 2: verification phrases — "make the tests pass", "make it work", etc.
 # These imply the agent must change code until a check passes.
@@ -123,7 +122,9 @@ def classify_edit_intent(
         return EditIntent(requires_edit=True, reason="explicit edit/fix verb")
 
     if _VERIFY_PHRASE_RE.search(text):
-        return EditIntent(requires_edit=True, reason="verification phrase (make tests pass / make it work)")
+        return EditIntent(
+            requires_edit=True, reason="verification phrase (make tests pass / make it work)"
+        )
 
     if _TEST_AUTHOR_RE.search(text):
         return EditIntent(requires_edit=True, reason="test-authoring (write/add a test)")
@@ -180,3 +181,32 @@ def exposes_bug_intent(goal: str) -> bool:
     if _PASS_INTENT_RE.search(text):
         return False
     return bool(_EXPOSE_BUG_RE.search(text))
+
+
+# Rule 5 (Piece 5 / fix-B): explicit file-ACCESS intent — read/show/open/list/cat/print/
+# inspect/view a FILE / DIRECTORY / a path-like token. Paired verb+target so a bare
+# "review the design" (no file target) or "list the tradeoffs" (no path/file noun) does
+# NOT match. Routes file-access goals into the ReAct loop so the local file tools are reached.
+_FILE_ACCESS_RE = re.compile(
+    r"\b(?:read|show|open|cat|print|display|inspect|view|list|dump|tail|head)\b"
+    r"(?:\s+\S+){0,5}?\s+"
+    r"(?:"
+    r"(?:the\s+)?(?:contents?\s+of\s+)?(?:file|files|directory|directories|dir|folder|folders)\b"  # explicit file/dir noun
+    r"|[\w./\-]+\.[A-Za-z0-9]{1,6}\b"  # a filename with an extension (config.py, main.rs)
+    r"|(?:\./|/)?[\w.\-]+/[\w./\-]+"  # a path with a separator (src/app, /tmp/x)
+    r")",
+    re.IGNORECASE,
+)
+
+
+def requires_local_tools(goal: str, *, enabled: bool | None = None) -> bool:
+    """True iff the goal needs the local file/edit tools (so it should enter the
+    ReAct loop). = requires_editing(...) OR an explicit file-ACCESS intent. Gated by
+    the same ROUTE_EDIT_TO_REACT toggle. Pure/deterministic; no I/O."""
+    if enabled is None:
+        enabled = route_edit_to_react_enabled()
+    if not enabled:
+        return False
+    if requires_editing(goal, enabled=True):
+        return True
+    return bool(_FILE_ACCESS_RE.search(goal or ""))

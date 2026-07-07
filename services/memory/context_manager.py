@@ -1,15 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
-import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from rank_bm25 import BM25Okapi
-
-from services.memory.reranker import rerank
 from services.memory.tokenizer import token_count
 
 _logger = logging.getLogger(__name__)
@@ -72,19 +67,17 @@ class AssembledContext:
 class ContextManager:
     def __init__(
         self,
-        redis,
-        mongo_db,
         chroma_cols: dict,
         embedder,
         budget: ContextBudget | None = None,
         storage=None,
+        local_store=None,
     ) -> None:
-        self.redis = redis
-        self.db = mongo_db
         self.chroma = chroma_cols
         self.embed = embedder
         self.budget = budget or ContextBudget()
         self.storage = storage  # orchestrator StorageManager hook for importance boost
+        self.local_store = local_store  # local SQLite store for chat-turn reads
 
     async def build_context(
         self,
@@ -101,13 +94,15 @@ class ContextManager:
         b = self.budget
 
         # 1. Pinned slots — agent_instructions + system_prompt + core never trimmed
-        core = await self.redis.get(f"core:{session_id}") or ""
+        core = await self.local_store.session_kv_get("core", session_id) or ""
         pinned_tokens = (
             token_count(agent_instructions) + token_count(system_prompt) + token_count(core)
         )
         remaining = b.effective_budget - pinned_tokens
 
-        # 2. RAG evidence — hybrid BM25 + dense → RRF → rerank
+        # 2. RAG evidence — INERT since Piece 3 dropped Chroma (hybrid_retrieve
+        #    returns []); the slot resolves to empty text. Kept as a no-op seam
+        #    for a future local recall backend (SQLite-FTS).
         rag_budget = min(b.slot(b.rag_share), max(0, remaining))
         rag_chunks = await self.hybrid_retrieve(current_task, token_budget=rag_budget)
         await self._boost_retrieved(rag_chunks)
@@ -116,14 +111,14 @@ class ContextManager:
 
         # 3. Summary buffer
         summary_budget = min(b.slot(b.summary_share), max(0, remaining))
-        summary = await self.redis.get(f"summary:{session_id}") or ""
+        summary = await self.local_store.session_kv_get("summary", session_id) or ""
         summary = self._trim_to_budget(summary, summary_budget)
         remaining -= token_count(summary)
 
         # 3b. Anchor buffer — surface founding facts only when they have drifted
         # out of the rolling summary, so the model keeps seeing them after many
         # compact cycles. Capped to a small dedicated slot.
-        anchor_raw = await self.redis.get(f"anchor:{session_id}") or ""
+        anchor_raw = await self.local_store.session_kv_get("anchor", session_id) or ""
         anchor_buffer = ""
         if self._anchor_diverges(anchor_raw, summary):
             anchor_budget = min(b.slot(b.anchor_share), max(0, remaining))
@@ -178,33 +173,19 @@ class ContextManager:
         return overlap < 0.60
 
     async def _recent_turns(self, session_id: str, budget: int) -> str:
-        """Load recent turns from chat_turns (immutable store), filtered by watermark.
+        """Load recent turns from the local store (immutable store), filtered by watermark.
 
-        Recent turns = turns with seq > watermark, where watermark is read from Redis.
-        Watermark defaults to -1 (meaning all turns are recent on first access).
+        Recent turns = turns with seq > watermark, where watermark is read from the
+        local store's session_kv table. Watermark defaults to -1 (meaning all turns
+        are recent on first access).
         """
-        # Get watermark from Redis (defaults to -1)
-        watermark_str = await self.redis.get(f"summarized_through:{session_id}")
+        # Get watermark from the local store (defaults to -1)
+        watermark_str = await self.local_store.session_kv_get("summarized_through", session_id)
         watermark = int(watermark_str) if watermark_str else -1
 
-        # Read the NEWEST turns after the watermark from chat_turns (camelCase).
-        # The watermark filter goes in the QUERY (so a long post-watermark session
-        # isn't dropped), sorted DESC + limit → the recent tail, not the oldest 50.
-        cursor = (
-            self.db["chat_turns"]
-            .find(
-                {"sessionId": session_id, "seq": {"$gt": watermark}},
-                {"role": 1, "text": 1, "seq": 1},
-            )
-            .sort("seq", -1)  # newest first, so limit keeps the recent tail
-            .limit(50)
-        )
-        turns = [doc async for doc in cursor]
-
-        # Enforce the watermark in-memory too (test fakes may ignore the query
-        # filter), then sort chronologically by seq — robust to cursor ordering.
-        turns = [t for t in turns if t.get("seq", -1) > watermark]
-        turns.sort(key=lambda t: t.get("seq", 0))
+        # Read the NEWEST turns after the watermark from the local store —
+        # it already applies seq>watermark, newest-cap, and ascending order.
+        turns = await self.local_store.recent_turns(session_id, watermark=watermark, limit=50)
 
         # Format as "ROLE: text"
         lines = [f"{t['role'].upper()}: {t['text']}" for t in turns]
@@ -218,94 +199,22 @@ class ContextManager:
         final_k: int = 8,
         token_budget: int = 2_800,
     ) -> list[dict]:
-        """Two-stage hybrid retrieval: BM25 + Chroma dense → RRF (k=60) → rerank.
+        """RAG retrieval is inert (no Chroma-backed vector store) — always returns [].
 
-        1. Dense: Chroma query per collection → candidate ids + docs
-        2. Sparse: BM25Okapi on the candidate set → ranked ids
-        3. RRF fusion (k=60): rank-based score sum across all rankings
-        4. Cross-encoder rerank of fused top-50 → final_k results
-        5. Pack into token_budget (highest score first)
+        Kept as a no-op so build_context()'s call site remains unchanged (the
+        RAG slot of the assembled prompt is simply empty). Continuity (recent
+        turns, summary, anchor) is unaffected — see conversation_context/
+        _recent_turns for the live continuity path.
         """
-        cols = collections or ["semantic", "episodic"]
-        query_vec = (await self.embed([query]))[0]
-
-        all_docs: dict[str, str] = {}
-        dense_rankings: list[list[str]] = []
-        bm25_rankings: list[list[str]] = []
-
-        for col_name in cols:
-            if col_name not in self.chroma:
-                continue
-            col = self.chroma[col_name]
-            res = await col.query(
-                query_embeddings=[query_vec],
-                n_results=min(top_k_first_stage, 100),
-                include=["documents", "metadatas"],
-            )
-            ids = res["ids"][0]
-            docs = res["documents"][0]
-
-            for cid, doc in zip(ids, docs, strict=False):
-                all_docs[cid] = doc
-            dense_rankings.append(ids)
-
-            if ids:
-                tokenized = [d.lower().split() for d in docs]
-                bm25 = BM25Okapi(tokenized, k1=1.5, b=0.75)
-                scores = bm25.get_scores(query.lower().split())
-                bm25_ranked = [ids[i] for i in sorted(range(len(scores)), key=lambda x: -scores[x])]
-                bm25_rankings.append(bm25_ranked)
-
-        if not all_docs:
-            return []
-
-        # RRF fusion (k=60)
-        rrf_scores: dict[str, float] = {}
-        for ranking in dense_rankings + bm25_rankings:
-            for rank, doc_id in enumerate(ranking, start=1):
-                rrf_scores[doc_id] = rrf_scores.get(doc_id, 0.0) + 1.0 / (60 + rank)
-
-        shortlist_ids = sorted(rrf_scores, key=lambda x: -rrf_scores[x])[:top_k_first_stage]
-        shortlist_docs = [all_docs[cid] for cid in shortlist_ids if cid in all_docs]
-
-        if not shortlist_docs:
-            return []
-
-        # Cross-encoder rerank
-        scores = await rerank(query, shortlist_docs)
-        ranked = sorted(
-            zip(scores, shortlist_ids, shortlist_docs, strict=False),
-            key=lambda x: -x[0],
-        )
-
-        # Pack into token budget (highest score first)
-        results = []
-        used = 0
-        for score, cid, text in ranked[:final_k]:
-            t = token_count(text)
-            if used + t > token_budget:
-                break
-            used += t
-            results.append({"id": cid, "text": text, "score": float(score)})
-
-        return results
+        return []
 
     async def _boost_retrieved(self, chunks: list[dict]) -> None:
-        """Increment importance on every retrieved memory (best-effort, non-blocking).
+        """No-op — importance-boost was semantic-memory/Chroma-only machinery.
 
-        Fire-and-forget: a boost failure must never break context assembly.
-        No-op when no storage hook is wired (e.g. unit tests of pure retrieval).
+        hybrid_retrieve always returns [] now, so this is never invoked with
+        real chunks, but kept as a stable no-op call site.
         """
-        if not self.storage or not chunks:
-            return
-        for c in chunks:
-            cid = c.get("id")
-            if not cid:
-                continue
-            try:
-                await self.storage.boost_memory_importance(cid, delta=0.1)
-            except Exception:
-                _logger.debug("importance boost failed for %s", cid)
+        return None
 
     # ── Compaction ────────────────────────────────────────────────────────────
 
@@ -411,7 +320,8 @@ class ContextManager:
         """Summarise old turns with anchoring and parallel blocks → advance watermark (non-destructive).
 
         Improvements over naive summarization:
-          1. Watermark-based non-destructive — advances a Redis watermark instead of deleting
+          1. Watermark-based non-destructive — advances a local-store watermark instead
+             of deleting
           2. Parallel blocks — concurrent summarization removes blocking stall
           3. Anchoring — first summary stored as anchor; passed to all subsequent
              compactions so the model cannot drift from early established facts
@@ -421,21 +331,13 @@ class ContextManager:
         llm_fn: async (prompt: str) -> str
         Returns {summary_tokens, pruned_messages, reflections: list[str]}.
         """
-        # Step 1: read all turns from chat_turns (immutable source)
-        cursor = (
-            self.db["chat_turns"]
-            .find(
-                {"sessionId": session_id},
-                {"seq": 1, "role": 1, "text": 1},
-            )
-            .sort("seq", 1)
-        )
-        all_turns = [doc async for doc in cursor]
+        # Step 1: read all turns from the local store (immutable source)
+        all_turns = await self.local_store.all_turns(session_id)
         if len(all_turns) <= self._KEEP_RECENT:
             return {"summary_tokens": 0, "pruned_messages": 0, "reflections": []}
 
         # Step 2: determine watermark and which turns are eligible for compaction
-        watermark_str = await self.redis.get(f"summarized_through:{session_id}")
+        watermark_str = await self.local_store.session_kv_get("summarized_through", session_id)
         watermark = int(watermark_str) if watermark_str else -1
         max_seq = all_turns[-1].get("seq", -1) if all_turns else -1
 
@@ -457,7 +359,7 @@ class ContextManager:
         )
 
         # Step 4: load anchor (stable early-session facts; empty on first compact)
-        anchor = await self.redis.get(f"anchor:{session_id}") or ""
+        anchor = await self.local_store.session_kv_get("anchor", session_id) or ""
 
         # Step 5: parallel anchored summarization (map text→content for _parallel_summarize)
         to_compact_mapped = [
@@ -467,11 +369,10 @@ class ContextManager:
 
         # Step 6: first compact → save result as the session anchor
         if not anchor:
-            await self.redis.set(f"anchor:{session_id}", new_summary)
+            await self.local_store.session_kv_set("anchor", session_id, new_summary)
 
         # Step 7: merge new summary into existing summary (or replace if none exists)
-        summary_key = f"summary:{session_id}"
-        old_summary = await self.redis.get(summary_key) or ""
+        old_summary = await self.local_store.session_kv_get("summary", session_id) or ""
 
         if old_summary:
             # Merge: send both summaries to the model
@@ -488,26 +389,28 @@ class ContextManager:
             # First-ever summary
             final_summary = new_summary
 
-        # Step 8: persist the merged summary to Redis (rollback on failure)
+        # Step 8: persist the merged summary to the local store (rollback on failure)
         try:
-            await self.redis.set(summary_key, final_summary)
+            await self.local_store.session_kv_set("summary", session_id, final_summary)
         except Exception:
             if old_summary:
-                await self.redis.set(summary_key, old_summary)
+                await self.local_store.session_kv_set("summary", session_id, old_summary)
             else:
-                await self.redis.delete(summary_key)
+                await self.local_store.session_kv_delete("summary", session_id)
             raise
 
-        # Step 9: advance watermark to max_seq in to_compact (rollback Redis on failure)
+        # Step 9: advance watermark to max_seq in to_compact (rollback on failure)
         max_compacted_seq = max([t.get("seq", -1) for t in to_compact])
         try:
-            await self.redis.set(f"summarized_through:{session_id}", str(max_compacted_seq))
+            await self.local_store.session_kv_set(
+                "summarized_through", session_id, str(max_compacted_seq)
+            )
         except Exception:
             # Rollback summary
             if old_summary:
-                await self.redis.set(summary_key, old_summary)
+                await self.local_store.session_kv_set("summary", session_id, old_summary)
             else:
-                await self.redis.delete(summary_key)
+                await self.local_store.session_kv_delete("summary", session_id)
             raise
 
         # Step 10: extract reflections for the caller to write to memory
@@ -556,11 +459,11 @@ class ContextManager:
             if budget is None:
                 budget = self.budget.slot(self.budget.recent_turns_share)
 
-            # Read summary from Redis
-            summary = await self.redis.get(f"summary:{session_id}") or ""
+            # Read summary from the local store
+            summary = await self.local_store.session_kv_get("summary", session_id) or ""
 
             # Read anchor, include only if it diverges from summary
-            anchor_raw = await self.redis.get(f"anchor:{session_id}") or ""
+            anchor_raw = await self.local_store.session_kv_get("anchor", session_id) or ""
             anchor_block = ""
             if anchor_raw and self._anchor_diverges(anchor_raw, summary):
                 anchor_block = f"KEY FACTS (anchored, always relevant):\n{anchor_raw}"
@@ -579,20 +482,11 @@ class ContextManager:
     async def last_activity_seconds(self, session_id: str) -> float:
         """Seconds since the newest turn in this session was written.
 
-        Reads the newest turn's createdAt from chat_turns (ISO string format).
+        Reads the newest turn's createdAt from the local store (ISO string format).
         Returns 0.0 when the session has no turns or the field is absent/unparseable — i.e.
         "not idle", so a missing timestamp never triggers a surprise compaction.
         """
-        cursor = (
-            self.db["chat_turns"]
-            .find({"sessionId": session_id}, {"createdAt": 1})
-            .sort("seq", -1)
-            .limit(1)
-        )
-        newest_iso = None
-        async for doc in cursor:
-            newest_iso = doc.get("createdAt")
-            break
+        newest_iso = await self.local_store.last_activity_iso(session_id)
         if not newest_iso:
             return 0.0
 
@@ -643,109 +537,3 @@ class ContextManager:
         except Exception:
             _logger.warning("background compact failed (non-fatal)", exc_info=True)
             return None
-
-    # ── Consolidation worker ──────────────────────────────────────────────────
-
-    async def consolidation_worker(
-        self,
-        llm_extract,
-        llm_decide,
-    ) -> None:
-        """Background coroutine — reads from Redis Stream "consolidate", extracts
-        semantic facts, reconciles them with existing archival memory, trims core.
-
-        llm_extract: async (core_text: str) -> list[str]
-        llm_decide:  async (candidate: str, similar: list[dict]) -> "ADD"|"UPDATE"|"DELETE"|"NOOP"
-
-        Never called on the agent's hot path.
-        """
-        try:
-            await self.redis.xgroup_create(
-                "consolidate", "consolidation_workers", id="0", mkstream=True
-            )
-        except Exception:
-            pass  # BUSYGROUP — group already exists
-
-        while True:
-            entries = await self.redis.xreadgroup(
-                groupname="consolidation_workers",
-                consumername="consolidator-1",
-                streams={"consolidate": ">"},
-                count=5,
-                block=10_000,
-            )
-            if not entries:
-                continue
-            for _, messages in entries:
-                for entry_id, fields in messages:
-                    session_id = fields.get(b"session_id", fields.get("session_id", ""))
-                    try:
-                        await self._consolidate_session(session_id, llm_extract, llm_decide)
-                    except Exception as exc:
-                        _logger.exception("consolidation error for session %s: %s", session_id, exc)
-                    finally:
-                        await self.redis.xack("consolidate", "consolidation_workers", entry_id)
-
-    async def _consolidate_session(
-        self,
-        session_id: str,
-        llm_extract,
-        llm_decide,
-    ) -> None:
-        """Extract facts from core memory, reconcile against semantic, trim cap."""
-        core_text = await self.redis.get(f"core:{session_id}") or ""
-        if not core_text.strip():
-            return
-
-        facts: list[str] = await llm_extract(core_text)
-
-        for fact in facts:
-            similar = await self.hybrid_retrieve(fact, collections=["semantic"], final_k=5)
-            op: str = await llm_decide(fact, similar)
-
-            if op in ("ADD", "UPDATE"):
-                await self._upsert_semantic(session_id, fact)
-            elif op == "DELETE":
-                for s in similar:
-                    await self.chroma["semantic"].delete(ids=[s["id"]])
-            # NOOP: do nothing
-
-        await self._trim_core_memory(session_id)
-
-    async def _upsert_semantic(self, session_id: str, text: str) -> None:
-        """Embed a fact and upsert into the semantic Chroma collection.
-
-        Chroma ID is sha1(session_id:text) — idempotent across retries.
-        """
-        cid = hashlib.sha1(f"{session_id}:{text}".encode()).hexdigest()
-        vec = (await self.embed([text]))[0]
-        await self.chroma["semantic"].upsert(
-            ids=[cid],
-            embeddings=[vec],
-            documents=[text],
-            metadatas=[
-                {
-                    "session_id": session_id,
-                    "created_at": time.time(),
-                    "embed_model": "BAAI/bge-small-en-v1.5",
-                    "importance": 0.5,
-                    "source": "consolidation",
-                }
-            ],
-        )
-
-    async def _trim_core_memory(self, session_id: str) -> None:
-        """Evict oldest non-goal lines from core memory until under the 3,000-token cap.
-
-        Line 0 is the pinned goal — it is NEVER evicted (Sisyphus Trap prevention).
-        """
-        CORE_CAP = 3_000
-        key = f"core:{session_id}"
-        text = await self.redis.get(key) or ""
-        lines = [line for line in text.splitlines() if line.strip()]
-        if len(lines) <= 1:
-            return
-        pinned, evictable = lines[0], lines[1:]
-        while token_count("\n".join([pinned] + evictable)) > CORE_CAP and evictable:
-            evictable.pop(0)
-        await self.redis.set(key, "\n".join([pinned] + evictable))

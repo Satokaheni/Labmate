@@ -1,13 +1,16 @@
 # tests/services/orchestrator/test_graph.py
 from __future__ import annotations
-import pytest
-from contextvars import copy_context
+
 from unittest.mock import AsyncMock, MagicMock
 
-from services.orchestrator.types import (
-    Status, create_goal, update_status, get_ready_goals,
-)
+import pytest
+
 from services.orchestrator import events
+from services.orchestrator.types import (
+    Status,
+    create_goal,
+    update_status,
+)
 
 
 def _make_state(**overrides) -> dict:
@@ -33,8 +36,9 @@ def _make_state(**overrides) -> dict:
 @pytest.mark.mocked
 class TestRouter:
     def test_router_returns_end_when_no_ready_goals(self):
-        from services.orchestrator.graph import router
         from langgraph.graph import END
+
+        from services.orchestrator.graph import router
 
         state = _make_state()
         update_status(state["goal_tree"], "root", Status.COMPLETED)
@@ -42,8 +46,9 @@ class TestRouter:
         assert result == END
 
     def test_router_returns_end_when_current_goal_id_is_none(self):
-        from services.orchestrator.graph import router
         from langgraph.graph import END
+
+        from services.orchestrator.graph import router
 
         state = _make_state(current_goal_id=None)
         result = router(state)
@@ -59,8 +64,9 @@ class TestRouter:
         assert result == "reflect"
 
     def test_router_returns_end_on_failed_goal_at_max_attempts(self):
-        from services.orchestrator.graph import router
         from langgraph.graph import END
+
+        from services.orchestrator.graph import router
 
         state = _make_state()
         update_status(state["goal_tree"], "root", Status.FAILED)
@@ -90,8 +96,8 @@ class TestRouter:
 class TestPlanNode:
     @pytest.mark.asyncio
     async def test_plan_node_creates_child_goals_from_architect_response(self):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_orch.architect = AsyncMock(return_value="Subtask A\nSubtask B\nSubtask C")
@@ -112,8 +118,8 @@ class TestPlanNode:
 
     @pytest.mark.asyncio
     async def test_plan_node_skips_empty_lines(self):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_orch.architect = AsyncMock(return_value="Task 1\n\nTask 2\n")
@@ -129,13 +135,15 @@ class TestPlanNode:
     @pytest.mark.asyncio
     async def test_plan_node_includes_skill_catalog_when_available(self):
         """Plan node should include skill catalog in the prompt when skill_router present."""
+
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
-        from unittest.mock import patch
 
         # Create a mock skill_router with a catalog
         mock_runner = MagicMock()
-        mock_runner.catalog_prompt.return_value = "- test-skill: A test skill\n- other-skill: Another skill"
+        mock_runner.catalog_prompt.return_value = (
+            "- test-skill: A test skill\n- other-skill: Another skill"
+        )
         mock_skill_router = MagicMock()
         mock_skill_router.runner = mock_runner
 
@@ -158,11 +166,12 @@ class TestPlanNode:
     @pytest.mark.asyncio
     async def test_plan_node_with_real_skill_router_property_access(self):
         """Test plan node with real SkillRouter.runner property (not private _runner)."""
-        from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
-        from services.orchestrator.skill_router import SkillRouter
-        from services.skill_runner.skill_runner import SkillRunner, SkillMeta
         from pathlib import Path
+
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
+        from services.orchestrator.graph import make_nodes
+        from services.orchestrator.skill_router import SkillRouter
+        from services.skill_runner.skill_runner import SkillMeta, SkillRunner
 
         # Build a real SkillRunner with a mock catalog
         runner = MagicMock(spec=SkillRunner)
@@ -178,10 +187,10 @@ class TestPlanNode:
         runner.tool_schema.return_value = {"type": "function", "function": {"name": "load_skill"}}
 
         # Create a real SkillRouter (which now has a .runner property)
-        mock_redis = AsyncMock()
+        mock_registry = AsyncMock()
         skill_router = SkillRouter(
             runner=runner,
-            redis=mock_redis,
+            registry=mock_registry,
             gemma_api_base="http://localhost:8000/v1",
         )
 
@@ -202,6 +211,7 @@ class TestPlanNode:
         # instead, so to still exercise the decompose fall-through we force route() onto the
         # documented backward-compat path (route() raises -> route_result is None).
         from unittest.mock import patch as _patch
+
         with _patch.object(skill_router, "route", AsyncMock(side_effect=TypeError("no live LLM"))):
             plan_node, *_ = make_nodes(mock_orch, mock_async_orch)
 
@@ -217,8 +227,8 @@ class TestPlanNode:
 
     @pytest.mark.asyncio
     async def test_plan_node_emits_reasoning_event(self, fake_event_emitter):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_orch.architect = AsyncMock(return_value="Subtask 1\nSubtask 2\nSubtask 3")
@@ -243,8 +253,8 @@ class TestPlanNode:
 class TestExecuteNode:
     @pytest.mark.asyncio
     async def test_idempotency_guard_skips_completed_goal(self):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
@@ -265,8 +275,12 @@ class TestExecuteNode:
     @pytest.mark.asyncio
     async def test_execute_node_calls_plan_and_dispatch_on_success(self):
         """execute_node should call plan_and_dispatch for ready goals."""
+        from services.orchestrator.coding_orchestrator import (
+            AsyncOrchestrator,
+            CodingOrchestrator,
+            Result,
+        )
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator, Result
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         result = Result(id="root", summary="task completed", ok=True)
@@ -282,8 +296,12 @@ class TestExecuteNode:
     @pytest.mark.asyncio
     async def test_execute_node_handles_failure_from_plan_and_dispatch(self):
         """execute_node should mark goal FAILED when plan_and_dispatch returns ok=False."""
+        from services.orchestrator.coding_orchestrator import (
+            AsyncOrchestrator,
+            CodingOrchestrator,
+            Result,
+        )
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator, Result
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         # Return a failed result
@@ -303,8 +321,12 @@ class TestExecuteNode:
         """A completed goal that verified via a passing test run must surface
         tests_passed=True in the state delta so main.py's final-answer
         reconciliation can honor an honest 'tests pass' claim."""
+        from services.orchestrator.coding_orchestrator import (
+            AsyncOrchestrator,
+            CodingOrchestrator,
+            Result,
+        )
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator, Result
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         result = Result(id="root", summary="fixed; all tests pass", ok=True, tests_passed=True)
@@ -320,8 +342,12 @@ class TestExecuteNode:
     async def test_execute_node_omits_tests_passed_when_unverified(self):
         """No passing test run -> tests_passed must NOT be set True (so an
         unverified success claim is still downgraded downstream)."""
+        from services.orchestrator.coding_orchestrator import (
+            AsyncOrchestrator,
+            CodingOrchestrator,
+            Result,
+        )
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator, Result
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         result = Result(id="root", summary="done", ok=True, tests_passed=False)
@@ -336,8 +362,12 @@ class TestExecuteNode:
     @pytest.mark.asyncio
     async def test_execute_node_respects_idempotency_guard_on_retry(self):
         """execute_node should skip already-applied results on retry (idempotency) — FIX #4."""
+        from services.orchestrator.coding_orchestrator import (
+            AsyncOrchestrator,
+            CodingOrchestrator,
+            Result,
+        )
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator, Result
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         # plan_and_dispatch returns a result
@@ -360,8 +390,12 @@ class TestExecuteNode:
     @pytest.mark.asyncio
     async def test_execute_node_routes_all_ready_goals_through_plan_and_dispatch(self):
         """execute_node should use plan_and_dispatch for all ready goals (including single)."""
+        from services.orchestrator.coding_orchestrator import (
+            AsyncOrchestrator,
+            CodingOrchestrator,
+            Result,
+        )
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator, Result
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
@@ -384,8 +418,12 @@ class TestExecuteNode:
     @pytest.mark.asyncio
     async def test_execute_node_with_multiple_ready_goals_calls_plan_and_dispatch(self):
         """execute_node handles multiple ready goals via plan_and_dispatch."""
+        from services.orchestrator.coding_orchestrator import (
+            AsyncOrchestrator,
+            CodingOrchestrator,
+            Result,
+        )
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator, Result
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
@@ -420,8 +458,12 @@ class TestExecuteNode:
     @pytest.mark.asyncio
     async def test_execute_node_increments_attempts_on_failed_result(self):
         """execute_node should increment attempts counter when a goal fails (SECONDARY BUG FIX)."""
+        from services.orchestrator.coding_orchestrator import (
+            AsyncOrchestrator,
+            CodingOrchestrator,
+            Result,
+        )
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator, Result
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         # Return a failed result
@@ -442,8 +484,12 @@ class TestExecuteNode:
     @pytest.mark.asyncio
     async def test_execute_node_idempotency_allows_retry_with_different_outcome(self):
         """execute_node idempotency (FIX #4): failed goals not marked, so retries can succeed."""
+        from services.orchestrator.coding_orchestrator import (
+            AsyncOrchestrator,
+            CodingOrchestrator,
+            Result,
+        )
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator, Result
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         # First call: failure
@@ -488,8 +534,12 @@ class TestExecuteNode:
 class TestExecuteNodeArtifact:
     @pytest.mark.asyncio
     async def test_execute_node_sets_last_artifact_code(self):
+        from services.orchestrator.coding_orchestrator import (
+            AsyncOrchestrator,
+            CodingOrchestrator,
+            Result,
+        )
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator, Result
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         result = Result(id="root", summary="def add(a, b):\n    return a + b", ok=True)
@@ -504,11 +554,17 @@ class TestExecuteNodeArtifact:
 
     @pytest.mark.asyncio
     async def test_execute_node_sets_last_artifact_writing(self):
+        from services.orchestrator.coding_orchestrator import (
+            AsyncOrchestrator,
+            CodingOrchestrator,
+            Result,
+        )
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator, Result
 
-        prose = ("This paper investigates the effect of context length on retrieval "
-                 "accuracy across several configurations. " * 4)
+        prose = (
+            "This paper investigates the effect of context length on retrieval "
+            "accuracy across several configurations. " * 4
+        )
         mock_orch = MagicMock(spec=CodingOrchestrator)
         result = Result(id="root", summary=prose, ok=True)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
@@ -525,8 +581,8 @@ class TestCheckNodeEvents:
     @pytest.mark.asyncio
     async def test_check_node_emits_reasoning_event_on_finalize(self, fake_event_emitter):
         """Check node should emit reasoning event when finalizing."""
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
@@ -539,7 +595,7 @@ class TestCheckNodeEvents:
         update_status(state["goal_tree"], "task1", Status.COMPLETED, result="Task 1 done")
         update_status(state["goal_tree"], "task2", Status.COMPLETED, result="Task 2 done")
 
-        delta = await check_node(state)
+        await check_node(state)
 
         # Verify event was emitted
         assert len(fake_event_emitter.events) == 1
@@ -551,8 +607,8 @@ class TestCheckNodeEvents:
     @pytest.mark.asyncio
     async def test_check_node_emits_reasoning_event_on_defer(self, fake_event_emitter):
         """Check node should emit reasoning event when deferring to reflect."""
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
@@ -566,7 +622,7 @@ class TestCheckNodeEvents:
         update_status(state["goal_tree"], "task2", Status.FAILED, error="Task 2 failed")
         state["goal_tree"]["task2"]["attempts"] = 1
 
-        delta = await check_node(state)
+        await check_node(state)
 
         # Verify event was emitted
         assert len(fake_event_emitter.events) == 1
@@ -581,8 +637,8 @@ class TestCheckNode:
     @pytest.mark.asyncio
     async def test_check_returns_empty_when_no_children(self):
         """Check node should return empty dict when root has no children."""
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
@@ -597,8 +653,8 @@ class TestCheckNode:
     @pytest.mark.asyncio
     async def test_check_defers_finalization_when_failed_child_retryable(self):
         """FIX #1: check should NOT finalize when a failed child has attempts < 3."""
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
@@ -625,8 +681,8 @@ class TestCheckNode:
     @pytest.mark.asyncio
     async def test_check_finalizes_with_failed_children_after_exhausted_attempts(self):
         """FIX #1: check should finalize with root=FAILED when all children terminal and no retryables."""
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
@@ -652,8 +708,8 @@ class TestCheckNode:
     @pytest.mark.asyncio
     async def test_check_finalizes_with_mixed_terminal_states_now_fails(self):
         """UPDATE: check should finalize with root=FAILED when any child FAILED and attempts >= 3."""
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
@@ -681,8 +737,8 @@ class TestCheckNode:
     @pytest.mark.asyncio
     async def test_check_returns_empty_when_children_not_all_terminal(self):
         """Check node should return empty dict when not all children are in terminal status."""
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
@@ -703,8 +759,8 @@ class TestCheckNode:
     @pytest.mark.asyncio
     async def test_check_finalizes_when_all_children_completed(self):
         """Check node should finalize root and set final_answer when all children are COMPLETED."""
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
@@ -736,8 +792,8 @@ class TestCheckNode:
     @pytest.mark.asyncio
     async def test_check_defers_finalization_on_retryable_failure(self):
         """Check node should defer finalization when a failed child has attempts < 3 (even with mixed terminal)."""
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
@@ -762,8 +818,8 @@ class TestCheckNode:
     @pytest.mark.asyncio
     async def test_check_uses_default_answer_when_no_results(self):
         """Check node should use 'Task completed.' when no child has a result."""
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
@@ -785,8 +841,8 @@ class TestCheckNode:
 class TestReflectNode:
     @pytest.mark.asyncio
     async def test_reflect_resets_goal_to_pending_and_appends_message(self):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_orch.architect = AsyncMock(return_value="do it differently next time")
@@ -806,11 +862,13 @@ class TestReflectNode:
 
     @pytest.mark.asyncio
     async def test_reflect_emits_reasoning_event(self, fake_event_emitter):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
-        mock_orch.architect = AsyncMock(return_value="Try a different approach: check for edge cases")
+        mock_orch.architect = AsyncMock(
+            return_value="Try a different approach: check for edge cases"
+        )
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
         _, _, _, reflect_node, _, _, _, _ = make_nodes(mock_orch, mock_async_orch)
@@ -819,7 +877,7 @@ class TestReflectNode:
         update_status(state["goal_tree"], "root", Status.FAILED, error="assertion failed")
         state["goal_tree"]["root"]["attempts"] = 1
 
-        delta = await reflect_node(state)
+        await reflect_node(state)
 
         # Verify event was emitted
         assert len(fake_event_emitter.events) == 1
@@ -833,6 +891,7 @@ class TestReflectNode:
 @pytest.fixture
 def fake_event_emitter():
     """Fixture that provides a fake EventEmitter for testing event emissions."""
+
     class FakeEventEmitter:
         def __init__(self):
             self.events = []
@@ -852,14 +911,16 @@ def fake_event_emitter():
 class TestAssessAmbiguityNode:
     @pytest.mark.asyncio
     async def test_assess_ambiguity_parses_json(self):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
-        mock_orch.architect = AsyncMock(return_value=(
-            '{"assumptions": ["uses python"], "ambiguity": 0.8, '
-            '"blocking_question": "which framework?"}'
-        ))
+        mock_orch.architect = AsyncMock(
+            return_value=(
+                '{"assumptions": ["uses python"], "ambiguity": 0.8, '
+                '"blocking_question": "which framework?"}'
+            )
+        )
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
         nodes = make_nodes(mock_orch, mock_async_orch)
@@ -873,8 +934,8 @@ class TestAssessAmbiguityNode:
 
     @pytest.mark.asyncio
     async def test_assess_ambiguity_defaults_zero_on_bad_json(self):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_orch.architect = AsyncMock(return_value="not json at all")
@@ -890,13 +951,15 @@ class TestAssessAmbiguityNode:
 
     @pytest.mark.asyncio
     async def test_assess_ambiguity_strips_code_fences(self):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
-        mock_orch.architect = AsyncMock(return_value=(
-            '```json\n{"assumptions": [], "ambiguity": 0.3, "blocking_question": ""}\n```'
-        ))
+        mock_orch.architect = AsyncMock(
+            return_value=(
+                '```json\n{"assumptions": [], "ambiguity": 0.3, "blocking_question": ""}\n```'
+            )
+        )
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
         nodes = make_nodes(mock_orch, mock_async_orch)
@@ -908,14 +971,16 @@ class TestAssessAmbiguityNode:
 
     @pytest.mark.asyncio
     async def test_assess_ambiguity_emits_reasoning_event(self, fake_event_emitter):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         # Low ambiguity (< AMBIGUITY_THRESHOLD) so ONLY the assess_ambiguity event fires.
-        mock_orch.architect = AsyncMock(return_value=(
-            '{"assumptions": ["uses python"], "ambiguity": 0.3, "blocking_question": "which version?"}'
-        ))
+        mock_orch.architect = AsyncMock(
+            return_value=(
+                '{"assumptions": ["uses python"], "ambiguity": 0.3, "blocking_question": "which version?"}'
+            )
+        )
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
         nodes = make_nodes(mock_orch, mock_async_orch)
@@ -941,8 +1006,8 @@ class TestApprovalNode:
         """Approval re-runs on every resume; it must NOT emit (would duplicate the event).
         (The approval node stays reachable via the check->approval edge; FIX 7 only changed
         the assess_ambiguity path to halt for clarification instead of routing here.)"""
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
@@ -961,18 +1026,22 @@ class TestApprovalNode:
         assert fake_event_emitter.events == []
 
     @pytest.mark.asyncio
-    async def test_assess_ambiguity_emits_clarification_event_when_ambiguous(self, fake_event_emitter):
+    async def test_assess_ambiguity_emits_clarification_event_when_ambiguous(
+        self, fake_event_emitter
+    ):
         """FIX 7: high-ambiguity tasks now HALT for clarification (ask a blocking question)
         instead of routing to the approval interrupt. Previously this asserted a
         node='approval' 'awaiting human approval' reasoning event; now assess_ambiguity
         emits a clarification_request event (same shape the plan node uses)."""
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
-        mock_orch.architect = AsyncMock(return_value=(
-            '{"assumptions": ["x"], "ambiguity": 0.9, "blocking_question": "clarify?"}'
-        ))
+        mock_orch.architect = AsyncMock(
+            return_value=(
+                '{"assumptions": ["x"], "ambiguity": 0.9, "blocking_question": "clarify?"}'
+            )
+        )
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
         nodes = make_nodes(mock_orch, mock_async_orch)
@@ -986,7 +1055,9 @@ class TestApprovalNode:
         # No approval reasoning event any more.
         assert "approval" not in nodes_emitted
         # A clarification_request event is emitted with the blocking question.
-        clar = [(name, f) for name, f in fake_event_emitter.events if name == "clarification_request"]
+        clar = [
+            (name, f) for name, f in fake_event_emitter.events if name == "clarification_request"
+        ]
         assert len(clar) == 1
         assert clar[0][1]["question"] == "clarify?"
         # The node halts for clarification.
@@ -1002,12 +1073,13 @@ class TestVerifyNode:
         exercise the gate firing for code/writing, so enable it here (auto-restored).
         The pass-through tests use type 'other', which skips regardless."""
         import services.orchestrator.graph as _graph_mod
+
         monkeypatch.setattr(_graph_mod, "CRITIQUE_ARTIFACT_TYPES", ("code", "writing"))
 
     @pytest.mark.asyncio
     async def test_verify_passes_through_non_code_writing(self):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_orch.skill_router = None
@@ -1023,14 +1095,16 @@ class TestVerifyNode:
 
     @pytest.mark.asyncio
     async def test_verify_calls_critique_for_code(self):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_router = MagicMock()
-        mock_router.execute = AsyncMock(return_value={
-            "ok": True,
-            "result": {"score": 0.42, "notes": "missing error handling"},
-        })
+        mock_router.execute = AsyncMock(
+            return_value={
+                "ok": True,
+                "result": {"score": 0.42, "notes": "missing error handling"},
+            }
+        )
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_orch.skill_router = mock_router
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
@@ -1046,8 +1120,8 @@ class TestVerifyNode:
 
     @pytest.mark.asyncio
     async def test_verify_defaults_score_when_critique_fails(self):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_router = MagicMock()
         mock_router.execute = AsyncMock(return_value={"ok": False, "error": "timeout"})
@@ -1065,14 +1139,16 @@ class TestVerifyNode:
 
     @pytest.mark.asyncio
     async def test_verify_emits_reasoning_event_for_code_artifact(self, fake_event_emitter):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_router = MagicMock()
-        mock_router.execute = AsyncMock(return_value={
-            "ok": True,
-            "result": {"score": 0.85, "notes": "good code but missing error handling"},
-        })
+        mock_router.execute = AsyncMock(
+            return_value={
+                "ok": True,
+                "result": {"score": 0.85, "notes": "good code but missing error handling"},
+            }
+        )
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_orch.skill_router = mock_router
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
@@ -1094,8 +1170,8 @@ class TestVerifyNode:
 
     @pytest.mark.asyncio
     async def test_verify_emits_reasoning_event_when_skipped(self, fake_event_emitter):
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
         from services.orchestrator.graph import make_nodes
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_orch.skill_router = None
@@ -1121,16 +1197,19 @@ class TestVerifyNode:
 class TestVerifyRouter:
     def test_verify_router_routes_to_reflect_when_below_threshold(self):
         from services.orchestrator.graph import verify_router
+
         state = _make_state(critique_score=0.5)
         assert verify_router(state) == "reflect"
 
     def test_verify_router_routes_to_check_when_at_threshold(self):
         from services.orchestrator.graph import verify_router
+
         state = _make_state(critique_score=0.95)
         assert verify_router(state) == "check"
 
     def test_verify_router_defaults_to_check_when_missing(self):
         from services.orchestrator.graph import verify_router
+
         state = _make_state()
         assert verify_router(state) == "check"
 
@@ -1140,18 +1219,22 @@ class TestAmbiguityRouter:
     def test_ambiguity_router_halts_for_clarification_when_high(self):
         # FIX 7: high ambiguity now halts (END) to ask the user a clarifying question,
         # rather than routing to the approval interrupt.
-        from services.orchestrator.graph import ambiguity_router
         from langgraph.graph import END
+
+        from services.orchestrator.graph import ambiguity_router
+
         state = _make_state(ambiguity=0.7)
         assert ambiguity_router(state) == END
 
     def test_ambiguity_router_routes_to_plan_when_low(self):
         from services.orchestrator.graph import ambiguity_router
+
         state = _make_state(ambiguity=0.2)
         assert ambiguity_router(state) == "plan"
 
     def test_ambiguity_router_defaults_to_plan_when_missing(self):
         from services.orchestrator.graph import ambiguity_router
+
         state = _make_state()
         assert ambiguity_router(state) == "plan"
 
@@ -1159,74 +1242,74 @@ class TestAmbiguityRouter:
 @pytest.mark.mocked
 class TestBuildGraph:
     def test_build_graph_compiles_without_error(self):
-        from unittest.mock import patch, MagicMock as MM
-        from services.orchestrator.graph import build_graph
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+        from unittest.mock import patch
+
         from langgraph.checkpoint.memory import MemorySaver
+
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
+        from services.orchestrator.graph import build_graph
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
-        # Mock MongoClient, use MemorySaver for MongoDBSaver
-        mock_client = MagicMock()
         real_cp = MemorySaver()
 
-        with patch("pymongo.MongoClient", return_value=mock_client):
-            with patch("langgraph.checkpoint.mongodb.MongoDBSaver", return_value=real_cp):
-                graph, cp = build_graph(mock_orch, mock_async_orch)
-                assert graph is not None
-                assert cp is real_cp
+        with patch("services.orchestrator.graph._make_sqlite_checkpointer", return_value=real_cp):
+            graph, cp = build_graph(mock_orch, mock_async_orch)
+            assert graph is not None
+            assert cp is real_cp
 
     def test_build_graph_wires_correct_nodes(self):
         from unittest.mock import patch
-        from services.orchestrator.graph import build_graph
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+
         from langgraph.checkpoint.memory import MemorySaver
+
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
+        from services.orchestrator.graph import build_graph
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
 
-        # Mock MongoClient, use MemorySaver for MongoDBSaver
-        mock_client = MagicMock()
         real_cp = MemorySaver()
 
-        with patch("pymongo.MongoClient", return_value=mock_client):
-            with patch("langgraph.checkpoint.mongodb.MongoDBSaver", return_value=real_cp):
-                graph, _ = build_graph(mock_orch, mock_async_orch)
-                node_names = set(graph.nodes.keys())
-                assert "plan" in node_names
-                assert "execute" in node_names
-                assert "check" in node_names
-                assert "reflect" in node_names
-                assert "approval" in node_names
+        with patch("services.orchestrator.graph._make_sqlite_checkpointer", return_value=real_cp):
+            graph, _ = build_graph(mock_orch, mock_async_orch)
+            node_names = set(graph.nodes.keys())
+            assert "plan" in node_names
+            assert "execute" in node_names
+            assert "check" in node_names
+            assert "reflect" in node_names
+            assert "approval" in node_names
 
     def test_build_graph_wires_assess_ambiguity_node(self):
         from unittest.mock import patch
-        from services.orchestrator.graph import build_graph
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+
         from langgraph.checkpoint.memory import MemorySaver
+
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
+        from services.orchestrator.graph import build_graph
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
         real_cp = MemorySaver()
-        with patch("pymongo.MongoClient"):
-            with patch("langgraph.checkpoint.mongodb.MongoDBSaver", return_value=real_cp):
-                graph, _ = build_graph(mock_orch, mock_async_orch)
-                assert "assess_ambiguity" in set(graph.nodes.keys())
+        with patch("services.orchestrator.graph._make_sqlite_checkpointer", return_value=real_cp):
+            graph, _ = build_graph(mock_orch, mock_async_orch)
+            assert "assess_ambiguity" in set(graph.nodes.keys())
 
     def test_build_graph_wires_verify_node(self):
         from unittest.mock import patch
-        from services.orchestrator.graph import build_graph
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator
+
         from langgraph.checkpoint.memory import MemorySaver
+
+        from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
+        from services.orchestrator.graph import build_graph
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_async_orch = MagicMock(spec=AsyncOrchestrator)
         real_cp = MemorySaver()
-        with patch("pymongo.MongoClient"):
-            with patch("langgraph.checkpoint.mongodb.MongoDBSaver", return_value=real_cp):
-                graph, _ = build_graph(mock_orch, mock_async_orch)
-                assert "verify" in set(graph.nodes.keys())
+        with patch("services.orchestrator.graph._make_sqlite_checkpointer", return_value=real_cp):
+            graph, _ = build_graph(mock_orch, mock_async_orch)
+            assert "verify" in set(graph.nodes.keys())
 
 
 @pytest.mark.mocked
@@ -1244,10 +1327,16 @@ class TestEndToEndGraphExecution:
         - Execute again: both COMPLETED
         - Check: finalizes with root COMPLETED
         """
-        from services.orchestrator.graph import build_graph
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator, Result
-        from langgraph.checkpoint.memory import MemorySaver
         from unittest.mock import patch
+
+        from langgraph.checkpoint.memory import MemorySaver
+
+        from services.orchestrator.coding_orchestrator import (
+            AsyncOrchestrator,
+            CodingOrchestrator,
+            Result,
+        )
+        from services.orchestrator.graph import build_graph
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         # Plan returns 2 subtasks
@@ -1264,43 +1353,44 @@ class TestEndToEndGraphExecution:
         second_results = [
             Result(id="root_sub1", summary="Subtask 2 complete (retry)", ok=True),
         ]
-        mock_async_orch.plan_and_dispatch = AsyncMock(
-            side_effect=[first_results, second_results]
-        )
+        mock_async_orch.plan_and_dispatch = AsyncMock(side_effect=[first_results, second_results])
 
         real_cp = MemorySaver()
-        with patch("pymongo.MongoClient"):
-            with patch("langgraph.checkpoint.mongodb.MongoDBSaver", return_value=real_cp):
-                graph, _ = build_graph(mock_orch, mock_async_orch)
+        with patch("services.orchestrator.graph._make_sqlite_checkpointer", return_value=real_cp):
+            graph, _ = build_graph(mock_orch, mock_async_orch)
 
-                # Run the graph
-                initial_state = {
-                    "session_id": "test-e2e-1",
-                    "goal_tree": {},
-                    "current_goal_id": "root",
-                    "step_markers": {},
-                    "messages": [],
-                    "error": None,
-                    "final_answer": "",
-                    "workspace_id": "ws1",
-                    "user_id": "user1",
-                }
-                create_goal(initial_state["goal_tree"], "root", None, "Do two tasks")
+            # Run the graph
+            initial_state = {
+                "session_id": "test-e2e-1",
+                "goal_tree": {},
+                "current_goal_id": "root",
+                "step_markers": {},
+                "messages": [],
+                "error": None,
+                "final_answer": "",
+                "workspace_id": "ws1",
+                "user_id": "user1",
+            }
+            create_goal(initial_state["goal_tree"], "root", None, "Do two tasks")
 
-                final_state = await graph.ainvoke(initial_state, {"configurable": {"thread_id": "test-e2e-1"}})
+            final_state = await graph.ainvoke(
+                initial_state, {"configurable": {"thread_id": "test-e2e-1"}}
+            )
 
-                # Verify final state
-                assert final_state["goal_tree"]["root"]["status"] == Status.COMPLETED.value
-                assert "final_answer" in final_state
-                assert final_state.get("error") is None
-                # Verify both children are completed
-                root = final_state["goal_tree"]["root"]
-                children = root["children"]
-                for cid in children:
-                    assert final_state["goal_tree"][cid]["status"] == Status.COMPLETED.value
-                # Verify reflection happened (message appended)
-                reflection_messages = [m for m in final_state.get("messages", []) if m.get("role") == "reflection"]
-                assert len(reflection_messages) > 0
+            # Verify final state
+            assert final_state["goal_tree"]["root"]["status"] == Status.COMPLETED.value
+            assert "final_answer" in final_state
+            assert final_state.get("error") is None
+            # Verify both children are completed
+            root = final_state["goal_tree"]["root"]
+            children = root["children"]
+            for cid in children:
+                assert final_state["goal_tree"][cid]["status"] == Status.COMPLETED.value
+            # Verify reflection happened (message appended)
+            reflection_messages = [
+                m for m in final_state.get("messages", []) if m.get("role") == "reflection"
+            ]
+            assert len(reflection_messages) > 0
 
     @pytest.mark.asyncio
     async def test_e2e_subtask_exhausted_attempts_finalizes_failed(self):
@@ -1315,10 +1405,16 @@ class TestEndToEndGraphExecution:
         ("error: always fails") is retryable (no environmental marker), so attempts increments
         by 1 per pass up to MAX_GOAL_ATTEMPTS.
         """
-        from services.orchestrator.graph import build_graph
-        from services.orchestrator.coding_orchestrator import CodingOrchestrator, AsyncOrchestrator, Result
-        from langgraph.checkpoint.memory import MemorySaver
         from unittest.mock import patch
+
+        from langgraph.checkpoint.memory import MemorySaver
+
+        from services.orchestrator.coding_orchestrator import (
+            AsyncOrchestrator,
+            CodingOrchestrator,
+            Result,
+        )
+        from services.orchestrator.graph import build_graph
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         mock_orch.architect = AsyncMock(return_value="Subtask that always fails")
@@ -1330,35 +1426,37 @@ class TestEndToEndGraphExecution:
         mock_async_orch.plan_and_dispatch = AsyncMock(return_value=[failed_result])
 
         real_cp = MemorySaver()
-        with patch("pymongo.MongoClient"):
-            with patch("langgraph.checkpoint.mongodb.MongoDBSaver", return_value=real_cp):
-                graph, _ = build_graph(mock_orch, mock_async_orch)
+        with patch("services.orchestrator.graph._make_sqlite_checkpointer", return_value=real_cp):
+            graph, _ = build_graph(mock_orch, mock_async_orch)
 
-                initial_state = {
-                    "session_id": "test-e2e-2",
-                    "goal_tree": {},
-                    "current_goal_id": "root",
-                    "step_markers": {},
-                    "messages": [],
-                    "error": None,
-                    "final_answer": "",
-                    "workspace_id": "ws1",
-                    "user_id": "user1",
-                }
-                create_goal(initial_state["goal_tree"], "root", None, "Impossible task")
+            initial_state = {
+                "session_id": "test-e2e-2",
+                "goal_tree": {},
+                "current_goal_id": "root",
+                "step_markers": {},
+                "messages": [],
+                "error": None,
+                "final_answer": "",
+                "workspace_id": "ws1",
+                "user_id": "user1",
+            }
+            create_goal(initial_state["goal_tree"], "root", None, "Impossible task")
 
-                final_state = await graph.ainvoke(initial_state, {"configurable": {"thread_id": "test-e2e-2"}})
+            final_state = await graph.ainvoke(
+                initial_state, {"configurable": {"thread_id": "test-e2e-2"}}
+            )
 
-                # Verify final state: root FAILED, error set
-                assert final_state["goal_tree"]["root"]["status"] == Status.FAILED.value
-                assert "error" in final_state
-                assert final_state.get("final_answer") != ""
-                # FIX 9: child should be exhausted at MAX_GOAL_ATTEMPTS (was hardcoded 3).
-                from services.orchestrator.graph import MAX_GOAL_ATTEMPTS
-                children = final_state["goal_tree"]["root"]["children"]
-                if children:
-                    child_id = children[0]
-                    assert final_state["goal_tree"][child_id]["attempts"] == MAX_GOAL_ATTEMPTS
+            # Verify final state: root FAILED, error set
+            assert final_state["goal_tree"]["root"]["status"] == Status.FAILED.value
+            assert "error" in final_state
+            assert final_state.get("final_answer") != ""
+            # FIX 9: child should be exhausted at MAX_GOAL_ATTEMPTS (was hardcoded 3).
+            from services.orchestrator.graph import MAX_GOAL_ATTEMPTS
+
+            children = final_state["goal_tree"]["root"]["children"]
+            if children:
+                child_id = children[0]
+                assert final_state["goal_tree"][child_id]["attempts"] == MAX_GOAL_ATTEMPTS
 
 
 @pytest.mark.mocked
@@ -1367,10 +1465,12 @@ class TestExecuteNodeClassification:
     async def test_terminal_dependency_exhausts_immediately(self):
         """A no-Docker / missing-tool failure is marked exhausted at MAX_GOAL_ATTEMPTS
         in ONE pass (no reflect-retry), and records error_class."""
-        from services.orchestrator.graph import make_nodes, MAX_GOAL_ATTEMPTS
         from services.orchestrator.coding_orchestrator import (
-            CodingOrchestrator, AsyncOrchestrator, Result,
+            AsyncOrchestrator,
+            CodingOrchestrator,
+            Result,
         )
+        from services.orchestrator.graph import MAX_GOAL_ATTEMPTS, make_nodes
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         result = Result(id="root", summary="docker: command not found", ok=False)
@@ -1387,10 +1487,12 @@ class TestExecuteNodeClassification:
 
     @pytest.mark.asyncio
     async def test_terminal_credential_exhausts_immediately(self):
-        from services.orchestrator.graph import make_nodes, MAX_GOAL_ATTEMPTS
         from services.orchestrator.coding_orchestrator import (
-            CodingOrchestrator, AsyncOrchestrator, Result,
+            AsyncOrchestrator,
+            CodingOrchestrator,
+            Result,
         )
+        from services.orchestrator.graph import MAX_GOAL_ATTEMPTS, make_nodes
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         result = Result(id="root", summary="Missing API key for Figma", ok=False)
@@ -1406,10 +1508,12 @@ class TestExecuteNodeClassification:
     async def test_unknown_error_increments_by_one(self):
         """Regression-safety: an unknown failure stays RETRYABLE and increments
         attempts by exactly one (today's behavior)."""
-        from services.orchestrator.graph import make_nodes
         from services.orchestrator.coding_orchestrator import (
-            CodingOrchestrator, AsyncOrchestrator, Result,
+            AsyncOrchestrator,
+            CodingOrchestrator,
+            Result,
         )
+        from services.orchestrator.graph import make_nodes
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         result = Result(id="root", summary="assertion failed: expected 4 got 5", ok=False)
@@ -1425,10 +1529,12 @@ class TestExecuteNodeClassification:
 
     @pytest.mark.asyncio
     async def test_transient_timeout_increments_by_one(self):
-        from services.orchestrator.graph import make_nodes
         from services.orchestrator.coding_orchestrator import (
-            CodingOrchestrator, AsyncOrchestrator, Result,
+            AsyncOrchestrator,
+            CodingOrchestrator,
+            Result,
         )
+        from services.orchestrator.graph import make_nodes
 
         mock_orch = MagicMock(spec=CodingOrchestrator)
         result = Result(id="root", summary="Request timed out after 60s", ok=False)
@@ -1447,7 +1553,9 @@ class TestExecuteNodeClassification:
         """RATE_LIMITED retries up to MAX_RATE_LIMIT_RETRIES, then is exhausted."""
         import services.orchestrator.graph as g
         from services.orchestrator.coding_orchestrator import (
-            CodingOrchestrator, AsyncOrchestrator, Result,
+            AsyncOrchestrator,
+            CodingOrchestrator,
+            Result,
         )
 
         monkeypatch.setattr(g, "MAX_RATE_LIMIT_RETRIES", 1)

@@ -21,6 +21,7 @@ function normaliseUrl(raw: string): string {
 
 export function OnboardingScreen({ onSaved }: OnboardingScreenProps) {
   const [raw, setRaw] = useState('');
+  const [gemmaBase, setGemmaBase] = useState('');
   const [testState, setTestState] = useState<TestState>('idle');
   const [errorMsg, setErrorMsg] = useState('');
   const [saving, setSaving] = useState(false);
@@ -81,7 +82,7 @@ export function OnboardingScreen({ onSaved }: OnboardingScreenProps) {
   const save = async () => {
     if (!valid) return;
     setSaving(true);
-    await window.electronAPI?.setConfig(url);
+    await window.electronAPI?.setConfig({ wsUrl: url, gemmaBase: gemmaBase.trim() || null });
     if (mountedRef.current) onSaved(url);
   };
 
@@ -94,17 +95,19 @@ export function OnboardingScreen({ onSaved }: OnboardingScreenProps) {
           <p className="text-center text-sm text-mono">
             Enter the WebSocket URL of your backend.
             <br />
-            Looks like <span className="font-mono text-xs" style={{ color: 'var(--accent-blue)' }}>wss://your-pod.runpod.net/ws</span>
+            Looks like <span className="font-mono text-xs" style={{ color: 'var(--accent-blue)' }}>ws://localhost:8787/ws</span> (local)
+            <br />
+            or <span className="font-mono text-xs" style={{ color: 'var(--accent-blue)' }}>wss://your-pod.runpod.net/ws</span> (remote)
           </p>
         </div>
 
         <div className="flex flex-col gap-2">
           <input
             type="text"
-            aria-label="Backend WebSocket URL"
+            aria-label="Gateway WebSocket URL"
             value={raw}
             onChange={(e) => { setRaw(e.target.value); setTestState('idle'); setErrorMsg(''); }}
-            placeholder="wss://…  or  https://…"
+            placeholder="ws://localhost:8787/ws"
             className="w-full rounded-card border border-border-2 bg-panel px-3 py-2 text-sm text-primary outline-none placeholder:text-mono focus:border-[var(--accent-blue)]"
             onKeyDown={(e) => e.key === 'Enter' && void save()}
           />
@@ -117,6 +120,18 @@ export function OnboardingScreen({ onSaved }: OnboardingScreenProps) {
           {testState === 'ok' && (
             <p className="text-[12px]" style={{ color: '#4ade80' }}>Connected successfully.</p>
           )}
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <input
+            type="text"
+            aria-label="Model endpoint (GEMMA_BASE)"
+            value={gemmaBase}
+            onChange={(e) => setGemmaBase(e.target.value)}
+            placeholder="https://your-pod-8000.proxy.runpod.net/v1"
+            className="w-full rounded-card border border-border-2 bg-panel px-3 py-2 text-sm text-primary outline-none placeholder:text-mono focus:border-[var(--accent-blue)]"
+            onKeyDown={(e) => e.key === 'Enter' && void save()}
+          />
         </div>
 
         <div className="flex gap-2">

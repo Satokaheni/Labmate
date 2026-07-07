@@ -3,15 +3,13 @@ Orchestrator process entrypoint.
 
 Bootstraps in order:
   1. Logging (stderr only)
-  2. StorageManager  (MongoDB + Chroma + Redis — reads MONGO_URI / CHROMA_URL / REDIS_URL)
+  2. StorageManager  (MongoDB — reads MONGO_URI)
   3. MCPClientManager (spawns MCP bridge subprocess, waits for ready)
-  4. LangGraph       (build_graph with MongoDBSaver checkpointer)
-  5. Goal loop       (XREADGROUP labmate:goals → run_task → write result)
+  4. LangGraph       (build_graph with local SqliteSaver checkpointer)
+  5. Goal loop       (in-process asyncio.Queue → run_task → ResultRegistry)
 
 Env vars:
   MONGO_URI          mongodb://localhost:27017/labmate
-  CHROMA_URL         http://localhost:8765          (RunPod) | http://chroma:8000 (Docker)
-  REDIS_URL          redis://localhost:6379/0
   GEMMA_BASE         http://localhost:8000/v1
   QWEN_BASE          (defaults to GEMMA_BASE on single-GPU)
   MCP_BRIDGE_CMD     node
@@ -20,40 +18,47 @@ Env vars:
   SANDBOX_CONTAINER  labmate-sandbox   (Docker container name for code execution)
   LOG_LEVEL          info
 
-Redis Streams contract (CLAUDE.md rule #5):
-  Consume: XREADGROUP GROUP orchestrators <worker-id> COUNT 1 BLOCK 5000
-           STREAMS labmate:goals >
-  Ack:     XACK labmate:goals orchestrators <msg-id>
+Goal ingress, events, and skill dispatch (Piece 4 — the whole harness is one
+Redis-free process; only GEMMA_BASE/QWEN_BASE, the model server, is remote):
+  Submit:  task_id = await proc.submit_goal(payload)   # enqueues onto asyncio.Queue
+  Result:  result = await proc.results.wait_result(task_id)   # ResultRegistry
+  Events:  the agent event stream is published on the in-process EventBus
+           (services/orchestrator/inproc_bus.py); steer/cancel signals route
+           through the in-process SignalRegistry.
+  Skills:  a shared SkillRegistry is built at boot with all runnable skills
+           registered, and SkillRouter dispatches to it directly
+           (services/skill_runner/skill_dispatch.py) — fully in-process.
 
-Goal payload (JSON in the "payload" field):
+Goal payload (dict passed to submit_goal):
   { "task_id": "<str>", "task": "<str>", "session_id": "<str|null>", "user_id": "<str|null>", "workspace_id": "<str|null>" }
-
-Result (24 h TTL):
-  SET  labmate:result:<task_id>  <JSON>  EX 86400
-  PUBLISH  labmate:result:<task_id>  "ready"
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import re as _re
 import signal
 import socket
 import sys
+import uuid
 from pathlib import Path
 
-import redis.asyncio as aioredis
 from mcp import StdioServerParameters
 
 from services.orchestrator import call_counter, client_context, ctx_window, events, skill_curator
 from services.orchestrator.coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
 from services.orchestrator.completion_guard import reconcile_final_answer
-from services.orchestrator.graph import GEMMA_BASE, QWEN_BASE, build_graph
+from services.orchestrator.graph import (
+    GEMMA_BASE,
+    QWEN_BASE,
+    _make_async_sqlite_checkpointer,
+    build_graph,
+)
+from services.orchestrator.inproc_bus import EventBus, ResultRegistry, SignalRegistry
+from services.orchestrator.lite_orchestrator import run_goal_lite
 from services.orchestrator.mcp_client_manager import MCPClientManager
-from services.orchestrator.memory_search import MemorySearch
 from services.orchestrator.session_search import SessionSearch
 from services.orchestrator.skill_curator import (
     CapturedSequence,
@@ -63,15 +68,11 @@ from services.orchestrator.skill_curator import (
 from services.orchestrator.skill_router import SkillRouter
 from services.orchestrator.storage_manager import StorageManager
 from services.orchestrator.tool_manifest import parse_manifest
+from services.skill_runner.skill_registry import SkillRegistry
 from services.skill_runner.skill_runner import SkillRunner
+from services.skill_worker.manifest_loader import discover_manifests
 
 _log = logging.getLogger("orchestrator")
-
-GOALS_STREAM = "labmate:goals"
-GOALS_GROUP = "orchestrators"
-RESULT_PREFIX = "labmate:result:"
-RESULT_TTL = 86_400  # 24 h
-BLOCK_MS = 5_000
 
 # Per-request context window the model actually serves (= llama-server --ctx-size
 # DIVIDED BY --parallel). This ceiling drives the context gauge (used/free shown to
@@ -197,24 +198,32 @@ def _build_mcp_params() -> StdioServerParameters:
     return StdioServerParameters(command=cmd, args=[args_str])
 
 
-# P2-D: the pod CodeGraph embedder exists ONLY as the no-client / headless fallback.
-# When a capable client hosts CodeGraph (as an MCP server via ~/.labmate/mcp.json), the
-# pod `code_semantic_search` is already excluded for that client by build_tool_list (it
-# advertises the pod tool only when the manifest declares it). Set ENABLE_POD_CODEGRAPH=0
-# in a client-first deployment to skip spawning the embedder entirely (saves the index +
-# watch cost); no-client tasks then have no semantic search. Default 1 = unchanged.
-def pod_codegraph_enabled() -> bool:
-    """Whether the orchestrator should spawn the pod CodeGraph embedder at startup.
+def _codegraph_bin() -> str | None:
+    import shutil
+
+    return os.getenv("LABMATE_CODEGRAPH_PATH") or shutil.which("codegraph")
+
+
+# The local orchestrator hosts the client's CodeGraph CLI directly, scoped to
+# WORKSPACE_PATH: `codegraph serve --mcp --path <workspace>` (stdio MCP server,
+# SQLite-backed — no Chroma). Enabled by default when the `codegraph` binary is
+# resolvable; set ENABLE_CODEGRAPH=0 to disable explicitly, or leave the binary
+# absent (e.g. CI) for a graceful no-op skip.
+def codegraph_enabled() -> bool:
+    """Whether the orchestrator should spawn the CodeGraph CLI daemon at startup.
 
     Read once at process start (run()); set the env before launching the orchestrator.
     """
-    return os.getenv("ENABLE_POD_CODEGRAPH", "1").lower() not in ("0", "false", "no")
+    if os.getenv("ENABLE_CODEGRAPH", "1").lower() in ("0", "false", "no"):
+        return False
+    return _codegraph_bin() is not None
 
 
 def _build_codegraph_params() -> StdioServerParameters:
+    workspace = os.getenv("WORKSPACE_PATH") or os.getcwd()
     return StdioServerParameters(
-        command="python",
-        args=["-m", "services.codegraph_embedder.server"],
+        command=_codegraph_bin() or "codegraph",
+        args=["serve", "--mcp", "--path", workspace],
         env={**os.environ},
     )
 
@@ -225,9 +234,20 @@ class OrchestratorProcess:
     def __init__(self) -> None:
         self._worker_id = _worker_id()
         self._shutdown = asyncio.Event()
-        self._redis: aioredis.Redis | None = None
+        # In-process event/signal/result primitives (Piece 4): the agent event
+        # stream and steer/cancel signals route through these; goals/results
+        # transport and skill/tool dispatch are all in-process too (below).
+        self.bus = EventBus()
+        self.signals = SignalRegistry()
+        self.results = ResultRegistry()
+        # In-process goal ingress (Piece 4 T5): submit_goal() enqueues here;
+        # _loop() drains it. Replaces the prior Redis goal-stream consumer.
+        self._goal_queue: asyncio.Queue = asyncio.Queue()
         self._mcp: MCPClientManager | None = None
         self._codegraph_mcp: MCPClientManager | None = None
+        # Shared SkillRegistry (Piece 4 T7a): owns the runnable skills' MCP
+        # subprocesses so SkillRouter.execute can dispatch in-process (no Redis).
+        self._skill_registry: SkillRegistry | None = None
         self._recent_sequences = RecentSequences()
         self._last_goal_at: float = 0.0
         # Per-session carried context fill (peak prompt tokens of the last turn), so
@@ -237,7 +257,6 @@ class OrchestratorProcess:
     # ── top-level run ──────────────────────────────────────────────────────
 
     async def run(self) -> None:
-        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
         workspace = os.getenv("WORKSPACE_PATH", "/workspace")
 
         async with StorageManager() as _sm:
@@ -262,7 +281,7 @@ class OrchestratorProcess:
             except TimeoutError:
                 _log.warning("MCP bridge did not become ready within 30 s — continuing")
 
-            if pod_codegraph_enabled():
+            if codegraph_enabled():
                 self._codegraph_mcp = MCPClientManager(_build_codegraph_params())
                 await self._codegraph_mcp.start()
                 try:
@@ -275,9 +294,8 @@ class OrchestratorProcess:
                         "codegraph MCP did not become ready within 120 s (index still building?) — continuing"
                     )
             else:
-                # P2-D: client-first deployment — clients host CodeGraph themselves.
                 self._codegraph_mcp = None
-                _log.info("pod codegraph embedder disabled (ENABLE_POD_CODEGRAPH=0)")
+                _log.info("codegraph CLI not found / disabled — code_semantic_search unavailable")
 
             # Note: skill_router is built below, so we'll update async_orch later
             async_orch = AsyncOrchestrator(
@@ -285,24 +303,15 @@ class OrchestratorProcess:
                 gemma_api_base=GEMMA_BASE,
             )
 
-            # Wire the durable inner-loop checkpoint store when a Mongo-backed
-            # StorageManager is available. No-op when checkpointing is disabled
-            # (the flag is read inside _run_react_loop) or no storage exists.
+            # Wire the durable inner-loop checkpoint store backed by the local SQLite store.
+            # No-op when checkpointing is disabled (the flag is read inside _run_react_loop)
+            # or the store fails to open.
             try:
                 from .loop_checkpoint import CheckpointStore
 
-                async_orch.checkpoint_store = CheckpointStore(_sm.loop_checkpoint_collection)
+                async_orch.checkpoint_store = CheckpointStore(_sm.local_store)
             except Exception:  # best-effort wiring; never block startup
                 async_orch.checkpoint_store = None
-
-            # Initialize Redis BEFORE skill router (CLAUDE.md: "after self._redis is created")
-            pool = aioredis.ConnectionPool.from_url(
-                redis_url,
-                max_connections=8,
-                decode_responses=True,
-            )
-            self._redis = aioredis.Redis(connection_pool=pool)
-            await self._ensure_group()
 
             # Build skill router (optional, wrapped in try/except so startup never fails)
             skill_router = None
@@ -310,25 +319,50 @@ class OrchestratorProcess:
                 skills_root = Path(__file__).resolve().parent.parent / "skills"
                 runner = SkillRunner(roots=[skills_root])
                 runner.discover()
+
+                # Shared SkillRegistry: spawns/owns the runnable skills' MCP
+                # subprocesses so SkillRouter.execute can dispatch in-process.
+                self._skill_registry = SkillRegistry(
+                    call_timeout=float(os.getenv("SKILL_CALL_TIMEOUT", "135"))
+                )
+                for manifest in discover_manifests(skills_root):
+                    try:
+                        await self._skill_registry.register(manifest)
+                        _log.info("registered skill: %s", manifest.name)
+                    except Exception:
+                        _log.exception("failed to register %s — skipping", manifest.name)
+
                 skill_router = SkillRouter(
                     runner=runner,
-                    redis=self._redis,
+                    registry=self._skill_registry,
                     gemma_api_base=GEMMA_BASE,
                 )
                 # Wire skill_router into async_orch for react_execute
                 async_orch.skill_router = skill_router
                 async_orch.mcp = self._mcp
                 async_orch.workspace = workspace
-                _log.info("skill router ready (%d skills)", len(runner.catalog))
+                _log.info(
+                    "skill router ready (%d skills, %d registered procs)",
+                    len(runner.catalog),
+                    len(self._skill_registry._skills),
+                )
             except Exception:
                 _log.warning(
                     "failed to initialize skill router — continuing without skills", exc_info=True
                 )
 
-            # Wire redis and codegraph_mcp outside the try/except (always available)
-            async_orch.redis = self._redis
+            # Wire local_client and codegraph_mcp outside the try/except (always available).
+            # local_client_attached is a truthy sentinel meaning "a local-tool client is
+            # attached to this process" — it gates the local-tool dispatch branches in
+            # the ReAct loop (services/orchestrator/coding_orchestrator.py). Always True
+            # here since the orchestrator process always has local_tools wired; unit tests
+            # set async_orch.local_client = None to simulate no client attached.
+            async_orch.local_client = True
+            # Piece 4: steer/cancel read from the in-process SignalRegistry; wired
+            # alongside local_client so the ReAct loop's `self.signals is not None`
+            # guard degrades cleanly in tests that never set it.
+            async_orch.signals = self.signals
             async_orch.codegraph_mcp = self._codegraph_mcp
-            async_orch.memory_search = MemorySearch(_sm)
             async_orch.session_search = SessionSearch(_sm)
             # Wire context_manager for conversation continuity (best-effort)
             try:
@@ -349,12 +383,14 @@ class OrchestratorProcess:
                 mcp=self._mcp,
                 skill_router=skill_router,
             )
-            graph, _cp = build_graph(
-                orch=orch,
-                async_orch=async_orch,
-                mongo_uri=os.getenv("MONGO_URI", "mongodb://localhost:27017/labmate"),
-            )
+            # Async checkpointer: the harness runs graph.ainvoke, which needs an
+            # AsyncSqliteSaver (the sync SqliteSaver raises on aget_tuple/aput).
+            # Created on THIS loop so the aiosqlite connection is loop-bound to it.
+            checkpointer = await _make_async_sqlite_checkpointer()
+            graph, _cp = build_graph(orch=orch, async_orch=async_orch, checkpointer=checkpointer)
             orch.graph = graph
+            # Store async_orch on self so _handle can reach it
+            self.async_orch = async_orch
             # Wire context_manager to CodingOrchestrator (best-effort)
             try:
                 orch.context_manager = _sm.context_manager
@@ -397,37 +433,22 @@ class OrchestratorProcess:
     async def stop(self) -> None:
         self._shutdown.set()
 
+    async def submit_goal(self, payload: dict) -> str:
+        """In-process goal ingress (replaces the Redis goal-stream XADD). Returns task_id."""
+        task_id = payload.get("task_id") or uuid.uuid4().hex
+        payload = {**payload, "task_id": task_id}
+        await self._goal_queue.put(payload)
+        return task_id
+
     # ── goal loop ──────────────────────────────────────────────────────────
 
     async def _loop(self, orch: CodingOrchestrator, storage: StorageManager) -> None:
         while not self._shutdown.is_set():
             try:
-                raw = await self._redis.xreadgroup(
-                    groupname=GOALS_GROUP,
-                    consumername=self._worker_id,
-                    streams={GOALS_STREAM: ">"},
-                    count=1,
-                    block=BLOCK_MS,
-                )
-            except (aioredis.TimeoutError, TimeoutError):
-                # Defensive: a blocking xreadgroup should tolerate a read-timeout
-                # and re-poll. This does NOT fire on the pinned redis-py 5.x
-                # (which returns [] cleanly when BLOCK elapses), but redis-py
-                # 8.x regressed blocking-read handling and raises TimeoutError
-                # here under a busy event loop — which, if uncaught, silently
-                # kills goal consumption. Keep the catch regardless of version.
+                payload = await asyncio.wait_for(self._goal_queue.get(), timeout=1.0)
+            except TimeoutError:
                 continue
-            except aioredis.ResponseError as exc:
-                _log.error("xreadgroup error: %s", exc)
-                await asyncio.sleep(1)
-                continue
-
-            if not raw:
-                continue
-
-            for _stream, entries in raw:
-                for msg_id, fields in entries:
-                    await self._handle(msg_id, fields, orch, storage)
+            await self._handle(payload, orch, storage)
 
     async def _background_compactor(
         self,
@@ -460,7 +481,7 @@ class OrchestratorProcess:
                 if self._shutdown.is_set():
                     break
 
-                session_ids = await storage._db["chat_turns"].distinct("sessionId")
+                session_ids = await storage.local_store.distinct_session_ids()
                 for session_id in session_ids[:BG_COMPACT_MAX_SESSIONS]:
                     if self._shutdown.is_set():
                         break
@@ -470,12 +491,6 @@ class OrchestratorProcess:
                         session_id,
                         _bg_llm,
                     )
-                    if result and result.get("reflections"):
-                        asyncio.create_task(
-                            storage.consolidator.write_reflections(
-                                session_id, result["reflections"]
-                            )
-                        )
                     if result:
                         _log.info(
                             "background compact: session %s pruned %d messages",
@@ -527,15 +542,62 @@ class OrchestratorProcess:
             except Exception:
                 _log.debug("background curator sweep failed (non-fatal)", exc_info=True)
 
+    async def _run_engine(
+        self,
+        orch: CodingOrchestrator,
+        task_text: str,
+        session_id: str,
+        *,
+        user_id: str,
+        workspace_id: str,
+        agent_instructions: str,
+        store,
+    ) -> dict:
+        """Dispatch a goal to the configured orchestration engine.
+
+        ORCHESTRATOR_ENGINE=graph (default) runs the LangGraph run_task; "lite"
+        runs run_goal_lite (the strangler path). Read at call time so the flag is
+        monkeypatchable in tests. The lite path returns an `ok` bool but no
+        `error` key, so normalize it into the `error` field _handle expects
+        downstream (ok_flag = final_state["error"] is None).
+        """
+        engine = os.getenv("ORCHESTRATOR_ENGINE", "graph")
+        if engine == "lite":
+            state = await run_goal_lite(
+                orch,
+                self.async_orch,
+                task_text,
+                session_id,
+                user_id=user_id,
+                workspace_id=workspace_id,
+                store=store,
+                signals=self.signals,
+            )
+            # NOTE (spike limitation): agent_instructions is not threaded into the
+            # lite path (run_goal_lite has no such parameter yet).
+            if isinstance(state, dict) and not state.get("awaiting_clarification"):
+                if state.get("ok"):
+                    state.setdefault("error", None)
+                elif state.get("error") is None:
+                    state["error"] = "lite engine: goal did not complete successfully"
+            return state
+        return await orch.run_task(
+            task_text,
+            session_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            agent_instructions=agent_instructions,
+        )
+
     async def _handle(
         self,
-        msg_id: str,
-        fields: dict[str, str],
+        payload: dict,
         orch: CodingOrchestrator,
         storage: StorageManager,
     ) -> None:
         # Safe defaults — must be bound before try so finally never raises NameError
-        task_id = msg_id
+        task_id = payload.get("task_id") if isinstance(payload, dict) else None
+        task_id = task_id or uuid.uuid4().hex
         user_id = ""
         workspace_id = ""
         session_id = ""
@@ -553,8 +615,7 @@ class OrchestratorProcess:
         _ctx_floor = 0
 
         try:
-            payload = json.loads(fields.get("payload", "{}"))
-            task_id = payload.get("task_id", msg_id)
+            task_id = payload.get("task_id", task_id)
             task_text = payload.get("task", "")
             session_id = payload.get("session_id") or task_id
             user_id = payload.get("user_id", "")
@@ -581,15 +642,10 @@ class OrchestratorProcess:
                     session_id,
                     llm_fn=_compact_llm,
                 )
-                # Write reflections extracted during compaction to semantic memory
-                if result.get("reflections"):
-                    asyncio.create_task(
-                        storage.consolidator.write_reflections(session_id, result["reflections"])
-                    )
                 await self._write_result(task_id, {"ok": True, **result})
                 return
 
-            _emitter = events.EventEmitter(self._redis, task_id)
+            _emitter = events.EventEmitter(self.bus, task_id)
             _token = events.current_emitter.set(_emitter)
             # Per-task LLM call counter (A/B instrumentation): set a fresh counter for
             # this task's context; the litellm success callback increments it.
@@ -711,30 +767,18 @@ class OrchestratorProcess:
                         task_id,
                         compact_result["pruned_messages"],
                     )
-                    if compact_result.get("reflections"):
-                        asyncio.create_task(
-                            storage.consolidator.write_reflections(
-                                session_id, compact_result["reflections"]
-                            )
-                        )
             except Exception as exc:
                 _log.warning("auto-compact check failed (non-fatal): %s", exc)
 
-            # Importance-based decay sweep (at most once/hour per session)
-            try:
-                if await storage.cache_get(f"decay_swept:{session_id}") is None:
-                    asyncio.create_task(storage.decay_expired_memories(session_id))
-                    await storage.cache_set(f"decay_swept:{session_id}", "1", ttl=3600)
-            except Exception:
-                pass  # decay is best-effort; never block task execution
-
             _log.info("task %s: %.80s", task_id, task_text)
-            final_state = await orch.run_task(
+            final_state = await self._run_engine(
+                orch,
                 task_text,
                 session_id,
                 user_id=user_id,
                 workspace_id=workspace_id,
                 agent_instructions=agent_instructions,
+                store=storage.local_store,
             )
             task_succeeded = True
             # If the graph halted for clarification, surface the question — do NOT
@@ -796,6 +840,10 @@ class OrchestratorProcess:
                 },
             )
             _log.info("task %s complete", task_id)
+            _answer_for_turns = (
+                final_state.get("final_answer", "") if isinstance(final_state, dict) else ""
+            )
+            await self._persist_turns(storage, session_id, task_text, _answer_for_turns)
             # Skill-curator: record a SUCCESSFUL multi-tool sequence as a draft
             # candidate (best-effort; never blocks). RecentSequences itself drops
             # failed / too-short sequences.
@@ -815,18 +863,6 @@ class OrchestratorProcess:
                 )
             except Exception:
                 pass  # capture is best-effort
-            # Task-boundary reflection: write to semantic memory asynchronously
-            _final_answer = (
-                final_state.get("final_answer", "") if isinstance(final_state, dict) else ""
-            )
-            asyncio.create_task(
-                storage.consolidator.on_task_complete(
-                    session_id=session_id,
-                    goal=task_text[:500],
-                    success=ok_flag,
-                    summary=_final_answer[:1_000],
-                )
-            )
 
         except Exception:
             _log.exception("task %s failed", task_id)
@@ -837,15 +873,6 @@ class OrchestratorProcess:
                     "error": "task_failed",
                     "llm_calls": call_counter.get_count(),
                 },
-            )
-            # Failure reflection: always write — highest signal for learning
-            asyncio.create_task(
-                storage.consolidator.on_task_complete(
-                    session_id=session_id,
-                    goal=task_text[:500],
-                    success=False,
-                    summary="Task raised an unhandled exception.",
-                )
             )
         finally:
             # Stop the live context refresher before the final (accurate) emit below.
@@ -929,24 +956,29 @@ class OrchestratorProcess:
                 client_context.reset_manifest(_manifest_token)
             if _ws_root_token is not None:
                 client_context.reset_workspace_root(_ws_root_token)
-            await self._redis.xack(GOALS_STREAM, GOALS_GROUP, msg_id)
 
     async def _write_result(self, task_id: str, result: dict) -> None:
-        key = f"{RESULT_PREFIX}{task_id}"
-        await self._redis.set(key, json.dumps(result, default=str), ex=RESULT_TTL)
-        await self._redis.publish(key, "ready")
+        self.results.set_result(task_id, result)
 
-    async def _ensure_group(self) -> None:
+    async def _persist_turns(
+        self, storage: StorageManager, session_id: str, user_text: str, assistant_text: str
+    ) -> None:
+        """Best-effort: persist the user + assistant turns for this goal to the local
+        store so the next turn of this session has conversation continuity. Never
+        raises into the caller (a persistence failure must not fail the task)."""
+        if not session_id:
+            return
+        signals = getattr(self, "signals", None)
+        if signals is not None and signals.is_persistence_owned(session_id):
+            return  # a WS relay owns persistence for this session (rich writer)
         try:
-            await self._redis.xgroup_create(
-                GOALS_STREAM,
-                GOALS_GROUP,
-                id="0",
-                mkstream=True,
-            )
-        except aioredis.ResponseError as exc:
-            if "BUSYGROUP" not in str(exc):
-                raise
+            store = storage.local_store
+            if user_text:
+                await store.append_turn(session_id, "user", user_text)
+            if assistant_text:
+                await store.append_turn(session_id, "assistant", assistant_text)
+        except Exception:  # noqa: BLE001 — persistence is best-effort
+            _log.warning("turn persistence failed for session %s", session_id, exc_info=True)
 
 
 def _setup_logging() -> None:

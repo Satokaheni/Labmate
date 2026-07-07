@@ -8,9 +8,7 @@ This file is for any AI coding agent helping implement Labmate. Read it fully be
 
 Labmate is a local autonomous agent: Brain (LLM) → Nervous System (MCP bridge) → Hands (skills). It runs on a single GPU host. The LLM inference server runs directly on the host; all support services run natively via shell scripts (no Docker — RunPod blocks namespace syscalls).
 
-**Primary model:** Gemma 4 31B 4-bit served via llama.cpp (`llama-server`) with an OpenAI-compatible HTTP API on port 8000. `QWEN_BASE` defaults to `GEMMA_BASE` — both roles run on the same model.
-
-**CRITICAL SECURITY CONSTRAINT:** Discord connector is deferred — do NOT wire, import, or reference it in any active code path until explicitly instructed. Lives in `services/connectors/deferred/`.
+**Primary model:** Gemma 4 12B 4-bit served via llama.cpp (`llama-server`) with an OpenAI-compatible HTTP API on port 8000. `QWEN_BASE` defaults to `GEMMA_BASE` — both roles run on the same model.
 
 ---
 
@@ -27,10 +25,10 @@ Labmate is a local autonomous agent: Brain (LLM) → Nervous System (MCP bridge)
                 │       │ child process                                        │
                 │  services/skills/<name>/    ← TypeScript / Rust / Python    │
                 │                                                              │
-                │  Memory / queues:                                            │
-                │    MongoDB  :27017  (sessions, messages, outbox)             │
-                │    Chroma   :8765   (vector embeddings)                      │
-                │    Redis    :6379   (task queues via Streams, event cache)   │
+                │  State:                                                      │
+                │    SQLite LocalStore  (sessions, turns, auth, checkpoints)   │
+                │    — one file, shared in-process by the orchestrator and    │
+                │      the gateway (services.local.main runs both on one loop)│
                 │                                                              │
                 │  services/ws_gateway/  :8787  ← FastAPI + WebSocket gateway │
                 │                                                              │
@@ -61,14 +59,19 @@ tokenizer = AutoTokenizer.from_pretrained("google/gemma-4-9b-it")
 token_count = len(tokenizer.encode(text))
 ```
 
-### 4. Chroma — always client-server mode
-```python
-# CORRECT
-client = chromadb.AsyncHttpClient(host="chroma", port=8000)
-```
+### 4. Chroma — removed from the core state path (historical)
+MongoDB/Chroma/Redis were retired by the local-state-sqlite rearchitecture; core
+session/turn/auth/checkpoint state now lives in one SQLite `LocalStore` (see the
+Architecture Map above). `services/codegraph_embedder/` (the Chroma-backed embedder)
+was deleted — the orchestrator now hosts the client's CodeGraph CLI daemon
+(SQLite-backed, no Chroma) instead. Only `paper-rag` still imports `chromadb` as
+legacy/unwired code — do not treat that as the state model; do not add new Chroma
+dependencies for orchestrator/session state.
 
-### 5. Redis — Streams for queues, not BRPOP
-Use `XADD` / `XREADGROUP` / `XACK`. Pin `redis>=5.0,<6` — version 8.x breaks blocking `xreadgroup` on empty streams.
+### 5. Redis — removed (historical)
+Task queueing used to go through Redis Streams (`XADD`/`XREADGROUP`/`XACK`). The
+single co-located process (`services.local.main`) now dispatches goals via an
+in-process queue/EventBus — no Redis anywhere in the live stack.
 
 ### 6. llama.cpp — every request must set thinking_budget_tokens
 Post-April-2026 builds default to `INT_MAX` when unset, causing non-deterministic hangs.
@@ -81,11 +84,15 @@ extra_body={"thinking_budget_tokens": 0}
 ```
 Also required on every `litellm.acompletion` call: `api_key="not-needed"` (prevents OpenAI SDK credential error).
 
-### 7. MongoDB transactional outbox
-Never write to MongoDB and Chroma/Redis in two separate calls. Write document + outbox marker atomically in one MongoDB write; background OutboxWorker projects to Chroma/Redis.
+### 7. MongoDB transactional outbox — removed (historical)
+The MongoDB-write + outbox-projection-to-Chroma/Redis pattern no longer applies:
+all state (sessions, turns, auth, checkpoints) is one SQLite `LocalStore`, written
+directly — no cross-store outbox needed.
 
 ### 8. LangGraph checkpointer
-Use `AsyncMongoDBSaver` from `langgraph-checkpoint-mongodb`. Never use `MemorySaver`.
+Use the local `SqliteSaver` (`services/orchestrator/graph.py::_make_sqlite_checkpointer`),
+backed by the same SQLite `LocalStore` file. Never use `MemorySaver`. (`AsyncMongoDBSaver`
+is no longer used.)
 
 ---
 
@@ -95,10 +102,12 @@ Always read from environment variables. Never hardcode.
 
 ```python
 INFERENCE_URL = os.getenv("GEMMA_BASE",   "http://localhost:8000/v1")
-MONGO_URI     = os.getenv("MONGO_URI",    "mongodb://localhost:27017/labmate")
-CHROMA_URL    = os.getenv("CHROMA_URL",   "http://localhost:8765")
-REDIS_URL     = os.getenv("REDIS_URL",    "redis://localhost:6379/0")
+LOCAL_HOST    = os.getenv("LOCAL_HOST",   "127.0.0.1")   # services.local.main bind host
+LOCAL_PORT    = os.getenv("LOCAL_PORT",   "8787")        # gateway HTTP/WebSocket port
 ```
+
+`MONGO_URI` / `CHROMA_URL` / `REDIS_URL` no longer exist — state is a single SQLite
+`LocalStore` file under `.data/`, shared in-process by the gateway and orchestrator.
 
 ---
 
@@ -112,7 +121,9 @@ REDIS_URL     = os.getenv("REDIS_URL",    "redis://localhost:6379/0")
 | Python classes | PascalCase | `ContextManager` |
 | Python functions | `snake_case` | `build_context()` |
 | Skill names | `kebab-case` | `ast-repo-map` |
-| Docker containers | `lm-<name>` | `lm-mongodb` |
+
+No Docker containers in the current stack — `services.local.main` runs as a single
+native host process alongside `llama-server`.
 
 ---
 
@@ -122,7 +133,7 @@ REDIS_URL     = os.getenv("REDIS_URL",    "redis://localhost:6379/0")
 - `@pytest.mark.asyncio` on all async tests
 - `pytest` + `pytest-asyncio` — no other test runners
 - Assert structure, not literal text — LLM output is non-deterministic
-- Motor async cursor chains must support `.find().sort().skip()` — all three return `self` in mocks
+- SQLite `LocalStore` access is async (via `aiosqlite`/thread-offload) — mock at the `LocalStore` method boundary, not at a driver-cursor level (the old Motor cursor-chain mocking rule no longer applies; Mongo is gone)
 
 ---
 
@@ -132,24 +143,22 @@ REDIS_URL     = os.getenv("REDIS_URL",    "redis://localhost:6379/0")
 |-----------|-----------|
 | Orchestrator loop, LangGraph | `research/llm-harness-research/specs/spec_orchestrator.md` |
 | TypeScript MCP server | `research/llm-harness-research/specs/spec_mcp_bridge.md` |
-| MongoDB + Chroma + Redis | `research/llm-harness-research/specs/spec_memory.md` |
+| MongoDB + Chroma + Redis (**superseded** — see `local_store.py` / SQLite LocalStore) | `research/llm-harness-research/specs/spec_memory.md` |
 | llama.cpp serving | `research/llm-harness-research/specs/spec_inference.md` |
 | SKILL.md format, SkillRunner | `research/llm-harness-research/specs/spec_skills.md` |
 | Testing strategy | `research/llm-harness-research/specs/spec_testing.md` |
-| Discord connector (**deferred**) | `research/llm-harness-research/specs/spec_integrations.md` |
 
 ---
 
 ## Build Order
 
 1. `services/mcp-bridge/` — TypeScript MCP server
-2. Memory layer — `StorageManager` (MongoDB + Chroma + Redis)
+2. State layer — `StorageManager` / `LocalStore` (SQLite: sessions, turns, auth, checkpoints — MongoDB/Chroma/Redis retired)
 3. `services/orchestrator/` — Python orchestrator
 4. `services/skills/` — individual skill servers
-5. `services/skill-worker/` — Redis consumer that dispatches skills
+5. `services/skill-worker/` — dispatches skills (in-process queue, not Redis)
 6. `services/cli/` — WebSocket CLI client
 7. `services/frontend/` — Electron frontend
-8. Discord connector — **deferred; do not implement until explicitly instructed**
 
 ---
 
@@ -261,36 +270,52 @@ A live A/B on RunPod (`eval/reports/ab_agentic_fix_loop_report.md`) drove a seco
 
 ---
 
+## ml-intern harness ports — G1–G9 (2026-07-05)
+
+Mined the `~/Work/ml-intern` harness for robustness patterns and ported the ones
+that fit Labmate (each TDD + opus-reviewed, one PR each). G2-style judgment
+applied: adapt to Labmate's seams, or flag already-covered / defer with a reason.
+
+| # | Pattern | Outcome | Where |
+|---|---|---|---|
+| G1 | Loop-detection **result-hash** — fold a hash of the tool result into the loop signature so legit polling (same name+args, changing result) isn't a false loop | **Ported** #71 | `loop_detection.py` (`result_hash`, `call_signature(...,result=)`); record/halt moved pre→post-exec in `_run_react_loop` |
+| G2 | Compaction hard-stop | **Adapted** #72 — ml-intern's compaction-loop stop is N/A (Labmate compaction is one-shot + tool results budgeted at ingest); built the residual gap: `ErrorClass.TERMINAL_CONTEXT` so a context-overflow 400 **finalizes** instead of retrying to exhaustion | `error_classifier.py` |
+| G3 | Truncated-output + malformed-args **recovery nudges** | **Ported** #73 — `finish_reason=="length"` drops the truncated tool_call + bounded `[RECOVERY]` nudge; malformed-JSON-args streak → nudge (no silent `{}`) | `coding_orchestrator.py` (`LABMATE_MAX_LENGTH_NUDGES=2`, `LABMATE_MALFORMED_ARGS_LIMIT=2`) |
+| G4 | No-tool **continuation guard** | **Ported** #74 — a text-only return (no tool_calls, no `finish`) now runs the same `needs_verification` gate as the finish branch, so editing-then-answering-in-prose can't bypass verification; spent-budget path reconciles the ok (parity) | `coding_orchestrator.py` |
+| G5 | Reasoning-effort probe-and-cache | **Adapted** #75 — Labmate has one param (`thinking_budget_tokens`) + one endpoint kind; on a 4xx naming the field unsupported, strip it, retry once, cache the base. Negative value-error guard so a value-rejection on a honoring build isn't stripped (rule #6 hang) | `model_client.py` (`LABMATE_THINKING_BUDGET_SELF_HEAL=1`) |
+| G6 | Parallel tool execution (`asyncio.gather` + cancel) | **Deferred** — `_run_react_loop` dispatches serially; the cancel-during-tool win is already covered (in-loop cancel check). For local Q4: model rarely emits parallel tool_calls, the dispatch block's per-tool accounting (loop-detect/grounding/`edited_files`/`tests_passed`) is serial, and parallel mutating tools are a write-ordering hazard. Read-only-subset parallelism is a future option **iff** live testing shows parallel tool calls |
+| G7 | Always-on **dangling-tool_call patch** | **Ported** #76 — `patch_dangling_tool_calls` stubs any assistant tool_call id with no answering result; wired always-on in `_maybe_repair` (independent of `ENABLE_MESSAGE_REPAIR`), so one dropped/cancelled tool can't 400 every later request | `message_repair.py` |
+| G8 | YAML+Jinja2 versioned system prompt | **Already-covered** — `PromptAssembler` already gives the static base prompt, LOCAL-EXECUTION block, workspace/cwd clause, tool-list assembly, and a byte-stable frozen prefix. The only deltas (Jinja2 file-versioning + a runtime date line) are things Labmate deliberately avoids — volatile content in the cached prefix busts the SWA prompt-cache (the `serve-model.sh` `--swa-full` fix, PR #31). Date-awareness, if ever needed, goes in the goal/user message, not the prefix |
+| G9 | REVIEW.md P0/P1/P2 judge spec | **Ported** — `docs/REVIEW.md` is the severity rubric for the review/judge step of the Implementation Workflow (Labmate honesty + prefix-cache + boundedness lenses added) |
+
+**Did NOT port** (deliberate, from the mining doc): the 300-iteration uncapped
+loop (Labmate's bounded iteration + wall-clock + no-progress breakers are
+stricter and correct for a local box) and ml-intern's remote HF-docs/GitHub-tree
+Whoosh search (HF-domain, not Labmate's local single-endpoint reality).
+
+---
+
 ## Live E2E Verification
 
 Run these after any change to confirm the stack still works. Start services in order:
 
 ```bash
-infrastructure/local/serve-model.sh   # wait until model healthy
-infrastructure/local/start.sh
-infrastructure/local/status.sh        # all services must be green before testing
+infrastructure/serve-model.sh   # wait until model healthy
+infrastructure/start.sh
+infrastructure/status.sh        # all services must be green before testing
 ```
 
 ### 1. Service health checks
 ```bash
-redis-cli ping                                               # → PONG
-mongosh --quiet --eval 'rs.status().myState'                # → 1
-curl -s http://localhost:8765/api/v2/heartbeat | head -c 80 # → {"nanosecond heartbeat":...}
-curl -s http://localhost:8000/health | grep '"status"'      # → "ok"
-curl -fsS http://localhost:8787/healthz                     # → {"ok":true}
+curl -s http://localhost:8000/health | grep '"status"'      # → "ok"   (llama-server)
+curl -fsS http://localhost:8787/healthz                     # → {"ok":true}   (services.local.main)
 ```
+No MongoDB/Redis/Chroma health checks — SQLite `LocalStore` is a file, not a service.
 
-### 2. Redis round-trip (no CLI, no GPU needed for the push)
-```bash
-TASK_ID="e2e-$(date +%s)"
-redis-cli XADD labmate:goals '*' payload \
-  "{\"task_id\":\"$TASK_ID\",\"task\":\"What is 2+2? Reply in one sentence.\",\"session_id\":\"$TASK_ID\"}"
-for i in $(seq 1 120); do
-  VAL=$(redis-cli GET "labmate:result:$TASK_ID" 2>/dev/null)
-  [ -n "$VAL" ] && echo "$VAL" && break; sleep 1
-done
-```
-Success: `{"ok": true, ...}`. Failure: timeout or `"ok": false`.
+### 2. One-shot goal round-trip (no CLI needed for the push)
+Goals go straight to `services.local.main` (in-process `submit_goal`, no Redis) via
+the CLI's one-shot mode or the gateway's WebSocket/REST API — see §4 below for the
+CLI smoke test, which is the simplest way to exercise this path end-to-end.
 
 ### 3. Unit tests
 ```bash
@@ -300,7 +325,7 @@ python -m pytest tests/ -v 2>&1 | tail -20
 
 ### 4. One-shot CLI smoke test
 ```bash
-source infrastructure/local/local.env
+source infrastructure/local.env
 PYTHONPATH=. python -m services.cli "Write a Python function that returns the square of a number."
 ```
 Success: answer streams live and process exits 0.
@@ -335,46 +360,42 @@ Acceptance: new skill ≥ 0.80, no existing skill drops > 0.05. If a skill mis-r
   (`eval/routing_metrics.py`, `eval/seq_ab/baselines.py`). Stale 31B baselines archived
   as `results-*.31b.ref.json`; re-capture on 12B per the protocol doc.
 
-### 6. Semantic codegraph search (run when `services/codegraph_embedder/` is changed)
+### 6. Semantic codegraph search (run when CodeGraph daemon wiring is changed)
 
-The orchestrator spawns the codegraph MCP server automatically — no separate start needed.
+The orchestrator spawns the client's CodeGraph CLI daemon automatically
+(`codegraph serve --mcp --path $WORKSPACE_PATH`, SQLite-backed, no Chroma;
+`services/orchestrator/main.py::_build_codegraph_params`/`codegraph_enabled`) —
+no separate start needed. The agent's `code_semantic_search` tool routes to the
+daemon's `codegraph_explore` tool (NL question -> verbatim source).
 
 ```bash
 # Confirm orchestrator picked up the tool at startup
 grep "codegraph semantic search ready" .data/logs/orchestrator.log
 
-# Check Chroma collection is populated (~2794 nodes for current codebase)
-curl -s http://localhost:8765/api/v1/collections/code_symbols | python3 -c \
-  "import sys,json; d=json.load(sys.stdin); print(d.get('count', d))"
-
-# Semantic query via agent (golden-path test)
-redis-cli XADD labmate:goals '*' payload \
-  '{"task_id":"cg-test","task":"Find the function that handles WebSocket authentication","session_id":"cg-test"}'
+# Semantic query via agent (golden-path test) — push via the CLI (see §4)
+PYTHONPATH=. python -m services.cli "Find the function that handles WebSocket authentication"
 # Expected: result references ws_gateway/server.py near the auth handshake
-
-# Incremental update — touch a file, wait 5 s, check the log
-touch services/orchestrator/main.py
-sleep 6
-grep "incremental_update" .data/logs/codegraph-embedder.log | tail -3
 ```
 
-`full_index` is skipped on restart if `code_symbols` already has documents. To force a full re-index, delete the collection from Chroma first.
+Requires the `codegraph` CLI installed (`shutil.which("codegraph")` or
+`LABMATE_CODEGRAPH_PATH`) and the repo `codegraph init`'d; gracefully OFF
+(`codegraph_enabled()` False) when the binary is absent, e.g. CI. Toggle with
+`ENABLE_CODEGRAPH` (default on when the CLI resolves).
 
 ### 7. Log locations
 ```
 .data/logs/orchestrator.log        ← task complete/failed, exceptions
 .data/logs/llama-server.log        ← model load, VRAM, 5xx
 .data/logs/ws-gateway.log          ← auth failures, event relay errors
-.data/logs/codegraph-embedder.log  ← indexer startup, incremental updates
+(CodeGraph MCP daemon stderr surfaces in orchestrator.log — `codegraph serve --mcp`)
 ```
 
 | Log pattern | Likely cause |
 |-------------|-------------|
 | `task failed` + traceback | Exception in `run_task` or LangGraph node |
-| `xreadgroup error` | Redis not running or stream not created |
-| No `goal received` after XADD | Orchestrator not running or consumer group missing |
+| No `goal received` after submitting | `services.local.main` not running, or `submit_goal` never reached (check gateway logs) |
 | `MCP bridge did not become ready` | Bridge crash or missing `dist/index.js` — run `npm run build` in `services/mcp-bridge/` |
-| `codegraph MCP did not become ready` | `.codegraph/codegraph.db` missing or embed model not loaded — check codegraph-embedder.log |
+| `codegraph MCP did not become ready` | `codegraph` CLI not installed / repo not `codegraph init`'d (`.codegraph/` missing) — the orchestrator hosts `codegraph serve --mcp`; check orchestrator.log |
 | `llama-server` 5xx / timeout | Model not loaded or VRAM OOM |
 | ws_gateway `auth_failed` | JWT credentials wrong or `ADMIN_EMAIL`/`ADMIN_PASSWORD` not seeded |
 
@@ -384,7 +405,7 @@ These are unit/BDD-covered (`PYTHONPATH=. python -m pytest tests/services/orches
 
 ```bash
 # Conditional gates — OFF by default; enable, then a trivial task should skip the ambiguity + verify gates
-ENABLE_CONDITIONAL_GATES=1 infrastructure/local/start.sh   # (or export before starting the orchestrator)
+ENABLE_CONDITIONAL_GATES=1 infrastructure/start.sh   # (or export before starting the orchestrator)
 PYTHONPATH=. python -m services.cli "What is 2+2? Reply in one sentence."
 #   log: assess_ambiguity skipped (trivial) + verify skipped → faster turn. An ambiguous task ("improve it") still gates.
 
@@ -409,7 +430,7 @@ GEMMA_BASE="http://localhost:9999/v1" LABMATE_FALLBACK_BASES="http://localhost:8
 # Sequencing mode — DEFAULT is skill_first (one skill/goal). The mode is read by the ORCHESTRATOR
 # at startup (process-wide), NOT by the CLI — to change it, restart the orchestrator under the env
 # var, then push a task. For the proper comparison use the A/B harness in §9 (it restarts per mode).
-SEQUENCING_MODE=react infrastructure/local/start.sh    # restart orchestrator in react (opt-in) mode
+SEQUENCING_MODE=react infrastructure/start.sh    # restart orchestrator in react (opt-in) mode
 PYTHONPATH=. python -m services.cli "Review /workspace/ab_buggy.py for bugs, then fix the code."
 #   skill_first: ONE skill dispatch then finish (honest 'partial' if the skill can't edit code).
 #   react:       always uses _run_react_loop for every goal; diagnostic / routing-regression baseline.
@@ -433,11 +454,11 @@ redis-cli SET "labmate:steer:$TASK_ID" "focus on the off-by-one in the loop rang
 #   log: "wall-clock deadline exceeded" OR "no-progress breaker tripped".
 
 # Revise-before-deliver (opt-in) — enable, then a thin/wrong final answer gets ONE revision pass before delivery
-ENABLE_FINALIZE_REVISION=1 infrastructure/local/start.sh
+ENABLE_FINALIZE_REVISION=1 infrastructure/start.sh
 #   log (revise node): should_revise → one architect() pass → revised final_answer. OFF by default (no latency).
 
 # Skill curator (opt-in) — enable; after successful sequences it STAGES drafts for review (never auto-activates)
-ENABLE_SKILL_CURATOR=1 infrastructure/local/start.sh
+ENABLE_SKILL_CURATOR=1 infrastructure/start.sh
 #   → check services/skills/.proposed/<name>/ for staged SKILL.md drafts + a skill.proposed event. discover() skips .proposed/.
 ```
 
@@ -517,7 +538,6 @@ failure, so run `npm run build` in the skill dir before testing it.
 ## What NOT to Do
 
 - Do not load the model with `FastLanguageModel` — use the llama.cpp HTTP API
-- Do not modify `core/`, `tools/`, or the legacy `main.py`
 - Do not add `console.log` to any MCP server (use `console.error`)
 - Do not use `asyncio.run()` inside an async function
 - Do not import `tiktoken` anywhere in this project

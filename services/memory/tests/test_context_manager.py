@@ -3,67 +3,44 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from services.orchestrator.local_store import LocalStore
+
 
 def _mock_token_count(text: str) -> int:
     """Deterministic stub: 1 token per 4 chars."""
     return max(0, len(text) // 4)
 
 
+async def _make_local_store(tmp_path, name="s.sqlite") -> LocalStore:
+    store = LocalStore(tmp_path / name)
+    await store.connect()
+    return store
+
+
 @pytest.mark.asyncio
-async def test_build_context_stays_within_budget():
+async def test_build_context_stays_within_budget(tmp_path):
     with (
         patch("services.memory.context_manager.token_count", side_effect=_mock_token_count),
-        patch("services.memory.context_manager.rerank", new_callable=AsyncMock, return_value=[]),
     ):
         from services.memory.context_manager import ContextBudget, ContextManager
 
-        redis = AsyncMock()
+        store = await _make_local_store(tmp_path)
+        await store.session_kv_set("core", "s1", "goal: finish MCP bridge")
+        await store.session_kv_set("summary", "s1", "old summary")
+        # summarized_through left unset -> watermark defaults to -1
 
-        def _redis_get(key):
-            if "core" in key:
-                return "goal: finish MCP bridge"
-            elif "summarized_through" in key:
-                return None  # watermark defaults to -1 when absent
-            else:
-                return "old summary"
-
-        redis.get = AsyncMock(side_effect=_redis_get)
-        db = MagicMock()
-
-        class AsyncDocIter:
-            def __init__(self, docs):
-                self._docs = iter(docs)
-
-            def __aiter__(self):
-                return self
-
-            async def __anext__(self):
-                try:
-                    return next(self._docs)
-                except StopIteration:
-                    raise StopAsyncIteration from None
-
-        # chat_turns uses camelCase: {sessionId, seq, role, text}
-        turns = [
-            {"role": "user", "text": "hello", "seq": 1},
-            {"role": "assistant", "text": "hi there", "seq": 2},
-        ]
-
-        # The cursor is used by _recent_turns which calls .find().sort().limit()
-        # We need the full chain to return our AsyncDocIter
-        mock_cursor = AsyncDocIter(turns)
-        mock_sort = MagicMock()
-        mock_sort.limit = MagicMock(return_value=mock_cursor)
-        mock_find = MagicMock()
-        mock_find.sort = MagicMock(return_value=mock_sort)
-        chat_turns_col = MagicMock()
-        chat_turns_col.find = MagicMock(return_value=mock_find)
-        db.__getitem__ = MagicMock(return_value=chat_turns_col)
+        await store.append_turn("s1", "user", "hello")
+        await store.append_turn("s1", "assistant", "hi there")
 
         embed = AsyncMock(return_value=[[0.1, 0.2]])
 
         budget = ContextBudget(max_tokens=200, completion_reserve=20)
-        cm = ContextManager(redis=redis, mongo_db=db, chroma_cols={}, embedder=embed, budget=budget)
+        cm = ContextManager(
+            chroma_cols={},
+            embedder=embed,
+            budget=budget,
+            local_store=store,
+        )
 
         ctx = await cm.build_context(
             session_id="s1",
@@ -77,39 +54,26 @@ async def test_build_context_stays_within_budget():
 
 
 @pytest.mark.asyncio
-async def test_build_context_pins_core_memory_even_when_over_budget():
+async def test_build_context_pins_core_memory_even_when_over_budget(tmp_path):
     """Core memory is never trimmed — only summary and recent turns are."""
     with (
         patch("services.memory.context_manager.token_count", side_effect=_mock_token_count),
-        patch("services.memory.context_manager.rerank", new_callable=AsyncMock, return_value=[]),
     ):
         from services.memory.context_manager import ContextBudget, ContextManager
 
-        redis = AsyncMock()
         long_core = "GOAL: " + "x" * 1994  # 2000 chars → 500 tokens at 1/4 rate
-        redis.get = AsyncMock(side_effect=lambda key: long_core if "core" in key else "")
 
-        db = MagicMock()
-
-        class EmptyCursor:
-            def __aiter__(self):
-                return self
-
-            async def __anext__(self):
-                raise StopAsyncIteration
-
-        empty = EmptyCursor()
-        mock_sort = MagicMock()
-        mock_sort.limit = MagicMock(return_value=empty)
-        mock_find = MagicMock()
-        mock_find.sort = MagicMock(return_value=mock_sort)
-        chat_turns_col = MagicMock()
-        chat_turns_col.find = MagicMock(return_value=mock_find)
-        db.__getitem__ = MagicMock(return_value=chat_turns_col)
+        store = await _make_local_store(tmp_path)  # no turns seeded
+        await store.session_kv_set("core", "s1", long_core)
 
         embed = AsyncMock(return_value=[[0.1]])
         budget = ContextBudget(max_tokens=700, completion_reserve=100)
-        cm = ContextManager(redis=redis, mongo_db=db, chroma_cols={}, embedder=embed, budget=budget)
+        cm = ContextManager(
+            chroma_cols={},
+            embedder=embed,
+            budget=budget,
+            local_store=store,
+        )
 
         ctx = await cm.build_context("s1", "task", "system")
         assert ctx.core_memory == long_core
@@ -120,8 +84,6 @@ def test_trim_to_budget_drops_oldest_lines():
         from services.memory.context_manager import ContextManager
 
         cm = ContextManager(
-            redis=AsyncMock(),
-            mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
         )
@@ -146,131 +108,54 @@ def test_context_budget_effective_budget():
 # ── Compaction tests ─────────────────────────────────────────────────────────
 
 
-class _AsyncIter:
-    """Async iterator that also supports Motor's chainable .sort(), .skip(), and .limit()."""
-
-    def __init__(self, docs):
-        self._docs = iter(docs)
-
-    def __aiter__(self):
-        return self
-
-    async def __anext__(self):
-        try:
-            return next(self._docs)
-        except StopIteration:
-            raise StopAsyncIteration from None
-
-    def sort(self, *args, **kwargs):
-        return self
-
-    def skip(self, *args, **kwargs):
-        return self
-
-    def limit(self, *args, **kwargs):
-        return self
-
-
-def _make_cm(turns=None, redis_data=None):
-    """Build a ContextManager with mocked DB and Redis."""
-    from unittest.mock import AsyncMock, MagicMock
-
-    from services.memory.context_manager import ContextManager
-
-    redis = AsyncMock()
-    _store: dict = redis_data or {}
-
-    async def _redis_get(key):
-        return _store.get(key)
-
-    async def _redis_set(key, value):
-        _store[key] = value
-
-    async def _redis_delete(key):
-        _store.pop(key, None)
-
-    redis.get = AsyncMock(side_effect=_redis_get)
-    redis.set = AsyncMock(side_effect=_redis_set)
-    redis.delete = AsyncMock(side_effect=_redis_delete)
-
-    db = MagicMock()
-    docs = turns or []
-
-    # find() → returns cursor iterable; delete_many → no-op async
-    find_mock = MagicMock(return_value=_AsyncIter(docs))
-    db.__getitem__ = MagicMock(
-        return_value=MagicMock(
-            find=find_mock,
-            update_one=AsyncMock(),
-            delete_many=AsyncMock(),
-        )
-    )
-
-    return ContextManager(redis=redis, mongo_db=db, chroma_cols={}, embedder=AsyncMock())
-
-
 @pytest.mark.asyncio
-async def test_recent_turns_reads_chat_turns_with_watermark():
-    """_recent_turns reads chat_turns (camelCase), filters by watermark, maps text→content."""
+async def test_recent_turns_reads_local_store_with_watermark(tmp_path):
+    """_recent_turns filters by watermark and formats ROLE: text, newest tail only."""
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
         from services.memory.context_manager import ContextManager
 
-        redis_store: dict = {"summarized_through:s1": "5"}  # watermark = 5
-        redis = AsyncMock()
-        redis.get = AsyncMock(side_effect=lambda k: redis_store.get(k))
+        store = await _make_local_store(tmp_path)
+        await store.session_kv_set("summarized_through", "s1", "5")  # watermark = 5
+        # seq is assigned in append order (0-based); seed 7 turns so seqs 6,7 don't
+        # exist naturally — instead seed exactly the seqs needed via direct inserts.
+        await store.append_turn("s1", "user", "hello")  # seq 0
+        await store.append_turn("s1", "assistant", "unused1")  # seq 1
+        await store.append_turn("s1", "user", "unused2")  # seq 2
+        await store.append_turn("s1", "assistant", "hi")  # seq 3
+        await store.append_turn("s1", "user", "unused3")  # seq 4
+        await store.append_turn("s1", "assistant", "unused4")  # seq 5
+        await store.append_turn("s1", "user", "how are you")  # seq 6, > watermark(5)
+        await store.append_turn("s1", "assistant", "fine")  # seq 7, > watermark(5)
 
-        # chat_turns uses camelCase: {sessionId, seq, role, text, createdAt}
-        db = MagicMock()
-        turns = [
-            {"sessionId": "s1", "seq": 1, "role": "user", "text": "hello"},
-            {"sessionId": "s1", "seq": 3, "role": "assistant", "text": "hi"},
-            {"sessionId": "s1", "seq": 6, "role": "user", "text": "how are you"},  # > watermark (5)
-            {"sessionId": "s1", "seq": 7, "role": "assistant", "text": "fine"},  # > watermark
-        ]
-        chat_turns_col = MagicMock()
-        chat_turns_col.find = MagicMock(return_value=_AsyncIter(turns))
-        chat_turns_col.sort = MagicMock(return_value=_AsyncIter(turns))
-        chat_turns_col.limit = MagicMock(return_value=_AsyncIter(turns))
-        db.__getitem__ = MagicMock(return_value=chat_turns_col)
-
-        cm = ContextManager(redis=redis, mongo_db=db, chroma_cols={}, embedder=AsyncMock())
+        cm = ContextManager(
+            chroma_cols={},
+            embedder=AsyncMock(),
+            local_store=store,
+        )
         recent = await cm._recent_turns("s1", budget=500)
 
         # Should only include turns with seq > 5 (i.e., seqs 6, 7)
         assert "how are you" in recent
         assert "fine" in recent
-        assert "hello" not in recent  # seq 1 is <= watermark
+        assert "hello" not in recent  # seq 0 is <= watermark
         assert "hi" not in recent  # seq 3 is <= watermark
-
-        # The watermark filter must live in the QUERY (not only in-memory), else a
-        # long post-watermark session would be dropped by the newest-N limit.
-        find_filter = chat_turns_col.find.call_args[0][0]
-        assert find_filter.get("sessionId") == "s1"
-        assert find_filter.get("seq") == {"$gt": 5}
 
 
 @pytest.mark.asyncio
-async def test_recent_turns_defaults_watermark_to_minus_one():
+async def test_recent_turns_defaults_watermark_to_minus_one(tmp_path):
     """When summarized_through is absent, watermark defaults to -1 (all turns are recent)."""
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
         from services.memory.context_manager import ContextManager
 
-        redis_store: dict = {}  # no watermark key
-        redis = AsyncMock()
-        redis.get = AsyncMock(side_effect=lambda k: redis_store.get(k))
+        store = await _make_local_store(tmp_path)  # no watermark key set
+        await store.append_turn("s1", "user", "first")
+        await store.append_turn("s1", "assistant", "reply")
 
-        db = MagicMock()
-        turns = [
-            {"sessionId": "s1", "seq": 0, "role": "user", "text": "first"},
-            {"sessionId": "s1", "seq": 1, "role": "assistant", "text": "reply"},
-        ]
-        chat_turns_col = MagicMock()
-        chat_turns_col.find = MagicMock(return_value=_AsyncIter(turns))
-        chat_turns_col.sort = MagicMock(return_value=_AsyncIter(turns))
-        chat_turns_col.limit = MagicMock(return_value=_AsyncIter(turns))
-        db.__getitem__ = MagicMock(return_value=chat_turns_col)
-
-        cm = ContextManager(redis=redis, mongo_db=db, chroma_cols={}, embedder=AsyncMock())
+        cm = ContextManager(
+            chroma_cols={},
+            embedder=AsyncMock(),
+            local_store=store,
+        )
         recent = await cm._recent_turns("s1", budget=500)
 
         # All turns should be included (watermark -1 means seq > -1, i.e. all >= 0)
@@ -279,8 +164,8 @@ async def test_recent_turns_defaults_watermark_to_minus_one():
 
 
 @pytest.mark.asyncio
-async def test_last_activity_seconds_reads_chat_turns_iso_timestamp():
-    """last_activity_seconds reads newest turn from chat_turns, parses ISO createdAt."""
+async def test_last_activity_seconds_reads_local_store_iso_timestamp(tmp_path):
+    """last_activity_seconds reads newest turn's created_at from the local store, parses ISO."""
     from datetime import datetime, timedelta
 
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
@@ -290,50 +175,29 @@ async def test_last_activity_seconds_reads_chat_turns_iso_timestamp():
         old_time = datetime.now(UTC) - timedelta(seconds=900)
         iso_ts = old_time.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        db = MagicMock()
-        cursor = _AsyncIter([{"createdAt": iso_ts}])
-        mock_sort = MagicMock()
-        mock_sort.limit = MagicMock(return_value=cursor)
-        mock_find = MagicMock()
-        mock_find.sort = MagicMock(return_value=mock_sort)
-        chat_turns_col = MagicMock()
-        chat_turns_col.find = MagicMock(return_value=mock_find)
-        db.__getitem__ = MagicMock(return_value=chat_turns_col)
+        store = await _make_local_store(tmp_path)
+        await store.append_turn("s1", "user", "hi", created_at=iso_ts)
 
-        cm = ContextManager(redis=AsyncMock(), mongo_db=db, chroma_cols={}, embedder=AsyncMock())
+        cm = ContextManager(
+            chroma_cols={},
+            embedder=AsyncMock(),
+            local_store=store,
+        )
         idle = await cm.last_activity_seconds("s1")
 
         assert idle >= 800  # ~900s, allow generous slack
 
 
 @pytest.mark.asyncio
-async def test_full_compact_watermark_nondestructive():
-    """full_compact writes summary, advances watermark, NEVER deletes chat_turns."""
+async def test_full_compact_watermark_nondestructive(tmp_path):
+    """full_compact writes summary, advances watermark, NEVER deletes turns."""
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
         from services.memory.context_manager import ContextManager
 
-        redis_store: dict = {}
-        redis = AsyncMock()
-        redis.get = AsyncMock(side_effect=lambda k: redis_store.get(k))
-        redis.set = AsyncMock(side_effect=lambda k, v: redis_store.update({k: v}))
-        redis.delete = AsyncMock(side_effect=lambda k: redis_store.pop(k, None))
-
-        db = MagicMock()
+        store = await _make_local_store(tmp_path)
         # 40 turns so _KEEP_RECENT=15 leaves 25 to compact
-        turns = [
-            {
-                "sessionId": "s1",
-                "seq": i,
-                "role": "user" if i % 2 == 0 else "assistant",
-                "text": f"turn {i}",
-            }
-            for i in range(40)
-        ]
-        chat_turns_col = MagicMock()
-        chat_turns_col.find = MagicMock(return_value=_AsyncIter(turns))
-        chat_turns_col.sort = MagicMock(return_value=_AsyncIter(turns))
-        chat_turns_col.limit = MagicMock(return_value=_AsyncIter(turns))
-        db.__getitem__ = MagicMock(return_value=chat_turns_col)
+        for i in range(40):
+            await store.append_turn("s1", "user" if i % 2 == 0 else "assistant", f"turn {i}")
 
         llm_calls = []
 
@@ -343,51 +207,39 @@ async def test_full_compact_watermark_nondestructive():
                 return '{"decisions": ["use Python"]}'
             return "summary of old turns"
 
-        cm = ContextManager(redis=redis, mongo_db=db, chroma_cols={}, embedder=AsyncMock())
+        cm = ContextManager(
+            chroma_cols={},
+            embedder=AsyncMock(),
+            local_store=store,
+        )
         await cm.full_compact("s1", _llm)
 
         # Verify watermark was advanced
-        watermark_key = "summarized_through:s1"
-        assert watermark_key in redis_store
+        watermark = await store.session_kv_get("summarized_through", "s1")
+        assert watermark is not None
         # watermark should be max_seq - _KEEP_RECENT = 39 - 15 = 24
-        assert redis_store[watermark_key] == "24"
+        assert watermark == "24"
 
         # Verify summary was written
-        assert "summary:s1" in redis_store
-        assert redis_store["summary:s1"] == "summary of old turns"
+        summary = await store.session_kv_get("summary", "s1")
+        assert summary == "summary of old turns"
 
-        # CRITICAL: delete_many should NOT have been called (chat_turns is immutable)
-        assert not chat_turns_col.delete_many.called
+        # CRITICAL: all 40 turns must still be readable (chat_turns is immutable)
+        all_turns = await store.all_turns("s1")
+        assert len(all_turns) == 40
 
 
 @pytest.mark.asyncio
-async def test_full_compact_respects_watermark_on_second_call():
+async def test_full_compact_respects_watermark_on_second_call(tmp_path):
     """A second full_compact only summarizes newly-eligible turns (respects watermark)."""
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
         from services.memory.context_manager import ContextManager
 
-        redis_store: dict = {"summarized_through:s1": "24"}  # from prior compaction
-        redis = AsyncMock()
-        redis.get = AsyncMock(side_effect=lambda k: redis_store.get(k))
-        redis.set = AsyncMock(side_effect=lambda k, v: redis_store.update({k: v}))
-        redis.delete = AsyncMock(side_effect=lambda k: redis_store.pop(k, None))
-
-        db = MagicMock()
+        store = await _make_local_store(tmp_path)
+        await store.session_kv_set("summarized_through", "s1", "24")  # from prior compaction
         # 45 turns: watermark=24, _KEEP_RECENT=15 → new to_compact = turns 25-29 (5 turns)
-        turns = [
-            {
-                "sessionId": "s1",
-                "seq": i,
-                "role": "user" if i % 2 == 0 else "assistant",
-                "text": f"turn {i}",
-            }
-            for i in range(45)
-        ]
-        chat_turns_col = MagicMock()
-        chat_turns_col.find = MagicMock(return_value=_AsyncIter(turns))
-        chat_turns_col.sort = MagicMock(return_value=_AsyncIter(turns))
-        chat_turns_col.limit = MagicMock(return_value=_AsyncIter(turns))
-        db.__getitem__ = MagicMock(return_value=chat_turns_col)
+        for i in range(45):
+            await store.append_turn("s1", "user" if i % 2 == 0 else "assistant", f"turn {i}")
 
         llm_calls = []
 
@@ -397,7 +249,11 @@ async def test_full_compact_respects_watermark_on_second_call():
                 return '{"decisions": []}'
             return "new summary segment"
 
-        cm = ContextManager(redis=redis, mongo_db=db, chroma_cols={}, embedder=AsyncMock())
+        cm = ContextManager(
+            chroma_cols={},
+            embedder=AsyncMock(),
+            local_store=store,
+        )
         result = await cm.full_compact("s1", _llm)
 
         # Only the newly-eligible turns (25-29, i.e., 5 turns) should be compacted
@@ -411,9 +267,7 @@ async def test_microcompact_and_clear_tool_results_removed():
     """Verify microcompact and clear_tool_results methods are deleted."""
     from services.memory.context_manager import ContextManager
 
-    cm = ContextManager(
-        redis=AsyncMock(), mongo_db=MagicMock(), chroma_cols={}, embedder=AsyncMock()
-    )
+    cm = ContextManager(chroma_cols={}, embedder=AsyncMock())
 
     # These methods should not exist
     assert not hasattr(cm, "microcompact"), "microcompact should be deleted"
@@ -421,27 +275,15 @@ async def test_microcompact_and_clear_tool_results_removed():
 
 
 @pytest.mark.asyncio
-async def test_full_compact_returns_reflections():
+async def test_full_compact_returns_reflections(tmp_path):
     """full_compact should call llm_fn multiple times and return reflection strings."""
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
         from services.memory.context_manager import ContextManager
 
-        redis_store: dict = {}
-        redis = AsyncMock()
-        redis.get = AsyncMock(side_effect=lambda k: redis_store.get(k))
-        redis.set = AsyncMock(side_effect=lambda k, v: redis_store.update({k: v}))
-        redis.delete = AsyncMock(side_effect=lambda k: redis_store.pop(k, None))
-
-        db = MagicMock()
+        store = await _make_local_store(tmp_path)
         # 20 turns so _KEEP_RECENT=15 leaves 5 to compact
-        turns = [
-            {"seq": i, "role": "user" if i % 2 == 0 else "assistant", "text": f"message {i}"}
-            for i in range(20)
-        ]
-        chat_turns_col = MagicMock()
-        chat_turns_col.find = MagicMock(return_value=_AsyncIter(turns))
-        chat_turns_col.sort = MagicMock(return_value=_AsyncIter(turns))
-        db.__getitem__ = MagicMock(return_value=chat_turns_col)
+        for i in range(20):
+            await store.append_turn("s1", "user" if i % 2 == 0 else "assistant", f"message {i}")
 
         llm_calls = []
 
@@ -451,43 +293,44 @@ async def test_full_compact_returns_reflections():
                 return '{"decisions": ["decided to use Python"], "findings": ["Redis is fast"]}'
             return "summary of old turns"
 
-        cm = ContextManager(redis=redis, mongo_db=db, chroma_cols={}, embedder=AsyncMock())
+        cm = ContextManager(
+            chroma_cols={},
+            embedder=AsyncMock(),
+            local_store=store,
+        )
         result = await cm.full_compact("s1", _llm)
 
         assert result["pruned_messages"] == 0  # no deletion; watermark-only
         assert result["reflections"] == ["decided to use Python", "Redis is fast"]
         # Anchor should be set on first compact
-        assert redis_store.get("anchor:s1") is not None
+        assert await store.session_kv_get("anchor", "s1") is not None
 
 
 @pytest.mark.asyncio
-async def test_full_compact_saves_anchor_only_on_first_compact():
+async def test_full_compact_saves_anchor_only_on_first_compact(tmp_path):
     """Second compact should not overwrite the anchor."""
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
         from services.memory.context_manager import ContextManager
 
         original_anchor = "anchor from first compact"
-        redis_store: dict = {"anchor:s1": original_anchor}
-        redis = AsyncMock()
-        redis.get = AsyncMock(side_effect=lambda k: redis_store.get(k))
-        redis.set = AsyncMock(side_effect=lambda k, v: redis_store.update({k: v}))
-        redis.delete = AsyncMock(side_effect=lambda k: redis_store.pop(k, None))
+        store = await _make_local_store(tmp_path)
+        await store.session_kv_set("anchor", "s1", original_anchor)
 
-        db = MagicMock()
-        turns = [{"seq": i, "role": "user", "text": f"msg {i}"} for i in range(20)]
-        chat_turns_col = MagicMock()
-        chat_turns_col.find = MagicMock(return_value=_AsyncIter(turns))
-        chat_turns_col.sort = MagicMock(return_value=_AsyncIter(turns))
-        db.__getitem__ = MagicMock(return_value=chat_turns_col)
+        for i in range(20):
+            await store.append_turn("s1", "user", f"msg {i}")
 
         async def _llm(prompt: str) -> str:
             return '{"decisions": []}' if "JSON" in prompt else "new summary"
 
-        cm = ContextManager(redis=redis, mongo_db=db, chroma_cols={}, embedder=AsyncMock())
+        cm = ContextManager(
+            chroma_cols={},
+            embedder=AsyncMock(),
+            local_store=store,
+        )
         await cm.full_compact("s1", _llm)
 
         # Anchor must not have changed
-        assert redis_store["anchor:s1"] == original_anchor
+        assert await store.session_kv_get("anchor", "s1") == original_anchor
 
 
 @pytest.mark.asyncio
@@ -496,9 +339,7 @@ async def test_parallel_summarize_calls_llm_per_block():
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
         from services.memory.context_manager import ContextManager
 
-        cm = ContextManager(
-            redis=AsyncMock(), mongo_db=MagicMock(), chroma_cols={}, embedder=AsyncMock()
-        )
+        cm = ContextManager(chroma_cols={}, embedder=AsyncMock())
         # 45 turns → 3 blocks of 20/20/5 → 3 block calls + 1 merge call = 4 total
         turns = [{"role": "user", "content": f"msg {i}"} for i in range(45)]
         llm_calls = []
@@ -535,42 +376,28 @@ def test_assembled_context_as_prompt_ordering():
 
 
 @pytest.mark.asyncio
-async def test_build_context_surfaces_anchor_when_diverged():
+async def test_build_context_surfaces_anchor_when_diverged(tmp_path):
     """When the anchor's facts are absent from the summary, anchor_buffer is populated."""
     with (
         patch("services.memory.context_manager.token_count", side_effect=_mock_token_count),
-        patch("services.memory.context_manager.rerank", new_callable=AsyncMock, return_value=[]),
     ):
         from services.memory.context_manager import ContextBudget, ContextManager
 
-        store = {
-            "core:s1": "GOAL: build MCP bridge",
-            "summary:s1": "discussed unrelated weather topics today",
-            "anchor:s1": "project uses Gemma model with Redis streams for goals",
-        }
-        redis = AsyncMock()
-        redis.get = AsyncMock(side_effect=lambda k: store.get(k))
-
-        db = MagicMock()
-
-        class EmptyCursor:
-            def __aiter__(self):
-                return self
-
-            async def __anext__(self):
-                raise StopAsyncIteration
-
-        mock_sort = MagicMock()
-        mock_sort.limit = MagicMock(return_value=EmptyCursor())
-        mock_find = MagicMock()
-        mock_find.sort = MagicMock(return_value=mock_sort)
-        chat_turns_col = MagicMock()
-        chat_turns_col.find = MagicMock(return_value=mock_find)
-        db.__getitem__ = MagicMock(return_value=chat_turns_col)
+        store = await _make_local_store(tmp_path)  # no turns seeded
+        await store.session_kv_set("core", "s1", "GOAL: build MCP bridge")
+        await store.session_kv_set("summary", "s1", "discussed unrelated weather topics today")
+        await store.session_kv_set(
+            "anchor", "s1", "project uses Gemma model with Redis streams for goals"
+        )
 
         embed = AsyncMock(return_value=[[0.1]])
         budget = ContextBudget(max_tokens=4000, completion_reserve=100)
-        cm = ContextManager(redis=redis, mongo_db=db, chroma_cols={}, embedder=embed, budget=budget)
+        cm = ContextManager(
+            chroma_cols={},
+            embedder=embed,
+            budget=budget,
+            local_store=store,
+        )
 
         ctx = await cm.build_context("s1", "task", "system")
         assert "KEY FACTS" in ctx.anchor_buffer
@@ -579,72 +406,50 @@ async def test_build_context_surfaces_anchor_when_diverged():
 
 
 @pytest.mark.asyncio
-async def test_build_context_omits_anchor_when_contained_in_summary():
+async def test_build_context_omits_anchor_when_contained_in_summary(tmp_path):
     """When the summary already contains the anchor's facts, anchor_buffer is empty."""
     with (
         patch("services.memory.context_manager.token_count", side_effect=_mock_token_count),
-        patch("services.memory.context_manager.rerank", new_callable=AsyncMock, return_value=[]),
     ):
         from services.memory.context_manager import ContextBudget, ContextManager
 
-        store = {
-            "core:s1": "GOAL: build MCP bridge",
-            "summary:s1": "project uses Gemma model with Redis streams for goals and more detail",
-            "anchor:s1": "project uses Gemma model with Redis streams for goals",
-        }
-        redis = AsyncMock()
-        redis.get = AsyncMock(side_effect=lambda k: store.get(k))
-
-        db = MagicMock()
-
-        class EmptyCursor:
-            def __aiter__(self):
-                return self
-
-            async def __anext__(self):
-                raise StopAsyncIteration
-
-        mock_sort = MagicMock()
-        mock_sort.limit = MagicMock(return_value=EmptyCursor())
-        mock_find = MagicMock()
-        mock_find.sort = MagicMock(return_value=mock_sort)
-        chat_turns_col = MagicMock()
-        chat_turns_col.find = MagicMock(return_value=mock_find)
-        db.__getitem__ = MagicMock(return_value=chat_turns_col)
+        store = await _make_local_store(tmp_path)  # no turns seeded
+        await store.session_kv_set("core", "s1", "GOAL: build MCP bridge")
+        await store.session_kv_set(
+            "summary",
+            "s1",
+            "project uses Gemma model with Redis streams for goals and more detail",
+        )
+        await store.session_kv_set(
+            "anchor", "s1", "project uses Gemma model with Redis streams for goals"
+        )
 
         embed = AsyncMock(return_value=[[0.1]])
         budget = ContextBudget(max_tokens=4000, completion_reserve=100)
-        cm = ContextManager(redis=redis, mongo_db=db, chroma_cols={}, embedder=embed, budget=budget)
+        cm = ContextManager(
+            chroma_cols={},
+            embedder=embed,
+            budget=budget,
+            local_store=store,
+        )
 
         ctx = await cm.build_context("s1", "task", "system")
         assert ctx.anchor_buffer == ""
 
 
 @pytest.mark.asyncio
-async def test_full_compact_emits_compact_quality_event():
+async def test_full_compact_emits_compact_quality_event(tmp_path):
     """full_compact emits compact.quality with ratio, counts, and tokens saved."""
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
         from services.memory.context_manager import ContextManager
 
-        redis_store: dict = {}
-        redis = AsyncMock()
-        redis.get = AsyncMock(side_effect=lambda k: redis_store.get(k))
-        redis.set = AsyncMock(side_effect=lambda k, v: redis_store.update({k: v}))
-        redis.delete = AsyncMock(side_effect=lambda k: redis_store.pop(k, None))
-
-        db = MagicMock()
-        turns = [
-            {
-                "seq": i,
-                "role": "user" if i % 2 == 0 else "assistant",
-                "text": f"message number {i} with some content to make tokens",
-            }
-            for i in range(20)
-        ]
-        chat_turns_col = MagicMock()
-        chat_turns_col.find = MagicMock(return_value=_AsyncIter(turns))
-        chat_turns_col.sort = MagicMock(return_value=_AsyncIter(turns))
-        db.__getitem__ = MagicMock(return_value=chat_turns_col)
+        store = await _make_local_store(tmp_path)
+        for i in range(20):
+            await store.append_turn(
+                "s1",
+                "user" if i % 2 == 0 else "assistant",
+                f"message number {i} with some content to make tokens",
+            )
 
         async def _llm(prompt: str) -> str:
             return '{"decisions": ["use Python"]}' if "JSON" in prompt else "short summary"
@@ -654,7 +459,11 @@ async def test_full_compact_emits_compact_quality_event():
         async def _fake_emit(type, **fields):
             captured[type] = fields
 
-        cm = ContextManager(redis=redis, mongo_db=db, chroma_cols={}, embedder=AsyncMock())
+        cm = ContextManager(
+            chroma_cols={},
+            embedder=AsyncMock(),
+            local_store=store,
+        )
 
         with patch("services.orchestrator.events.emit", side_effect=_fake_emit):
             result = await cm.full_compact("s1", _llm)
@@ -672,7 +481,7 @@ async def test_full_compact_emits_compact_quality_event():
 
 
 @pytest.mark.asyncio
-async def test_last_activity_seconds_reports_idle_time():
+async def test_last_activity_seconds_reports_idle_time(tmp_path):
     """last_activity_seconds returns roughly the age of the newest turn."""
     from datetime import datetime, timedelta
 
@@ -682,42 +491,33 @@ async def test_last_activity_seconds_reports_idle_time():
         old_time = datetime.now(UTC) - timedelta(seconds=900)
         old_iso = old_time.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        db = MagicMock()
-        cursor = _AsyncIter([{"createdAt": old_iso}])
-        mock_sort = MagicMock()
-        mock_sort.limit = MagicMock(return_value=cursor)
-        mock_find = MagicMock()
-        mock_find.sort = MagicMock(return_value=mock_sort)
-        chat_turns_col = MagicMock()
-        chat_turns_col.find = MagicMock(return_value=mock_find)
-        db.__getitem__ = MagicMock(return_value=chat_turns_col)
+        store = await _make_local_store(tmp_path)
+        await store.append_turn("s1", "user", "hi", created_at=old_iso)
 
-        cm = ContextManager(redis=AsyncMock(), mongo_db=db, chroma_cols={}, embedder=AsyncMock())
+        cm = ContextManager(
+            chroma_cols={},
+            embedder=AsyncMock(),
+            local_store=store,
+        )
         idle = await cm.last_activity_seconds("s1")
         assert idle >= 800  # ~900s, allow generous slack
 
 
 @pytest.mark.asyncio
-async def test_maybe_background_compact_skips_when_not_idle():
+async def test_maybe_background_compact_skips_when_not_idle(tmp_path):
     """A recently-active session is never background-compacted."""
-    import time as _time
-
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
         from services.memory.context_manager import ContextManager
 
-        recent_ts = _time.time() - 5.0  # float Unix timestamp, as actually stored
-        db = MagicMock()
-        cursor = _AsyncIter([{"created_at": recent_ts}])
-        mock_sort = MagicMock()
-        mock_sort.limit = MagicMock(return_value=cursor)
-        mock_find = MagicMock()
-        mock_find.sort = MagicMock(return_value=mock_sort)
-        messages_col = MagicMock()
-        messages_col.find = MagicMock(return_value=mock_find)
-        db.__getitem__ = MagicMock(return_value=messages_col)
+        store = await _make_local_store(tmp_path)
+        await store.append_turn("s1", "user", "hi")  # created_at defaults to "now"
 
         llm = AsyncMock()
-        cm = ContextManager(redis=AsyncMock(), mongo_db=db, chroma_cols={}, embedder=AsyncMock())
+        cm = ContextManager(
+            chroma_cols={},
+            embedder=AsyncMock(),
+            local_store=store,
+        )
         result = await cm.maybe_background_compact("s1", llm)
         assert result is None
         llm.assert_not_called()
@@ -730,15 +530,12 @@ async def test_maybe_background_compact_runs_when_idle_and_full():
 
     with (
         patch("services.memory.context_manager.token_count", side_effect=_mock_token_count),
-        patch("services.memory.context_manager.rerank", new_callable=AsyncMock, return_value=[]),
     ):
         from services.memory.context_manager import ContextBudget, ContextManager
 
         old_ts = _dt.datetime.now(_dt.UTC) - _dt.timedelta(seconds=1200)
 
         cm = ContextManager(
-            redis=AsyncMock(),
-            mongo_db=MagicMock(),
             chroma_cols={},
             embedder=AsyncMock(),
             budget=ContextBudget(max_tokens=400, completion_reserve=20),
@@ -770,9 +567,7 @@ def test_anchor_diverges_heuristic_boundaries():
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
         from services.memory.context_manager import ContextManager
 
-        cm = ContextManager(
-            redis=AsyncMock(), mongo_db=MagicMock(), chroma_cols={}, embedder=AsyncMock()
-        )
+        cm = ContextManager(chroma_cols={}, embedder=AsyncMock())
 
         # Build anchor with 10 distinct >3-char words
         anchor_words = [
@@ -808,59 +603,27 @@ def test_anchor_diverges_heuristic_boundaries():
 
 
 @pytest.mark.asyncio
-async def test_conversation_context_returns_summary_and_recent_turns():
+async def test_conversation_context_returns_summary_and_recent_turns(tmp_path):
     """conversation_context assembles summary + anchor (if diverged) + recent turns."""
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
         from services.memory.context_manager import ContextManager
 
-        redis = AsyncMock()
-
-        def _redis_get(key):
-            if "summary:" in key:
-                return "Summary of first part of the conversation"
-            elif "anchor:" in key:
-                return "Founding fact about the task"
-            elif "summarized_through:" in key:
-                return "0"  # watermark: first turn is compacted
-            else:
-                return None
-
-        redis.get = AsyncMock(side_effect=_redis_get)
-        db = MagicMock()
-
-        class AsyncDocIter:
-            def __init__(self, docs):
-                self._docs = iter(docs)
-
-            def __aiter__(self):
-                return self
-
-            async def __anext__(self):
-                try:
-                    return next(self._docs)
-                except StopIteration:
-                    raise StopAsyncIteration from None
+        store = await _make_local_store(tmp_path)
+        await store.session_kv_set("summary", "s1", "Summary of first part of the conversation")
+        await store.session_kv_set("anchor", "s1", "Founding fact about the task")
+        await store.session_kv_set(
+            "summarized_through", "s1", "0"
+        )  # watermark: first turn compacted
 
         # Recent turns (seq > watermark=0, so seq 1,2 are recent)
-        turns = [
-            {"role": "user", "text": "what is AI?", "seq": 1},
-            {"role": "assistant", "text": "AI is machine learning", "seq": 2},
-        ]
-
-        mock_cursor = AsyncDocIter(turns)
-        mock_sort = MagicMock()
-        mock_sort.limit = MagicMock(return_value=mock_cursor)
-        mock_find = MagicMock()
-        mock_find.sort = MagicMock(return_value=mock_sort)
-        chat_turns_col = MagicMock()
-        chat_turns_col.find = MagicMock(return_value=mock_find)
-        db.__getitem__ = MagicMock(return_value=chat_turns_col)
+        await store.append_turn("s1", "user", "compacted already")  # seq 0
+        await store.append_turn("s1", "user", "what is AI?")  # seq 1
+        await store.append_turn("s1", "assistant", "AI is machine learning")  # seq 2
 
         cm = ContextManager(
-            redis=redis,
-            mongo_db=db,
             chroma_cols={},
             embedder=AsyncMock(),
+            local_store=store,
         )
 
         result = await cm.conversation_context("s1", budget=500)
@@ -877,11 +640,7 @@ async def test_conversation_context_returns_empty_on_no_session():
     """conversation_context returns empty string when session_id is empty."""
     from services.memory.context_manager import ContextManager
 
-    redis = AsyncMock()
-    db = MagicMock()
     cm = ContextManager(
-        redis=redis,
-        mongo_db=db,
         chroma_cols={},
         embedder=AsyncMock(),
     )
@@ -895,15 +654,13 @@ async def test_conversation_context_returns_empty_on_failure():
     """conversation_context returns empty string on any exception (best-effort)."""
     from services.memory.context_manager import ContextManager
 
-    redis = AsyncMock()
-    redis.get = AsyncMock(side_effect=RuntimeError("Redis error"))
-    db = MagicMock()
+    broken_store = MagicMock()
+    broken_store.session_kv_get = AsyncMock(side_effect=RuntimeError("local store error"))
 
     cm = ContextManager(
-        redis=redis,
-        mongo_db=db,
         chroma_cols={},
         embedder=AsyncMock(),
+        local_store=broken_store,
     )
 
     result = await cm.conversation_context("s1", budget=500)
@@ -912,40 +669,20 @@ async def test_conversation_context_returns_empty_on_failure():
 
 
 @pytest.mark.asyncio
-async def test_conversation_context_does_not_call_hybrid_retrieve():
+async def test_conversation_context_does_not_call_hybrid_retrieve(tmp_path):
     """conversation_context assembles summary+anchor+recent WITHOUT RAG (keep hot-path cheap)."""
     with patch("services.memory.context_manager.token_count", side_effect=_mock_token_count):
         from services.memory.context_manager import ContextManager
 
-        redis = AsyncMock()
-        redis.get = AsyncMock(return_value=None)
-
-        db = MagicMock()
-
-        class EmptyCursor:
-            def __aiter__(self):
-                return self
-
-            async def __anext__(self):
-                raise StopAsyncIteration
-
-        mock_cursor = EmptyCursor()
-        mock_sort = MagicMock()
-        mock_sort.limit = MagicMock(return_value=mock_cursor)
-        mock_find = MagicMock()
-        mock_find.sort = MagicMock(return_value=mock_sort)
-        chat_turns_col = MagicMock()
-        chat_turns_col.find = MagicMock(return_value=mock_find)
-        db.__getitem__ = MagicMock(return_value=chat_turns_col)
+        store = await _make_local_store(tmp_path)  # no turns seeded, no kv seeded
 
         # Mock hybrid_retrieve so we can verify it's NOT called
         hybrid_retrieve_mock = AsyncMock(return_value=[])
 
         cm = ContextManager(
-            redis=redis,
-            mongo_db=db,
             chroma_cols={},
             embedder=AsyncMock(),
+            local_store=store,
         )
         cm.hybrid_retrieve = hybrid_retrieve_mock
 

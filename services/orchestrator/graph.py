@@ -12,6 +12,7 @@ from . import client_context, events
 from .coding_orchestrator import AsyncOrchestrator, CodingOrchestrator
 from .error_classifier import ErrorClass, classify_error, is_terminal
 from .finalize_revision import build_revision_prompt, should_revise
+from .local_mode import local_state_db_path
 from .task_complexity import classify_complexity
 from .tool_manifest import client_doc_skills
 from .types import State, Status, create_goal, get_ready_goals, update_status
@@ -966,21 +967,63 @@ def clarification_router(state: State) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _make_sqlite_checkpointer():
+    """Construct a SYNC local SqliteSaver at the per-user state DB path.
+
+    ONLY safe under sync graph.invoke. The production harness runs graph.AINVOKE
+    (async), which calls the async checkpoint methods (aget_tuple/aput) that the
+    sync SqliteSaver raises NotImplementedError on — use
+    _make_async_sqlite_checkpointer() there. This sync factory is retained as the
+    build_graph fallback and the unit-test patch seam (tests substitute a
+    MemorySaver, which supports both sync and async). Parent dir created if
+    missing; imports lazy. Held for the graph's lifetime by the caller.
+    """
+    import sqlite3
+
+    from langgraph.checkpoint.sqlite import SqliteSaver
+
+    db_path = local_state_db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path), check_same_thread=False)
+    return SqliteSaver(conn)
+
+
+async def _make_async_sqlite_checkpointer():
+    """Construct an AsyncSqliteSaver at the per-user state DB path.
+
+    REQUIRED for the production graph.ainvoke path: the sync SqliteSaver raises
+    "does not support async methods" on aget_tuple/aput, which async LangGraph
+    execution calls directly (they are NOT auto-wrapped in a threadpool). Must be
+    awaited on the SAME asyncio loop the graph runs on (the aiosqlite connection
+    is loop-bound). Held for the graph's lifetime by the caller; the aiosqlite
+    connection closes when the process exits. Imports are lazy.
+    """
+    import aiosqlite
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    db_path = local_state_db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = await aiosqlite.connect(str(db_path))
+    saver = AsyncSqliteSaver(conn)
+    await saver.setup()
+    return saver
+
+
 def build_graph(
     orch: CodingOrchestrator,
     async_orch: AsyncOrchestrator,
-    mongo_uri: str = MONGO_URI,
-    db_name: str = "labmate",
+    checkpointer=None,
 ):
     """
-    Compile the StateGraph with a MongoDBSaver checkpointer.
-    Returns (compiled_graph, checkpointer). The caller MUST keep checkpointer
-    alive for the graph's lifetime.
+    Compile the StateGraph with a local SQLite checkpointer. Returns
+    (compiled_graph, checkpointer). The caller MUST keep the checkpointer alive
+    for the graph's lifetime.
 
-    Call once at startup; MongoDBSaver.from_conn_string() creates MongoDB indexes (idempotent).
+    `checkpointer`: pass an AsyncSqliteSaver (from _make_async_sqlite_checkpointer)
+    for the async graph.ainvoke path used by the live harness. When None, falls
+    back to the SYNC _make_sqlite_checkpointer() — correct only for sync invoke /
+    unit tests (which patch that factory with a MemorySaver). Call once at startup.
     """
-    from langgraph.checkpoint.mongodb import MongoDBSaver
-
     (
         plan_node,
         execute_node,
@@ -1012,9 +1055,6 @@ def build_graph(
     b.add_edge("reflect", "execute")
     b.add_edge("approval", "execute")
 
-    from pymongo import MongoClient
-
-    client = MongoClient(mongo_uri)
-    cp = MongoDBSaver(client, db_name=db_name)
+    cp = checkpointer if checkpointer is not None else _make_sqlite_checkpointer()
     graph = b.compile(checkpointer=cp)
     return graph, cp

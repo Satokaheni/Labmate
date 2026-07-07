@@ -18,7 +18,7 @@ requires: [pdf-parse]
 
 # paper-rag
 
-Cited agentic RAG over scientific PDFs using PaperQA2, backed by the shared Chroma container.
+Cited agentic RAG over scientific PDFs using PaperQA2's native local index (no external vector-store service).
 
 ## Tools
 
@@ -29,9 +29,8 @@ Cited agentic RAG over scientific PDFs using PaperQA2, backed by the shared Chro
 
 ## Environment
 
-- `CHROMA_URL` (default `http://chroma:8000`) — Chroma container, client-server mode.
-- `PAPER_RAG_COLLECTION` (default `paper_rag`).
 - `PAPER_RAG_EMBED_MODEL` (default `st-all-MiniLM-L6-v2`) — local embedding model.
+- `PAPER_RAG_LLM` (default `ollama/llama3`) — the PaperQA agent LLM.
 
 ## Notes
 

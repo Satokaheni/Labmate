@@ -5,8 +5,8 @@ Integrates the SkillRunner (already-implemented machinery) into the orchestrator
 to:
   1. Use architect() + tool calling to select which skill to use (select)
   2. Load the skill body and ask for a specific tool call (plan_tool_call)
-  3. Dispatch to the running Redis-Streams skill worker (execute)
-  4. Poll for the result and return it (run)
+  3. Dispatch directly in-process via a shared SkillRegistry (execute)
+  4. Return the shaped result (run)
 
 All litellm calls use api_key="not-needed" and explicit thinking_budget_tokens.
 No stdout writes; all logging goes to stderr.
@@ -25,17 +25,14 @@ from pathlib import Path
 from typing import Any
 
 import litellm
-import redis.asyncio as aioredis
 
 from services.orchestrator import events
 from services.orchestrator.skill_telemetry import record_use_best_effort
+from services.skill_runner.skill_dispatch import dispatch as skill_dispatch
+from services.skill_runner.skill_registry import SkillRegistry
 from services.skill_runner.skill_runner import SkillRunner
 
 _log = logging.getLogger("skill_router")
-
-# Redis stream constants
-SKILL_TASKS_STREAM = "labmate:skill-tasks"
-RESULT_PREFIX = "labmate:result:"
 
 # NOTE: routing is single-intent ONLY. A broadened A/B (3 batches + wall-clock,
 # high confidence) concluded the multi-intent DECOMPOSE path added cost + flakiness
@@ -87,7 +84,7 @@ class SkillRouter:
     def __init__(
         self,
         runner: SkillRunner,
-        redis: aioredis.Redis,
+        registry: SkillRegistry,
         gemma_api_base: str,
         *,
         call_timeout: float = float(os.getenv("SKILL_CALL_TIMEOUT", "135")),
@@ -96,18 +93,18 @@ class SkillRouter:
         """
         Args:
             runner: SkillRunner instance with .discover() already called
-            redis: redis.asyncio.Redis client for task dispatch and result polling
+            registry: SkillRegistry with all runnable skills already registered
+                (spawns/owns the skill MCP subprocesses). execute() calls
+                registry.call_tool(...) directly in-process — no Redis.
             gemma_api_base: base URL for Gemma 4 31B (e.g. http://localhost:8000/v1)
-            call_timeout: max seconds to wait for a skill result. MUST exceed the
-                skill-worker's CALL_TIMEOUT (default 120s) so the router receives the
-                worker's own result/timeout instead of giving up first — a 60s router
-                budget cut off heavy skills (test-gen, code-review, critique) mid-run.
-                Override via SKILL_CALL_TIMEOUT.
+            call_timeout: max seconds to wait for a skill call to complete before
+                execute() gives up and returns a timeout error. Override via
+                SKILL_CALL_TIMEOUT.
             telemetry_path: optional path to skill telemetry store. Defaults to
                 None, which resolves to default_store_path() inside record_use_best_effort.
         """
         self._runner = runner
-        self._redis = redis
+        self._registry = registry
         self._gemma_base = gemma_api_base
         self._call_timeout = call_timeout
         self._telemetry_path = telemetry_path
@@ -248,7 +245,7 @@ class SkillRouter:
                 from services.orchestrator.routing_pregate import SkillPreGate
 
                 catalog = {name: meta.description for name, meta in self._runner.catalog.items()}
-                self._pregate = SkillPreGate(catalog, redis=self._redis)
+                self._pregate = SkillPreGate(catalog)
             if self._pregate is not None and not await self._pregate.any_plausible_skill(task):
                 _log.info("route() pre-gate: no plausible skill -> skip vote, direct answer")
                 return RouteResult(skills=[], needs_clarification=False, sub_intents=[task])
@@ -389,64 +386,41 @@ class SkillRouter:
         self, skill_name: str, tool: str, arguments: dict, timeout: float | None = None
     ) -> dict[str, Any]:
         """
-        Dispatch to the skill worker via Redis Streams, then poll for result.
-
-        XADD to "labmate:skill-tasks" with payload={task_id, skill, tool, arguments}.
-        Polls GET "labmate:result:<task_id>" until present or timeout.
+        Dispatch directly in-process via the shared SkillRegistry. No Redis.
 
         Args:
             skill_name: Name of the skill
             tool: Tool to invoke within the skill
             arguments: Arguments to pass to the tool
-            timeout: Optional per-call poll budget (seconds). Defaults to the
+            timeout: Optional per-call timeout (seconds). Defaults to the
                 router's call_timeout. Heavy multi-call skills (e.g. the critique
-                verify gate, which fans out CoVe questions) pass a larger value —
-                it must stay under the skill-worker's CALL_TIMEOUT (default 120s)
-                so the worker actually writes the result before we stop polling.
+                verify gate, which fans out CoVe questions) pass a larger value.
 
         Returns:
             Result dict {"ok": bool, "result": ...} or {"ok": False, "error": "timeout"}
         """
         call_timeout = timeout if timeout is not None else self._call_timeout
         task_id = str(uuid.uuid4())
-        key = f"{RESULT_PREFIX}{task_id}"
 
+        payload = {
+            "task_id": task_id,
+            "skill": skill_name,
+            "tool": tool,
+            "arguments": arguments,
+        }
+        _log.info("dispatching task %s: %s.%s", task_id, skill_name, tool)
         try:
-            # Push to Redis Streams
-            payload = {
-                "task_id": task_id,
-                "skill": skill_name,
-                "tool": tool,
-                "arguments": arguments,
-            }
-            await self._redis.xadd(
-                SKILL_TASKS_STREAM,
-                {"payload": json.dumps(payload)},
+            result = await asyncio.wait_for(
+                skill_dispatch(self._registry, payload), timeout=call_timeout
             )
-            _log.info("dispatched task %s: %s.%s", task_id, skill_name, tool)
-
-            # Poll for result
-            start = asyncio.get_event_loop().time()
-            while True:
-                result_json = await self._redis.get(key)
-                if result_json is not None:
-                    try:
-                        result = json.loads(result_json)
-                        _log.info("task %s result: %s", task_id, result.get("ok"))
-                        return result
-                    except json.JSONDecodeError:
-                        return {
-                            "ok": False,
-                            "error": "malformed_result_json",
-                        }
-
-                elapsed = asyncio.get_event_loop().time() - start
-                if elapsed > call_timeout:
-                    _log.warning("task %s timed out after %.1f s", task_id, elapsed)
-                    return {"ok": False, "error": "timeout"}
-
-                await asyncio.sleep(0.5)
-
+            _log.info("task %s result: %s", task_id, result.get("ok"))
+            return result
+        except TimeoutError:
+            _log.warning("task %s timed out after %.1f s", task_id, call_timeout)
+            return {
+                "ok": False,
+                "error": f"skill {skill_name}.{tool} timed out after {call_timeout}s",
+            }
         except Exception as exc:
             _log.exception("execute() error: %s", exc)
             return {"ok": False, "error": str(exc)}

@@ -13,23 +13,27 @@ from dataclasses import dataclass, field
 import litellm
 from aiolimiter import AsyncLimiter
 
+from services.cli.local_tool_executor import execute_local_tool
+from services.model_client import acompletion_with_failover, resolve_bases
+
 from . import client_context, events
 from .completion_guard import is_assertion_verification, reconcile_cutoff, reconcile_ok
-from .edit_intent import exposes_bug_intent, requires_editing
+from .edit_intent import exposes_bug_intent, requires_editing, requires_local_tools
 from .iteration_budget import REFUNDABLE_TOOLS, IterationBudget
 from .load_skill_guard import already_loaded_message, is_repeat_load
 from .local_tools import (
     LOCAL_TOOL_NAMES,
-    build_sandbox_test_args,
-    request_local_tool,
-    shape_sandbox_test_result,
+    build_run_tests_command,
+    shape_run_tests_result,
     verify_written_content,
 )
 from .loop_checkpoint import LoopCheckpoint
 from .loop_detection import LoopDetector, call_signature, repeat_limit_for
-from .memory_search import MemorySearch
-from .message_repair import message_repair_enabled, sanitize_messages
-from .model_client import acompletion_with_failover, resolve_bases
+from .message_repair import (
+    message_repair_enabled,
+    patch_dangling_tool_calls,
+    sanitize_messages,
+)
 from .progress_breaker import ProgressBreaker, ProgressStep
 from .prompt_assembler import PromptAssembler, measure_prompt_segments
 from .repeat_analysis_guard import (
@@ -93,6 +97,15 @@ ENABLE_LOOP_CHECKPOINT = os.getenv("ENABLE_LOOP_CHECKPOINT", "0") not in (
     "False",
     "",
 )
+
+# G3 recovery nudges (ml-intern port): a weak local model occasionally hits
+# max_tokens mid tool-call (finish_reason=="length") producing truncated/
+# garbage arguments, or emits invalid-JSON tool arguments outright. Both used
+# to silently default to args={} with no signal, wasting turns on a doomed
+# retry of the same giant write. Bounded so a persistently-broken model can't
+# be nudged forever — see _run_react_loop.
+MAX_LENGTH_NUDGES = int(os.getenv("LABMATE_MAX_LENGTH_NUDGES", "2"))
+MALFORMED_ARGS_LIMIT = int(os.getenv("LABMATE_MALFORMED_ARGS_LIMIT", "2"))
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +301,8 @@ class AsyncOrchestrator:
         mcp=None,
         workspace: str = ".",
         max_steps: int = 6,
-        redis=None,
+        local_client=None,
+        signals=None,
         now: Callable[[], float] | None = None,
     ) -> None:
         self.sem = asyncio.Semaphore(max_inflight)
@@ -307,18 +321,25 @@ class AsyncOrchestrator:
         self._editor_bases = resolve_bases(qwen_api_base)
         self.skill_router = skill_router
         self.mcp = mcp
-        self.codegraph_mcp = None  # set after construction if codegraph-embedder is running
+        self.codegraph_mcp = None  # set after construction if the CodeGraph MCP daemon is running
         self.context_manager = None  # set after construction for conversation continuity
         self._active_session_id = ""  # set in execute node to track the current session
-        self.memory_search: MemorySearch | None = (
-            None  # set after construction when a memory store is wired
-        )
         self.session_search: SessionSearch | None = (
             None  # set after construction when a memory store is wired
         )
         self.workspace = workspace
         self.max_steps = max_steps
-        self.redis = redis
+        # Truthy sentinel: "a local-tool client is attached to this process".
+        # Gates the local-tool dispatch branches below (read_file/write_file/
+        # list_dir execute directly via execute_local_tool now that the
+        # orchestrator is co-located; run_tests now runs as a direct local
+        # subprocess via asyncio.create_subprocess_shell, no client needed).
+        # None in unit tests that don't attach a client.
+        self.local_client = local_client
+        # In-process steer/cancel signal registry (Piece 4). None in unit tests
+        # / when unwired, in which case the ReAct loop's steer/cancel checks
+        # are skipped (mirrors the `self.local_client is not None` guard).
+        self.signals = signals
         # Injected post-construction by the orchestrator bootstrap when a Mongo
         # handle is available (CheckpointStore over the loop_checkpoints
         # collection). None in unit tests / when checkpointing is unwired.
@@ -403,7 +424,7 @@ class AsyncOrchestrator:
         # (skills stay callable inside the loop via call_skill_tool). Gated by
         # ROUTE_EDIT_TO_REACT (default ON); when off, behavior is identical to
         # before. No effect in 'react' mode (already runs the loop).
-        if SEQUENCING_MODE != "react" and requires_editing(goal):
+        if SEQUENCING_MODE != "react" and requires_local_tools(goal):
             return await self._run_react_loop(goal, self.max_steps)
 
         if SEQUENCING_MODE != "react":
@@ -495,15 +516,20 @@ class AsyncOrchestrator:
         return {"ok": recon_ok, "summary": summary, "tools_used": tools_list, "tests_passed": False}
 
     def _maybe_repair(self, messages: list[dict]) -> list[dict]:
-        """Repair the messages list right before a model call, when enabled.
+        """Repair the messages list right before a model call.
 
-        Drops orphaned tool results and merges illegal adjacent same-role runs
-        so malformed sequences (from injected synthetic turns) never reach the
-        OpenAI-compatible endpoint. No-op pass-through when the flag is off.
+        ALWAYS patches dangling tool_calls (an assistant tool_call with no
+        answering tool result) — a single dangler 400s EVERY subsequent request,
+        so this safety net runs regardless of ENABLE_MESSAGE_REPAIR (it only ADDS
+        missing stub results; never drops/reorders real content). The broader
+        sanitize (drop orphaned tool results + merge illegal adjacent same-role
+        runs) remains opt-in behind ENABLE_MESSAGE_REPAIR.
         """
         if message_repair_enabled():
-            return sanitize_messages(messages)
-        return messages
+            # sanitize first (drop orphans / merge), then patch danglers on the
+            # cleaned list so every remaining assistant tool_call is answered.
+            return patch_dangling_tool_calls(sanitize_messages(messages))
+        return patch_dangling_tool_calls(messages)
 
     @staticmethod
     def _turn_made_progress(*, has_tool_calls: bool, content: str | None, is_finish: bool) -> bool:
@@ -520,6 +546,12 @@ class AsyncOrchestrator:
             ENABLE_LOOP_CHECKPOINT and self.checkpoint_store is not None and task_id is not None
         )
 
+    def _tool_workspace(self) -> str:
+        """Authoritative FS root for direct local-tool execution: the per-task
+        client_context workspace_root if set, else self.workspace (same root
+        run_bash/run_tests use)."""
+        return client_context.get_workspace_root() or self.workspace
+
     async def _run_react_loop(self, goal: str, max_steps: int) -> dict:
         """Multi-tool ReAct loop bounded by ``max_steps``.
 
@@ -533,7 +565,6 @@ class AsyncOrchestrator:
         assembler = PromptAssembler(
             skill_router=self.skill_router,
             codegraph_enabled=self.codegraph_mcp is not None,
-            memory_enabled=self.memory_search is not None,
             session_search_enabled=self.session_search is not None,
             client_manifest=client_context.get_manifest(),
             workspace_root=client_context.get_workspace_root(),
@@ -615,6 +646,14 @@ class AsyncOrchestrator:
         # below). Loop-local, not checkpointed.
         seen_analysis: set[str] = set()
 
+        # G3 recovery-nudge counters (bounded — see MAX_LENGTH_NUDGES /
+        # MALFORMED_ARGS_LIMIT above). _length_nudges counts truncated
+        # (finish_reason=="length") turns nudged this goal; _malformed_streak
+        # counts CONSECUTIVE invalid-JSON tool-arg parses (reset on any valid
+        # parse) and fires a nudge once it reaches the limit.
+        _length_nudges = 0
+        _malformed_streak = 0
+
         # ReAct loop — bounded by an IterationBudget (replaces the bare
         # range(max_steps) cap). The budget grants ONE grace turn after
         # exhaustion and refunds cheap read-only iterations (CHEAP_TOOLS).
@@ -646,8 +685,8 @@ class AsyncOrchestrator:
             _task_id = None
 
         _prewritten_steer: str | None = None
-        if _task_id is not None and self.redis is not None:
-            _prewritten_steer = await events.read_and_clear_steer(self.redis, _task_id)
+        if _task_id is not None and self.signals is not None:
+            _prewritten_steer = await events.read_and_clear_steer(self.signals, _task_id)
 
         _pending_steer: str | None = None
 
@@ -689,7 +728,7 @@ class AsyncOrchestrator:
             while True:
                 # ── Live interrupt: cancel + steer (top of every turn) ──────────
                 # task_id comes from the active EventEmitter (set per-task in
-                # main._handle); None in unit tests with no emitter / no redis,
+                # main._handle); None in unit tests with no emitter attached,
                 # in which case both checks are skipped and the loop is unchanged.
                 try:
                     _task_id = events.current_task_id()
@@ -698,10 +737,10 @@ class AsyncOrchestrator:
                 _new_midloop_steer = None
                 _to_inject = None  # steer to inject into THIS turn's model call
 
-                if _task_id is not None and self.redis is not None:
+                if _task_id is not None and self.signals is not None:
                     # (1) Cancel — honest partial halt (this is the in-loop cancel
                     #     check that was previously MISSING entirely).
-                    if await events.is_cancelled(self.redis, _task_id):
+                    if await events.is_cancelled(self.signals, _task_id):
                         await events.emit("turn.cancelled", task_id=_task_id, steps=budget.used)
                         return {
                             "ok": False,
@@ -715,7 +754,7 @@ class AsyncOrchestrator:
                     #     Pre-written (read before loop): defer to turn 2 (unit test).
                     #     Mid-loop (written during loop): inject immediately on next turn.
                     # Read any newly available steer from mid-loop writes.
-                    _new_midloop_steer = await events.read_and_clear_steer(self.redis, _task_id)
+                    _new_midloop_steer = await events.read_and_clear_steer(self.signals, _task_id)
 
                     # Deferral logic for pre-written steers:
                     # On turn 1, set _pending_steer to _prewritten_steer for use on turn 2.
@@ -790,7 +829,7 @@ class AsyncOrchestrator:
                     _steer_this_turn = _to_inject
                 if _steer_this_turn:
                     _messages_for_model = inject_steer(messages, _steer_this_turn)
-                    if _task_id is not None and self.redis is not None:
+                    if _task_id is not None and self.signals is not None:
                         await events.emit("steer.injected", task_id=_task_id, text=_steer_this_turn)
                     # Clear the pending steer so it is not re-injected on subsequent turns.
                     # Mid-loop steers (_to_inject) are already cleared at line 517 each turn.
@@ -803,6 +842,14 @@ class AsyncOrchestrator:
                         import logging as _logging
 
                         _seg = measure_prompt_segments(assembler, _messages_for_model)
+                        # Feed the measured prompt size into the context-window gauge.
+                        # The gauge's high-water mark is otherwise fed only from the
+                        # model's usage.prompt_tokens, which llama.cpp/RunPod omits —
+                        # leaving the gauge at 0 and "resetting" it each message. This
+                        # measured total is the real, accumulating context size.
+                        from . import call_counter as _cc
+
+                        _cc.note_prompt_tokens(int(_seg.get("total", 0)))
                         _logging.getLogger("orchestrator").info(
                             "token_breakdown session=%s %s", self._active_session_id, _seg
                         )
@@ -833,6 +880,40 @@ class AsyncOrchestrator:
 
                 # Check for tool calls early (before appending assistant turn)
                 tool_calls = getattr(msg, "tool_calls", None)
+
+                # G3: finish_reason=="length" recovery. A small model writing a
+                # giant tool call (e.g. a huge write_file) can hit max_tokens
+                # mid-call — the response is truncated and tool_calls[].
+                # function.arguments is truncated garbage. Left unchecked this
+                # silently parses to args={} downstream (a no-op/error) with no
+                # signal, and the model tends to retry the same doomed giant
+                # write. Detect it here, DROP the truncated tool_calls entirely
+                # (do not process/dispatch them), append the assistant's (empty/
+                # partial) text WITHOUT tool_calls so the transcript stays
+                # coherent, inject a bounded [RECOVERY] nudge, and go straight to
+                # the next model call. Bounded by MAX_LENGTH_NUDGES so a
+                # persistently-truncating model falls through to normal
+                # processing instead of nudging forever (the iteration/loop
+                # guards catch a persistent problem from there).
+                _finish_reason = getattr(r.choices[0], "finish_reason", None)
+                if _finish_reason == "length" and tool_calls and _length_nudges < MAX_LENGTH_NUDGES:
+                    _length_nudges += 1
+                    await events.emit("recovery.truncated", nudges=_length_nudges, steps=step + 1)
+                    messages.append({"role": "assistant", "content": (msg.content or "")})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "[RECOVERY] Your previous response was TRUNCATED (hit the "
+                                "output token limit) — its tool call was cut off and cannot "
+                                "be used. Do NOT repeat the same large output. Write files in "
+                                "SMALLER pieces (append/replace a section at a time, or a "
+                                "heredoc), or split the work into multiple smaller tool calls. "
+                                "Emit a single, complete, valid tool call now."
+                            ),
+                        }
+                    )
+                    continue  # next iteration; the budget/loop guards still apply
 
                 # Append assistant turn
                 if hasattr(msg, "model_dump"):
@@ -865,11 +946,67 @@ class AsyncOrchestrator:
 
                 # Check for tool calls (already extracted above)
                 if not tool_calls:
-                    # No tool calls — return the content directly
+                    # G4 continuation guard: a text-only turn (no tool_calls, no
+                    # finish) would otherwise accept ok=True here and BYPASS the
+                    # verification-stop check that only runs in the finish branch.
+                    # So a model that edited files but never called finish/run_tests
+                    # (just answered "done" in prose) would escape verification. If
+                    # it edited without a passing run and nudge budget remains, push
+                    # it back into the loop instead of accepting an unverified stop.
+                    # The assistant turn (msg_dict) was appended above and has NO
+                    # tool_calls, so assistant(text) -> user(nudge) is valid ordering.
+                    if needs_verification(
+                        edited_files,
+                        tests_passed,
+                        verify_nudges_used,
+                        max_verify_nudges,
+                        infra_error_streak=infra_error_streak,
+                    ):
+                        verify_nudges_used += 1
+                        await events.emit(
+                            "verify.nudge",
+                            files=sorted(edited_files),
+                            nudge=verify_nudges_used,
+                            max_nudges=max_verify_nudges,
+                            source="text_only_return",
+                        )
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    build_expose_test_nudge(edited_files)
+                                    if _expose_bug
+                                    else build_verify_nudge(edited_files)
+                                ),
+                            }
+                        )
+                        continue
+                    # No outstanding verification nudge to issue (pure-answer goal,
+                    # already verified, or nudge budget spent). Mirror the finish
+                    # branch's honesty handling so this path has PARITY: annotate an
+                    # edited-but-unverified stop and reconcile the ok, so an unbacked
+                    # "I fixed it / tests pass" claim can't be reported as success
+                    # even when the nudge budget is spent (a pure-answer goal with no
+                    # edits is unaffected — reconcile_ok leaves ok=True).
+                    summary = (msg.content or "")[:2000]
+                    if _expose_bug and edited_files and not tests_passed:
+                        summary = (
+                            summary + " [verification-stop: the test was NOT run "
+                            "to confirm it exposes the bug]"
+                        )[:2000]
+                    elif edited_files and not tests_passed:
+                        summary = (
+                            summary + " [verification-stop: tests were NOT "
+                            "verified to pass within the nudge budget]"
+                        )[:2000]
+                    recon_ok, note = reconcile_ok(True, summary, tests_passed=tests_passed)
+                    if note:
+                        summary = (summary + " " + note)[:2000]
                     return {
-                        "ok": True,
-                        "summary": (msg.content or "")[:2000],
+                        "ok": recon_ok,
+                        "summary": summary,
                         "tools_used": _tools_used,
+                        "tests_passed": tests_passed,
                     }
 
                 # Process each tool call
@@ -882,8 +1019,51 @@ class AsyncOrchestrator:
                         _tools_used.append(name)
                     try:
                         args = json.loads(tc.function.arguments or "{}")
+                        _malformed_streak = 0
                     except (json.JSONDecodeError, ValueError):
                         args = {}
+                        _malformed_streak += 1
+                        if _malformed_streak >= MALFORMED_ARGS_LIMIT:
+                            _malformed_streak = 0
+                            await events.emit("recovery.malformed_args", tool=name, steps=step + 1)
+                            # Do NOT dispatch this call with args={} — that would run
+                            # the tool as a silent no-op with no signal. Instead
+                            # append a synthetic tool-role result for THIS tc.id (the
+                            # assistant turn above already declared it, so a message
+                            # with tool_calls must be followed by a matching tool
+                            # result for every id, or the sequence is invalid for the
+                            # next model call) recording the rejection, then a
+                            # [RECOVERY] user nudge, then continue the per-tool-call
+                            # loop (only this malformed call is skipped — any other
+                            # tool_calls in this same turn are still processed below).
+                            messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": tc.id,
+                                    "content": json.dumps(
+                                        {
+                                            "error": "malformed_args",
+                                            "tool": name,
+                                            "reason": (
+                                                "arguments were not valid JSON "
+                                                "(repeatedly) — call not dispatched"
+                                            ),
+                                        }
+                                    ),
+                                }
+                            )
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        f"[RECOVERY] Your last tool arguments for '{name}' "
+                                        "were not valid JSON (repeatedly). Stop retrying "
+                                        "that shape — emit a SMALLER, strictly-valid JSON "
+                                        "object for the arguments."
+                                    ),
+                                }
+                            )
+                            continue
 
                     content = ""
 
@@ -975,51 +1155,13 @@ class AsyncOrchestrator:
                             "tests_passed": tests_passed,
                         }
 
-                    # No-progress / tool-loop detection. finish already returned
-                    # above, so only genuinely dispatched tools reach here.
-                    # Special case: for repeat load_skill calls, skip the halt check
-                    # because we will dedupe them (short-circuit + refund). Still
-                    # record the signature for backstop detection in case a true
-                    # loop of failed loads occurs.
+                    # Compute the repeat-load_skill backstop flag here (before
+                    # dispatch); the loop record+halt itself now happens
+                    # POST-execution (after `content` is finalized, below) so
+                    # the result can be folded into the loop signature.
                     _is_repeat_load_skill = name == "load_skill" and is_repeat_load(
                         args.get("name", ""), loaded_skills
                     )
-                    if not _is_repeat_load_skill and loop_detector.record(
-                        call_signature(name, args),
-                        repeat_limit=repeat_limit_for(name),
-                    ):
-                        _reason = loop_detector.reason()
-                        await events.emit(
-                            "loop.detected",
-                            tool=name,
-                            reason=_reason,
-                            signature=call_signature(name, args),
-                            steps=step + 1,
-                        )
-                        import logging as _logging
-
-                        _logging.getLogger("orchestrator").warning(
-                            "tool-loop detected (%s) on '%s' at step %d — halting",
-                            _reason,
-                            name,
-                            step + 1,
-                        )
-                        return {
-                            "ok": False,
-                            "summary": (
-                                f"loop detected ({_reason}): repeated tool "
-                                f"'{name}' — halting to avoid burning steps"
-                            ),
-                            "tools_used": _tools_used,
-                        }
-
-                    # For repeat load_skill, record the signature for backstop
-                    # loop detection in case a true loop of failed loads occurs.
-                    if _is_repeat_load_skill:
-                        loop_detector.record(
-                            call_signature(name, args),
-                            repeat_limit=repeat_limit_for(name),
-                        )
 
                     # Emit tool.start for all non-finish tools
                     _tool_id = uuid.uuid4().hex[:12]
@@ -1176,109 +1318,59 @@ class AsyncOrchestrator:
                                 edited_files |= _sb_writes
 
                     elif name == "run_tests":
-                        # First-class test runner. Two paths:
-                        # 1. Client-routed when the client declared run_tests.
-                        # 2. Pod code-sandbox fallback (when no client attached).
-                        # In both cases, apply the same verification accounting
-                        # (tests_passed, infra_error_streak, _bug_exposed).
-                        if self.redis is not None and "run_tests" in local_tool_names:
-                            # Client-routed: tests run on the client side via local
-                            # tool handler; we get back {ok, exit_code, raw_output}.
+                        # Direct local subprocess (co-located; no client, no sandbox skill).
+                        try:
+                            command, _timeout_ms = build_run_tests_command(args)
+                            proc = await asyncio.create_subprocess_shell(
+                                command,
+                                cwd=self.workspace,
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.STDOUT,
+                            )
                             try:
-                                # Tests can run for minutes — give the round-trip a long
-                                # deadline. The client enforces its own timeout and returns
-                                # a 124 exit code if it times out.
-                                _tms = args.get("timeout_ms")
-                                _ms = (
-                                    float(_tms)
-                                    if isinstance(_tms, int | float) and _tms
-                                    else float(os.getenv("LABMATE_TEST_TIMEOUT_MS", "120000"))
+                                _out, _ = await asyncio.wait_for(
+                                    proc.communicate(), timeout=_timeout_ms / 1000.0
                                 )
-                                _test_timeout_s = max(30.0, _ms / 1000.0 + 15.0)
-                                result = await request_local_tool(
-                                    self.redis, "run_tests", args, timeout=_test_timeout_s
-                                )
-                                if isinstance(result, dict):
-                                    shaped = {
-                                        "ok": bool(result.get("ok")),
-                                        "exit_code": int(result.get("exit_code", 1)),
-                                        "raw_output": str(result.get("raw_output", ""))[-8000:],
-                                    }
-                                else:
-                                    shaped = {
-                                        "ok": False,
-                                        "exit_code": 1,
-                                        "raw_output": str(result)[-8000:],
-                                    }
-                                content = ground_tool_result(
-                                    json.dumps(shaped), LABMATE_TOOL_RESULT_BUDGET
-                                )
-                                # SAME verification accounting as the pod path (kept in sync).
-                                if _run_tests_passed(content):
-                                    tests_passed = True
-                                _outcome = classify_test_attempt(content)
-                                if _outcome.infra_error:
-                                    infra_error_streak += 1
-                                    _last_infra_reason = _outcome.reason
-                                elif _outcome.ran:
-                                    infra_error_streak = 0
-                                # Expose-bug inversion: a test that RAN and FAILED
-                                # exposes the bug -> that IS the verification.
-                                if (
-                                    _expose_bug
-                                    and _outcome.ran
-                                    and not _outcome.passed
-                                    and not _outcome.infra_error
-                                ):
-                                    _bug_exposed = True
-                                    tests_passed = True
-                            except Exception as exc:
-                                content = json.dumps({"error": str(exc)})
-                        elif self.skill_router is not None:
-                            # Pod code-sandbox fallback (no client attached).
-                            # pytest is BLOCKED through the generic exec_run bash seam
-                            # (sandbox rule), so route to the code-sandbox skill's run_tests
-                            # tool, which runs the REAL pytest suite (LocalSubprocessExecutor
-                            # on RunPod). Always an ABSOLUTE test_path rooted at the workspace.
-                            sb_args = build_sandbox_test_args(args, self.workspace)
-                            try:
-                                envelope = await self.skill_router.execute(
-                                    "code-sandbox",
-                                    "run_tests",
-                                    sb_args,
-                                    timeout=min(sb_args["timeout"] + 15, SKILL_CALL_TIMEOUT),
-                                )
-                                shaped = shape_sandbox_test_result(envelope)
-                                content = ground_tool_result(
-                                    json.dumps(shaped), LABMATE_TOOL_RESULT_BUDGET
-                                )
-                                if _run_tests_passed(content):
-                                    tests_passed = True
-                                _outcome = classify_test_attempt(content)
-                                if _outcome.infra_error:
-                                    infra_error_streak += 1
-                                    _last_infra_reason = _outcome.reason
-                                elif _outcome.ran:
-                                    infra_error_streak = 0
-                                # Expose-bug inversion: a test that RAN and FAILED
-                                # exposes the bug -> that IS the verification.
-                                if (
-                                    _expose_bug
-                                    and _outcome.ran
-                                    and not _outcome.passed
-                                    and not _outcome.infra_error
-                                ):
-                                    _bug_exposed = True
-                                    tests_passed = True
-                            except Exception as exc:
-                                content = json.dumps({"error": str(exc)})
-                        else:
-                            content = json.dumps({"error": "no test runner available"})
+                                _exit = proc.returncode if proc.returncode is not None else 1
+                                _raw = (_out or b"").decode("utf-8", errors="replace")
+                            except TimeoutError:
+                                try:
+                                    proc.kill()
+                                    await proc.wait()
+                                except ProcessLookupError:
+                                    pass
+                                _exit = 124
+                                _raw = f"run_tests timed out after {_timeout_ms}ms"
+                            shaped = shape_run_tests_result(_exit, _raw)
+                            content = ground_tool_result(
+                                json.dumps(shaped), LABMATE_TOOL_RESULT_BUDGET
+                            )
+                            # Verification accounting (UNCHANGED from the prior paths).
+                            if _run_tests_passed(content):
+                                tests_passed = True
+                            _outcome = classify_test_attempt(content)
+                            if _outcome.infra_error:
+                                infra_error_streak += 1
+                                _last_infra_reason = _outcome.reason
+                            elif _outcome.ran:
+                                infra_error_streak = 0
+                            if (
+                                _expose_bug
+                                and _outcome.ran
+                                and not _outcome.passed
+                                and not _outcome.infra_error
+                            ):
+                                _bug_exposed = True
+                                tests_passed = True
+                        except Exception as exc:  # noqa: BLE001
+                            content = json.dumps({"error": str(exc)})
 
                     elif name in local_tool_names:
-                        if self.redis is not None:
+                        if self.local_client is not None:
                             try:
-                                result = await request_local_tool(self.redis, name, args)
+                                result = execute_local_tool(
+                                    name, args, workspace=self._tool_workspace()
+                                )
                                 # Reliable write: after a write_file the client may
                                 # report success without the bytes landing. Read the
                                 # file back and confirm it matches what we asked to
@@ -1287,10 +1379,10 @@ class AsyncOrchestrator:
                                 if name == "write_file":
                                     requested = str(args.get("content", ""))
                                     try:
-                                        readback = await request_local_tool(
-                                            self.redis,
+                                        readback = execute_local_tool(
                                             "read_file",
                                             {"path": args.get("path", "")},
+                                            workspace=self._tool_workspace(),
                                         )
                                     except Exception as exc:
                                         readback = f"<read-back failed: {exc}>"
@@ -1363,8 +1455,8 @@ class AsyncOrchestrator:
                         if self.codegraph_mcp is not None:
                             try:
                                 obs = await self.codegraph_mcp.call_tool(
-                                    "code_semantic_search",
-                                    {"query": args.get("query", ""), "k": args.get("k", 8)},
+                                    "codegraph_explore",
+                                    {"question": args.get("query", "")},
                                 )
                                 content = ground_tool_result(
                                     "\n".join(c.text for c in obs.content if hasattr(c, "text")),
@@ -1376,18 +1468,6 @@ class AsyncOrchestrator:
                             content = json.dumps(
                                 {"error": "codegraph semantic search not available"}
                             )
-
-                    elif name == "memory_search":
-                        if self.memory_search is not None:
-                            try:
-                                content = await self.memory_search.search(
-                                    args.get("query", ""),
-                                    args.get("k"),
-                                )
-                            except Exception as exc:
-                                content = json.dumps({"error": str(exc)})
-                        else:
-                            content = json.dumps({"error": "memory search not available"})
 
                     elif name == "session_search":
                         if self.session_search is not None:
@@ -1414,6 +1494,56 @@ class AsyncOrchestrator:
                         )
                     except Exception:
                         _td_status = "done"
+
+                    # No-progress / tool-loop detection (POST-execution): fold the
+                    # RESULT hash into the signature so legitimate polling (same
+                    # name+args, CHANGING result — e.g. run_tests while a build runs)
+                    # is progress, not a loop. A loop = same name+args+result repeated.
+                    # load_skill repeats are deduped+refunded elsewhere; still record
+                    # (backstop) but do not halt on them.
+                    _sig = call_signature(
+                        name,
+                        args,
+                        result=content
+                        if isinstance(content, str)
+                        else json.dumps(content, default=str),
+                    )
+                    _broke = loop_detector.record(_sig, repeat_limit=repeat_limit_for(name))
+                    if _broke and not _is_repeat_load_skill:
+                        _reason = loop_detector.reason()
+                        await events.emit(
+                            "loop.detected",
+                            tool=name,
+                            reason=_reason,
+                            signature=_sig,
+                            steps=step + 1,
+                        )
+                        import logging as _logging
+
+                        _logging.getLogger("orchestrator").warning(
+                            "tool-loop detected (%s) on '%s' at step %d — halting",
+                            _reason,
+                            name,
+                            step + 1,
+                        )
+                        # still emit tool.done for the just-run tool so the stream is consistent
+                        await events.emit(
+                            "tool.done",
+                            tool_id=_tool_id,
+                            status=_td_status,
+                            summary=str(content)[:200],
+                            result=content,
+                            duration_ms=int((time.monotonic() - _t0) * 1000),
+                        )
+                        return {
+                            "ok": False,
+                            "summary": (
+                                f"loop detected ({_reason}): repeated tool "
+                                f"'{name}' with no changing result — halting to avoid burning steps"
+                            ),
+                            "tools_used": _tools_used,
+                        }
+
                     await events.emit(
                         "tool.done",
                         tool_id=_tool_id,
@@ -1434,7 +1564,7 @@ class AsyncOrchestrator:
 
                 # Refund this turn if EVERY tool call it made was a refundable read/verify/inspect (REFUNDABLE_TOOLS).
                 # Pure inspection (read_file / list_dir / code_semantic_search) and
-                # verification (run_tests / run_bash / memory_search) must not starve genuine work.
+                # verification (run_tests / run_bash) must not starve genuine work.
                 # A turn with no tool calls already returned above, so _turn_tools is non-empty here.
                 if _turn_tools and all(t in REFUNDABLE_TOOLS for t in _turn_tools):
                     budget.refund()
@@ -1594,7 +1724,7 @@ class CodingOrchestrator:
       run_task() -> graph.ainvoke() -> plan -> execute -> check -> [reflect | END]
 
     Crash recovery: re-invoke run_task() with the same session_id.
-    The AsyncMongoDBSaver will load the latest checkpoint and resume.
+    The local SqliteSaver checkpointer will load the latest checkpoint and resume.
     """
 
     def __init__(

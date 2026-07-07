@@ -12,9 +12,9 @@ def _now_iso() -> str:
 
 
 class InMemorySessionStore:
-    """Minimal session index. Swap for a Mongo-backed store behind this API.
+    """Minimal session index. Swap for a SQLite-backed store behind this API.
 
-    All methods are async to match the MongoSessionStore interface.
+    All methods are async to match the SqliteSessionStore interface.
     """
 
     def __init__(self) -> None:

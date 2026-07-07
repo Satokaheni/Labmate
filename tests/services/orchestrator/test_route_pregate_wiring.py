@@ -23,7 +23,7 @@ def _router():
             tier="bundled",
         )
     }
-    return SkillRouter(runner=runner, redis=AsyncMock(), gemma_api_base="http://x/v1")
+    return SkillRouter(runner=runner, registry=AsyncMock(), gemma_api_base="http://x/v1")
 
 
 @pytest.mark.asyncio
@@ -87,7 +87,7 @@ async def test_empty_catalog_still_runs_vote(monkeypatch):
     monkeypatch.setattr(SR, "ENABLE_ROUTING_PREGATE", True)
     runner = MagicMock()
     runner.catalog = {}  # Empty catalog
-    router = SkillRouter(runner=runner, redis=AsyncMock(), gemma_api_base="http://x/v1")
+    router = SkillRouter(runner=runner, registry=AsyncMock(), gemma_api_base="http://x/v1")
     # After initialization with empty catalog, _pregate should be None
     assert router._pregate is None
 

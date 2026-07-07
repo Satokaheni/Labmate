@@ -9,6 +9,10 @@ import { McpHostManager } from './mcp-registry.js';
 import { resolveMcpPathArgs, injectCodegraphProjectPath } from './mcp-path-rooting.js';
 import { skillDescriptors } from './skill-discovery.js';
 import { userSkillsDir, ensureUserSkillsDir } from './labmate-home.js';
+import { AppConfig, loadConfig as loadConfigAt, saveConfig as saveConfigAt } from './config-store';
+import { BackendSupervisor, type SupervisorStatus } from './backend-supervisor.js';
+import { startupSequence } from './startup-sequence.js';
+import { readLocalEnv, type LocalEnv } from './local-env.js';
 
 const DEV_URL = 'http://localhost:8080';
 const IS_DEV = process.env.ELECTRON_DEV === '1';
@@ -21,20 +25,11 @@ let _sessionToken: string | null = null;
 
 function tokenFile() { return path.join(app.getPath('userData'), 'token.enc'); }
 
-// ── App config (runtime WS URL) ───────────────────────────────────────────────
+// ── App config (runtime WS URL + model endpoint) ──────────────────────────────
 
-interface AppConfig { wsUrl: string | null; isDev: boolean; }
-
-function configFile() { return path.join(app.getPath('userData'), 'config.json'); }
-
-function loadConfig(): AppConfig {
-  if (IS_DEV) return { wsUrl: null, isDev: true };
-  try { return { wsUrl: (JSON.parse(fs.readFileSync(configFile(), 'utf8')) as { wsUrl: string }).wsUrl, isDev: false }; }
-  catch { return { wsUrl: null, isDev: false }; }
-}
-
-function saveConfig(wsUrl: string): void {
-  fs.writeFileSync(configFile(), JSON.stringify({ wsUrl }), 'utf8');
+function loadConfig(): AppConfig { return loadConfigAt(app.getPath('userData')); }
+function saveConfig(cfg: { wsUrl: string | null; gemmaBase: string | null }): void {
+  saveConfigAt(cfg, app.getPath('userData'));
 }
 
 // ── Per-chat workspace store ──────────────────────────────────────────────────
@@ -198,6 +193,52 @@ function buildMenu(): Menu {
 const mcpManager = new McpHostManager();
 let mcpReady: Promise<void> = Promise.resolve();
 
+// ── Backend supervisor (spawns infrastructure/start.sh, health-gates it) ─────
+
+// main.ts compiles to dist-electron/main.js (see package.json "main"), which
+// lives at <repoRoot>/services/frontend/dist-electron/main.js — three levels
+// up from __dirname is the repo root (verified: infrastructure/start.sh
+// resolves from there).
+const REPO_ROOT = path.join(__dirname, '..', '..', '..');
+const LOCAL_PORT = Number(process.env.LOCAL_PORT ?? 8787);
+
+const supervisor = new BackendSupervisor();
+
+// Latest backend status, tracked so a renderer created AFTER `ready` (or any
+// other status) already fired can still learn the current state via a pull
+// (`labmate:get-backend-status`) instead of only a push. The supervisor emits
+// `ready` DURING startupSequence, BEFORE createWindow() runs, so a push-only
+// design would miss it entirely.
+type BackendStatus = SupervisorStatus | { phase: 'model_unreachable'; url: string };
+let latestBackendStatus: BackendStatus | null = null;
+
+function broadcastBackendStatus(s: BackendStatus): void {
+  latestBackendStatus = s;
+  for (const w of BrowserWindow.getAllWindows()) w.webContents.send('labmate:backend-status', s);
+}
+supervisor.onStatus(broadcastBackendStatus);
+
+// infrastructure/local.env is the single source of truth for LOCAL_PORT +
+// GEMMA_BASE (the same file the backend sources). Read once at startup and
+// again on every retry so an edit to the pod URL + Retry works without a
+// full app restart.
+let localEnv: LocalEnv = { localPort: 8787, gemmaBase: '' };
+
+async function runStartupAndProbe(): Promise<void> {
+  const localPort = localEnv.localPort;
+  const logPath = path.join(REPO_ROOT, '.data', 'logs', 'local.log');
+  try {
+    await startupSequence(supervisor, localPort, REPO_ROOT, logPath);
+  } catch (e) {
+    console.error('backend startup failed:', e);
+    return; // boot_failed already broadcast by the supervisor
+  }
+  if (localEnv.gemmaBase) {
+    const ok = await BackendSupervisor.probeModel(localEnv.gemmaBase);
+    broadcastBackendStatus(ok ? { phase: 'ready' } : { phase: 'model_unreachable', url: localEnv.gemmaBase });
+  }
+}
+
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
 
 let tray: Tray | null = null;
@@ -206,6 +247,10 @@ let isQuitting = false;
 app.on('before-quit', (_event) => {
   isQuitting = true;
   void mcpManager.stopAll();
+  // Best-effort teardown: BackendSupervisor.stop() has its own bounded grace
+  // (SIGTERM, then SIGKILL after STOP_GRACE_MS) so this never blocks quit
+  // beyond the supervisor's own guard.
+  void supervisor.stop();
 });
 
 function createWindow(): BrowserWindow {
@@ -260,7 +305,13 @@ function createWindow(): BrowserWindow {
   return win;
 }
 
-ipcMain.on('labmate:get-config', (event) => { event.returnValue = loadConfig(); });
+ipcMain.on('labmate:get-config', (event) => {
+  event.returnValue = {
+    wsUrl: `ws://localhost:${localEnv.localPort}/ws`,
+    gemmaBase: localEnv.gemmaBase || null,
+    isDev: IS_DEV,
+  };
+});
 
 ipcMain.on('labmate:get-token', (event) => {
   if (_sessionToken !== null) { event.returnValue = _sessionToken; return; }
@@ -290,7 +341,18 @@ ipcMain.handle('labmate:clear-token', () => {
   try { fs.unlinkSync(tokenFile()); } catch { /* ignore */ }
 });
 
-ipcMain.handle('labmate:set-config', (_evt, wsUrl: string) => { saveConfig(wsUrl); });
+ipcMain.handle('labmate:set-config', (_evt, cfg: { wsUrl: string | null; gemmaBase: string | null }) => {
+  saveConfig(cfg);
+});
+
+// ── Backend supervisor status: pull (in case a renderer misses the push) + retry ──
+
+ipcMain.handle('labmate:get-backend-status', () => latestBackendStatus);
+ipcMain.handle('labmate:retry-backend', async () => {
+  localEnv = await readLocalEnv(REPO_ROOT);
+  await runStartupAndProbe();
+  return latestBackendStatus;
+});
 
 // ── Workspace (multi-root per chat) ───────────────────────────────────────────
 
@@ -408,7 +470,7 @@ ipcMain.handle(
   },
 );
 
-void app.whenReady().then(() => {
+void app.whenReady().then(async () => {
   ensureUserSkillsDir();
   mcpReady = mcpManager.startAll().catch((e) => {
     console.error('mcp startAll failed:', e);
@@ -419,6 +481,10 @@ void app.whenReady().then(() => {
   } catch (err) {
     console.error('failed to seed initial workspace roots:', err);
   }
+
+  localEnv = await readLocalEnv(REPO_ROOT);
+  await runStartupAndProbe();
+
   createWindow();
 });
 

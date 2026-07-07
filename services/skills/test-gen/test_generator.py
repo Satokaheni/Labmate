@@ -3,15 +3,23 @@
 CRITICAL: stderr-only logging. NEVER print() — stdout is JSON-RPC.
 Qwen is the specialist test writer; Gemma never writes tests.
 """
+
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
 import sys
 
 import litellm
+
+# Shared resilient model-call path (cross-endpoint failover + transient retry).
+# Available in the harness (skill_registry puts the repo root on PYTHONPATH); fall
+# back to raw litellm.completion when the skill runs standalone (its own tests).
+try:
+    from services.model_client import resilient_completion as _completion
+except ImportError:  # pragma: no cover — standalone skill run, no repo on path
+    _completion = litellm.completion
 
 logging.basicConfig(
     stream=sys.stderr,
@@ -31,7 +39,7 @@ class TestGenerator:
 
     def _read_source(self, path: str) -> str:
         try:
-            with open(path, "r", encoding="utf-8") as fh:
+            with open(path, encoding="utf-8") as fh:
                 return fh.read()
         except OSError as exc:
             log.error("cannot read source %s: %r", path, exc)
@@ -39,7 +47,7 @@ class TestGenerator:
 
     def _call_llm(self, prompt: str) -> str:
         log.info("calling Qwen at %s (model=%s)", self._base_url, MODEL)
-        resp = litellm.completion(
+        resp = _completion(
             model=MODEL,
             api_base=self._base_url,
             api_key=self._api_key,
@@ -95,8 +103,7 @@ class TestGenerator:
         source = self._read_source(source_file)
         existing = self._read_source(test_file)
         mutants_block = "\n\n".join(
-            f"Surviving mutant {i + 1}:\n```diff\n{m}\n```"
-            for i, m in enumerate(surviving_mutants)
+            f"Surviving mutant {i + 1}:\n```diff\n{m}\n```" for i, m in enumerate(surviving_mutants)
         )
         prompt = (
             f"The current test suite for `{source_file}` failed to kill the "
@@ -113,6 +120,7 @@ class TestGenerator:
         code = self._extract_code(reply)
         log.info(
             "improve: %d surviving mutants -> %d chars of new tests",
-            len(surviving_mutants), len(code),
+            len(surviving_mutants),
+            len(code),
         )
         return {"additional_test_code": code}

@@ -1,7 +1,4 @@
-"""Tests for SessionSearch wrapper and StorageManager.search_turns.
-
-Mirrors test_memory_search.py patterns.
-"""
+"""Tests for SessionSearch wrapper and StorageManager.search_turns."""
 
 from __future__ import annotations
 
@@ -197,135 +194,6 @@ async def test_none_store_returns_unavailable():
 
 
 # ---------------------------------------------------------------------------
-# StorageManager.search_turns tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-@pytest.mark.mocked
-async def test_search_turns_text_mode_uses_dollar_text(storage, mock_mongo):
-    """text mode builds a $text filter and sorts by textScore."""
-    col = mock_mongo._collections.setdefault("chat_turns", MagicMock(name="chat_turns"))
-
-    # Motor: find().sort().limit() all return self; col is async-iterable.
-    async def _aiter(self_):
-        return
-        yield  # make it an async generator (empty)
-
-    col.find.return_value = col
-    col.sort.return_value = col
-    col.limit.return_value = col
-    col.__aiter__ = _aiter
-
-    result = await storage.search_turns("billing", top_k=5, mode="text")
-
-    assert col.find.called
-    call_args = col.find.call_args
-    filt = call_args.args[0] if call_args.args else call_args[0][0]
-    assert "$text" in filt
-    assert filt["$text"]["$search"] == "billing"
-
-    # sort must be by relevance (textScore) — the whole point of $text mode
-    assert col.sort.called
-    sort_args = col.sort.call_args
-    sort_arg = sort_args.args[0] if sort_args.args else sort_args[0][0]
-    assert "textScore" in str(sort_arg)
-    assert col.limit.called
-    assert result == []
-
-
-@pytest.mark.asyncio
-@pytest.mark.mocked
-async def test_search_turns_regex_mode_uses_dollar_regex(storage, mock_mongo):
-    """regex mode builds a $regex filter."""
-    col = mock_mongo._collections.setdefault("chat_turns", MagicMock(name="chat_turns"))
-
-    async def _aiter(self_):
-        return
-        yield
-
-    col.find.return_value = col
-    col.sort.return_value = col
-    col.limit.return_value = col
-    col.__aiter__ = _aiter
-
-    await storage.search_turns("foo\\.bar", top_k=3, mode="regex")
-
-    filt = col.find.call_args.args[0]
-    assert "$regex" in filt["text"]
-    assert filt["text"]["$options"] == "i"
-
-
-@pytest.mark.asyncio
-@pytest.mark.mocked
-async def test_search_turns_session_id_adds_filter(storage, mock_mongo):
-    """When session_id is provided it's added to the filter."""
-    col = mock_mongo._collections.setdefault("chat_turns", MagicMock(name="chat_turns"))
-
-    async def _aiter(self_):
-        return
-        yield
-
-    col.find.return_value = col
-    col.sort.return_value = col
-    col.limit.return_value = col
-    col.__aiter__ = _aiter
-
-    await storage.search_turns("hello", mode="text", session_id="sess42")
-
-    filt = col.find.call_args.args[0]
-    assert filt["sessionId"] == "sess42"
-
-
-@pytest.mark.asyncio
-@pytest.mark.mocked
-async def test_search_turns_empty_query_returns_empty(storage):
-    """Empty/whitespace query returns [] without hitting Mongo."""
-    result = await storage.search_turns("")
-    assert result == []
-
-    result2 = await storage.search_turns("   ")
-    assert result2 == []
-
-
-@pytest.mark.asyncio
-@pytest.mark.mocked
-async def test_search_turns_exception_returns_empty(storage, mock_mongo):
-    """A Mongo exception (e.g. invalid regex) → [] and never raises."""
-    col = mock_mongo._collections.setdefault("chat_turns", MagicMock(name="chat_turns"))
-    col.find.side_effect = Exception("OperationFailure: invalid regex")
-
-    result = await storage.search_turns("bad[regex", mode="regex")
-    assert result == []
-
-
-@pytest.mark.asyncio
-@pytest.mark.mocked
-async def test_search_turns_returns_rows_correctly(storage, mock_mongo):
-    """Rows from Mongo cursor are projected to {sessionId, seq, text}."""
-    col = mock_mongo._collections.setdefault("chat_turns", MagicMock(name="chat_turns"))
-
-    docs = [
-        {"sessionId": "s1", "seq": 1, "text": "hello world", "_id": "x"},
-        {"sessionId": "s2", "seq": 3, "text": "foo bar", "_id": "y"},
-    ]
-
-    async def _aiter(self_):
-        for d in docs:
-            yield d
-
-    col.find.return_value = col
-    col.sort.return_value = col
-    col.limit.return_value = col
-    col.__aiter__ = _aiter
-
-    result = await storage.search_turns("hello", mode="text")
-    assert len(result) == 2
-    assert result[0] == {"sessionId": "s1", "seq": 1, "text": "hello world"}
-    assert result[1] == {"sessionId": "s2", "seq": 3, "text": "foo bar"}
-
-
-# ---------------------------------------------------------------------------
 # Tool schema tests
 # ---------------------------------------------------------------------------
 
@@ -342,19 +210,6 @@ def test_session_search_schema_absent_when_disabled():
     assert "session_search" not in names
 
 
-def test_memory_enabled_unaffected_by_session_search():
-    """session_search_enabled=True must not add memory_search and vice versa."""
-    assembler = PromptAssembler(memory_enabled=False, session_search_enabled=True)
-    names = {t["function"]["name"] for t in assembler.tools() if t.get("type") == "function"}
-    assert "session_search" in names
-    assert "memory_search" not in names
-
-    assembler2 = PromptAssembler(memory_enabled=True, session_search_enabled=False)
-    names2 = {t["function"]["name"] for t in assembler2.tools() if t.get("type") == "function"}
-    assert "memory_search" in names2
-    assert "session_search" not in names2
-
-
 def test_session_search_schema_has_required_query():
     assembler = PromptAssembler(session_search_enabled=True)
     tool = next(
@@ -368,30 +223,6 @@ def test_session_search_schema_has_required_query():
     assert "mode" in params["properties"]
     assert "session_id" in params["properties"]
     assert params["required"] == ["query"]
-
-
-# ---------------------------------------------------------------------------
-# db_indexes: ensure_indexes creates chat_turns text index
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-@pytest.mark.mocked
-async def test_ensure_indexes_creates_chat_turns_text_index(mock_mongo):
-    """ensure_indexes must create a $text index on chat_turns."""
-    from services.orchestrator.db_indexes import ensure_indexes
-
-    db = mock_mongo[None]  # get the mock db
-
-    await ensure_indexes(db)
-
-    # chat_turns collection must have create_index called at least twice
-    ct = db["chat_turns"]
-    assert ct.create_index.await_count >= 2
-
-    # One of the calls must be the text index
-    calls = [str(c) for c in ct.create_index.call_args_list]
-    assert any("text" in c for c in calls), f"No text index call found in: {calls}"
 
 
 # ---------------------------------------------------------------------------

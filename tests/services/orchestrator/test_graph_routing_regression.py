@@ -51,7 +51,7 @@ def test_skill_router_runner_property_is_accessible():
 
     skill_router = SkillRouter(
         runner=runner,
-        redis=AsyncMock(),
+        registry=AsyncMock(),
         gemma_api_base="http://localhost:8000/v1",
     )
 
@@ -135,9 +135,8 @@ def _build_compiled_graph(monkeypatch, *, route_result, dispatch_recorder=None):
     mock_async_orch.plan_and_dispatch = AsyncMock(side_effect=fake_dispatch)
 
     real_cp = MemorySaver()
-    with patch("pymongo.MongoClient", return_value=MagicMock()):
-        with patch("langgraph.checkpoint.mongodb.MongoDBSaver", return_value=real_cp):
-            graph, _ = graph_mod.build_graph(mock_orch, mock_async_orch)
+    with patch("services.orchestrator.graph._make_sqlite_checkpointer", return_value=real_cp):
+        graph, _ = graph_mod.build_graph(mock_orch, mock_async_orch)
     return graph, mock_async_orch
 
 
