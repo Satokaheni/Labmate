@@ -44,7 +44,6 @@ RunPod works too, but nothing here requires it.
 | M4 — Local state | ✅ Done | SQLite LocalStore (sessions, turns, auth, checkpoints) — replaced MongoDB/Chroma/Redis |
 | M5 — Skills | ✅ Done | Polyglot skill framework, SKILL.md discovery |
 | M6 — llama.cpp serving | ✅ Done | `llama-server` OpenAI-compatible API (see the vLLM-vs-CUDA note in `infrastructure/INSTALL.md`) |
-| M7 — Discord | ⬜ Deferred | Discord bot connector, edit-based streaming (do not wire until explicitly instructed) |
 
 ---
 
@@ -134,8 +133,7 @@ labmate/
 │           ├── spec_skills.md
 │           ├── spec_testing.md
 │           ├── spec_writing_skills.md
-│           ├── spec_infrastructure.md
-│           └── spec_integrations.md
+│           └── spec_infrastructure.md
 │
 ├── specs/                         # Legacy M1-M2 specs (reference only)
 └── docs/                          # Legacy M1-M2 docs (reference only)
@@ -157,7 +155,6 @@ Each component has a dedicated engineering spec in `research/llm-harness-researc
 | `spec_testing.md` | Three-layer test pyramid, pytest-bdd, LLM-as-judge |
 | `spec_writing_skills.md` | IMRaD pipeline, citation validation, Critique+Reflexion |
 | `spec_infrastructure.md` | Docker setup, host inference, service discovery |
-| `spec_integrations.md` | Discord connector, slash commands, streaming |
 
 ---
 
