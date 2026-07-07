@@ -10,8 +10,6 @@ Labmate is a local autonomous agent: Brain (LLM) → Nervous System (MCP bridge)
 
 **Primary model:** Gemma 4 12B 4-bit served via llama.cpp (`llama-server`) with an OpenAI-compatible HTTP API on port 8000. `QWEN_BASE` defaults to `GEMMA_BASE` — both roles run on the same model.
 
-**CRITICAL SECURITY CONSTRAINT:** Discord connector is deferred — do NOT wire, import, or reference it in any active code path until explicitly instructed. Lives in `services/connectors/deferred/`.
-
 ---
 
 ## Architecture Map
@@ -149,7 +147,6 @@ native host process alongside `llama-server`.
 | llama.cpp serving | `research/llm-harness-research/specs/spec_inference.md` |
 | SKILL.md format, SkillRunner | `research/llm-harness-research/specs/spec_skills.md` |
 | Testing strategy | `research/llm-harness-research/specs/spec_testing.md` |
-| Discord connector (**deferred**) | `research/llm-harness-research/specs/spec_integrations.md` |
 
 ---
 
@@ -162,7 +159,6 @@ native host process alongside `llama-server`.
 5. `services/skill-worker/` — dispatches skills (in-process queue, not Redis)
 6. `services/cli/` — WebSocket CLI client
 7. `services/frontend/` — Electron frontend
-8. Discord connector — **deferred; do not implement until explicitly instructed**
 
 ---
 

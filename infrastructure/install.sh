@@ -249,8 +249,7 @@ else
   # rather than hardcoding a list — a hardcoded list silently misses newly-added services
   # (e.g. a future service dir), whose absence only surfaces later as a runtime
   # ModuleNotFoundError. The glob matches DIRECT children only, so per-skill deps
-  # (services/skills/<name>/, handled in §3b) and the DEFERRED Discord connector
-  # (services/connectors/deferred/) are intentionally NOT matched.
+  # (services/skills/<name>/, handled in §3b) are intentionally NOT matched.
   for req in "${REPO_ROOT}"/services/*/requirements.txt; do
     [[ -f "$req" ]] || continue
     svc="$(basename "$(dirname "$req")")"
